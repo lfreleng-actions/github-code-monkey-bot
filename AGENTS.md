@@ -33,5 +33,31 @@ a pull request, not the full set:
 
 ## Repository specifics
 
-None: working in this repository needs nothing beyond the organisation
-guidelines.
+A reusable GitHub workflow that selects triaged issues across the
+organisation, runs one Copilot CLI coding agent per repository, and
+publishes each result as signed commits and a pull request.
+`docs/DESIGN.md` is the architecture and trust model; read it before
+changing how the jobs hand data to each other.
+
+- `.github/workflows/code-monkey.yaml`: the reusable workflow (select,
+  author, publish, report); `code-monkey-cron.yaml` schedules and
+  dispatches it; `testing.yaml` runs the suite and PR plumbing.
+- `scripts/`: the Python the jobs run; `tests/`: its offline suite.
+- `prompt/author.md`: the coding agent's task. It defines what the
+  agent does and the limits of what the workflow can publish. It must
+  **not** restate organisation policy on commits, tests or reviews:
+  the agent receives the organisation `AGENTS.md` for that, and a
+  copy here would drift from it.
+
+Before pushing, run:
+
+```bash
+uv run python -B -m unittest discover -s tests
+prek run --files <changed files>   # includes the aislop gate at 100
+zizmor --persona auditor .github/workflows/   # zero findings
+```
+
+Nothing about the author job earns trust: never give it a credential that can
+write to a repository, and never let it hold the App key. The
+contract tests in `tests/test_workflow.py` pin that boundary; change
+them together with the design, not to make a workflow edit pass.
