@@ -267,6 +267,72 @@ class AuthorJobContracts(ReusableWorkflowCase):
         )
         self.assert_expression(author["if"], "needs.select.outputs.run_agent == 'true'")
 
+    @unittest.skipUnless(
+        shutil.which("jq") and shutil.which("bash") and shutil.which("git"), "needs jq"
+    )
+    def test_packet_step_accepts_bot_identities(self) -> None:
+        """The identity guards admit real and placeholder [bot] logins.
+
+        Run 37522468427 failed here: a bracket expression written inline
+        in ``[[ =~ ]]`` rejected ``code-monkey[bot]``. The guard runs for
+        real, with both identities, so a regex edit cannot regress it.
+        """
+        packet = self.step("author", "Prepare workspace and packet")
+        base = "f" * 40
+        identities = [
+            ("code-monkey[bot]", "code-monkey[bot]@users.noreply.github.com"),
+            (
+                "lf-releng-code-monkey-bot[bot]",
+                "123+lf-releng-code-monkey-bot[bot]@users.noreply.github.com",
+            ),
+        ]
+        for login, email in identities:
+            with self.subTest(login=login), tempfile.TemporaryDirectory() as holder:
+                work = Path(holder)
+                (work / "evidence").mkdir()
+                (work / "evidence" / "selection.json").write_text(
+                    json.dumps(
+                        {
+                            "bot": {"login": login, "email": email},
+                            "issues": [
+                                {"key": "repo-7", "branch": "b", "repository": "o/repo"}
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                subprocess.run(["git", "init", "-q", "workspace"], cwd=work, check=True)
+                # The base-commit check needs HEAD to equal BASE_SHA; a
+                # fake rev-parse on PATH answers with the fixture SHA.
+                fake = work / "bin"
+                fake.mkdir()
+                (fake / "git").write_text(
+                    "#!/bin/sh\n"
+                    'if [ "$3" = rev-parse ]; then echo ' + base + "; exit 0; fi\n"
+                    'exec /usr/bin/env -u PATH PATH="'
+                    + os.environ["PATH"]
+                    + '" git "$@"\n',
+                    encoding="utf-8",
+                )
+                (fake / "git").chmod(0o755)
+                output = work / "out.txt"
+                output.touch()
+                env = {
+                    "PATH": f"{fake}:{os.environ['PATH']}",
+                    "KEY": "repo-7",
+                    "BASE_SHA": base,
+                    "GITHUB_OUTPUT": str(output),
+                }
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(packet["run"])],
+                    cwd=work,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn(f"bot_login={login}", output.read_text(encoding="utf-8"))
+
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
         checkout = self.step("author", "Checkout target repository")
