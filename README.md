@@ -36,6 +36,28 @@ the commits through GitHub's `createCommitOnBranch`, which signs
 them, and opens the pull request. The agent reads the organisation's
 `AGENTS.md` at a recorded commit and works to its rules.
 
+## Where bot branches live
+
+The publisher never pushes a branch to a target repository and never
+opens a pull request from one. It forks the target into the bot
+organisation for that project, pushes there, and opens the pull
+request from the fork, so the target's workflows run the change as
+an outside contribution: no secrets, a token that cannot write,
+and the organisation's approval gate before any workflow runs. The mapping
+lives in [`config/fork-orgs.json`](config/fork-orgs.json):
+
+| Target organisation | Fork organisation |
+| ------------------- | ----------------- |
+| `onap` | `lfreleng-bot-forks-onap` |
+| `opendaylight` | `lfreleng-bot-forks-opendaylight` |
+| `o-ran-sc` | `lfreleng-bot-forks-oransc` |
+| every other organisation, `lfreleng-actions` included | `lfreleng-bot-forks` |
+
+The fork organisations hold nothing but bot forks, have Actions
+switched off, and accept the App's installation and nothing else.
+The [design document](docs/DESIGN.md) section 4.3 explains the
+reasoning.
+
 ## Schedule and dispatch
 
 `code-monkey-cron.yaml` runs at 09:00 UTC on weekdays, two hours
