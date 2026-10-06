@@ -288,7 +288,7 @@ class AuthorJobContracts(ReusableWorkflowCase):
         )
 
         verify = self.step("author", "Verify evidence bytes")
-        self.assertIn("monkey_evidence.py verify", flatten(verify["run"]))
+        self.assertIn("bot_evidence.py verify", flatten(verify["run"]))
         env = cast(dict[str, Any], verify["env"])
         self.assert_expression(
             env["SELECTION_SHA"], "needs.select.outputs.selection_sha256"
@@ -297,8 +297,8 @@ class AuthorJobContracts(ReusableWorkflowCase):
             env["GUIDANCE_SHA"], "needs.select.outputs.guidance_sha256"
         )
         script = flatten(verify["run"])
-        self.assertIn('--selection-sha256 "$SELECTION_SHA"', script)
-        self.assertIn('--guidance-sha256 "$GUIDANCE_SHA"', script)
+        self.assertIn('--expect "selection.json=$SELECTION_SHA"', script)
+        self.assertIn('--expect "agents.md=$GUIDANCE_SHA"', script)
 
         fetched = self.steps("author").index(download)
         verified = self.position("author", "Verify evidence bytes")
@@ -428,7 +428,7 @@ class PublishJobContracts(ReusableWorkflowCase):
             evidence["with"]["artifact-ids"], "needs.select.outputs.evidence_id"
         )
         verified = self.step("publish", "verified")
-        self.assertIn("monkey_evidence.py verify", flatten(verified["run"]))
+        self.assertIn("bot_evidence.py verify", flatten(verified["run"]))
 
         # The proposal is never extracted by download-artifact: the
         # bounded fetcher checks sizes before writing anything.

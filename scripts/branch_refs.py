@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-import monkey_github as github
+import bot_github as github
+import issue_reads as reads
 import proposal_check as checks
 import proposal_policy as policy
 from proposal_policy import PublishError, Rejection
@@ -135,7 +136,7 @@ def existing_pull_request(
     counts as that earlier success: anyone else's is a conflict.
     """
     fork_owner = fork_repository.partition("/")[0]
-    entries = github.api_page(
+    entries = reads.api_page(
         f"repos/{repository}/pulls?state=open&head={fork_owner}:{branch}&per_page=20"
     )
     for data in entries:

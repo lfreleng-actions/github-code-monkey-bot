@@ -10,7 +10,8 @@ import json
 from collections.abc import Callable
 from typing import Any, cast
 
-import monkey_github as github
+import bot_github as github
+import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
 
@@ -120,7 +121,7 @@ def posted(
     if not since:
         return None
     for page in range(1, 4):
-        entries = github.api_page(
+        entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
             f"?since={since}&per_page=100&page={page}"
         )

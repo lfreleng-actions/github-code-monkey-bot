@@ -18,7 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-github = import_module("monkey_github")
+github = import_module("bot_github")
 reads = import_module("issue_reads")
 select = import_module("select_issues")
 categories = import_module("issue_categories")

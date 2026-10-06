@@ -19,7 +19,8 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-github = import_module("monkey_github")
+github = import_module("bot_github")
+reads = import_module("issue_reads")
 checks = import_module("proposal_check")
 bounded = import_module("git_bounded")
 policy = import_module("proposal_policy")
@@ -776,7 +777,7 @@ class ExistingPullRequestTest(NoNetworkCase):
             self.pr(BOT, "someone-else/repo"),
             self.pr(BOT, FORK.upper()),
         ]
-        with patch.object(github, "api_page", return_value=entries) as read:
+        with patch.object(reads, "api_page", return_value=entries) as read:
             url = publish.existing_pull_request(REPOSITORY, BRANCH, BOT, FORK)
         self.assertEqual(url, f"https://x/pull/{BOT}")
         self.assertIn(f"head={FORK_ORG}:{BRANCH}", read.call_args.args[0])
@@ -784,7 +785,7 @@ class ExistingPullRequestTest(NoNetworkCase):
 
     def test_someone_elses_pr_is_not_ours(self) -> None:
         """A human's PR from the same fork branch is not an earlier attempt."""
-        with patch.object(github, "api_page", return_value=[self.pr("mallory", FORK)]):
+        with patch.object(reads, "api_page", return_value=[self.pr("mallory", FORK)]):
             self.assertIsNone(
                 publish.existing_pull_request(REPOSITORY, BRANCH, BOT, FORK)
             )
@@ -954,7 +955,7 @@ class RunCommentTest(NoNetworkCase):
         """The comment lands on the issue, marked, and its URL is written back."""
         path = self.write_result(result_json(bot_login=BOT))
         with (
-            patch.object(github, "api_page", return_value=[]) as search,
+            patch.object(reads, "api_page", return_value=[]) as search,
             patch.object(
                 github, "api_write", return_value={"html_url": "https://x/c/1"}
             ) as write,
@@ -984,7 +985,7 @@ class RunCommentTest(NoNetworkCase):
             "html_url": "https://x/c/9",
         }
         with (
-            patch.object(github, "api_page", return_value=[earlier]),
+            patch.object(reads, "api_page", return_value=[earlier]),
             patch.object(github, "api_write") as write,
             redirect_stdout(io.StringIO()),
         ):
@@ -1004,7 +1005,7 @@ class RunCommentTest(NoNetworkCase):
             "html_url": "https://x/c/evil",
         }
         with (
-            patch.object(github, "api_page", return_value=[spoof]),
+            patch.object(reads, "api_page", return_value=[spoof]),
             patch.object(
                 github, "api_write", return_value={"html_url": "https://x/c/3"}
             ) as write,
@@ -1025,7 +1026,7 @@ class RunCommentTest(NoNetworkCase):
             "body": "<!-- code-monkey https://run publish-failed -->",
         }
         with (
-            patch.object(github, "api_page", return_value=[earlier]),
+            patch.object(reads, "api_page", return_value=[earlier]),
             patch.object(
                 github, "api_write", return_value={"html_url": "https://x/c/2"}
             ) as write,

@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-import monkey_github as github
+import bot_github as github
 import proposal_policy as policy
 from fork_orgs import ALLOWED_RE
 from git_bounded import git

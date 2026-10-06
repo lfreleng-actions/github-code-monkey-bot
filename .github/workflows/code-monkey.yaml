@@ -491,9 +491,9 @@ jobs:
           SELECTION_SHA: "${{ needs.select.outputs.selection_sha256 }}"
           GUIDANCE_SHA: "${{ needs.select.outputs.guidance_sha256 }}"
         run: |
-          python3 monkey-assets/scripts/monkey_evidence.py verify \
-            --directory evidence --selection-sha256 "$SELECTION_SHA" \
-            --guidance-sha256 "$GUIDANCE_SHA"
+          python3 monkey-assets/scripts/bot_evidence.py verify \
+            --directory evidence --expect "selection.json=$SELECTION_SHA" \
+            --expect "agents.md=$GUIDANCE_SHA"
 
       # The default token has no grant on the target repository; the
       # checkout succeeds because the estate is public. Nothing here
@@ -796,9 +796,9 @@ jobs:
           SELECTION_SHA: "${{ needs.select.outputs.selection_sha256 }}"
           GUIDANCE_SHA: "${{ needs.select.outputs.guidance_sha256 }}"
         run: |
-          python3 monkey-assets/scripts/monkey_evidence.py verify \
-            --directory evidence --selection-sha256 "$SELECTION_SHA" \
-            --guidance-sha256 "$GUIDANCE_SHA"
+          python3 monkey-assets/scripts/bot_evidence.py verify \
+            --directory evidence --expect "selection.json=$SELECTION_SHA" \
+            --expect "agents.md=$GUIDANCE_SHA"
 
       # The proposal is untrusted whatever its name, and its archive is
       # never extracted blindly: proposal_fetch.py bounds the zip size,

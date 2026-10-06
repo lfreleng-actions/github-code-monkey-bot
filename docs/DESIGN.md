@@ -980,9 +980,12 @@ scripts/select_issues.py                 selection policy
 scripts/issue_categories.py              category switches and matching
 scripts/selection_outputs.py             selection files and summary
 scripts/issue_reads.py                   GitHub reads for selection
-scripts/monkey_github.py                 gh wrapper, REST and GraphQL
-scripts/monkey_evidence.py               evidence digests, file caps
-scripts/proposal_fetch.py                bounded proposal extraction
+scripts/bot_github.py                    gh wrapper, REST and GraphQL (shared)
+scripts/bot_evidence.py                  evidence digest verification (shared)
+scripts/artifact_fetch.py                bounded artifact extraction (shared)
+scripts/preflight.py                     pre-flight gate (shared)
+scripts/ledger.py                        run ledger (shared, unused here)
+scripts/proposal_fetch.py                proposal cap table over artifact_fetch
 scripts/proposal_policy.py               the rules a proposal must pass
 
 scripts/proposal_check.py                offline bundle verification
@@ -996,6 +999,12 @@ tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
 docs/DESIGN.md                           this document
 ```
+
+The five modules marked shared come verbatim from
+`lfreleng-actions/bots-template`, and every bot carries them; a fix
+lands in the template first and then propagates here. `ledger.py`
+ships so the copied set stays whole, though this bot does not yet
+read a prior run's ledger.
 
 The template's linting configuration stays as the repository's
 gate: `prek` hooks including gitleaks, gitlint, ruff, mypy,
@@ -1266,8 +1275,8 @@ select_issues.py --org ORG --output-dir DIR --mode MODE --model ID
     --guidance-repository O/R [--guidance-ref REF]
     [--guidance-path AGENTS.md] [--bot-slug SLUG]
 
-monkey_evidence.py verify --directory DIR --selection-sha256 HEX
-    --guidance-sha256 HEX
+bot_evidence.py verify --directory DIR --expect selection.json=HEX
+    --expect agents.md=HEX [--limit-bytes N]
 proposal_fetch.py --repository O/R --run-id ID --name ARTIFACT
     --output ACCEPTED
 

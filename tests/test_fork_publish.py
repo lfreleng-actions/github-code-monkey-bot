@@ -14,7 +14,7 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-github = import_module("monkey_github")
+github = import_module("bot_github")
 bounded = import_module("git_bounded")
 policy = import_module("proposal_policy")
 refs = import_module("branch_refs")

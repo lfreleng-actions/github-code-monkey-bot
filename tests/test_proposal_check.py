@@ -25,7 +25,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 checks = import_module("proposal_check")
 model = import_module("proposal_model")
-github = import_module("monkey_github")
+github = import_module("bot_github")
 policy = import_module("proposal_policy")
 
 BOT_LOGIN = "code-monkey[bot]"
@@ -956,7 +956,7 @@ class SelectionEntryTest(unittest.TestCase):
     def test_missing_fields(self) -> None:
         """Each required string or the number missing is an error.
 
-        The field checks reuse ``monkey_github.require_*`` so a malformed
+        The field checks reuse ``bot_github.require_*`` so a malformed
         local file surfaces as ``GitHubError``; ``publish.main`` catches
         both, so the behaviour is pinned rather than judged here.
         """

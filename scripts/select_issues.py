@@ -27,10 +27,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import bot_github as github
 import fork_orgs as forks
 import issue_categories as categories
 import issue_reads as reads
-import monkey_github as github
 import selection_outputs as outputs
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError

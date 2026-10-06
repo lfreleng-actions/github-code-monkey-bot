@@ -34,8 +34,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+import bot_github as github
 import issue_comment as comments
-import monkey_github as github
 import proposal_check as checks
 import proposal_model as model
 import proposal_policy as policy

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""GitHub reads and writes shared by the select and publish scripts.
+"""GitHub reads and writes shared by the select, apply and report scripts.
 
-Kept apart from the selection and publication logic so that the
-rules stay readable without API plumbing interleaved through them.
+Kept apart from the selection and review logic so that the rules
+stay readable without API plumbing interleaved through them.
 Nothing here decides whether an action is permitted; callers do
 that first.
 """
@@ -25,6 +25,8 @@ TIMEOUT_SECONDS = 60
 TRANSIENT = frozenset({500, 502, 503, 504})
 READ_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 2
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
 
 
 class GitHubError(Exception):
@@ -46,12 +48,11 @@ def is_read(args: list[str]) -> bool:
     """Whether a gh invocation only reads, and so is safe to repeat.
 
     GraphQL goes through one endpoint for queries and mutations alike,
-    and ``createCommitOnBranch`` must never run twice, so no GraphQL
-    call counts as a read here.
+    so no GraphQL call counts as a read here unless the caller says so.
     """
     if args[:1] == ["api"]:
         return args[1:2] != ["graphql"] and "--method" not in args
-    return args[:2] in (["pr", "list"], ["repo", "list"], ["search", "issues"])
+    return args[:2] in (["pr", "list"], ["pr", "view"], ["search", "prs"])
 
 
 def run_once(args: list[str], input: str | None) -> str:
@@ -79,9 +80,9 @@ def run_gh(
 ) -> str:
     """Run gh with a pinned REST API version, returning stdout or raising.
 
-    Reads retry a transient 5xx or timeout with a short backoff: the
-    selection makes hundreds of reads, and one 502 should not cost the
-    day's run. Writes run once; a repeated write is not harmless.
+    Reads retry a transient 5xx or timeout with a short backoff: a
+    selection makes many reads, and one 502 should not cost the run.
+    Writes run once; a repeated review submission is not harmless.
     ``read`` overrides the guess from the arguments, for a GraphQL
     query the caller knows to be read-only.
     """
@@ -130,19 +131,6 @@ def api_list(endpoint: str) -> list[dict[str, Any]]:
             if not isinstance(entry, dict):
                 raise GitHubError(f"expected an object entry from {endpoint}")
             entries.append(cast("dict[str, Any]", entry))
-    return entries
-
-
-def api_page(endpoint: str) -> list[dict[str, Any]]:
-    """Read one page of a list endpoint, without following pagination."""
-    parsed = decode_response(run_gh(["api", endpoint]))
-    if not isinstance(parsed, list):
-        raise GitHubError(f"expected an array from {endpoint}")
-    entries: list[dict[str, Any]] = []
-    for entry in cast("list[Any]", parsed):
-        if not isinstance(entry, dict):
-            raise GitHubError(f"expected an object entry from {endpoint}")
-        entries.append(cast("dict[str, Any]", entry))
     return entries
 
 
@@ -205,3 +193,16 @@ def require_int(data: dict[str, Any], key: str, context: str) -> int:
     if type(value) is not int or value <= 0:
         raise GitHubError(f"{context}: missing or invalid {key!r}")
     return value
+
+
+def require_sha(data: dict[str, Any], key: str, context: str) -> str:
+    """Return a 40-hex commit SHA field or fail the operation."""
+    value = require_str(data, key, context)
+    if not SHA_RE.fullmatch(value):
+        raise GitHubError(f"{context}: {key!r} is not a commit SHA")
+    return value
+
+
+def safe_message(exc: BaseException) -> str:
+    """Render an error for a log that workflow commands are parsed from."""
+    return ascii(str(exc)).replace("::", ": :").replace("##[", "# #[")

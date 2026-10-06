@@ -43,6 +43,10 @@ changing how the jobs hand data to each other.
   author, publish, report); `code-monkey-cron.yaml` schedules and
   dispatches it; `testing.yaml` runs the suite and PR plumbing.
 - `scripts/`: the Python the jobs run; `tests/`: its offline suite.
+  Every bot carries five modules verbatim from
+  `lfreleng-actions/bots-template`: `bot_github.py`, `bot_evidence.py`,
+  `artifact_fetch.py`, `preflight.py`, `ledger.py`. Fix them in the
+  template first, then copy; never patch a copy alone.
 - `prompt/author.md`: the coding agent's task. It defines what the
   agent does and the limits of what the workflow can publish. It must
   **not** restate organisation policy on commits, tests or reviews:

@@ -18,7 +18,7 @@ import re
 import urllib.parse
 from typing import Any, cast
 
-import monkey_github as github
+import bot_github as github
 
 SEARCH_LIMIT = 1000
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -29,7 +29,8 @@ MAX_COMMENT_PAGES = 3
 COMMENTS_PER_PAGE = 100
 MAX_COMMENT_BYTES = 64 * 1024
 MAX_BODY_BYTES = 256 * 1024
-# Matches monkey_evidence.MAX_GUIDANCE_BYTES, which verifies agents.md.
+# Guidance over this is refused before it is written, so the shared
+# verify step's default evidence cap is enough when agents.md is read.
 MAX_GUIDANCE_BYTES = 1024 * 1024
 PLACEHOLDER_BOT = "code-monkey[bot]"
 
@@ -43,6 +44,19 @@ class SelectionError(Exception):
     """The selection cannot proceed; an operational failure, not a skip."""
 
 
+def api_page(endpoint: str) -> list[dict[str, Any]]:
+    """Read one page of a list endpoint, without following pagination."""
+    parsed = github.decode_response(github.run_gh(["api", endpoint]))
+    if not isinstance(parsed, list):
+        raise github.GitHubError(f"expected an array from {endpoint}")
+    entries: list[dict[str, Any]] = []
+    for entry in cast("list[Any]", parsed):
+        if not isinstance(entry, dict):
+            raise github.GitHubError(f"expected an object entry from {endpoint}")
+        entries.append(cast("dict[str, Any]", entry))
+    return entries
+
+
 def list_repositories(org: str) -> dict[str, dict[str, Any]]:
     """Map lower-cased repository names to the metadata selection needs."""
     raw = github.run_gh(
@@ -54,7 +68,8 @@ def list_repositories(org: str) -> dict[str, dict[str, Any]]:
             str(SEARCH_LIMIT),
             "--json",
             "name,isArchived,isTemplate,isFork,isPrivate,visibility,defaultBranchRef",
-        ]
+        ],
+        read=True,
     )
     parsed = github.decode_response(raw)
     if not isinstance(parsed, list):
@@ -105,7 +120,7 @@ def search_open_issues(org: str, repositories: list[str]) -> list[dict[str, Any]
     ]
     for name in repositories:
         args.extend(["--repo", f"{org}/{name}"])
-    parsed = github.decode_response(github.run_gh(args))
+    parsed = github.decode_response(github.run_gh(args, read=True))
     if not isinstance(parsed, list):
         raise github.GitHubError("expected an issue array from search")
     entries = cast("list[Any]", parsed)
@@ -213,9 +228,7 @@ def prior_attempt(repo: str, fork_repository: str, branch: str) -> bool:
     """
     fork_owner = fork_repository.partition("/")[0]
     head = urllib.parse.quote(f"{fork_owner}:{branch}", safe="")
-    for entry in github.api_page(
-        f"repos/{repo}/pulls?head={head}&state=all&per_page=100"
-    ):
+    for entry in api_page(f"repos/{repo}/pulls?head={head}&state=all&per_page=100"):
         head_data = entry.get("head")
         head_repo = (
             cast("dict[str, Any]", head_data).get("repo")
@@ -325,7 +338,7 @@ def filtered_comments(repo: str, number: int) -> tuple[list[dict[str, Any]], int
     dropped = 0
     total = 0
     for page in range(1, MAX_COMMENT_PAGES + 1):
-        entries = github.api_page(
+        entries = api_page(
             f"repos/{repo}/issues/{number}/comments"
             f"?per_page={COMMENTS_PER_PAGE}&page={page}"
         )

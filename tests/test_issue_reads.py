@@ -15,7 +15,7 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-github = import_module("monkey_github")
+github = import_module("bot_github")
 reads = import_module("issue_reads")
 
 SHA = "c" * 40
@@ -64,7 +64,7 @@ class FilteredCommentsTest(ReadsCase):
             comment("MEMBER", "d", "mem"),
             comment("COLLABORATOR", "e"),
         ]
-        with patch.object(github, "api_page", return_value=entries) as read:
+        with patch.object(reads, "api_page", return_value=entries) as read:
             kept, dropped, _ = reads.filtered_comments("org/repo", 4)
         read.assert_called_once_with(
             "repos/org/repo/issues/4/comments?per_page=100&page=1"
@@ -98,7 +98,7 @@ class FilteredCommentsTest(ReadsCase):
             {"author_association": "MEMBER", "body": "x"},
             comment("OWNER", "ok"),
         ]
-        with patch.object(github, "api_page", return_value=entries):
+        with patch.object(reads, "api_page", return_value=entries):
             kept, dropped, _ = reads.filtered_comments("org/repo", 1)
         self.assertEqual(dropped, 5)
         self.assertEqual([c["body"] for c in kept], ["ok"])
@@ -106,7 +106,7 @@ class FilteredCommentsTest(ReadsCase):
     def test_count_limit(self) -> None:
         """Only the first ``MAX_COMMENTS`` survive; the rest count as dropped."""
         entries = [comment("MEMBER", str(i)) for i in range(reads.MAX_COMMENTS + 5)]
-        with patch.object(github, "api_page", return_value=entries):
+        with patch.object(reads, "api_page", return_value=entries):
             kept, dropped, _ = reads.filtered_comments("org/repo", 1)
         self.assertEqual(len(kept), reads.MAX_COMMENTS)
         self.assertEqual(dropped, 5)
@@ -120,7 +120,7 @@ class FilteredCommentsTest(ReadsCase):
             comment("MEMBER", "x" * 30),  # would exceed the budget
             comment("MEMBER", "tiny"),  # still fits
         ]
-        with patch.object(github, "api_page", return_value=entries):
+        with patch.object(reads, "api_page", return_value=entries):
             kept, dropped, _ = reads.filtered_comments("org/repo", 1)
         self.assertEqual([c["body"] for c in kept], [big, "tiny"])
         self.assertEqual(dropped, 1)
@@ -128,7 +128,7 @@ class FilteredCommentsTest(ReadsCase):
     def test_single_oversize_comment_dropped(self) -> None:
         """One comment bigger than the whole budget is dropped, not kept."""
         entries = [comment("OWNER", "z" * (reads.MAX_COMMENT_BYTES + 1))]
-        with patch.object(github, "api_page", return_value=entries):
+        with patch.object(reads, "api_page", return_value=entries):
             kept, dropped, _ = reads.filtered_comments("org/repo", 1)
         self.assertEqual(kept, [])
         self.assertEqual(dropped, 1)
@@ -136,7 +136,7 @@ class FilteredCommentsTest(ReadsCase):
     def test_pages_are_bounded(self) -> None:
         """Full pages stop at ``MAX_COMMENT_PAGES`` and mark the history cut."""
         page = [comment("NONE", "x")] * reads.COMMENTS_PER_PAGE
-        with patch.object(github, "api_page", return_value=page) as read:
+        with patch.object(reads, "api_page", return_value=page) as read:
             kept, dropped, truncated = reads.filtered_comments("org/repo", 1)
         self.assertEqual(read.call_count, reads.MAX_COMMENT_PAGES)
         self.assertEqual(kept, [])
@@ -146,7 +146,7 @@ class FilteredCommentsTest(ReadsCase):
     def test_short_page_ends_the_read(self) -> None:
         """A page shorter than the page size is the last; nothing is cut."""
         with patch.object(
-            github, "api_page", return_value=[comment("MEMBER", "a")]
+            reads, "api_page", return_value=[comment("MEMBER", "a")]
         ) as read:
             _, _, truncated = reads.filtered_comments("org/repo", 1)
         self.assertEqual(read.call_count, 1)
@@ -155,7 +155,7 @@ class FilteredCommentsTest(ReadsCase):
     def test_full_quota_stops_early(self) -> None:
         """Once the count cap fills, no further page is read."""
         page = [comment("MEMBER", str(i)) for i in range(reads.COMMENTS_PER_PAGE)]
-        with patch.object(github, "api_page", return_value=page) as read:
+        with patch.object(reads, "api_page", return_value=page) as read:
             kept, _, truncated = reads.filtered_comments("org/repo", 1)
         self.assertEqual(read.call_count, 1)
         self.assertEqual(len(kept), reads.MAX_COMMENTS)
@@ -219,7 +219,7 @@ class PriorAttemptTest(ReadsCase):
     def test_no_pull_request_no_branch(self) -> None:
         """An empty list and a 404 on the fork branch means no prior attempt."""
         with (
-            patch.object(github, "api_page", return_value=[]),
+            patch.object(reads, "api_page", return_value=[]),
             patch.object(
                 github,
                 "api_object",
@@ -232,7 +232,7 @@ class PriorAttemptTest(ReadsCase):
     def test_branch_in_fork_without_pull_request(self) -> None:
         """An orphaned bot branch in the fork still counts as an attempt."""
         with (
-            patch.object(github, "api_page", return_value=[]),
+            patch.object(reads, "api_page", return_value=[]),
             patch.object(github, "api_object", return_value={"name": "x"}) as read,
         ):
             self.assertTrue(self.attempt())
@@ -243,7 +243,7 @@ class PriorAttemptTest(ReadsCase):
     def test_missing_fork_is_no_attempt(self) -> None:
         """A 404 on the fork repository itself means no fork, so no attempt."""
         with (
-            patch.object(github, "api_page", return_value=[]),
+            patch.object(reads, "api_page", return_value=[]),
             patch.object(
                 github,
                 "api_object",
@@ -255,7 +255,7 @@ class PriorAttemptTest(ReadsCase):
     def test_branch_read_failure_propagates(self) -> None:
         """A 500 is not silently treated as absence."""
         with (
-            patch.object(github, "api_page", return_value=[]),
+            patch.object(reads, "api_page", return_value=[]),
             patch.object(
                 github,
                 "api_object",
@@ -278,7 +278,7 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
             {"number": 3, "head": {"repo": {"full_name": "LFreleng-Bot-Forks/Repo"}}}
         ]
         with (
-            patch.object(github, "api_page", return_value=own) as page,
+            patch.object(reads, "api_page", return_value=own) as page,
             patch.object(github, "api_object") as read,
         ):
             self.assertTrue(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
@@ -295,7 +295,7 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
             {"number": 6, "head": {"repo": {"full_name": "lfreleng-bot-forks/other"}}},
         ]
         with (
-            patch.object(github, "api_page", return_value=other),
+            patch.object(reads, "api_page", return_value=other),
             patch.object(
                 github,
                 "api_object",
@@ -633,10 +633,10 @@ class FetchGuidanceTest(ReadsCase):
         ):
             reads.fetch_guidance("org/.github", "main", "AGENTS.md")
 
-    def test_guidance_cap_matches_the_verifier(self) -> None:
-        """The select-side cap and the evidence verifier's cap agree."""
-        evidence = import_module("monkey_evidence")
-        self.assertEqual(reads.MAX_GUIDANCE_BYTES, evidence.MAX_GUIDANCE_BYTES)
+    def test_guidance_cap_is_within_the_verifier_default(self) -> None:
+        """Guidance refused here never exceeds what the shared verifier reads."""
+        evidence = import_module("bot_evidence")
+        self.assertLessEqual(reads.MAX_GUIDANCE_BYTES, evidence.MAX_EVIDENCE_BYTES)
 
     def test_non_base64_encoding_raises(self) -> None:
         """Any encoding other than base64 is refused."""
@@ -780,93 +780,34 @@ class ListRepositoriesTest(ReadsCase):
             reads.list_repositories("org")
 
 
-class RunGhRetryTest(unittest.TestCase):
-    """``run_gh`` retries transient failures on reads and never on writes."""
+class DeclaredReadsTest(unittest.TestCase):
+    """The ``gh`` CLI reads this bot makes are declared so they retry.
 
-    def setUp(self) -> None:
-        """Make the backoff instant."""
-        sleep = patch.object(github.time, "sleep")
-        sleep.start()
-        self.addCleanup(sleep.stop)
+    The shared ``bot_github.is_read`` recognises ``api`` and the pull
+    request listings alone; ``repo list`` and ``search issues`` are
+    read-only too, so each call site says so and a transient 5xx is
+    retried rather than costing the run.
+    """
 
-    def test_read_retries_a_502_then_succeeds(self) -> None:
-        """Two 502s then success returns the successful output."""
-        with patch.object(
-            github,
-            "run_once",
-            side_effect=[
-                github.GitHubError("gh: Server Error (HTTP 502)"),
-                github.GitHubError("gh: Server Error (HTTP 502)"),
-                "ok",
-            ],
-        ) as once:
-            self.assertEqual(github.run_gh(["api", "repos/o/r/issues/1"]), "ok")
-        self.assertEqual(once.call_count, 3)
+    def test_repo_list_and_issue_search_are_declared_reads(self) -> None:
+        """Both CLI reads pass ``read=True`` to the shared wrapper."""
+        with patch.object(github, "run_gh", return_value="[]") as gh:
+            reads.list_repositories("org")
+            reads.search_open_issues("org", ["a"])
+        self.assertEqual(len(gh.call_args_list), 2)
+        for call in gh.call_args_list:
+            self.assertIs(call.kwargs.get("read"), True)
+            self.assertFalse(github.is_read(call.args[0]))
 
-    def test_read_gives_up_after_the_budget(self) -> None:
-        """Persistent 5xx still fails, after the bounded attempts."""
-        error = github.GitHubError("gh: Server Error (HTTP 503)")
-        with (
-            patch.object(github, "run_once", side_effect=[error] * 3) as once,
-            self.assertRaises(github.GitHubError),
-        ):
-            github.run_gh(["search", "issues", "--owner", "o"])
-        self.assertEqual(once.call_count, github.READ_ATTEMPTS)
-
-    def test_client_errors_are_not_retried(self) -> None:
-        """A 404 is an answer, not a blip."""
-        with (
-            patch.object(
-                github,
-                "run_once",
-                side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
-            ) as once,
-            self.assertRaises(github.GitHubError),
-        ):
-            github.run_gh(["api", "repos/o/r"])
-        self.assertEqual(once.call_count, 1)
-
-    def test_writes_and_graphql_run_once(self) -> None:
-        """A POST, a DELETE or any GraphQL call is never repeated."""
+    def test_declared_read_retries_a_transient_failure(self) -> None:
+        """With the flag, a 502 on ``search issues`` is retried."""
         error = github.GitHubError("gh: Server Error (HTTP 502)")
-        for args in (
-            ["api", "--method", "POST", "repos/o/r/pulls", "--input", "-"],
-            ["api", "--method", "DELETE", "repos/o/r/git/refs/heads/b"],
-            ["api", "graphql", "--input", "-"],
+        with (
+            patch.object(github.time, "sleep"),
+            patch.object(github, "run_once", side_effect=[error, "[]"]) as once,
         ):
-            with (
-                self.subTest(args=args),
-                patch.object(github, "run_once", side_effect=error) as once,
-                self.assertRaises(github.GitHubError),
-            ):
-                github.run_gh(args)
-            self.assertEqual(once.call_count, 1)
-
-    def test_graphql_query_retries_when_marked_read(self) -> None:
-        """A caller-declared read query retries a 502; the default does not."""
-        error = github.GitHubError("gh: Server Error (HTTP 502)")
-        with patch.object(
-            github, "run_once", side_effect=[error, '{"data": {"ok": 1}}']
-        ) as once:
-            self.assertEqual(github.graphql("query", {}, read=True), {"ok": 1})
+            self.assertEqual(reads.search_open_issues("org", []), [])
         self.assertEqual(once.call_count, 2)
-        with (
-            patch.object(github, "run_once", side_effect=error) as once,
-            self.assertRaises(github.GitHubError),
-        ):
-            github.graphql("mutation", {})
-        self.assertEqual(once.call_count, 1)
-
-
-class GitHubErrorTest(unittest.TestCase):
-    """``GitHubError`` parses the status gh reports."""
-
-    def test_status_parsing(self) -> None:
-        """The HTTP status is extracted when present."""
-        self.assertEqual(github.GitHubError("gh: Not Found (HTTP 404)").status, 404)
-        self.assertIsNone(github.GitHubError("timed out").status)
-        self.assertTrue(github.is_absent(github.GitHubError("x (HTTP 410)")))
-        self.assertFalse(github.is_absent(github.GitHubError("x (HTTP 403)")))
 
 
 if __name__ == "__main__":

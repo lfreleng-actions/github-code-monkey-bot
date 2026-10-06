@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 preflight = import_module("preflight")
-github = import_module("monkey_github")
+github = import_module("bot_github")
 
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT_ID = "Iv23liB4s8f6cI7i0oQB"
@@ -33,7 +33,7 @@ PEM = "\n".join(
 
 def write_config(directory: Path, **overrides: Any) -> Path:
     """A bot.json with the given overrides applied to a valid base."""
-    config: dict[str, Any] = {"app_slug": "lf-releng-code-monkey-bot"}
+    config: dict[str, Any] = {"app_slug": "lf-releng-code-review-bot"}
     config.update(overrides)
     path = directory / "bot.json"
     path.write_text(json.dumps(config), encoding="utf-8")
@@ -53,7 +53,7 @@ class ConfigTest(unittest.TestCase):
         """The slug comes back for the identity check."""
         with redirect_stdout(io.StringIO()):
             config = preflight.check_config(write_config(self.root))
-        self.assertEqual(config["app_slug"], "lf-releng-code-monkey-bot")
+        self.assertEqual(config["app_slug"], "lf-releng-code-review-bot")
 
     def test_invalid_configs_are_drift(self) -> None:
         """Missing file, bad JSON, wrong shape, bad slug and extra keys all refuse."""
@@ -141,11 +141,11 @@ class IdentityAndTokenTest(unittest.TestCase):
         """A token from another App, or no slug at all, is drift."""
         with redirect_stdout(io.StringIO()):
             preflight.check_identity(
-                "lf-releng-code-monkey-bot", "lf-releng-code-monkey-bot"
+                "lf-releng-code-review-bot", "lf-releng-code-review-bot"
             )
-        for minted in ("", "lf-releng-code-review-bot"):
+        for minted in ("", "lf-releng-issues-triage-bot"):
             with self.subTest(minted=minted), self.assertRaises(preflight.Drift):
-                preflight.check_identity("lf-releng-code-monkey-bot", minted)
+                preflight.check_identity("lf-releng-code-review-bot", minted)
 
     def test_read_token_must_not_push(self) -> None:
         """The repository probe's permissions decide."""
