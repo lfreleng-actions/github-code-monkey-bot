@@ -537,8 +537,12 @@ jobs:
             evidence/selection.json > artefacts/issue.json
           bot_login="$(jq -r '.bot.login' evidence/selection.json)"
           bot_email="$(jq -r '.bot.email' evidence/selection.json)"
-          [[ "$bot_login" =~ ^[A-Za-z0-9_.\[\]-]+$ ]]
-          [[ "$bot_email" =~ ^[A-Za-z0-9_.+\[\]@-]+$ ]]
+          # Bracket expressions holding literal brackets must come from a
+          # variable: written inline in [[ =~ ]], bash rejects "[bot]".
+          login_re='^[][A-Za-z0-9_.-]+$'
+          email_re='^[][A-Za-z0-9_.+@-]+$'
+          [[ "$bot_login" =~ $login_re ]]
+          [[ "$bot_email" =~ $email_re ]]
           git -C workspace config user.name "$bot_login"
           git -C workspace config user.email "$bot_email"
           git -C workspace config commit.gpgsign false
