@@ -523,7 +523,7 @@ class PublishJobContracts(ReusableWorkflowCase):
         ensure = self.step("publish", "Ensure a result exists")
         self.assertEqual(ensure["if"], "always()")
         script = squash(str(ensure["run"]))
-        self.assertIn("if [ -s artefacts/result.json ]; then exit 0; fi", script)
+        self.assertIn("if [ -s artefacts/result.json ]; then", script)
         self.assertIn('verdict: "publish-failed"', script)
         steps = self.steps("publish")
         upload = self.step("publish", "Attach publish result")
@@ -580,6 +580,71 @@ class PublishJobContracts(ReusableWorkflowCase):
                 ),
                 expected,
             )
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_pushed_branch_without_a_pull_request_is_a_failure(self) -> None:
+        """push's proposed result is not publication until open succeeded."""
+        ensure = self.step("publish", "Ensure a result exists")
+        base_env = {
+            "PATH": os.environ["PATH"],
+            "KEY": "repo-7",
+            "REPOSITORY": "o/repo",
+            "FORK_REPOSITORY": "lfreleng-bot-forks/repo",
+            "ISSUE": "7",
+            "RUN_ATTEMPT": "1",
+            "CHECK_OUTCOME": "success",
+            "PUSH_OUTCOME": "success",
+            "AUTHOR_SESSION": "",
+        }
+        pushed: dict[str, Any] = {
+            "verdict": "proposed",
+            "reasons": [],
+            "pull_request_url": None,
+        }
+        cases = [
+            ("pull-requests", "false", "failure", pushed, "publish-failed"),
+            ("pull-requests", "false", "skipped", pushed, "publish-failed"),
+            ("pull-requests", "false", "success", pushed, "proposed"),
+            (
+                "pull-requests",
+                "false",
+                "failure",
+                {**pushed, "pull_request_url": "u"},
+                "proposed",
+            ),
+            ("branches", "false", "skipped", pushed, "proposed"),
+            ("pull-requests", "true", "skipped", pushed, "proposed"),
+        ]
+        for mode, dry, open_outcome, result_in, expected in cases:
+            with self.subTest(
+                mode=mode,
+                dry=dry,
+                open=open_outcome,
+                pr=result_in.get("pull_request_url"),
+            ):
+                with tempfile.TemporaryDirectory() as holder:
+                    work = Path(holder)
+                    (work / "artefacts").mkdir()
+                    (work / "artefacts" / "result.json").write_text(
+                        json.dumps(result_in), encoding="utf-8"
+                    )
+                    subprocess.run(
+                        ["bash", "-e", "-c", str(ensure["run"])],
+                        cwd=work,
+                        env={
+                            **base_env,
+                            "MODE": mode,
+                            "DRY_RUN": dry,
+                            "OPEN_OUTCOME": open_outcome,
+                        },
+                        check=True,
+                    )
+                    result = json.loads(
+                        (work / "artefacts" / "result.json").read_text(encoding="utf-8")
+                    )
+                self.assertEqual(result["verdict"], expected)
+                if expected == "publish-failed":
+                    self.assertIn("next run resumes", result["reasons"][-1])
 
     def test_result_names_the_author_session(self) -> None:
         """The fetched artifact's ID reaches push, so spend counts per session."""

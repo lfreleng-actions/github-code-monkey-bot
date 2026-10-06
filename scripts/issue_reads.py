@@ -214,17 +214,19 @@ def read_priority(repo: str, number: int) -> str | None:
     return None
 
 
-def prior_attempt(repo: str, fork_repository: str, branch: str) -> bool:
-    """Whether a pull request from the designated fork's bot branch exists.
+def prior_attempt(repo: str, fork_repository: str, branch: str) -> str | None:
+    """What an earlier run left for this issue: a pull request, a branch, or nothing.
 
     Anyone can open a pull request from a fork branch of the same
     name, so the query names the fork organisation in ``head``: GitHub
     then filters server-side, and other forks' pull requests cannot
     crowd the bot's own out of the page. Only a head in the designated
-    fork counts; the branch check below covers a branch pushed with no
-    pull request yet. A same-named branch in the target itself is not
-    this workflow's (DESIGN.md section 4.3), and a 404 on the fork
-    means no fork yet, so no attempt.
+    fork counts. A branch in the fork with no pull request is an
+    orphan: the publisher keeps the branch when opening the pull
+    request fails so a later run can finish the job, and that later
+    run must select the issue again rather than skip it. A same-named
+    branch in the target itself is not this workflow's (DESIGN.md
+    section 4.3), and a 404 on the fork means no fork yet.
     """
     fork_owner = fork_repository.partition("/")[0]
     head = urllib.parse.quote(f"{fork_owner}:{branch}", safe="")
@@ -241,14 +243,14 @@ def prior_attempt(repo: str, fork_repository: str, branch: str) -> bool:
             else None
         )
         if isinstance(name, str) and name.lower() == fork_repository.lower():
-            return True
+            return "pull_request"
     try:
         github.api_object(f"repos/{fork_repository}/branches/{branch}")
     except github.GitHubError as exc:
         if github.is_absent(exc):
-            return False
+            return None
         raise
-    return True
+    return "branch"
 
 
 LINKED_QUERY = """

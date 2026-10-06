@@ -90,9 +90,14 @@ def candidate(
     }
 
 
-def attempted_issue_one(_repo: str, _fork: str, branch: str) -> bool:
-    """A ``prior_attempt`` double that reports issue 1 as already tried."""
-    return branch.endswith("-1")
+def attempted_issue_one(_repo: str, _fork: str, branch: str) -> str | None:
+    """A ``prior_attempt`` double that reports a pull request for issue 1."""
+    return "pull_request" if branch.endswith("-1") else None
+
+
+def orphan_issue_one(_repo: str, _fork: str, branch: str) -> str | None:
+    """A ``prior_attempt`` double that reports an orphan fork branch for issue 1."""
+    return "branch" if branch.endswith("-1") else None
 
 
 def linked_issue_two(_repo: str, number: int) -> bool:
@@ -431,7 +436,7 @@ class ChooseTest(NoSubprocessCase):
     def setUp(self) -> None:
         """Patch every read ``choose`` performs with benign defaults."""
         super().setUp()
-        self.prior = patch.object(reads, "prior_attempt", return_value=False).start()
+        self.prior = patch.object(reads, "prior_attempt", return_value=None).start()
         self.linked = patch.object(
             reads, "has_open_linked_pr", return_value=False
         ).start()
@@ -538,6 +543,17 @@ class ChooseTest(NoSubprocessCase):
         self.assertEqual([c["number"] for c in chosen], [3])
         self.assertEqual(skipped["attempted"], 1)
         self.assertEqual(skipped["linked_pr"], 1)
+
+    def test_orphan_fork_branch_is_selected_for_resume(self) -> None:
+        """A fork branch with no pull request keeps the issue, flagged to resume."""
+        self.prior.side_effect = orphan_issue_one
+        ranked = [candidate("a", 1), candidate("b", 2)]
+        skipped = fresh_skipped()
+        chosen = self.choose(ranked, max_pull_requests=0, skipped=skipped)
+        self.assertEqual(
+            [(c["number"], c["resume"]) for c in chosen], [(1, True), (2, False)]
+        )
+        self.assertEqual(skipped["attempted"], 0)
 
     def test_skipped_repository_stays_available(self) -> None:
         """A skipped attempt does not claim the repository slot."""
@@ -766,7 +782,7 @@ class MainTest(NoSubprocessCase):
         patch.object(reads, "list_repositories", return_value=repositories).start()
         patch.object(reads, "search_open_issues", return_value=issues).start()
         patch.object(reads, "issue_details", return_value=details).start()
-        patch.object(reads, "prior_attempt", return_value=False).start()
+        patch.object(reads, "prior_attempt", return_value=None).start()
         patch.object(reads, "has_open_linked_pr", return_value=False).start()
         patch.object(reads, "branch_head", return_value=SHA_B).start()
         patch.object(

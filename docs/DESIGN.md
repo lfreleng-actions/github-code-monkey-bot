@@ -215,8 +215,12 @@ Publishing then works as follows, with the §5 signing unchanged:
    `<fork-org>:code-monkey/issue-<n>`, using a token minted on the
    target organisation's installation.
 5. A prior attempt (§6) is a pull request whose head repository is
-   the designated fork, or a surviving branch in that fork; a
-   same-named branch in any other fork still does not count.
+   the designated fork. A branch in that fork with no pull request
+   is an orphan: a publish that pushed and then failed to open the
+   pull request leaves it on purpose, and the next run selects the
+   issue again, marked `resume`, so the publisher can adopt the
+   branch and finish. A same-named branch in any other fork, or in
+   the target itself, does not count.
 
 **Installation.** The publisher has no same-repository path. The
 four organisations exist and each holds an installation of the App
@@ -671,8 +675,10 @@ For each selected issue:
    it; label `code-monkey` if the label exists. Not a draft: a
    ready pull request triggers the automatic Copilot review and
    notifies code owners; a draft does neither by default. A failure
-   here keeps the fork branch: the next run's selection sees a
-   prior attempt, adopts the branch and opens the pull request.
+   here keeps the fork branch and records `publish-failed`, since a
+   pushed branch is not a publication; the next run's selection sees
+   the orphan, selects the issue with `resume` set, and its publisher
+   adopts the branch and opens the pull request.
 10. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
     provenance rejection, which check failed and the run URL. The

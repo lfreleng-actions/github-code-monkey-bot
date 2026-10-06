@@ -227,7 +227,12 @@ def choose(
         except ForkOrgError as exc:
             raise SelectionError(str(exc)) from exc
         fork_repository = f"{fork_org}/{candidate['repo_name']}"
-        if reads.prior_attempt(repo, fork_repository, branch):
+        # A pull request from the fork branch is an attempt a human has
+        # not processed yet. A fork branch with no pull request is an
+        # orphan from a publish that failed after pushing: select the
+        # issue so the publisher can adopt the branch and finish.
+        prior = reads.prior_attempt(repo, fork_repository, branch)
+        if prior == "pull_request":
             skipped["attempted"] += 1
             continue
         if reads.has_open_linked_pr(repo, number):
@@ -241,6 +246,7 @@ def choose(
             "branch": branch,
             "fork_org": fork_org,
             "fork_repository": fork_repository,
+            "resume": prior == "branch",
             "comments": comments,
             "comments_dropped": dropped,
             "comments_truncated": truncated,

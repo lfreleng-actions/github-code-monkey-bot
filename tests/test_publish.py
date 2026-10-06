@@ -710,8 +710,11 @@ class BranchMatchesTest(NoNetworkCase):
             found = publish.branch_matches(
                 REPOSITORY, BRANCH, BASE, check_json()["commits"], BOT
             )
+        # The branch name carries a slash, which the compare path needs
+        # encoded; an unencoded one fails reconciliation on retry.
         self.assertEqual(
-            read.call_args.args[0], f"repos/{REPOSITORY}/compare/{BASE}...{BRANCH}"
+            read.call_args.args[0],
+            f"repos/{REPOSITORY}/compare/{BASE}...code-monkey%2Fissue-7",
         )
         return found
 

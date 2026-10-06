@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, cast
 
@@ -268,7 +269,9 @@ def branch_matches(
     Verified by GitHub, and bearing the checked message. Anything else
     is not this run's work, whatever its final tree.
     """
-    compare = github.api_object(f"repos/{repository}/compare/{base_sha}...{branch}")
+    # The bot branch carries a slash; the compare path needs it encoded.
+    encoded = urllib.parse.quote(branch, safe="")
+    compare = github.api_object(f"repos/{repository}/compare/{base_sha}...{encoded}")
     merge_base = compare.get("merge_base_commit")
     base = (
         cast("dict[str, Any]", merge_base).get("sha")

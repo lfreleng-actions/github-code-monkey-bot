@@ -207,12 +207,16 @@ class BotIdentityTest(ReadsCase):
 
 
 class PriorAttemptTest(ReadsCase):
-    """``prior_attempt`` consults pull requests first, then the fork branch."""
+    """``prior_attempt`` consults pull requests first, then the fork branch.
+
+    A pull request from the fork is an attempt; a fork branch alone is
+    an orphan the publisher resumes; nothing is nothing.
+    """
 
     FORK = "lfreleng-bot-forks/repo"
     BRANCH = "code-monkey/issue-3"
 
-    def attempt(self) -> bool:
+    def attempt(self) -> str | None:
         """Run the lookup against the fixture target and fork."""
         return reads.prior_attempt("org/repo", self.FORK, self.BRANCH)
 
@@ -226,16 +230,16 @@ class PriorAttemptTest(ReadsCase):
                 side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
             ) as read,
         ):
-            self.assertFalse(self.attempt())
+            self.assertIsNone(self.attempt())
         read.assert_called_once_with(f"repos/{self.FORK}/branches/{self.BRANCH}")
 
     def test_branch_in_fork_without_pull_request(self) -> None:
-        """An orphaned bot branch in the fork still counts as an attempt."""
+        """An orphaned bot branch in the fork is reported for the publisher to resume."""
         with (
             patch.object(reads, "api_page", return_value=[]),
             patch.object(github, "api_object", return_value={"name": "x"}) as read,
         ):
-            self.assertTrue(self.attempt())
+            self.assertEqual(self.attempt(), "branch")
         # The target's own branches are never consulted: a same-named
         # branch there is not this workflow's work.
         self.assertNotIn("repos/org/repo/", read.call_args.args[0])
@@ -250,7 +254,7 @@ class PriorAttemptTest(ReadsCase):
                 side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
             ),
         ):
-            self.assertFalse(self.attempt())
+            self.assertIsNone(self.attempt())
 
     def test_branch_read_failure_propagates(self) -> None:
         """A 500 is not silently treated as absence."""
@@ -281,7 +285,9 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
             patch.object(reads, "api_page", return_value=own) as page,
             patch.object(github, "api_object") as read,
         ):
-            self.assertTrue(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
+            self.assertEqual(
+                reads.prior_attempt("org/repo", self.FORK, self.BRANCH), "pull_request"
+            )
         read.assert_not_called()
         endpoint = page.call_args.args[0]
         self.assertTrue(endpoint.startswith("repos/org/repo/pulls?"), endpoint)
@@ -302,7 +308,7 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
                 side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
             ) as read,
         ):
-            self.assertFalse(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
+            self.assertIsNone(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
         read.assert_called_once_with(f"repos/{self.FORK}/branches/{self.BRANCH}")
 
 

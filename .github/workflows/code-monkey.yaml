@@ -1061,7 +1061,11 @@ jobs:
 
       # Every selected issue gets a row in the report. When an earlier
       # step failed before push wrote a result (the offline check, a
-      # token mint), record that as a typed publish failure.
+      # token mint), record that as a typed publish failure. A result
+      # push wrote is not proof of publication either: in pull-requests
+      # mode a proposed verdict with no pull request after open failed
+      # or never ran is a publish failure, and the fork branch stays
+      # for the next run to resume.
       - name: 'Ensure a result exists'
         if: always()
         env:
@@ -1080,7 +1084,21 @@ jobs:
           AUTHOR_SESSION: "${{ steps.fetch.outputs.artifact_id }}"
         run: |
           # shellcheck disable=SC2016  # jq variables, not shell expansions
-          if [ -s artefacts/result.json ]; then exit 0; fi
+          if [ -s artefacts/result.json ]; then
+            if [ "$MODE" = pull-requests ] && [ "$DRY_RUN" != true ] &&
+              [ "$OPEN_OUTCOME" != success ] &&
+              [ "$(jq -r '.verdict' artefacts/result.json)" = proposed ] &&
+              [ -z "$(jq -r '.pull_request_url // ""' artefacts/result.json)" ]
+            then
+              jq --arg outcome "$OPEN_OUTCOME" '
+                .verdict = "publish-failed"
+                | .reasons += ["branch pushed to the fork but no pull request"
+                    + " opened (open: " + $outcome + "); next run resumes"]
+              ' artefacts/result.json > artefacts/result.tmp
+              mv artefacts/result.tmp artefacts/result.json
+            fi
+            exit 0
+          fi
           mkdir -p artefacts
           usage='{}'
           if [ -s artefacts/check.json ]; then
