@@ -1,0 +1,9 @@
+{
+  "description": "Where the publisher pushes bot branches. A pull request is always opened from a fork held in one of these organisations, never from a branch in the target, so the target's workflows run it as an outside contribution: no secrets, a read-only token, and the organisation's approval gate. Keys are target organisations; 'default' covers every other target. The fork organisation names are explicit because o-ran-sc maps to oransc; nothing derives them.",
+  "default": "lfreleng-bot-forks",
+  "organisations": {
+    "onap": "lfreleng-bot-forks-onap",
+    "opendaylight": "lfreleng-bot-forks-opendaylight",
+    "o-ran-sc": "lfreleng-bot-forks-oransc"
+  }
+}

@@ -248,19 +248,6 @@ jobs:
           echo '::error::Live runs require organisation App credentials'
           exit 1
 
-      # Until bot branches publish from forks (docs/DESIGN.md 4.3), a
-      # live branch lands in the target repository and its CI runs the
-      # agent's code with that repository's secrets. A live run must
-      # therefore name its targets; an organisation-wide live run is
-      # refused. Whether a named repository is safe stays a human call.
-      - name: 'Require named targets for live runs'
-        # yamllint disable-line rule:line-length
-        if: ${{ !inputs.dry_run && inputs.mode != 'select' && steps.budget.outputs.repositories == '' }}
-        run: |
-          echo '::error::A live run must name its repositories' \
-            'until fork publishing lands (docs/DESIGN.md 4.3)'
-          exit 1
-
       - name: 'Mint read-only App token'
         id: app-token
         if: inputs.github_app_client_id != ''
@@ -345,6 +332,7 @@ jobs:
             --repositories "$REPOSITORIES" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
+            --fork-orgs monkey-assets/config/fork-orgs.json \
             --max-pull-requests "$MAX_PRS" \
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
@@ -817,31 +805,104 @@ jobs:
               artefacts/check.json)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: 'Mint repository write token'
-        id: write-token
+      # The bot branch lives in a fork held by a bot organisation, never
+      # in the target (docs/DESIGN.md 4.3). The matrix names the fork
+      # organisation; this step proves it is one of the bot pools and
+      # that the committed mapping still agrees before any token names
+      # it as owner.
+      - name: 'Resolve fork organisation'
+        id: fork
+        env:
+          ORG: "${{ inputs.org }}"
+          FORK_ORG: "${{ matrix.fork_org }}"
+        run: |
+          if [[ ! "$FORK_ORG" =~ ^lfreleng-bot-forks(-[a-z0-9]+)?$ ]]; then
+            echo "::error::$FORK_ORG is not a bot fork organisation"
+            exit 1
+          fi
+          if [ "$FORK_ORG" = "$ORG" ]; then
+            echo '::error::The fork organisation cannot be the target'
+            exit 1
+          fi
+          python3 monkey-assets/scripts/fork_orgs.py check \
+            --config monkey-assets/config/fork-orgs.json
+          resolved="$(python3 monkey-assets/scripts/fork_orgs.py resolve \
+            --config monkey-assets/config/fork-orgs.json --owner "$ORG")"
+          if [ "$resolved" != "fork_org=$FORK_ORG" ]; then
+            echo "::error::Selection named $FORK_ORG; mapping says $resolved"
+            exit 1
+          fi
+          echo "$resolved" >> "$GITHUB_OUTPUT"
+
+      # Forks are public, so the native token can see whether one
+      # exists; the answer picks which of the two fork mints runs.
+      - name: 'Check fork exists'
+        id: fork-state
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          FORK: "${{ matrix.fork_org }}/${{ matrix.repo_name }}"
+        run: |
+          set +e
+          output="$(gh api "repos/$FORK" 2>&1)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          elif grep -q 'HTTP 404' <<< "$output"; then
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not read $FORK: $output"
+            exit 1
+          fi
+
+      # Two mints, one per fork state, because a token scoped to a
+      # repository that does not exist yet cannot be minted. The
+      # creation token is the sole holder of administration, and it
+      # runs only when there is no fork to administer.
+      - name: 'Mint fork write token'
+        id: fork-token
         if: >-
           !inputs.dry_run && steps.check.outputs.verdict == 'proposed' &&
-          inputs.github_app_client_id != ''
+          inputs.github_app_client_id != '' &&
+          steps.fork-state.outputs.exists == 'true'
         # yamllint disable-line rule:line-length
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: "${{ inputs.github_app_client_id }}"
           private-key: "${{ secrets.github_app_private_key }}"
-          owner: "${{ inputs.org }}"
+          owner: "${{ matrix.fork_org }}"
           # The bare name, relative to owner: independent of how the
           # action parses an owner/repository form.
           repositories: "${{ matrix.repo_name }}"
           permission-contents: 'write'
           permission-metadata: 'read'
           # yamllint disable-line rule:line-length
-          permission-pull-requests: "${{ inputs.mode == 'pull-requests' && 'write' || 'read' }}"
+          permission-workflows: "${{ steps.check.outputs.needs_workflows == 'true' && 'write' || '' }}"
+
+      - name: 'Mint fork creation token'
+        id: fork-create-token
+        if: >-
+          !inputs.dry_run && steps.check.outputs.verdict == 'proposed' &&
+          inputs.github_app_client_id != '' &&
+          steps.fork-state.outputs.exists == 'false'
+        # yamllint disable-line rule:line-length
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: "${{ inputs.github_app_client_id }}"
+          private-key: "${{ secrets.github_app_private_key }}"
+          # yamllint disable-line rule:line-length
+          owner: "${{ matrix.fork_org }}"  # zizmor: ignore[github-app] no repository exists yet to scope to; the fork pool holds only bot forks
+          permission-administration: 'write'
+          permission-contents: 'write'
+          permission-metadata: 'read'
           # yamllint disable-line rule:line-length
           permission-workflows: "${{ steps.check.outputs.needs_workflows == 'true' && 'write' || '' }}"
 
-      - name: 'Publish branch and pull request'
-        id: apply
+      - name: 'Push branch to fork'
+        id: push
         env:
-          GH_TOKEN: "${{ steps.write-token.outputs.token }}"
+          # yamllint disable-line rule:line-length
+          GH_TOKEN: "${{ steps.fork-token.outputs.token || steps.fork-create-token.outputs.token }}"
           MODE: "${{ inputs.mode }}"
           DRY_RUN: "${{ inputs.dry_run }}"
           RUN_ATTEMPT: "${{ github.run_attempt }}"
@@ -851,18 +912,49 @@ jobs:
         run: |
           extra=()
           if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
-          python3 monkey-assets/scripts/publish.py apply \
+          python3 monkey-assets/scripts/publish.py push \
             --check artefacts/check.json --workdir work \
             --run-attempt "$RUN_ATTEMPT" \
             --author-session "$AUTHOR_SESSION" \
             --mode "$MODE" --output artefacts/result.json "${extra[@]}"
 
-      # Runs after a failed apply as well, so a publish failure and
-      # its rollback reach the issue; never after cancellation.
+      # The pull request is the one write to the target: a token for
+      # the target that can touch pull requests and nothing else.
+      - name: 'Mint pull request token'
+        id: pr-token
+        if: >-
+          !cancelled() && steps.push.outcome == 'success' &&
+          !inputs.dry_run && inputs.mode == 'pull-requests' &&
+          inputs.github_app_client_id != ''
+        # yamllint disable-line rule:line-length
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: "${{ inputs.github_app_client_id }}"
+          private-key: "${{ secrets.github_app_private_key }}"
+          owner: "${{ inputs.org }}"
+          repositories: "${{ matrix.repo_name }}"
+          permission-pull-requests: 'write'
+          permission-metadata: 'read'
+
+      - name: 'Open pull request'
+        id: open
+        if: >-
+          !cancelled() && steps.push.outcome == 'success' &&
+          !inputs.dry_run && inputs.mode == 'pull-requests' &&
+          inputs.github_app_client_id != ''
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py open \
+            --result artefacts/result.json --check artefacts/check.json \
+            --output artefacts/result.json
+
+      # Runs after a failed push or open as well, so a publish failure
+      # and its rollback reach the issue; never after cancellation.
       - name: 'Mint issue comment token'
         id: comment-token
         # yamllint disable-line rule:line-length
-        if: ${{ !cancelled() && steps.apply.outcome != 'skipped' && !inputs.dry_run && inputs.github_app_client_id != '' }}
+        if: ${{ !cancelled() && steps.push.outcome != 'skipped' && !inputs.dry_run && inputs.github_app_client_id != '' }}
         # yamllint disable-line rule:line-length
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -877,7 +969,7 @@ jobs:
 
       - name: 'Comment on the issue'
         # yamllint disable-line rule:line-length
-        if: ${{ !cancelled() && steps.apply.outcome != 'skipped' && !inputs.dry_run && inputs.github_app_client_id != '' }}
+        if: ${{ !cancelled() && steps.push.outcome != 'skipped' && !inputs.dry_run && inputs.github_app_client_id != '' }}
         env:
           GH_TOKEN: "${{ steps.comment-token.outputs.token }}"
           # yamllint disable-line rule:line-length
@@ -891,19 +983,21 @@ jobs:
             --since "$SINCE"
 
       # Every selected issue gets a row in the report. When an earlier
-      # step failed before apply wrote a result (the offline check, a
+      # step failed before push wrote a result (the offline check, a
       # token mint), record that as a typed publish failure.
       - name: 'Ensure a result exists'
         if: always()
         env:
           KEY: "${{ matrix.key }}"
           REPOSITORY: "${{ matrix.repository }}"
+          FORK_REPOSITORY: "${{ matrix.fork_repository }}"
           ISSUE: "${{ matrix.number }}"
           DRY_RUN: "${{ inputs.dry_run }}"
           MODE: "${{ inputs.mode }}"
           RUN_ATTEMPT: "${{ github.run_attempt }}"
           CHECK_OUTCOME: "${{ steps.check.outcome }}"
-          APPLY_OUTCOME: "${{ steps.apply.outcome }}"
+          PUSH_OUTCOME: "${{ steps.push.outcome }}"
+          OPEN_OUTCOME: "${{ steps.open.outcome }}"
           # The session this entry paid for, and what the check recorded
           # of its spend, survive a later failure so the report counts it.
           AUTHOR_SESSION: "${{ steps.fetch.outputs.artifact_id }}"
@@ -917,15 +1011,17 @@ jobs:
               artefacts/check.json)" || usage='{}'
           fi
           reason="publish did not complete (offline check: $CHECK_OUTCOME,"
-          reason="$reason apply: $APPLY_OUTCOME)"
+          reason="$reason push: $PUSH_OUTCOME, open: $OPEN_OUTCOME)"
           jq -n --arg key "$KEY" --arg repo "$REPOSITORY" \
+            --arg fork "$FORK_REPOSITORY" \
             --argjson issue "$ISSUE" --arg reason "$reason" \
             --argjson dry "$DRY_RUN" --arg mode "$MODE" \
             --argjson attempt "$RUN_ATTEMPT" \
             --arg session "$AUTHOR_SESSION" --argjson usage "$usage" '
             def number: if type == "number" then . else null end;
             {
-              schema: 1, key: $key, repository: $repo, issue: $issue,
+              schema: 1, key: $key, repository: $repo,
+              fork_repository: $fork, issue: $issue,
               verdict: "publish-failed", reasons: [$reason], warnings: [],
               dry_run: $dry, mode: $mode, run_attempt: $attempt,
               author_session: (if $session == "" then null else $session end),

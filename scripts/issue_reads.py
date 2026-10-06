@@ -199,18 +199,20 @@ def read_priority(repo: str, number: int) -> str | None:
     return None
 
 
-def prior_attempt(repo: str, branch: str) -> bool:
-    """Whether a pull request from the bot branch exists, open or closed.
+def prior_attempt(repo: str, fork_repository: str, branch: str) -> bool:
+    """Whether a pull request from the designated fork's bot branch exists.
 
     Anyone can open a pull request from a fork branch of the same
-    name, so the query names the target's owner in ``head``: GitHub
-    then filters server-side, and fork pull requests cannot crowd the
-    bot's own out of the page. Only a head in the target repository
-    itself counts; the branch check below covers a branch with no pull
-    request yet.
+    name, so the query names the fork organisation in ``head``: GitHub
+    then filters server-side, and other forks' pull requests cannot
+    crowd the bot's own out of the page. Only a head in the designated
+    fork counts; the branch check below covers a branch pushed with no
+    pull request yet. A same-named branch in the target itself is not
+    this workflow's (DESIGN.md section 4.3), and a 404 on the fork
+    means no fork yet, so no attempt.
     """
-    owner = repo.partition("/")[0]
-    head = urllib.parse.quote(f"{owner}:{branch}", safe="")
+    fork_owner = fork_repository.partition("/")[0]
+    head = urllib.parse.quote(f"{fork_owner}:{branch}", safe="")
     for entry in github.api_page(
         f"repos/{repo}/pulls?head={head}&state=all&per_page=100"
     ):
@@ -225,10 +227,10 @@ def prior_attempt(repo: str, branch: str) -> bool:
             if isinstance(head_repo, dict)
             else None
         )
-        if isinstance(name, str) and name.lower() == repo.lower():
+        if isinstance(name, str) and name.lower() == fork_repository.lower():
             return True
     try:
-        github.api_object(f"repos/{repo}/branches/{branch}")
+        github.api_object(f"repos/{fork_repository}/branches/{branch}")
     except github.GitHubError as exc:
         if github.is_absent(exc):
             return False

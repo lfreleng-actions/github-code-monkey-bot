@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import monkey_github as github
 import proposal_policy as policy
+from fork_orgs import ALLOWED_RE
 from git_bounded import git
 from proposal_model import Check, Context, load_json, read_usage
 from proposal_policy import Identity, PublishError, Rejection
@@ -48,11 +49,26 @@ def selection_entry(selection: dict[str, Any], key: str) -> dict[str, Any]:
     for entry in cast("list[Any]", issues):
         if isinstance(entry, dict) and cast("dict[str, Any]", entry).get("key") == key:
             data = cast("dict[str, Any]", entry)
-            for name in ("repository", "base_sha", "branch", "default_branch", "url"):
+            for name in (
+                "repository",
+                "base_sha",
+                "branch",
+                "default_branch",
+                "url",
+                "fork_org",
+                "fork_repository",
+            ):
                 field_str(data, name, "selection entry")
             field_int(data, "number", "selection entry")
             if not policy.SHA_RE.fullmatch(str(data["base_sha"])):
                 raise PublishError("selection base_sha is not a commit SHA")
+            # The fork token is minted on this organisation: the selection
+            # is trusted, but the pool pattern is checked once more here.
+            fork_org = str(data["fork_org"])
+            if not ALLOWED_RE.fullmatch(fork_org):
+                raise PublishError(f"{fork_org!r} is not a bot fork organisation")
+            if not str(data["fork_repository"]).startswith(f"{fork_org}/"):
+                raise PublishError("selection fork_repository is outside fork_org")
             return data
     raise PublishError(f"selection has no entry for {key!r}")
 

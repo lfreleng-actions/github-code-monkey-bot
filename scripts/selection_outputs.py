@@ -55,6 +55,8 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
             "number": issue["number"],
             "base_sha": issue["base_sha"],
             "branch": issue["branch"],
+            "fork_org": issue["fork_org"],
+            "fork_repository": issue["fork_repository"],
         }
         for issue in cast("list[dict[str, Any]]", selection["issues"])
     ]

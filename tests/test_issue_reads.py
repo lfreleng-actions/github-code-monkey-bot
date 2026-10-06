@@ -207,10 +207,17 @@ class BotIdentityTest(ReadsCase):
 
 
 class PriorAttemptTest(ReadsCase):
-    """``prior_attempt`` consults pull requests first, then the branch."""
+    """``prior_attempt`` consults pull requests first, then the fork branch."""
+
+    FORK = "lfreleng-bot-forks/repo"
+    BRANCH = "code-monkey/issue-3"
+
+    def attempt(self) -> bool:
+        """Run the lookup against the fixture target and fork."""
+        return reads.prior_attempt("org/repo", self.FORK, self.BRANCH)
 
     def test_no_pull_request_no_branch(self) -> None:
-        """An empty list and a 404 on the branch means no prior attempt."""
+        """An empty list and a 404 on the fork branch means no prior attempt."""
         with (
             patch.object(github, "api_page", return_value=[]),
             patch.object(
@@ -219,16 +226,31 @@ class PriorAttemptTest(ReadsCase):
                 side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
             ) as read,
         ):
-            self.assertFalse(reads.prior_attempt("org/repo", "code-monkey/issue-3"))
-        read.assert_called_once_with("repos/org/repo/branches/code-monkey/issue-3")
+            self.assertFalse(self.attempt())
+        read.assert_called_once_with(f"repos/{self.FORK}/branches/{self.BRANCH}")
 
-    def test_branch_exists_without_pull_request(self) -> None:
-        """An orphaned bot branch still counts as an attempt."""
+    def test_branch_in_fork_without_pull_request(self) -> None:
+        """An orphaned bot branch in the fork still counts as an attempt."""
         with (
             patch.object(github, "api_page", return_value=[]),
-            patch.object(github, "api_object", return_value={"name": "x"}),
+            patch.object(github, "api_object", return_value={"name": "x"}) as read,
         ):
-            self.assertTrue(reads.prior_attempt("org/repo", "code-monkey/issue-3"))
+            self.assertTrue(self.attempt())
+        # The target's own branches are never consulted: a same-named
+        # branch there is not this workflow's work.
+        self.assertNotIn("repos/org/repo/", read.call_args.args[0])
+
+    def test_missing_fork_is_no_attempt(self) -> None:
+        """A 404 on the fork repository itself means no fork, so no attempt."""
+        with (
+            patch.object(github, "api_page", return_value=[]),
+            patch.object(
+                github,
+                "api_object",
+                side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
+            ),
+        ):
+            self.assertFalse(self.attempt())
 
     def test_branch_read_failure_propagates(self) -> None:
         """A 500 is not silently treated as absence."""
@@ -241,29 +263,37 @@ class PriorAttemptTest(ReadsCase):
             ),
             self.assertRaises(github.GitHubError),
         ):
-            reads.prior_attempt("org/repo", "code-monkey/issue-3")
+            self.attempt()
 
 
 class PriorAttemptOwnerHeadTest(ReadsCase):
-    """Fork pull requests cannot crowd the bot's own out of the lookup."""
+    """Other forks' pull requests cannot crowd the bot's own out of the lookup."""
 
-    def test_owner_qualified_head_filters_server_side(self) -> None:
-        """The query names the target's owner, so forks never fill the page."""
-        own = [{"number": 3, "head": {"repo": {"full_name": "Org/Repo"}}}]
+    FORK = PriorAttemptTest.FORK
+    BRANCH = PriorAttemptTest.BRANCH
+
+    def test_fork_qualified_head_filters_server_side(self) -> None:
+        """The query names the fork organisation, so other heads never fill it."""
+        own = [
+            {"number": 3, "head": {"repo": {"full_name": "LFreleng-Bot-Forks/Repo"}}}
+        ]
         with (
             patch.object(github, "api_page", return_value=own) as page,
             patch.object(github, "api_object") as read,
         ):
-            self.assertTrue(reads.prior_attempt("org/repo", "code-monkey/issue-3"))
+            self.assertTrue(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
         read.assert_not_called()
         endpoint = page.call_args.args[0]
         self.assertTrue(endpoint.startswith("repos/org/repo/pulls?"), endpoint)
-        self.assertIn("head=org%3Acode-monkey%2Fissue-3", endpoint)
+        self.assertIn("head=lfreleng-bot-forks%3Acode-monkey%2Fissue-3", endpoint)
         self.assertIn("state=all", endpoint)
 
     def test_other_repository_head_falls_through_to_the_branch(self) -> None:
-        """A head in another repository of the owner is not an attempt."""
-        other = [{"number": 5, "head": {"repo": {"full_name": "org/other"}}}]
+        """A head in the target or another repository is not an attempt."""
+        other = [
+            {"number": 5, "head": {"repo": {"full_name": "org/repo"}}},
+            {"number": 6, "head": {"repo": {"full_name": "lfreleng-bot-forks/other"}}},
+        ]
         with (
             patch.object(github, "api_page", return_value=other),
             patch.object(
@@ -272,8 +302,8 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
                 side_effect=github.GitHubError("gh: Not Found (HTTP 404)"),
             ) as read,
         ):
-            self.assertFalse(reads.prior_attempt("org/repo", "code-monkey/issue-3"))
-        read.assert_called_once_with("repos/org/repo/branches/code-monkey/issue-3")
+            self.assertFalse(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
+        read.assert_called_once_with(f"repos/{self.FORK}/branches/{self.BRANCH}")
 
 
 class HasOpenLinkedPrTest(ReadsCase):

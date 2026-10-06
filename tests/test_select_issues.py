@@ -28,6 +28,11 @@ outputs = import_module("selection_outputs")
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
+FORK_ORGS: dict[str, Any] = {
+    "default": "lfreleng-bot-forks",
+    "organisations": {"onap": "lfreleng-bot-forks-onap"},
+}
+FORK_ORGS_PATH = Path(__file__).resolve().parents[1] / "config" / "fork-orgs.json"
 
 
 def repo_meta(name: str, **overrides: Any) -> dict[str, Any]:
@@ -85,7 +90,7 @@ def candidate(
     }
 
 
-def attempted_issue_one(_repo: str, branch: str) -> bool:
+def attempted_issue_one(_repo: str, _fork: str, branch: str) -> bool:
     """A ``prior_attempt`` double that reports issue 1 as already tried."""
     return branch.endswith("-1")
 
@@ -436,33 +441,64 @@ class ChooseTest(NoSubprocessCase):
         ).start()
         self.addCleanup(patch.stopall)
 
+    def choose(
+        self,
+        ranked: list[dict[str, Any]],
+        *,
+        max_pull_requests: int,
+        skipped: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        """Run ``choose`` with the fixture fork mapping."""
+        return select.choose(
+            ranked,
+            fork_orgs=FORK_ORGS,
+            max_pull_requests=max_pull_requests,
+            skipped=skipped,
+        )
+
     def test_one_per_repository_and_shape(self) -> None:
         """The second issue of a repository is dropped; the chosen entry is shaped."""
         ranked = [candidate("alpha", 3), candidate("alpha", 4), candidate("beta", 5)]
         skipped = fresh_skipped()
-        chosen = select.choose(ranked, max_pull_requests=10, skipped=skipped)
+        chosen = self.choose(ranked, max_pull_requests=10, skipped=skipped)
         self.assertEqual([c["number"] for c in chosen], [3, 5])
         self.assertEqual(skipped["one_per_repo"], 1)
         first = chosen[0]
         self.assertEqual(first["key"], "alpha-3")
         self.assertEqual(first["branch"], "code-monkey/issue-3")
         self.assertEqual(first["base_sha"], SHA_A)
+        self.assertEqual(first["fork_org"], "lfreleng-bot-forks")
+        self.assertEqual(first["fork_repository"], "lfreleng-bot-forks/alpha")
         self.assertEqual(first["comments"], [])
         self.assertEqual(first["comments_dropped"], 0)
         self.assertNotIn("assignees", first)
         self.head.assert_any_call("org/alpha", "main")
-        self.prior.assert_any_call("org/alpha", "code-monkey/issue-3")
+        self.prior.assert_any_call(
+            "org/alpha", "lfreleng-bot-forks/alpha", "code-monkey/issue-3"
+        )
+
+    def test_fork_org_follows_the_target_owner(self) -> None:
+        """A mapped owner gets its own pool; the owner itself is refused."""
+        onap = candidate("alpha", 3)
+        onap["repository"] = "ONAP/alpha"
+        chosen = self.choose([onap], max_pull_requests=0, skipped=fresh_skipped())
+        self.assertEqual(chosen[0]["fork_org"], "lfreleng-bot-forks-onap")
+        self.assertEqual(chosen[0]["fork_repository"], "lfreleng-bot-forks-onap/alpha")
+        own = candidate("alpha", 4)
+        own["repository"] = "lfreleng-bot-forks/alpha"
+        with self.assertRaises(reads.SelectionError):
+            self.choose([own], max_pull_requests=0, skipped=fresh_skipped())
 
     def test_cap(self) -> None:
         """Survivors beyond the cap count as ``cap``; zero lifts the cap."""
         ranked = [candidate(f"r{i}", i) for i in range(1, 6)]
         skipped = fresh_skipped()
-        chosen = select.choose(ranked, max_pull_requests=2, skipped=skipped)
+        chosen = self.choose(ranked, max_pull_requests=2, skipped=skipped)
         self.assertEqual(len(chosen), 2)
         self.assertEqual(skipped["cap"], 3)
 
         skipped = fresh_skipped()
-        chosen = select.choose(ranked, max_pull_requests=0, skipped=skipped)
+        chosen = self.choose(ranked, max_pull_requests=0, skipped=skipped)
         self.assertEqual(len(chosen), 5)
         self.assertEqual(skipped["cap"], 0)
 
@@ -472,7 +508,7 @@ class ChooseTest(NoSubprocessCase):
         for requested in (0, select.MATRIX_LIMIT + 50):
             with self.subTest(max_pull_requests=requested):
                 skipped = fresh_skipped()
-                chosen = select.choose(
+                chosen = self.choose(
                     ranked, max_pull_requests=requested, skipped=skipped
                 )
                 self.assertEqual(len(chosen), select.MATRIX_LIMIT)
@@ -485,8 +521,8 @@ class ChooseTest(NoSubprocessCase):
         small = candidate("small", 2)
         ranked = [big, small, candidate("third", 3)]
         skipped = fresh_skipped()
-        with patch.object(select, "MAX_SELECTION_BYTES", 1500):
-            chosen = select.choose(ranked, max_pull_requests=0, skipped=skipped)
+        with patch.object(select, "MAX_SELECTION_BYTES", 1600):
+            chosen = self.choose(ranked, max_pull_requests=0, skipped=skipped)
         # The first entry fits alone; the second would push past the budget
         # and the third is refused without further reads.
         self.assertEqual([c["number"] for c in chosen], [1])
@@ -498,7 +534,7 @@ class ChooseTest(NoSubprocessCase):
         self.linked.side_effect = linked_issue_two
         ranked = [candidate("a", 1), candidate("b", 2), candidate("c", 3)]
         skipped = fresh_skipped()
-        chosen = select.choose(ranked, max_pull_requests=0, skipped=skipped)
+        chosen = self.choose(ranked, max_pull_requests=0, skipped=skipped)
         self.assertEqual([c["number"] for c in chosen], [3])
         self.assertEqual(skipped["attempted"], 1)
         self.assertEqual(skipped["linked_pr"], 1)
@@ -507,7 +543,7 @@ class ChooseTest(NoSubprocessCase):
         """A skipped attempt does not claim the repository slot."""
         self.prior.side_effect = attempted_issue_one
         ranked = [candidate("a", 1), candidate("a", 2)]
-        chosen = select.choose(ranked, max_pull_requests=0, skipped=fresh_skipped())
+        chosen = self.choose(ranked, max_pull_requests=0, skipped=fresh_skipped())
         self.assertEqual([c["number"] for c in chosen], [2])
 
 
@@ -639,6 +675,8 @@ class WriteOutputsTest(unittest.TestCase):
             "key": "alpha-3",
             "base_sha": SHA_A,
             "branch": "code-monkey/issue-3",
+            "fork_org": "lfreleng-bot-forks",
+            "fork_repository": "lfreleng-bot-forks/alpha",
             "comments": [],
             "comments_dropped": 0,
         }
@@ -664,6 +702,8 @@ class WriteOutputsTest(unittest.TestCase):
                             "number": 3,
                             "base_sha": SHA_A,
                             "branch": "code-monkey/issue-3",
+                            "fork_org": "lfreleng-bot-forks",
+                            "fork_repository": "lfreleng-bot-forks/alpha",
                         }
                     ]
                 },
@@ -766,6 +806,8 @@ class MainTest(NoSubprocessCase):
                         "--dry-run",
                         "--guidance-repository",
                         "org/.github",
+                        "--fork-orgs",
+                        str(FORK_ORGS_PATH),
                         "--max-pull-requests",
                         "5",
                         "--exclude-repos",
@@ -794,6 +836,8 @@ class MainTest(NoSubprocessCase):
         self.assertEqual(selection["skipped"]["one_per_repo"], 1)
         (issue,) = selection["issues"]
         self.assertEqual(issue["key"], "alpha-1")
+        self.assertEqual(issue["fork_org"], "lfreleng-bot-forks")
+        self.assertEqual(issue["fork_repository"], "lfreleng-bot-forks/alpha")
         self.assertEqual(issue["base_sha"], SHA_B)
         self.assertEqual(issue["comments_dropped"], 2)
         self.assertEqual(issue["priority"], "Urgent")
@@ -816,6 +860,8 @@ class MainTest(NoSubprocessCase):
                         "m",
                         "--guidance-repository",
                         "org/.github",
+                        "--fork-orgs",
+                        str(FORK_ORGS_PATH),
                         "--repositories",
                         "missing",
                     ]
@@ -848,10 +894,39 @@ class MainTest(NoSubprocessCase):
                         "m",
                         "--guidance-repository",
                         "org/.github",
+                        "--fork-orgs",
+                        str(FORK_ORGS_PATH),
                     ]
                 )
         self.assertEqual(caught.exception.code, 1)
         self.assertIn("select issues: 'boom (HTTP 500)'", stderr.getvalue())
+
+    def test_bad_fork_orgs_file_exits_one(self) -> None:
+        """A malformed fork mapping stops the run before any read."""
+        self.patch_reads()
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "forks.json"
+            bad.write_text('{"default": "evil-org", "organisations": {}}')
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as caught:
+                select.main(
+                    [
+                        "--org",
+                        "org",
+                        "--output-dir",
+                        tmp,
+                        "--mode",
+                        "select",
+                        "--model",
+                        "m",
+                        "--guidance-repository",
+                        "org/.github",
+                        "--fork-orgs",
+                        str(bad),
+                    ]
+                )
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("fork organisation", stderr.getvalue())
 
 
 if __name__ == "__main__":

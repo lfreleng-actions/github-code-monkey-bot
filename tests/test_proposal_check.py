@@ -192,6 +192,8 @@ class Fixture:
             "default_branch": "main",
             "base_sha": self.base_sha,
             "branch": BRANCH,
+            "fork_org": "lfreleng-bot-forks",
+            "fork_repository": "lfreleng-bot-forks/repo",
             "comments": [],
             "comments_dropped": 0,
         }
@@ -918,6 +920,8 @@ class SelectionEntryTest(unittest.TestCase):
             "branch": BRANCH,
             "default_branch": "main",
             "url": ISSUE_URL,
+            "fork_org": "lfreleng-bot-forks",
+            "fork_repository": "lfreleng-bot-forks/repo",
         }
         entry.update(overrides)
         return {"issues": [entry]}
@@ -956,7 +960,15 @@ class SelectionEntryTest(unittest.TestCase):
         local file surfaces as ``GitHubError``; ``publish.main`` catches
         both, so the behaviour is pinned rather than judged here.
         """
-        for name in ("repository", "branch", "default_branch", "url", "number"):
+        for name in (
+            "repository",
+            "branch",
+            "default_branch",
+            "url",
+            "number",
+            "fork_org",
+            "fork_repository",
+        ):
             selection = self.selection()
             del selection["issues"][0][name]
             with (
@@ -964,6 +976,19 @@ class SelectionEntryTest(unittest.TestCase):
                 self.assertRaises((policy.PublishError, github.GitHubError)),
             ):
                 checks.selection_entry(selection, KEY)
+
+    def test_fork_must_be_a_bot_pool(self) -> None:
+        """A fork organisation outside the pattern, or a stray fork repo, is refused."""
+        for overrides in (
+            {"fork_org": "evil-org", "fork_repository": "evil-org/repo"},
+            {"fork_repository": "other/repo"},
+            {"fork_org": REPOSITORY.partition("/")[0]},
+        ):
+            with (
+                self.subTest(overrides=overrides),
+                self.assertRaises(policy.PublishError),
+            ):
+                checks.selection_entry(self.selection(**overrides), KEY)
 
 
 class SelectionIdentityTest(unittest.TestCase):

@@ -383,8 +383,8 @@ class AuthorJobContracts(ReusableWorkflowCase):
         # A rerun of the entry replaces its own earlier proposal; without
         # this, the second upload collides with the immutable first one.
         self.assertIs(with_["overwrite"], True)
-        apply = squash(str(self.step("publish", "apply")["run"]))
-        self.assertIn('--run-attempt "$RUN_ATTEMPT"', apply)
+        push = squash(str(self.step("publish", "push")["run"]))
+        self.assertIn('--run-attempt "$RUN_ATTEMPT"', push)
         self.assertEqual(
             set(str(with_["path"]).split()),
             {
@@ -452,45 +452,74 @@ class PublishJobContracts(ReusableWorkflowCase):
         self.assertLess(steps.index(verified), steps.index(fetch))
 
     def test_offline_check_and_scoped_token_mints(self) -> None:
-        """The check has no token; each mint names one repository and grants."""
+        """The check has no token; each fork mint names the fork org and grants."""
         check = self.step("publish", "check")
         script = flatten(check["run"])
         self.assertIn("publish.py check", script)
         self.assertIn("--coauthors monkey-assets/config/coauthors.json", script)
         self.assertNotIn("GH_TOKEN", cast(dict[str, Any], check.get("env", {})))
 
-        write = self.step("publish", "write-token")
-        self.assertTrue(is_action(write, APP_TOKEN))
-        condition = unwrap(str(write["if"]))
+        for identity, exists in (
+            ("fork-token", "true"),
+            ("fork-create-token", "false"),
+        ):
+            with self.subTest(mint=identity):
+                mint = self.step("publish", identity)
+                self.assertTrue(is_action(mint, APP_TOKEN))
+                condition = unwrap(str(mint["if"]))
+                self.assertIn("!inputs.dry_run", condition)
+                self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+                self.assertIn("inputs.github_app_client_id != ''", condition)
+                self.assertIn(
+                    f"steps.fork-state.outputs.exists == '{exists}'", condition
+                )
+                with_ = cast(dict[str, Any], mint["with"])
+                self.assert_expression(with_["owner"], "matrix.fork_org")
+                self.assertEqual(with_["permission-contents"], "write")
+                self.assertEqual(with_["permission-metadata"], "read")
+                self.assertNotIn("permission-pull-requests", with_)
+                self.assertNotIn("permission-issues", with_)
+                self.assert_expression(
+                    with_["permission-workflows"],
+                    "steps.check.outputs.needs_workflows == 'true' && 'write' || ''",
+                )
+        write = cast(dict[str, Any], self.step("publish", "fork-token")["with"])
+        self.assert_expression(write["repositories"], "matrix.repo_name")
+        # The fork does not exist yet, so no repository can be named.
+        create = cast(dict[str, Any], self.step("publish", "fork-create-token")["with"])
+        self.assertNotIn("repositories", create)
+        self.assertEqual(create["permission-administration"], "write")
+
+        pr = self.step("publish", "pr-token")
+        self.assertTrue(is_action(pr, APP_TOKEN))
+        condition = unwrap(str(pr["if"]))
+        self.assertIn("!cancelled()", condition)
+        self.assertIn("steps.push.outcome == 'success'", condition)
         self.assertIn("!inputs.dry_run", condition)
-        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        self.assertIn("inputs.mode == 'pull-requests'", condition)
         self.assertIn("inputs.github_app_client_id != ''", condition)
-        with_ = cast(dict[str, Any], write["with"])
-        self.assert_expression(with_["repositories"], "matrix.repo_name")
-        self.assertEqual(with_["permission-contents"], "write")
-        self.assert_expression(
-            with_["permission-pull-requests"],
-            "inputs.mode == 'pull-requests' && 'write' || 'read'",
-        )
-        self.assert_expression(
-            with_["permission-workflows"],
-            "steps.check.outputs.needs_workflows == 'true' && 'write' || ''",
-        )
+        pr_with = cast(dict[str, Any], pr["with"])
+        self.assert_expression(pr_with["owner"], "inputs.org")
+        self.assert_expression(pr_with["repositories"], "matrix.repo_name")
+        self.assertEqual(pr_with["permission-pull-requests"], "write")
+        self.assertEqual(pr_with["permission-metadata"], "read")
+        self.assertEqual(unwrap(str(self.step("publish", "open")["if"])), condition)
 
         comment = self.step("publish", "comment-token")
         self.assertTrue(is_action(comment, APP_TOKEN))
         condition = unwrap(str(comment["if"]))
         self.assertIn("!inputs.dry_run", condition)
-        # The comment must also reach the issue after a failed apply, so
+        # The comment must also reach the issue after a failed push, so
         # the rollback is visible; never after cancellation.
         self.assertIn("!cancelled()", condition)
-        self.assertIn("steps.apply.outcome != 'skipped'", condition)
+        self.assertIn("steps.push.outcome != 'skipped'", condition)
         comment_with = cast(dict[str, Any], comment["with"])
         self.assertEqual(comment_with["permission-issues"], "write")
+        self.assert_expression(comment_with["owner"], "inputs.org")
         self.assert_expression(comment_with["repositories"], "matrix.repo_name")
 
     def test_every_entry_uploads_a_result(self) -> None:
-        """A failure before apply still leaves a typed result for the report."""
+        """A failure before push still leaves a typed result for the report."""
         ensure = self.step("publish", "Ensure a result exists")
         self.assertEqual(ensure["if"], "always()")
         script = squash(str(ensure["run"]))
@@ -511,12 +540,14 @@ class PublishJobContracts(ReusableWorkflowCase):
             "PATH": os.environ["PATH"],
             "KEY": "repo-7",
             "REPOSITORY": "o/repo",
+            "FORK_REPOSITORY": "lfreleng-bot-forks/repo",
             "ISSUE": "7",
             "DRY_RUN": "false",
             "MODE": "pull-requests",
             "RUN_ATTEMPT": "1",
             "CHECK_OUTCOME": "success",
-            "APPLY_OUTCOME": "skipped",
+            "PUSH_OUTCOME": "skipped",
+            "OPEN_OUTCOME": "skipped",
         }
         for session, check, expected in (
             ("77", {"premium_requests": 12.5, "agent_seconds": 30}, ("77", 12.5, 30)),
@@ -539,6 +570,8 @@ class PublishJobContracts(ReusableWorkflowCase):
                     (work / "artefacts" / "result.json").read_text(encoding="utf-8")
                 )
             self.assertEqual(result["verdict"], "publish-failed")
+            self.assertEqual(result["fork_repository"], "lfreleng-bot-forks/repo")
+            self.assertIn("push: skipped, open: skipped", result["reasons"][0])
             self.assertEqual(
                 (
                     result["author_session"],
@@ -549,36 +582,46 @@ class PublishJobContracts(ReusableWorkflowCase):
             )
 
     def test_result_names_the_author_session(self) -> None:
-        """The fetched artifact's ID reaches apply, so spend counts per session."""
+        """The fetched artifact's ID reaches push, so spend counts per session."""
         fetch = self.step("publish", "Fetch and accept bounded proposal")
         self.assertEqual(fetch["id"], "fetch")
         self.assertIn('--output accepted >> "$GITHUB_OUTPUT"', flatten(fetch["run"]))
-        apply = self.step("publish", "Publish branch and pull request")
+        push = self.step("publish", "push")
         self.assert_expression(
-            apply["env"]["AUTHOR_SESSION"], "steps.fetch.outputs.artifact_id"
+            push["env"]["AUTHOR_SESSION"], "steps.fetch.outputs.artifact_id"
         )
-        self.assertIn('--author-session "$AUTHOR_SESSION"', squash(str(apply["run"])))
+        self.assertIn('--author-session "$AUTHOR_SESSION"', squash(str(push["run"])))
 
     def test_writes_never_fall_back_to_the_native_token(self) -> None:
         """Branch, pull request and comment writes use App tokens alone."""
-        apply = self.step("publish", "Publish branch and pull request")
+        push = self.step("publish", "push")
         self.assert_expression(
-            apply["env"]["GH_TOKEN"], "steps.write-token.outputs.token"
+            push["env"]["GH_TOKEN"],
+            "steps.fork-token.outputs.token || steps.fork-create-token.outputs.token",
         )
+        self.assertIn("publish.py push", flatten(push["run"]))
+        opened = self.step("publish", "open")
+        self.assert_expression(
+            opened["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py open", flatten(opened["run"]))
         comment = self.step("publish", "Comment on the issue")
         self.assert_expression(
             comment["env"]["GH_TOKEN"], "steps.comment-token.outputs.token"
         )
-        self.assertNotIn("github.token", dumped(apply))
-        self.assertNotIn("github.token", dumped(comment))
-        # The native token appears once in the job: reading this run's
-        # artifacts, with the job's actions: read and nothing more.
+        for step in (push, opened, comment):
+            self.assertNotIn("github.token", dumped(step))
+        # The native token appears twice in the job: reading this run's
+        # artifacts, and reading whether a public fork exists; the job
+        # grants it actions: read and nothing more.
         users = [
             step.get("name")
             for step in self.steps("publish")
             if "github.token" in dumped(step)
         ]
-        self.assertEqual(users, ["Fetch and accept bounded proposal"])
+        self.assertEqual(
+            users, ["Fetch and accept bounded proposal", "Check fork exists"]
+        )
         self.assertEqual(
             self.jobs["publish"]["permissions"],
             {"actions": "read", "contents": "read"},
@@ -596,6 +639,95 @@ class PublishJobContracts(ReusableWorkflowCase):
         ):
             with self.subTest(check=check):
                 self.assertIn(check, script)
+
+
+class MintProvenanceContracts(ReusableWorkflowCase):
+    """Every App token names a known owner and carries the least it needs."""
+
+    FORK_MINTS = ("fork-token", "fork-create-token")
+    TARGET_MINTS = (
+        ("select", "app-token"),
+        ("publish", "pr-token"),
+        ("publish", "comment-token"),
+    )
+
+    def mints(self) -> list[tuple[str, dict[str, Any]]]:
+        """Every create-github-app-token step, with its job."""
+        return [
+            (job, step)
+            for job in self.jobs
+            if "steps" in self.jobs[job]
+            for step in self.actions(job, APP_TOKEN)
+        ]
+
+    def test_every_mint_names_the_target_or_the_fork_organisation(self) -> None:
+        """Owner is ``inputs.org`` or ``matrix.fork_org``; never anything else."""
+        found = self.mints()
+        self.assertEqual(
+            sorted(str(step["id"]) for _, step in found),
+            sorted(["app-token", "comment-token", "pr-token", *self.FORK_MINTS]),
+        )
+        for job, step in found:
+            with self.subTest(job=job, mint=step["id"]):
+                owner = unwrap(str(cast(dict[str, Any], step["with"])["owner"]))
+                expected = (
+                    "matrix.fork_org" if step["id"] in self.FORK_MINTS else "inputs.org"
+                )
+                self.assertEqual(owner, expected)
+
+    def test_administration_belongs_to_the_creation_mint_alone(self) -> None:
+        """Only the mint that forks a missing repository may administer."""
+        for job, step in self.mints():
+            with_ = cast(dict[str, Any], step["with"])
+            with self.subTest(job=job, mint=step["id"]):
+                if step["id"] == "fork-create-token":
+                    self.assertEqual(with_["permission-administration"], "write")
+                else:
+                    self.assertNotIn("permission-administration", with_)
+
+    def test_target_mints_cannot_write_code(self) -> None:
+        """No token for the target organisation can push, run or administer."""
+        for job, identity in self.TARGET_MINTS:
+            with_ = cast(dict[str, Any], self.step(job, identity)["with"])
+            with self.subTest(job=job, mint=identity):
+                self.assertNotEqual(with_.get("permission-contents"), "write")
+                self.assertNotIn("permission-workflows", with_)
+                self.assertNotIn("permission-administration", with_)
+
+    def test_each_write_step_holds_its_own_token(self) -> None:
+        """Push sees fork tokens alone; open sees the pull request token alone."""
+        push = unwrap(str(self.step("publish", "push")["env"]["GH_TOKEN"]))
+        self.assertEqual(
+            set(re.findall(r"steps\.([a-z-]+)\.outputs\.token", push)),
+            set(self.FORK_MINTS),
+        )
+        opened = unwrap(str(self.step("publish", "open")["env"]["GH_TOKEN"]))
+        self.assertEqual(
+            re.findall(r"steps\.([a-z-]+)\.outputs\.token", opened), ["pr-token"]
+        )
+
+    def test_fork_organisation_is_proven_before_any_fork_mint(self) -> None:
+        """The resolve step guards the pattern and the mapping, then the mints run."""
+        fork = self.step("publish", "fork")
+        script = flatten(fork["run"])
+        self.assertIn('"$FORK_ORG" =~ ^lfreleng-bot-forks(-[a-z0-9]+)?$', script)
+        self.assertIn('"$FORK_ORG" = "$ORG"', script)
+        self.assertIn("fork_orgs.py check", script)
+        self.assertIn("fork_orgs.py resolve", script)
+        self.assertIn('"$resolved" != "fork_org=$FORK_ORG"', script)
+        self.assert_expression(fork["env"]["FORK_ORG"], "matrix.fork_org")
+        state = self.step("publish", "fork-state")
+        self.assert_expression(state["env"]["GH_TOKEN"], "github.token")
+        positions = [self.position("publish", step) for step in self.FORK_MINTS]
+        self.assertLess(self.position("publish", "fork"), min(positions))
+        self.assertLess(self.position("publish", "fork-state"), min(positions))
+        self.assertLess(max(positions), self.position("publish", "push"))
+        self.assertLess(
+            self.position("publish", "push"), self.position("publish", "pr-token")
+        )
+        self.assertLess(
+            self.position("publish", "pr-token"), self.position("publish", "open")
+        )
 
 
 class SelectAndReportContracts(ReusableWorkflowCase):
@@ -640,18 +772,10 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertIn("inputs.mode != 'select'", condition)
         self.assertIn("inputs.github_app_client_id == ''", condition)
 
-    def test_live_runs_must_name_their_targets(self) -> None:
-        """Until the fork path lands, a live writing run needs a repository list."""
-        guard = self.step("select", "Require named targets for live runs")
-        condition = unwrap(str(guard["if"]))
-        self.assertIn("!inputs.dry_run", condition)
-        self.assertIn("inputs.mode != 'select'", condition)
-        self.assertIn("steps.budget.outputs.repositories == ''", condition)
-        self.assertIn("exit 1", str(guard["run"]))
-        steps = self.steps("select")
-        self.assertLess(
-            steps.index(guard), steps.index(self.step("select", "app-token"))
-        )
+    def test_select_resolves_fork_organisations(self) -> None:
+        """Selection carries the committed fork mapping into every entry."""
+        script = flatten(self.step("select", "Select issues")["run"])
+        self.assertIn("--fork-orgs monkey-assets/config/fork-orgs.json", script)
 
     def test_read_mint_scopes_to_the_requested_repositories(self) -> None:
         """Selection reads with the caller's repository list; empty is org-wide."""

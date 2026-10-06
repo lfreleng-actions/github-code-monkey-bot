@@ -38,6 +38,8 @@ class Check:
     branch: str
     base_sha: str
     default_branch: str
+    fork_org: str = ""
+    fork_repository: str = ""
     verdict: str = "proposed"
     reasons: list[str] = field(default_factory=lambda: cast("list[str]", []))
     needs_workflows: bool = False
@@ -65,6 +67,8 @@ class Check:
             branch=str(entry["branch"]),
             base_sha=str(entry["base_sha"]),
             default_branch=str(entry["default_branch"]),
+            fork_org=str(entry["fork_org"]),
+            fork_repository=str(entry["fork_repository"]),
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -78,6 +82,8 @@ class Check:
             "branch": self.branch,
             "base_sha": self.base_sha,
             "default_branch": self.default_branch,
+            "fork_org": self.fork_org,
+            "fork_repository": self.fork_repository,
             "verdict": self.verdict,
             "reasons": self.reasons,
             "needs_workflows": self.needs_workflows,

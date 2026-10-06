@@ -6,9 +6,10 @@ SPDX-FileCopyrightText: 2026 The Linux Foundation
 # Design: Scheduled AI Authoring of Pull Requests
 
 Status: **implemented, awaiting rollout** (§15). The workflow,
-scripts and offline tests exist; no live run has yet published a
-branch. Live publication waits on the bot fork organisations and
-the fork publishing path (§4.3). §17 records the decisions taken on
+scripts and offline tests exist, the bot fork organisations hold
+the App installation and the publisher writes through them (§4.3);
+no live run
+has yet published a branch. §17 records the decisions taken on
 the first draft's open questions and the three points that rollout,
 not further discussion, will settle.
 
@@ -35,9 +36,8 @@ pull request:
 
 - comes from a bot-owned branch in a fork held by a bot fork
   organisation (§4.3), never from a branch in the target repository,
-  so the target's CI runs the agent's code as an outside contribution
-  (the publisher still writes to the target until the fork path
-  lands; §15 step 0 limits live runs meanwhile);
+  which makes the agent's code an outside contribution to the
+  target's CI;
 - carries commits that follow the organisation's `AGENTS.md`
   (signed, DCO trailer, Conventional Commit subject, co-author
   trailer, PR title equal to a single commit's subject);
@@ -218,13 +218,14 @@ Publishing then works as follows, with the §5 signing unchanged:
    the designated fork, or a surviving branch in that fork; a
    same-named branch in any other fork still does not count.
 
-**Prerequisites before any live run.** The four organisations must
-exist. The App must be public so other organisations can install it
-(today it installs on `lfreleng-actions` alone), then installed on
-each fork organisation on all repositories with Contents: write,
-Workflows: write and Administration: write. Until then the
-publisher implements the same-repository path above, and
-§15 holds every live `branches` and `pull-requests` dispatch.
+**Installation.** The publisher has no same-repository path. The
+four organisations exist and each holds an installation of the App
+on all repositories with Contents: write, Workflows: write and
+Administration: write (§10.1). Every fork organisation has Actions
+switched off, which means a bot branch triggers no workflow where it
+lands; the target organisation requires approval before workflows
+run for pull requests from outside contributors, and the change
+gets CI once a maintainer has read it.
 
 ## 5. Signed Commits Without a Key on the Runner
 
@@ -608,15 +609,31 @@ For each selected issue:
    no trailing punctuation, blank line after the subject, body lines
    ≤ 72 outside URL lines, and valid UTF-8 throughout, since the API
    takes text. Compose the trailers (§5).
-5. **Mint a token** for that repository alone (`repositories:` the
-   bare `repo_name`, relative to `owner`) with `contents: write`,
-   `pull_requests: write` (read in `branches` mode), `metadata:
-   read`, plus `workflows: write` when step 3 saw a workflow change.
-   Dry-run and `select` mode never reach this step.
-6. **Create the branch** `code-monkey/issue-<n>` at the base SHA
-   (an existing branch is a rejection), then replay commits per §5.
-7. **Open the pull request** (`pull-requests` mode) against the
-   default branch: title from the manifest (equal to the subject on
+5. **Resolve the fork organisation.** The matrix entry names it;
+   the step requires it to match the bot pool pattern, to differ
+   from the target organisation, and to equal what the committed
+   mapping (`config/fork-orgs.json`) resolves for the target's owner.
+   It then reads, with the native token, whether the public fork
+   exists. Dry-run and `select` mode go no further than this step.
+6. **Mint a fork token** on the fork organisation's installation:
+   for an existing fork, `repositories:` the bare `repo_name` with
+   `contents: write` and `metadata: read`; for a missing fork, no
+   repository (none exists to name) and `administration: write`
+   besides, the sole mint in the pipeline that holds it. Either adds
+   `workflows: write` when step 3 saw a workflow change. The two
+   mints exclude each other on the fork's existence.
+7. **Push to the fork.** Find or create the fork (§4.3), sync its
+   default branch, create `code-monkey/issue-<n>` there at the base
+   SHA (an existing branch is a rejection unless it holds this
+   proposal's own chain, §6), then replay commits per §5.
+8. **Mint a pull request token** on the target organisation's
+   installation for that repository alone, with `pull_requests:
+   write` and `metadata: read`: the one token in the pipeline that
+   can write to the target. `pull-requests` mode after a successful
+   push alone.
+9. **Open the pull request** (`pull-requests` mode) against the
+   default branch with head `<fork-org>:code-monkey/issue-<n>`:
+   title from the manifest (equal to the subject on
    a single commit, enforced); a body the publisher heads with its
    own `Closes #<n>` line and a provenance block (run URL, model,
    issue link, commands run, the AI authorship disclosure), which
@@ -626,45 +643,47 @@ For each selected issue:
    defused, so agent text cannot notify anyone before a human reads
    it; label `code-monkey` if the label exists. Not a draft: a
    ready pull request triggers the automatic Copilot review and
-   notifies code owners; a draft does neither by default.
-8. **Comment on the issue** with one line: the pull request URL on
-   success; on `abstain`, the agent's reason; on a policy or
-   provenance rejection, which check failed and the run URL. The
-   reason descends from the untrusted manifest; the publisher cuts
-   it to 2,000 characters when recording and again when rendering,
-   which keeps the comment inside GitHub's limit with the run URL
-   intact. The comment uses a second per-repository token carrying
-   `issues: write` and nothing else, minted for this step alone.
-   GitHub has no permission that stops at comments: `issues: write`
-   also covers labels, assignees, milestones, close and reopen. The
-   publisher's code path calls the comment endpoint and no other,
-   the token lives in one trusted step, and labelling stays with
-   triage. Dry-run skips the comment. Each comment ends with a hidden
-   marker naming the run and the outcome; before posting, the
-   publisher looks for it on the bot's own comments since the run's
-   creation, a time every attempt shares. A retry after a lost reply
-   or a later failure then posts nothing twice, and a marker someone
-   else pastes cannot suppress the comment. An operational failure
-   before any write, the offline check or a token mint, posts
-   nothing: the target saw no change, the verdict may be unknown,
-   and one publisher fault would otherwise comment on every issue
-   in the run. Step 9 records it in the report instead; a failure
-   during or after the writes (step 6 on) still comments, since the
-   issue's repository saw a branch and its rollback.
-9. **Record** `result.json` and a step-summary section. A step that
-   runs whatever came before writes a `publish-failed` result when an
-   earlier failure (the offline check, a token mint) left none, so
-   every selected issue reaches the report. A final
-   report job gathers every `result.json` by artifact-name pattern
-   and renders one table: issue, verdict, output URL, premium
-   requests consumed (from `usage.json`), detail. A report covers one
-   selection, its namespace: a retried entry shows its latest
-   attempt's row, but the spend total counts each author session
-   once, since a rerun author job uploads a new proposal artifact
-   and the ID of each proposal artifact names the session that
-   produced it. A full rerun selects afresh under a new namespace
-   and gets its own report; the earlier report keeps the earlier
-   sessions' spend, so a run's cost is the sum of its reports.
+   notifies code owners; a draft does neither by default. A failure
+   here keeps the fork branch: the next run's selection sees a
+   prior attempt, adopts the branch and opens the pull request.
+10. **Comment on the issue** with one line: the pull request URL on
+    success; on `abstain`, the agent's reason; on a policy or
+    provenance rejection, which check failed and the run URL. The
+    reason descends from the untrusted manifest; the publisher cuts
+    it to 2,000 characters when recording and again when rendering,
+    which keeps the comment inside GitHub's limit with the run URL
+    intact. The comment uses a further per-repository token carrying
+    `issues: write` and nothing else, minted for this step alone.
+    GitHub has no permission that stops at comments: `issues: write`
+    also covers labels, assignees, milestones, close and reopen. The
+    publisher's code path calls the comment endpoint and no other,
+    the token lives in one trusted step, and labelling stays with
+    triage. Dry-run skips the comment. Each comment ends with a hidden
+    marker naming the run and the outcome; before posting, the
+    publisher looks for it on the bot's own comments since the run's
+    creation, a time every attempt shares. A retry after a lost reply
+    or a later failure then posts nothing twice, and a marker someone
+    else pastes cannot suppress the comment. An operational failure
+    before any write, the offline check or a token mint, posts
+    nothing: the target saw no change, the verdict may be unknown,
+    and one publisher fault would otherwise comment on every issue
+    in the run. Step 11 records it in the report instead; a failure
+    during or after the writes (step 7 on) still comments, since the
+    fork saw a branch and its rollback.
+11. **Record** `result.json` and a step-summary section. A step that
+    runs whatever came before writes a `publish-failed` result when an
+    earlier failure (the offline check, a token mint) left none, so
+    every selected issue reaches the report. A final
+    report job gathers every `result.json` by artifact-name pattern
+    and renders one table: issue, verdict, output URL, premium
+    requests consumed (from `usage.json`), detail. A report covers one
+    selection, its namespace: a retried entry shows its latest
+    attempt's row, but the spend total counts each author session
+    once, since a rerun author job uploads a new proposal artifact
+    and the ID of each proposal artifact names the session that
+    produced it. A full rerun selects afresh under a new namespace
+    and gets its own report; the earlier report keeps the earlier
+    sessions' spend, so a run's cost is the sum of its reports.
 
 ## 9. Inputs
 
@@ -765,20 +784,35 @@ role, as every bot repository in the organisation does:
 is public so the fork organisations (section 4.3) can install it;
 OAuth and webhooks stay off. Its permissions:
 
+<!-- markdownlint-disable MD013 -->
+
 | Permission | Level | Used by | For |
 | ---------- | ----- | ------- | --- |
 | Metadata | read | select, publish | Repository listing |
-| Issues | write | select, publish | Scan; one comment per outcome (§8 step 8) |
+| Issues | write | select, publish | Scan; one comment per outcome (§8 step 10) |
 | Issue fields | read | select | Priority |
 | Issue types | read | select | Type |
-| Contents | write | publish | Branch, commits |
+| Contents | write | publish | Fork sync, branch, commits (fork organisations alone) |
 | Pull requests | write | publish | Open PR, label |
-| Workflows | write | publish | Commits that touch `.github/workflows/` |
+| Workflows | write | publish | Commits that touch `.github/workflows/` (fork organisations alone) |
+| Administration | write | publish | Create a missing fork (fork organisations alone) |
 
-With fork publishing (§4.3) the App needs a second installation on
-each fork organisation, and the branch and commit writes move
-there; the target installation keeps Pull requests: write to open
-the pull request and Issues: write for the comment.
+<!-- markdownlint-enable MD013 -->
+
+The App holds two kinds of installation. On the target organisation
+the publisher mints Pull requests: write to open the pull request
+and Issues: write for the comment, and no mint there ever requests
+Contents, Workflows or Administration. On each fork organisation it
+mints the writes that build the branch; the installation covers all
+repositories of the organisation, since the fork it writes to may
+not exist until the run creates it.
+
+| Fork organisation | Installed | Actions |
+| ----------------- | --------- | ------- |
+| `lfreleng-bot-forks` | all repositories | disabled |
+| `lfreleng-bot-forks-onap` | all repositories | disabled |
+| `lfreleng-bot-forks-oransc` | all repositories | disabled |
+| `lfreleng-bot-forks-opendaylight` | all repositories | disabled |
 
 | Fork-organisation permission | Level | For |
 | ---------------------------- | ----- | --- |
@@ -943,14 +977,11 @@ write-good and `aislop` at threshold 100.
 
 ## 15. Rollout
 
-0. Until the §4.3 fork path exists, a live `branches` or
-   `pull-requests` dispatch names its targets in `repositories` and
-   keeps to repositories whose workflows hold no secrets (a `test-*`
-   project), since the bot's branch there runs as trusted code. The
-   select job enforces the first half: a live writing run with no
-   repositories named fails before the job mints any token. Whether a
-   named repository holds secrets stays a human judgement. The
-   schedule stays dry-run; dry-run and `select` mode need neither.
+0. A live `branches` or `pull-requests` dispatch writes into a bot
+   fork (§4.3) with Actions switched off, so the agent's code runs
+   nowhere until a maintainer approves the pull request's workflows
+   on the target. The schedule stays dry-run; dry-run and `select`
+   mode mint no write token.
 1. Land the workflow with the schedule in dry-run and
    `pull-requests` mode. Inspect diffs, messages and abstentions
    for a week of runs.

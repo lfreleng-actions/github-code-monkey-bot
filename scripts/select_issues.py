@@ -27,10 +27,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import fork_orgs as forks
 import issue_categories as categories
 import issue_reads as reads
 import monkey_github as github
 import selection_outputs as outputs
+from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 
 SCHEMA = 1
@@ -195,7 +197,11 @@ def enrich(
 
 
 def choose(
-    ranked: list[dict[str, Any]], *, max_pull_requests: int, skipped: dict[str, int]
+    ranked: list[dict[str, Any]],
+    *,
+    fork_orgs: dict[str, Any],
+    max_pull_requests: int,
+    skipped: dict[str, int],
 ) -> list[dict[str, Any]]:
     """Keep one issue per repository, run the expensive checks, and cap."""
     seen: set[str] = set()
@@ -214,7 +220,14 @@ def choose(
             continue
         number = int(candidate["number"])
         branch = f"{BRANCH_PREFIX}{number}"
-        if reads.prior_attempt(repo, branch):
+        # The publisher pushes into a fork in the bot pool, never the
+        # target (DESIGN.md section 4.3); a prior attempt lives there.
+        try:
+            fork_org = forks.resolve(fork_orgs, repo.partition("/")[0])
+        except ForkOrgError as exc:
+            raise SelectionError(str(exc)) from exc
+        fork_repository = f"{fork_org}/{candidate['repo_name']}"
+        if reads.prior_attempt(repo, fork_repository, branch):
             skipped["attempted"] += 1
             continue
         if reads.has_open_linked_pr(repo, number):
@@ -226,6 +239,8 @@ def choose(
             **{k: v for k, v in candidate.items() if k != "assignees"},
             "base_sha": reads.branch_head(repo, str(candidate["default_branch"])),
             "branch": branch,
+            "fork_org": fork_org,
+            "fork_repository": fork_repository,
             "comments": comments,
             "comments_dropped": dropped,
             "comments_truncated": truncated,
@@ -248,6 +263,10 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     try:
         enabled = categories.parse_categories(args.categories)
     except categories.CategoryError as exc:
+        raise SelectionError(str(exc)) from exc
+    try:
+        fork_orgs = forks.load(args.fork_orgs)
+    except ForkOrgError as exc:
         raise SelectionError(str(exc)) from exc
     skipped: dict[str, int] = dict.fromkeys(
         (
@@ -285,7 +304,12 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         skipped=skipped,
     )
     ranked = sorted(enriched, key=rank_key)
-    chosen = choose(ranked, max_pull_requests=max_pull_requests, skipped=skipped)
+    chosen = choose(
+        ranked,
+        fork_orgs=fork_orgs,
+        max_pull_requests=max_pull_requests,
+        skipped=skipped,
+    )
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
     )
@@ -328,6 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repositories", default="")
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
+    parser.add_argument("--fork-orgs", type=Path, required=True)
     parser.add_argument("--include-dotgithub", action="store_true")
     parser.add_argument("--include-assigned", action="store_true")
     parser.add_argument("--max-pull-requests", default="10")
