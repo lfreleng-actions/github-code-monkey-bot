@@ -641,6 +641,77 @@ class PublishJobContracts(ReusableWorkflowCase):
                 self.assertIn(check, script)
 
 
+class PreflightContracts(ReusableWorkflowCase):
+    """The run-time gate runs from pinned assets before any token exists."""
+
+    def test_gate_runs_after_pinning_and_before_the_read_mint(self) -> None:
+        """Contract tests, zizmor and the config check precede the mint."""
+        pinned = self.position("select", "Pin assets commit")
+        workflow = self.position("select", "Pre-flight: workflow contracts and audit")
+        config = self.position("select", "Pre-flight: configuration and credentials")
+        mint = self.position("select", "Mint read-only App token")
+        self.assertLess(pinned, workflow)
+        self.assertLess(workflow, config)
+        self.assertLess(config, mint)
+        run = flatten(
+            self.step("select", "Pre-flight: workflow contracts and audit")["run"]
+        )
+        self.assertIn("scripts/preflight.py workflow --root .", run)
+        self.assertIn("cd monkey-assets", run)
+        config_run = flatten(
+            self.step("select", "Pre-flight: configuration and credentials")["run"]
+        )
+        self.assertIn("--config monkey-assets/config/bot.json", config_run)
+        self.assertIn("fork_orgs.py check", config_run)
+
+    def test_config_gate_sees_the_credentials_under_template_names(self) -> None:
+        """Shape checks read the inputs the workflow was handed, nothing else."""
+        step = self.step("select", "Pre-flight: configuration and credentials")
+        self.assertEqual(
+            step["env"]["BOT_APP_CLIENT_ID"], "${{ inputs.github_app_client_id }}"
+        )
+        self.assertEqual(
+            step["env"]["BOT_APP_PRIVATE_KEY"], "${{ secrets.github_app_private_key }}"
+        )
+        self.assertEqual(
+            step["env"]["COPILOT_GITHUB_TOKEN"], "${{ secrets.copilot_token }}"
+        )
+
+    def test_every_minted_token_is_checked_for_identity(self) -> None:
+        """Read, fork and pull request mints each hand their slug to the check."""
+        read = self.step("select", "Pre-flight: App identity and token grants")
+        self.assertEqual(
+            read["env"]["MINTED_SLUG"], "${{ steps.app-token.outputs.app-slug }}"
+        )
+        self.assertIn("preflight.py token", flatten(read["run"]))
+        self.assertLess(
+            self.position("select", "Pre-flight: App identity and token grants"),
+            self.position("select", "Select issues"),
+        )
+        fork = self.step("publish", "Pre-flight: fork token identity")
+        self.assertEqual(
+            squash(fork["env"]["MINTED_SLUG"]),
+            "${{ steps.fork-token.outputs.app-slug || steps.fork-create-token.outputs.app-slug }}",
+        )
+        self.assertLess(
+            self.position("publish", "Pre-flight: fork token identity"),
+            self.position("publish", "Push branch to fork"),
+        )
+        pr = self.step("publish", "Pre-flight: pull request token identity")
+        self.assertEqual(
+            pr["env"]["MINTED_SLUG"], "${{ steps.pr-token.outputs.app-slug }}"
+        )
+        self.assertLess(
+            self.position("publish", "Pre-flight: pull request token identity"),
+            self.position("publish", "Open pull request"),
+        )
+
+    def test_zizmor_is_pinned(self) -> None:
+        """The auditor the gate runs is an exact version."""
+        run = flatten(self.step("select", "Install zizmor")["run"])
+        self.assertRegex(run, r"uv tool install 'zizmor==\d+\.\d+\.\d+'")
+
+
 class MintProvenanceContracts(ReusableWorkflowCase):
     """Every App token names a known owner and carries the least it needs."""
 

@@ -248,28 +248,6 @@ jobs:
           echo '::error::Live runs require organisation App credentials'
           exit 1
 
-      - name: 'Mint read-only App token'
-        id: app-token
-        if: inputs.github_app_client_id != ''
-        # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        # v3.2.0 forwards INPUT_PERMISSION-* but does not declare
-        # these org grants; env avoids main/post input warnings.
-        env:
-          INPUT_PERMISSION-ISSUE-FIELDS: 'read'
-          INPUT_PERMISSION-ISSUE-TYPES: 'read'
-        with:
-          client-id: "${{ inputs.github_app_client_id }}"
-          private-key: "${{ secrets.github_app_private_key }}"
-          owner: "${{ inputs.org }}"
-          # Empty means every repository of the owner: the candidate
-          # scan is organisation-wide by design and this token reads.
-          repositories: "${{ steps.budget.outputs.repositories }}"
-          permission-issues: 'read'
-          permission-metadata: 'read'
-          permission-contents: 'read'
-          permission-pull-requests: 'read'
-
       - name: 'Resolve assets ref'
         id: assets
         env:
@@ -299,6 +277,84 @@ jobs:
           sha="$(git -C monkey-assets rev-parse HEAD)"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # Pre-flight gate (docs/DESIGN.md section 4.4). The contract tests
+      # and zizmor run again here, from the pinned assets, so a drift
+      # merged into the workflow fails this run before any token exists.
+      # The config check reads the credential shapes from the
+      # environment and prints nothing it read.
+      - name: 'Set up uv'
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: 'Install zizmor'
+        run: uv tool install 'zizmor==1.30.1'
+
+      - name: 'Pre-flight: workflow contracts and audit'
+        run: |
+          cd monkey-assets
+          uv run --locked python -B scripts/preflight.py workflow --root .
+
+      - name: 'Pre-flight: configuration and credentials'
+        env:
+          BOT_APP_CLIENT_ID: "${{ inputs.github_app_client_id }}"
+          BOT_APP_PRIVATE_KEY: "${{ secrets.github_app_private_key }}"
+          COPILOT_GITHUB_TOKEN: "${{ secrets.copilot_token }}"
+          EGRESS_POLICY: "${{ inputs.egress_policy }}"
+          EGRESS_ALLOW_CONFIG: "${{ inputs.egress_allow_config }}"
+          DRY_RUN: "${{ inputs.dry_run }}"
+          # yamllint disable-line rule:line-length
+          JOB_WORKFLOW_SHA: "${{ job.workflow_sha || github.job_workflow_sha }}"
+          ASSETS_SHA: "${{ steps.pinned.outputs.sha }}"
+        run: |
+          extra=()
+          if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
+          python3 monkey-assets/scripts/preflight.py config \
+            --config monkey-assets/config/bot.json \
+            --egress-policy "$EGRESS_POLICY" \
+            --egress-allow-config "$EGRESS_ALLOW_CONFIG" \
+            --workflow-sha "$JOB_WORKFLOW_SHA" \
+            --assets-sha "$ASSETS_SHA" "${extra[@]}"
+          python3 monkey-assets/scripts/fork_orgs.py check \
+            --config monkey-assets/config/fork-orgs.json
+
+      - name: 'Mint read-only App token'
+        id: app-token
+        if: inputs.github_app_client_id != ''
+        # yamllint disable-line rule:line-length
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        # v3.2.0 forwards INPUT_PERMISSION-* but does not declare
+        # these org grants; env avoids main/post input warnings.
+        env:
+          INPUT_PERMISSION-ISSUE-FIELDS: 'read'
+          INPUT_PERMISSION-ISSUE-TYPES: 'read'
+        with:
+          client-id: "${{ inputs.github_app_client_id }}"
+          private-key: "${{ secrets.github_app_private_key }}"
+          owner: "${{ inputs.org }}"
+          # Empty means every repository of the owner: the candidate
+          # scan is organisation-wide by design and this token reads.
+          repositories: "${{ steps.budget.outputs.repositories }}"
+          permission-issues: 'read'
+          permission-metadata: 'read'
+          permission-contents: 'read'
+          permission-pull-requests: 'read'
+
+      # The slug the mint returns is the one signal that says whose key
+      # was wired in; a probe with the token proves it cannot write.
+      - name: 'Pre-flight: App identity and token grants'
+        if: inputs.github_app_client_id != ''
+        env:
+          GH_TOKEN: "${{ steps.app-token.outputs.token }}"
+          MINTED_SLUG: "${{ steps.app-token.outputs.app-slug }}"
+          REPOSITORY: "${{ github.repository }}"
+        run: |
+          python3 monkey-assets/scripts/preflight.py identity \
+            --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
+          python3 monkey-assets/scripts/preflight.py token \
+            --repository "$REPOSITORY"
 
       - name: 'Select issues'
         env:
@@ -898,6 +954,19 @@ jobs:
           # yamllint disable-line rule:line-length
           permission-workflows: "${{ steps.check.outputs.needs_workflows == 'true' && 'write' || '' }}"
 
+      # Every write token is checked against the configured App before
+      # it is used; a key for another App fails here rather than acts.
+      - name: 'Pre-flight: fork token identity'
+        if: >-
+          steps.fork-token.outcome == 'success' ||
+          steps.fork-create-token.outcome == 'success'
+        env:
+          # yamllint disable-line rule:line-length
+          MINTED_SLUG: "${{ steps.fork-token.outputs.app-slug || steps.fork-create-token.outputs.app-slug }}"
+        run: |
+          python3 monkey-assets/scripts/preflight.py identity \
+            --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
+
       - name: 'Push branch to fork'
         id: push
         env:
@@ -935,6 +1004,14 @@ jobs:
           repositories: "${{ matrix.repo_name }}"
           permission-pull-requests: 'write'
           permission-metadata: 'read'
+
+      - name: 'Pre-flight: pull request token identity'
+        if: steps.pr-token.outcome == 'success'
+        env:
+          MINTED_SLUG: "${{ steps.pr-token.outputs.app-slug }}"
+        run: |
+          python3 monkey-assets/scripts/preflight.py identity \
+            --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
 
       - name: 'Open pull request'
         id: open

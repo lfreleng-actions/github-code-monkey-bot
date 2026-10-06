@@ -227,6 +227,33 @@ lands; the target organisation requires approval before workflows
 run for pull requests from outside contributors, and the change
 gets CI once a maintainer has read it.
 
+### 4.4 The pre-flight gate
+
+The contract tests in `tests/test_workflow.py` run when a pull
+request changes the workflow. A scheduled run executes whatever is on
+the default branch, and nothing in that path re-checks the boundary
+before the first App token mint. `scripts/preflight.py` closes that:
+it runs from the pinned assets checkout in the select job, before any
+`create-github-app-token` step, and fails the run closed on drift.
+
+Before the read mint it re-runs the workflow contract tests and
+`zizmor --persona auditor` against the checked-out workflow files,
+checks `config/bot.json` names one lower-case App slug and
+`config/fork-orgs.json` maps to allowed fork organisations alone,
+checks each credential has the shape of the thing it claims to be
+without printing it, requires a commit-pinned and loaded allow-list
+in block mode, and refuses a live run whose `assets_sha` differs from
+`job.workflow_sha`. After the mint it compares the `app-slug` the
+action returned with the configured slug, so another App's key wired
+into this workflow fails rather than acts, and probes the token
+against this repository to prove it holds no `push`, `maintain` or
+`admin`. The publish job repeats the identity check on the fork
+token before `push` and on the pull request token before `open`.
+
+The same module, tests and step shape run in every bot repository of
+the organisation; this repository's copy differs in the module it
+imports for `gh` and the job names alone.
+
 ## 5. Signed Commits Without a Key on the Runner
 
 The organisation enforces commit signatures: one unsigned commit

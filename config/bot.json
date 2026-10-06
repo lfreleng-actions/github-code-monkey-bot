@@ -1,0 +1,4 @@
+{
+  "app_slug": "lf-releng-code-monkey-bot",
+  "description": "GitHub App whose installation tokens this pipeline mints. The select job refuses a token minted by any other App."
+}
