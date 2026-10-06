@@ -1,6 +1,6 @@
 ---
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Linux Foundation
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 ci:
   autofix_prs: false
@@ -9,11 +9,11 @@ ci:
   # (dependency audits), so it cannot run in the sandbox either.
   skip: [gha-workflow-linter, aislop]
   autofix_commit_msg: |
-    Chore: pre-commit autofixes
+    Chore: Pre-commit autofixes
 
     Signed-off-by: pre-commit-ci[bot] <pre-commit-ci@users.noreply.github.com>
   autoupdate_commit_msg: |
-    Chore: pre-commit autoupdate
+    Chore: Pre-commit autoupdate
 
     Signed-off-by: pre-commit-ci[bot] <pre-commit-ci@users.noreply.github.com>
 
@@ -23,9 +23,37 @@ ci:
 default_install_hook_types: [pre-commit, commit-msg]
 default_stages: [pre-commit]
 
-exclude: "^docs/conf.py"
-
 repos:
+  # Guard the pins below before any of them run.
+  #
+  # 'pre-commit autoupdate' resolves each repo to its newest tag with no
+  # semantic-version filtering, so a maintainer who pushes a non-release
+  # tag drags every downstream consumer off the release they pinned.
+  # A '# frozen:' label records the ref --freeze resolved, so the whole
+  # label is matched against the shape a release takes: optional 'v',
+  # dot-separated digits, optional numeric revision. Pre-release labels
+  # such as 'v2.0.0-rc1' are rejected too.
+  - repo: local
+    hooks:
+      - id: frozen-rev-is-a-release
+        name: frozen revs name a release
+        language: pygrep
+        # yamllint disable-line rule:line-length
+        entry: '^[ \t]*rev:[ \t]*\S+[ \t]+#[ \t]*frozen:(?![ \t]+v?[0-9]+(\.[0-9]+)*(-[0-9]+)?[ \t]*$)'
+        files: '^\.pre-commit-config\.yaml$'
+
+  # The offline suite covers the scripts the workflow runs and the
+  # contracts the workflow files must keep; it needs no credentials.
+  - repo: local
+    hooks:
+      - id: monkey-tests
+        name: Offline regression tests
+        entry: python -B -m unittest discover -s tests -q
+        language: python
+        additional_dependencies: [PyYAML==6.0.3]
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
     hooks:
@@ -55,9 +83,8 @@ repos:
   # existing history.
   #
   # always_run is required: the hook reads the staged index directly, but
-  # pre-commit still gates invocation on the file classifier, so the
-  # top-level exclude above would otherwise skip scanning entirely on a
-  # commit that touches only excluded paths.
+  # pre-commit still gates invocation on the file classifier, so a
+  # commit touching only excluded paths would otherwise skip the scan.
   - repo: https://github.com/gitleaks/gitleaks
     rev: 2ca41cc1372d1e939a6a879f18cdc19fc1cac1ce  # frozen: v8.30.0
     hooks:
@@ -109,12 +136,20 @@ repos:
     hooks:
       - id: reuse
 
-  # Replaces: https://github.com/rhysd/actionlint
-  # Permits actionlint to run both locally and with precommit.ci/GitHub
-  - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
-    rev: 357f7eec6dec49bf7693dc0dbec30212226d5492  # frozen: v1.7.12.25
+  # Actively maintained fork of https://github.com/rhysd/actionlint
+  # Unlike upstream v1.7.12, this fork understands GitHub's
+  # self-repository 'uses: $/{path}' syntax for both step 'uses:' and
+  # job-level reusable workflow calls.
+  #
+  # The '-shellcheck' variant supplies its own Go build of ShellCheck,
+  # so 'run:' blocks are checked identically everywhere rather than
+  # depending on whatever ShellCheck happens to be on PATH. It does not
+  # replace the shellcheck-py hook above: that covers '.sh' files, this
+  # covers shell embedded in workflows.
+  - repo: https://github.com/kjanat/actionlint
+    rev: 2da2ceb4af2c7ecc48f5b9311d85080c3971b5f0  # frozen: v1.17.0
     hooks:
-      - id: actionlint
+      - id: actionlint-shellcheck
 
   # Check for misspellings in documentation files
   - repo: https://github.com/codespell-project/codespell
@@ -146,7 +181,7 @@ repos:
         name: aislop
         entry: aislop ci --human
         language: node
-        additional_dependencies: ["aislop@0.13.1"]
+        additional_dependencies: ["aislop@0.16.0"]
         pass_filenames: false
         always_run: true
 
@@ -163,4 +198,3 @@ repos:
         files: ^\.github/workflows/[^/]+$
         types:
           - yaml
-      - id: check-readthedocs
