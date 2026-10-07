@@ -7,7 +7,7 @@ SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 <!-- prettier-ignore-start -->
 <!-- markdownlint-disable-next-line MD013 -->
-[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/github-code-monkey) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/github-code-monkey/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/github-code-monkey)
+[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/github-code-monkey-bot) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/github-code-monkey-bot/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/github-code-monkey-bot)
 <!-- prettier-ignore-end -->
 
 Scheduled AI authoring of pull requests for open GitHub issues across
@@ -76,7 +76,7 @@ jobs:
       issues: read
       contents: read
       actions: read
-    uses: lfreleng-actions/github-code-monkey/.github/workflows/code-monkey.yaml@<sha>
+    uses: lfreleng-actions/github-code-monkey-bot/.github/workflows/code-monkey.yaml@<sha>
     with:
       org: my-org
       mode: pull-requests

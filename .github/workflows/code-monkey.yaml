@@ -98,7 +98,7 @@ on:
       assets_repository:
         description: 'Trusted repository providing the prompt and scripts'
         type: string
-        default: 'lfreleng-actions/github-code-monkey'
+        default: 'lfreleng-actions/github-code-monkey-bot'
       assets_ref:
         description: >-
           Commit, tag or branch of the assets; empty resolves the
