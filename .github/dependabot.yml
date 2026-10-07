@@ -16,3 +16,16 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 15
+
+  # Pinned MkDocs toolchain behind the documentation site. The pin
+  # lives in docs/requirements.txt so a bump arrives as a reviewable
+  # pull request rather than a silent floating upgrade.
+  - package-ecosystem: "pip"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "Build(docs)"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5

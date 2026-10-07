@@ -4,12 +4,14 @@ version = 1
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Licensing for files that cannot carry an inline SPDX header, so
-# REUSE lint passes. uv regenerates uv.lock wholesale, which would
-# discard a header; JSON has no comment syntax.
+# REUSE lint passes. uv regenerates uv.lock wholesale, and
+# uv pip compile regenerates docs/requirements.txt wholesale, either
+# of which would discard a header; JSON has no comment syntax.
 
 [[annotations]]
 path = [
     "*.lock",
+    "docs/requirements.txt",
     "config/*.json",
 ]
 SPDX-License-Identifier = "Apache-2.0"

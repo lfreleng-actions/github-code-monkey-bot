@@ -24,7 +24,7 @@ trust model, inputs, credentials and the rollout plan.
 
 ```text
 select (trusted)      author (untrusted, matrix)    publish (trusted)
-  App: read token       no repository credential      App: per-repo token
+  App: read token       no write credential           App: per-repo token
   rank, one per repo    checkout + Copilot CLI        verify bundle
   selection.json -----> bundle + manifest ----------> signed commits, PR
 ```

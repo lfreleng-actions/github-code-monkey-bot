@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Direct documentation dependency. Compile the fully resolved,
+# hash-pinned lock beside it after any change here:
+#
+#   uv pip compile docs/requirements.in \
+#     --generate-hashes --output-file docs/requirements.txt
+mkdocs-material==9.7.7

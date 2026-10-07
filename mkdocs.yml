@@ -1,0 +1,82 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# MkDocs configuration for the GitHub Pages documentation site.
+#
+# The site publishes the Markdown under docs/ as HTML; the build and
+# deployment live in .github/workflows/documentation.yaml. Every page
+# also renders on github.com, so links between documents use relative
+# Markdown paths that work in both places.
+
+site_name: 'GitHub Code Monkey Bot'
+site_description: >-
+  Scheduled AI authoring of pull requests: a reusable workflow that
+  works triaged issues with a Copilot CLI agent and publishes each
+  result as signed commits from a bot fork organisation.
+site_url: 'https://lfreleng-actions.github.io/github-code-monkey-bot/'
+repo_url: 'https://github.com/lfreleng-actions/github-code-monkey-bot'
+repo_name: 'lfreleng-actions/github-code-monkey-bot'
+edit_uri: 'edit/main/docs/'
+copyright: 'Copyright © 2026 The Linux Foundation'
+
+docs_dir: 'docs'
+site_dir: 'site'
+
+theme:
+  name: 'material'
+  language: 'en'
+  icon:
+    repo: 'fontawesome/brands/github'
+  features:
+    - 'content.action.edit'
+    - 'content.code.copy'
+    - 'navigation.sections'
+    - 'navigation.top'
+    - 'navigation.tracking'
+    - 'search.highlight'
+    - 'search.suggest'
+    - 'toc.follow'
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: 'default'
+      primary: 'indigo'
+      accent: 'indigo'
+      toggle:
+        icon: 'material/weather-night'
+        name: 'Switch to dark mode'
+    - media: '(prefers-color-scheme: dark)'
+      scheme: 'slate'
+      primary: 'indigo'
+      accent: 'indigo'
+      toggle:
+        icon: 'material/weather-sunny'
+        name: 'Switch to light mode'
+
+nav:
+  - 'Home': 'index.md'
+  - 'Design': 'DESIGN.md'
+  - 'Guidance for agents': 'ORG-AGENTS-GUIDANCE.md'
+
+markdown_extensions:
+  - 'admonition'
+  - 'attr_list'
+  - 'def_list'
+  - 'md_in_html'
+  - 'tables'
+  - 'toc':
+      permalink: true
+  - 'pymdownx.details'
+  - 'pymdownx.superfences'
+  - 'pymdownx.blocks.caption'
+
+plugins:
+  - 'search'
+
+# Surface broken links and orphaned pages as build warnings; the
+# workflow builds with --strict, which turns them into failures.
+validation:
+  omitted_files: 'warn'
+  absolute_links: 'warn'
+  unrecognized_links: 'warn'
+  anchors: 'warn'
