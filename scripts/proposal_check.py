@@ -300,7 +300,11 @@ def walk_diff(clone: Path, parent: str, sha: str, check: Check) -> dict[str, Any
 
 def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) -> None:
     """Everything after the manifest says ``proposed``; raises Rejection."""
-    bundle = context.proposal_dir / "changes.bundle"
+    # Absolute, because every git call runs with -C in the clone: the
+    # workflow passes the proposal directory relative to the job's
+    # working directory, which git would otherwise resolve inside the
+    # clone and fail to open.
+    bundle = (context.proposal_dir / "changes.bundle").resolve()
     if not bundle.is_file():
         raise Rejection("proposal lacks changes.bundle")
     clone = prepare_clone(context.workdir, check.repository, check.base_sha)

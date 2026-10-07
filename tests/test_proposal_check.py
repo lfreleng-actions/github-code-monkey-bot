@@ -321,6 +321,25 @@ class RunCheckProposedTest(GitCase):
             serialised["stats"], {"files_changed": 1, "added_bytes": len(fixed)}
         )
 
+    def test_relative_proposal_directory(self) -> None:
+        """The workflow passes ``--proposal-dir accepted``, relative to its cwd.
+
+        Every git call runs in the clone, so a relative bundle path
+        must not reach git as given: run 37587554533 rejected a valid
+        proposal because git resolved ``accepted/changes.bundle``
+        inside the clone.
+        """
+        fixed = README.replace("with a typo", "without a typo")
+        self.fixture.commit("Fix(readme): Correct typo\n", {"README.md": fixed})
+        self.fixture.bundle()
+        self.fixture.manifest()
+        previous = os.getcwd()
+        os.chdir(self.fixture.proposal.parent)
+        self.addCleanup(os.chdir, previous)
+        self.fixture.proposal = Path(self.fixture.proposal.name)
+        check = self.fixture.run()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+
     def test_publisher_owns_the_closing_line(self) -> None:
         """The body opens with this issue's Closes line whatever the agent wrote.
 
