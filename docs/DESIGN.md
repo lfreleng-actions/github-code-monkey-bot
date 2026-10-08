@@ -600,7 +600,8 @@ For each selected issue:
    fetches the untrusted proposal through the API rather than
    `download-artifact`, which would extract it before any size
    check: it refuses a zip larger than the sum of the file caps,
-   streams it to disk under that limit, checks the zip directory
+   streams it to disk under that limit, retrying a download that
+   gets no reply or a transient `5xx`, checks the zip directory
    (entry count, regular files, per-file caps, stored or deflated
    and unencrypted) and extracts the manifest, bundle and usage
    files alone, each read with a hard stop. An artifact it refuses
