@@ -1084,6 +1084,9 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_dotgithub": False,
             "include_assigned": False,
             "load_repo_skills": False,
+            # A caller omitting assets_repository checks out these
+            # assets; the stale pre-rename name broke such callers.
+            "assets_repository": "lfreleng-actions/github-code-monkey-bot",
         }
         for name, default in expected.items():
             with self.subTest(input=name):

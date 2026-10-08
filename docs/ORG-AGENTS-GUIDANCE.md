@@ -12,8 +12,10 @@ here, next to the code that implements it, ready to paste as a
 section of that document.
 
 The mapping it states is the one in
-[`../config/fork-orgs.json`](../config/fork-orgs.json). A change to
+[`config/fork-orgs.json`][fork-orgs]. A change to
 either must change both.
+
+[fork-orgs]: https://github.com/lfreleng-actions/github-code-monkey-bot/blob/main/config/fork-orgs.json
 
 ---
 

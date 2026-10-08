@@ -104,3 +104,40 @@ jobs:
           enable-cache: false
       - name: 'Run offline regression suite'
         run: uv run --locked python -B -m unittest discover -s tests -v
+
+  docs:
+    name: 'Documentation build'
+    if: github.event_name == 'pull_request'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read  # Check out the documentation sources
+    timeout-minutes: 10
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Install uv'
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: false
+
+      # Proves the site builds from the pull request head without
+      # granting it any Pages permission; the deployment lives in
+      # documentation.yaml and runs from the default branch alone.
+      - name: 'Build documentation'
+        shell: bash
+        run: |
+          uv venv --python 3.13
+          uv pip install --require-hashes \
+            --requirement docs/requirements.txt
+          .venv/bin/mkdocs build --strict

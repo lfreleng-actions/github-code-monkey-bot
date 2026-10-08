@@ -541,6 +541,11 @@ class ProvenanceBlockTest(unittest.TestCase):
         self.assertIn("| Command | Exit |", block)
         self.assertIn("| `uv run pytest \\| tee 'log'` | 0 |", block)
         self.assertIn("| `make` | ? |", block)
+        # The footer names the workflow repository by its current name;
+        # a stale name here reaches every pull request the bot opens.
+        self.assertIn(
+            "The `github-code-monkey-bot` workflow opened this pull request.", block
+        )
         self.assertTrue(block.startswith("<details>\n"))
         self.assertTrue(block.endswith("</details>\n"))
 

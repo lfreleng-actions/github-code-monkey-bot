@@ -317,7 +317,7 @@ def provenance_block(
             lines.append(f"| `{command}` | {code if code is not None else '?'} |")
         lines.append("")
     lines += [
-        "The `github-code-monkey` workflow opened this pull request.",
+        "The `github-code-monkey-bot` workflow opened this pull request.",
         "Nobody has merged it; a maintainer must review it first.",
         "</details>",
         "",
