@@ -127,7 +127,7 @@ jobs:
         uses: lfreleng-actions/harden-runner-block-action@a32eb064a1188f6b0f15d2c0c0381efe54b0dd22 # v0.12.2
         with:
           # yamllint disable-line rule:line-length
-          config: '@e0e35011ee145321a51d3226f044ec88dfe645b1'  # v0.16.4
+          config: '@ac32415b91e0b6db1166bc451024c472cdbcbd3d'  # v0.16.8
           allow_list_summary: 'false'
 
       - name: 'Harden runner'
@@ -214,7 +214,7 @@ jobs:
       # organisation allow-list; the author job is always audit.
       egress_policy: 'block'
       # yamllint disable-line rule:line-length
-      egress_allow_config: '@e0e35011ee145321a51d3226f044ec88dfe645b1'  # v0.16.4
+      egress_allow_config: '@ac32415b91e0b6db1166bc451024c472cdbcbd3d'  # v0.16.8
       github_app_client_id: "${{ vars.BOT_APP_CLIENT_ID || '' }}"
       assets_repository: "${{ github.repository }}"
       assets_ref: "${{ github.sha }}"
