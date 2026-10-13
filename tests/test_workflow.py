@@ -30,6 +30,10 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 REUSABLE = WORKFLOWS / "code-monkey.yaml"
 CRON = WORKFLOWS / "code-monkey-cron.yaml"
 TESTING = WORKFLOWS / "testing.yaml"
+PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
+
+PLACEHOLDER_NAME = "Code Monkey"
+PLACEHOLDER_EMAIL = "code-monkey@example.invalid"
 
 # PyYAML reads the bare mapping key ``on`` as the boolean ``True``.
 TRIGGERS = True
@@ -270,68 +274,100 @@ class AuthorJobContracts(ReusableWorkflowCase):
     @unittest.skipUnless(
         shutil.which("jq") and shutil.which("bash") and shutil.which("git"), "needs jq"
     )
-    def test_packet_step_accepts_bot_identities(self) -> None:
-        """The identity guards admit real and placeholder [bot] logins.
+    def test_packet_step_sets_a_placeholder_identity(self) -> None:
+        """The agent commits as a placeholder whose sign-off fits gitlint.
 
-        Run 37522468427 failed here: a bracket expression written inline
-        in ``[[ =~ ]]`` rejected ``code-monkey[bot]``. The guard runs for
-        real, with both identities, so a regex edit cannot regress it.
+        Run 38417531314 failed here: ``git commit -s`` as the App's bot
+        login wrote a 113-character trailer that a target ``.gitlint``
+        without the organisation's trailer exemption rejects. The
+        publisher replaces every ``*-by`` trailer, so the local identity
+        only has to pass the hooks, and the bot never reaches git config.
         """
         packet = self.step("author", "Prepare workspace and packet")
+        self.assertNotIn(".bot.", str(packet["run"]))
         base = "f" * 40
-        identities = [
-            ("code-monkey[bot]", "code-monkey[bot]@users.noreply.github.com"),
-            (
-                "lf-releng-code-monkey-bot[bot]",
-                "123+lf-releng-code-monkey-bot[bot]@users.noreply.github.com",
-            ),
-        ]
-        for login, email in identities:
-            with self.subTest(login=login), tempfile.TemporaryDirectory() as holder:
-                work = Path(holder)
-                (work / "evidence").mkdir()
-                (work / "evidence" / "selection.json").write_text(
-                    json.dumps(
-                        {
-                            "bot": {"login": login, "email": email},
-                            "issues": [
-                                {"key": "repo-7", "branch": "b", "repository": "o/repo"}
-                            ],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                subprocess.run(["git", "init", "-q", "workspace"], cwd=work, check=True)
-                # The base-commit check needs HEAD to equal BASE_SHA; a
-                # fake rev-parse on PATH answers with the fixture SHA.
-                fake = work / "bin"
-                fake.mkdir()
-                (fake / "git").write_text(
-                    "#!/bin/sh\n"
-                    'if [ "$3" = rev-parse ]; then echo ' + base + "; exit 0; fi\n"
-                    'exec /usr/bin/env -u PATH PATH="'
-                    + os.environ["PATH"]
-                    + '" git "$@"\n',
-                    encoding="utf-8",
-                )
-                (fake / "git").chmod(0o755)
-                output = work / "out.txt"
-                output.touch()
-                env = {
-                    "PATH": f"{fake}:{os.environ['PATH']}",
-                    "KEY": "repo-7",
-                    "BASE_SHA": base,
-                    "GITHUB_OUTPUT": str(output),
-                }
-                proc = subprocess.run(
-                    ["bash", "-e", "-c", str(packet["run"])],
+        login = "lf-releng-code-monkey-bot[bot]"
+        email = "123+lf-releng-code-monkey-bot[bot]@users.noreply.github.com"
+        with tempfile.TemporaryDirectory() as holder:
+            work = Path(holder)
+            (work / "evidence").mkdir()
+            (work / "evidence" / "selection.json").write_text(
+                json.dumps(
+                    {
+                        "bot": {"login": login, "email": email},
+                        "issues": [
+                            {"key": "repo-7", "branch": "b", "repository": "o/repo"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q", "workspace"], cwd=work, check=True)
+            # The base-commit check needs HEAD to equal BASE_SHA; a
+            # fake rev-parse on PATH answers with the fixture SHA.
+            fake = work / "bin"
+            fake.mkdir()
+            (fake / "git").write_text(
+                "#!/bin/sh\n"
+                'if [ "$3" = rev-parse ]; then echo ' + base + "; exit 0; fi\n"
+                'exec /usr/bin/env -u PATH PATH="'
+                + os.environ["PATH"]
+                + '" git "$@"\n',
+                encoding="utf-8",
+            )
+            (fake / "git").chmod(0o755)
+            output = work / "out.txt"
+            output.touch()
+            env = {
+                "PATH": f"{fake}:{os.environ['PATH']}",
+                "KEY": "repo-7",
+                "BASE_SHA": base,
+                "GITHUB_OUTPUT": str(output),
+            }
+            proc = subprocess.run(
+                ["bash", "-e", "-c", str(packet["run"])],
+                cwd=work,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            def config(key: str) -> str:
+                return subprocess.run(
+                    ["git", "-C", "workspace", "config", "--local", key],
                     cwd=work,
-                    env=env,
                     capture_output=True,
                     text=True,
-                )
-                self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertIn(f"bot_login={login}", output.read_text(encoding="utf-8"))
+                    check=True,
+                ).stdout.strip()
+
+            name, mail = config("user.name"), config("user.email")
+            self.assertEqual((name, mail), (PLACEHOLDER_NAME, PLACEHOLDER_EMAIL))
+            self.assertLessEqual(len(f"Signed-off-by: {name} <{mail}>"), 72)
+            outputs = output.read_text(encoding="utf-8")
+            self.assertIn(f"git_identity={name} <{mail}>", outputs)
+            self.assertNotIn("[bot]", outputs)
+
+    def test_runtime_context_names_the_placeholder_identity(self) -> None:
+        """The prompt presents the git identity as a placeholder, not the bot."""
+        assemble = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], assemble["env"])
+        self.assertNotIn("BOT_LOGIN", env)
+        self.assert_expression(env["GIT_IDENTITY"], "steps.packet.outputs.git_identity")
+        self.assertIn("placeholder", str(assemble["run"]))
+        self.assertNotIn("bot identity", str(assemble["run"]))
+
+    def test_prompt_states_the_publisher_subject_limit(self) -> None:
+        """The agent learns the subject limit the publisher enforces.
+
+        A target without ``title-max-length`` lets gitlint pass a subject
+        up to 72 characters, which the publisher rejects above 50.
+        """
+        prompt = squash(PROMPT.read_text(encoding="utf-8"))
+        self.assertIn("title-max-length", prompt)
+        self.assertIn("50 where it does not", prompt)
+        self.assertIn("placeholder", prompt)
 
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
