@@ -213,7 +213,12 @@ Publishing then works as follows, with the §5 signing unchanged:
    organisation's installation for that one fork.
 4. It opens the pull request on the target with head
    `<fork-org>:code-monkey/issue-<n>`, using a token minted on the
-   target organisation's installation.
+   target organisation's installation. The request sets
+   `maintainer_can_modify` to `false`: GitHub limits maintainer
+   edits to forks owned by a user account, and requires a token
+   that can write to the fork. The fork here belongs to an
+   organisation and this token has no access to it, so `true` fails
+   with HTTP 422.
 5. A prior attempt (§6) is a pull request whose head repository is
    the designated fork. A branch in that fork with no pull request
    is an orphan: a publish that pushed and then failed to open the

@@ -235,7 +235,9 @@ def open_pull_request(check: dict[str, Any]) -> tuple[str, str | None]:
             "head": f"{check['fork_org']}:{check['branch']}",
             "base": str(check["default_branch"]),
             "body": str(check["pr_body"]),
-            "maintainer_can_modify": True,
+            # The head is a fork owned by an organisation, and this token
+            # cannot write to it; GitHub rejects true there with HTTP 422.
+            "maintainer_can_modify": False,
             "draft": False,
         },
     )

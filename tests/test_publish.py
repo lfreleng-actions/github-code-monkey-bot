@@ -890,7 +890,6 @@ class ReplayCommitsTest(NoNetworkCase):
 class OpenPullRequestTest(NoNetworkCase):
     """``open_pull_request`` opens, then labels when the label exists."""
 
-    @unittest.expectedFailure
     def test_labelled(self) -> None:
         """An existing label is applied and no warning returned."""
         with (
