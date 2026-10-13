@@ -206,7 +206,12 @@ Publishing then works as follows, with the §5 signing unchanged:
    fork organisation with access to all its repositories and
    Administration: write, plus Contents: read on the source.
 2. It syncs the fork's default branch with the target
-   (`merge-upstream`), so the recorded base commit is present.
+   (`merge-upstream`), so the recorded base commit is present. The
+   sync fast-forwards over every commit upstream merged since the
+   last one, and GitHub refuses any that touch `.github/workflows/`
+   unless the token holds Workflows: write; Dependabot pin bumps
+   make that most weeks. Every fork token carries Workflows: write,
+   whatever the proposal edits.
 3. It creates `code-monkey/issue-<n>` in the fork at the base
    commit and replays the commits there through
    `createCommitOnBranch`, with a token minted on the fork
@@ -232,7 +237,8 @@ four organisations exist and each holds an installation of the App
 on all repositories with Contents: write, Workflows: write and
 Administration: write (§10.1). Every fork organisation has Actions
 switched off, which means a bot branch triggers no workflow where it
-lands; the target organisation requires approval before workflows
+lands, and Workflows: write on a fork token can run nothing there;
+the target organisation requires approval before workflows
 run for pull requests from outside contributors, and the change
 gets CI once a maintainer has read it.
 
@@ -639,7 +645,8 @@ For each selected issue:
    another; at least one and at most 100 file changes per commit,
    the mutation's requirements; total added bytes under the cap; no change to
    `AGENTS.md`, `LICENSE*`, `REUSE.toml` or `.gitlint`. Changes
-   under `.github/workflows/` pass and flag the token mint in step 5.
+   under `.github/workflows/` pass and set `needs_workflows` in the
+   check summary; no token mint depends on it (step 6).
 4. **Check the message** of each commit against the rules the org
    guidance makes mechanical: subject length from the target's
    `.gitlint` (fallback 50), capitalised type from the allowed list
@@ -658,8 +665,9 @@ For each selected issue:
    for an existing fork, `repositories:` the bare `repo_name` with
    `contents: write` and `metadata: read`; for a missing fork, no
    repository (none exists to name) and `administration: write`
-   besides, the sole mint in the pipeline that holds it. Either adds
-   `workflows: write` when step 3 saw a workflow change. The two
+   besides, the sole mint in the pipeline that holds it. Both always
+   add `workflows: write`, since the step 7 sync can fast-forward
+   over upstream workflow changes (§4.3). The two
    mints exclude each other on the fork's existence.
 7. **Push to the fork.** Find or create the fork (§4.3), sync its
    default branch, create `code-monkey/issue-<n>` there at the base
@@ -835,7 +843,7 @@ OAuth and webhooks stay off. Its permissions:
 | Issue types | read | select | Type |
 | Contents | write | publish | Fork sync, branch, commits (fork organisations alone) |
 | Pull requests | write | publish | Open PR, label |
-| Workflows | write | publish | Commits that touch `.github/workflows/` (fork organisations alone) |
+| Workflows | write | publish | Fork sync over upstream workflow changes; commits that touch `.github/workflows/` (fork organisations alone) |
 | Administration | write | publish | Create a missing fork (fork organisations alone) |
 
 <!-- markdownlint-enable MD013 -->
@@ -859,7 +867,7 @@ not exist until the run creates it.
 | ---------------------------- | ----- | --- |
 | Metadata | read | Repository listing |
 | Contents | write | Sync the fork, branch, commits |
-| Workflows | write | Commits that touch `.github/workflows/` |
+| Workflows | write | Fork sync; commits under `.github/workflows/` |
 | Administration | write | Create a missing fork |
 
 The select job mints a token with the read levels alone, org-wide by
@@ -874,9 +882,13 @@ job receives it, including as a post-step input.
 Workflow edits are in scope from the start. The estate is
 workflows, and an issue labelled `CI` is as fair a target as any
 other; a bot that cannot touch `.github/workflows/` would abstain
-from a large share of the backlog. The publisher adds
-`workflows: write` to a mint when the verified diff
-needs it.
+from a large share of the backlog. Both fork mints request
+`workflows: write` on every run, whatever the verified diff holds:
+the fork sync (§4.3 step 2) fast-forwards over upstream
+workflow changes too, and a proposal that edits no workflow would
+otherwise fail against a fork whose upstream changed one. The grant
+stays on the fork organisations, which hold bot forks alone and run
+no Actions; no target-organisation mint requests it.
 
 ### 10.2 The model credential
 
@@ -1077,7 +1089,7 @@ The questions the first draft left open, and how they closed:
 | Where bot branches live | Bot fork organisations, never the target (§4.3); CI on agent code runs as an outside contribution |
 | Mode changes and symlinks | Reject; agent banners the human follow-up in the PR body (§5, §7.3). Unsigned commits are unmergeable and create work |
 | Payload cap | 4 MiB added, 512 KiB per binary; rollout confirms (§5) |
-| Workflow edits | In scope from day one; App holds `workflows: write`, minted on demand (§10.1) |
+| Workflow edits | In scope from day one; App holds `workflows: write`, granted to every fork mint (§10.1) |
 | Assigned issues | Skipped by default; `include_assigned` overrides (§6) |
 | Sub-agent tool | `task`; agent-definition tools denied alongside (§7.2) |
 | Skills from the checkout | Off by default; `load_repo_skills` for a repository a maintainer has read (§7.2) |
@@ -1238,7 +1250,9 @@ The output of `publish.py check`, produced without credentials.
 `verdict` is `proposed`, `abstain`, `rejected` or `author-failed`
 here; `result.json` (§18.4) adds `publish-failed` for a write that
 failed after verification, with the branch rolled back.
-`reasons` explains anything but `proposed`. `commits[].body` is the
+`reasons` explains anything but `proposed`. `needs_workflows` records
+whether the proposal edits `.github/workflows/`, for the check
+summary alone; no step gates on it. `commits[].body` is the
 composed message the publisher will send: the agent's body plus the
 trailers §5 describes. `pr_body` is the composed body: the closing
 line and provenance block first, then the agent's text.
