@@ -120,11 +120,22 @@ jobs:
       model: "${{ steps.map.outputs.id }}"
       categories: "${{ steps.categories.outputs.list }}"
     steps:
+      # Block mode needs the allow-list in this job too: the
+      # environment variable does not cross job boundaries.
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@a32eb064a1188f6b0f15d2c0c0381efe54b0dd22 # v0.12.2
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@e0e35011ee145321a51d3226f044ec88dfe645b1'  # v0.16.4
+          allow_list_summary: 'false'
+
       - name: 'Harden runner'
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
 
       # Display names in the dispatch form map to the identifiers
       # docs/DESIGN.md section 10.3 checked against the CLI.

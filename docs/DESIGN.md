@@ -575,7 +575,9 @@ The select, publish and report jobs run in `block` mode with the
 organisation's allow-list from `harden-runner-block-action`, pinned
 by commit in both callers, with `allow_list_summary: 'true'` on the
 select job alone. `block` is the reusable workflow's default; a
-caller may pass `audit` to diagnose a blocked endpoint.
+caller may pass `audit` to diagnose a blocked endpoint. The cron
+caller's `options` job runs in `block` mode too, loading the same
+coordinate it forwards, without a token or a summary.
 
 ## 8. The Publish Job
 

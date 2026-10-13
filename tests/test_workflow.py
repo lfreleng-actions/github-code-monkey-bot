@@ -1207,7 +1207,6 @@ class CronCallerContracts(WorkflowCase):
             secrets["github_app_private_key"], "secrets.BOT_APP_PRIVATE_KEY"
         )
 
-    @unittest.expectedFailure
     def test_options_job_loads_the_allow_list(self) -> None:
         """The options job blocks egress against the forwarded allow-list.
 
