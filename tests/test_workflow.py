@@ -1207,6 +1207,27 @@ class CronCallerContracts(WorkflowCase):
             secrets["github_app_private_key"], "secrets.BOT_APP_PRIVATE_KEY"
         )
 
+    @unittest.expectedFailure
+    def test_options_job_loads_the_allow_list(self) -> None:
+        """The options job blocks egress against the forwarded allow-list.
+
+        Block mode with no allowed-endpoints configures no rules, so the
+        job loads the same coordinate it forwards before hardening, and
+        does so without a token.
+        """
+        job = self.jobs["options"]
+        self.assertEqual(job["permissions"], {})
+        steps = self.steps("options")
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        loader = self.action("options", BLOCK_ACTION)
+        forwarded = self.jobs["code-monkey"]["with"]["egress_allow_config"]
+        self.assertEqual(loader["with"]["config"], forwarded)
+        self.assertEqual(loader["with"]["allow_list_summary"], "false")
+        harden = cast(dict[str, Any], steps[1]["with"])
+        self.assertEqual(harden["egress-policy"], "block")
+        self.assert_expression(harden["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST")
+
     def test_caller_steps_are_pinned(self) -> None:
         """The model job's actions are commit-pinned like the reusable ones."""
         self.assert_pinned_steps()
