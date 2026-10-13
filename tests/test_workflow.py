@@ -554,12 +554,14 @@ class PublishJobContracts(ReusableWorkflowCase):
         self.assertLess(steps.index(verified), steps.index(fetch))
 
     def test_offline_check_and_scoped_token_mints(self) -> None:
-        """The check has no token; each fork mint names the fork org and grants."""
+        """The check has no token; each fork mint grants workflows always."""
         check = self.step("publish", "check")
         script = flatten(check["run"])
         self.assertIn("publish.py check", script)
         self.assertIn("--coauthors monkey-assets/config/coauthors.json", script)
         self.assertNotIn("GH_TOKEN", cast(dict[str, Any], check.get("env", {})))
+        # No step may gate on the proposal's workflow edits any longer.
+        self.assertNotIn("needs_workflows", script)
 
         for identity, exists in (
             ("fork-token", "true"),
@@ -581,10 +583,10 @@ class PublishJobContracts(ReusableWorkflowCase):
                 self.assertEqual(with_["permission-metadata"], "read")
                 self.assertNotIn("permission-pull-requests", with_)
                 self.assertNotIn("permission-issues", with_)
-                self.assert_expression(
-                    with_["permission-workflows"],
-                    "steps.check.outputs.needs_workflows == 'true' && 'write' || ''",
-                )
+                # Syncing the fork can fast-forward over upstream
+                # workflow commits, so the grant cannot depend on the
+                # proposal's own diff.
+                self.assertEqual(with_["permission-workflows"], "write")
         write = cast(dict[str, Any], self.step("publish", "fork-token")["with"])
         self.assert_expression(write["repositories"], "matrix.repo_name")
         # The fork does not exist yet, so no repository can be named.

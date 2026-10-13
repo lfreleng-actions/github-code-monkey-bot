@@ -857,11 +857,8 @@ jobs:
             --summary artefacts/check-summary.md \
             --run-url "$RUN_URL"
           cat artefacts/check-summary.md >> "$GITHUB_STEP_SUMMARY"
-          {
-            echo "verdict=$(jq -r .verdict artefacts/check.json)"
-            echo "needs_workflows=$(jq -r .needs_workflows \
-              artefacts/check.json)"
-          } >> "$GITHUB_OUTPUT"
+          echo "verdict=$(jq -r .verdict artefacts/check.json)" \
+            >> "$GITHUB_OUTPUT"
 
       # The bot branch lives in a fork held by a bot organisation, never
       # in the target (docs/DESIGN.md 4.3). The matrix names the fork
@@ -916,7 +913,11 @@ jobs:
       # Two mints, one per fork state, because a token scoped to a
       # repository that does not exist yet cannot be minted. The
       # creation token is the sole holder of administration, and it
-      # runs only when there is no fork to administer.
+      # runs only when there is no fork to administer. Both always
+      # grant workflows: syncing the fork fast-forwards over whatever
+      # upstream merged, workflow changes included, whether or not the
+      # proposal edits one. Fork organisations hold bot forks alone and
+      # have Actions disabled, so the grant runs nothing there.
       - name: 'Mint fork write token'
         id: fork-token
         if: >-
@@ -934,8 +935,7 @@ jobs:
           repositories: "${{ matrix.repo_name }}"
           permission-contents: 'write'
           permission-metadata: 'read'
-          # yamllint disable-line rule:line-length
-          permission-workflows: "${{ steps.check.outputs.needs_workflows == 'true' && 'write' || '' }}"
+          permission-workflows: 'write'
 
       - name: 'Mint fork creation token'
         id: fork-create-token
@@ -953,8 +953,7 @@ jobs:
           permission-administration: 'write'
           permission-contents: 'write'
           permission-metadata: 'read'
-          # yamllint disable-line rule:line-length
-          permission-workflows: "${{ steps.check.outputs.needs_workflows == 'true' && 'write' || '' }}"
+          permission-workflows: 'write'
 
       # Every write token is checked against the configured App before
       # it is used; a key for another App fails here rather than acts.
