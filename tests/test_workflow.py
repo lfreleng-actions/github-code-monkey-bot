@@ -160,7 +160,6 @@ class TopLevelContracts(ReusableWorkflowCase):
         """Every job opts into its own grants; the workflow default is none."""
         self.assertEqual(self.workflow["permissions"], {})
 
-    @unittest.expectedFailure
     def test_concurrency_is_per_caller_and_owner_without_cancel(self) -> None:
         """Live runs lock per caller and owner; dry runs within their run.
 
@@ -1146,7 +1145,6 @@ class CronCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_schedule_and_concurrency(self) -> None:
         """Weekday 09:00 UTC; live runs share a group, dry dispatches do not."""
         self.assertEqual(self.triggers["schedule"], [{"cron": "0 9 * * 1-5"}])
@@ -1289,7 +1287,6 @@ class TestingCallerContracts(WorkflowCase):
 
     WORKFLOW = TESTING
 
-    @unittest.expectedFailure
     def test_concurrency_keys_pull_requests_on_ref_and_dispatches_on_run(
         self,
     ) -> None:

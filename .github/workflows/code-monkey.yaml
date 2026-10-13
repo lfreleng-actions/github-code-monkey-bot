@@ -117,10 +117,17 @@ on:
 
 permissions: {}
 
-# One pipeline per caller and owner. Different caller repositories
-# need external coordination if they target the same estate.
+# Live runs hold one lock per caller repository and owner across the
+# whole pipeline; different caller repositories need external
+# coordination if they target the same estate. A group keeps one
+# pending run and a newcomer cancels it, so dry runs, which write
+# nothing, lock within their own caller run and never cancel or wait
+# on a live run or another caller run's dry run.
 concurrency:
-  group: "code-monkey-${{ github.repository }}-${{ inputs.org }}"
+  group: >-
+    ${{ inputs.dry_run
+    && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)
+    || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
 
 env:

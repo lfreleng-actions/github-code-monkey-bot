@@ -959,8 +959,21 @@ today. Move it when a second consumer appears.
   offset is the first cut and §16 lists the dispatch as a later
   option.
 - Caller concurrency group `code-monkey`, `cancel-in-progress:
-  false`: one run at a time, and a dispatch during the scheduled
-  run queues behind it.
+  false`, for scheduled runs and live dispatches: one run at a time,
+  and a dispatch during the scheduled run queues behind it. A group
+  keeps a single pending run and a newcomer cancels it, so this is
+  not a FIFO queue. A dry `workflow_dispatch` writes nothing and
+  takes `code-monkey-dry-run-<run_id>` instead: it neither waits
+  behind the schedule nor cancels a pending live run.
+- The reusable workflow locks a live run on
+  `code-monkey-<caller repository>-<owner>` for the whole pipeline.
+  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, keyed on
+  the caller run, so the two plumbing legs of one test run queue on
+  that run's own lock and never cancel or wait on a live run or
+  another pull request's tests. Both groups set `cancel-in-progress: false`.
+- `testing.yaml` keys pull request runs on the ref, so a newer push
+  cancels a stale run, and gives each manual dispatch a group of its
+  own.
 - Within a run, the branch-existence rule in §6 and the
   one-issue-per-repository rule make concurrent agents independent.
 - Across runs, the `code-monkey/*` pull request check in §6 stops a
