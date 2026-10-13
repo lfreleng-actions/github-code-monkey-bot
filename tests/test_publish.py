@@ -906,7 +906,7 @@ class OpenPullRequestTest(NoNetworkCase):
         self.assertEqual(opened[1], f"repos/{REPOSITORY}/pulls")
         self.assertEqual(opened[2]["head"], f"{FORK_ORG}:{BRANCH}")
         self.assertEqual(opened[2]["base"], "main")
-        self.assertTrue(opened[2]["maintainer_can_modify"])
+        self.assertFalse(opened[2]["maintainer_can_modify"])
         self.assertFalse(opened[2]["draft"])
         labelled = write.call_args_list[1].args
         self.assertEqual(labelled[1], f"repos/{REPOSITORY}/issues/1/labels")
