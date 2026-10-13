@@ -20,8 +20,13 @@ on:
 
 permissions: {}
 
+# A newer push cancels its pull request's stale run. Each manual
+# dispatch takes a group of its own, so it neither cancels nor is
+# cancelled by pull request runs or another dispatch on the same ref.
 concurrency:
-  group: "testing-${{ github.ref }}"
+  group: >-
+    ${{ format('testing-{0}', github.event_name == 'pull_request'
+    && github.ref || github.run_id) }}
   cancel-in-progress: true
 
 jobs:

@@ -161,11 +161,18 @@ class TopLevelContracts(ReusableWorkflowCase):
         self.assertEqual(self.workflow["permissions"], {})
 
     def test_concurrency_is_per_caller_and_owner_without_cancel(self) -> None:
-        """One pipeline per caller and target owner; a queued run waits."""
+        """Live runs lock per caller and owner; dry runs within their run.
+
+        A group keeps one pending run and a newcomer cancels it, so a
+        dry run that wrote nothing must not share the live group.
+        """
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
-        group = str(concurrency["group"])
-        self.assertIn("github.repository", group)
-        self.assertIn("inputs.org", group)
+        self.assert_expression(
+            str(concurrency["group"]),
+            "inputs.dry_run"
+            " && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)"
+            " || format('code-monkey-{0}-{1}', github.repository, inputs.org)",
+        )
         self.assertIs(concurrency["cancel-in-progress"], False)
 
     def test_every_action_is_pinned_to_a_commit(self) -> None:
@@ -1139,10 +1146,15 @@ class CronCallerContracts(WorkflowCase):
     WORKFLOW = CRON
 
     def test_schedule_and_concurrency(self) -> None:
-        """Weekday 09:00 UTC, one run at a time, later runs queue."""
+        """Weekday 09:00 UTC; live runs share a group, dry dispatches do not."""
         self.assertEqual(self.triggers["schedule"], [{"cron": "0 9 * * 1-5"}])
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
-        self.assertEqual(concurrency["group"], "code-monkey")
+        self.assert_expression(
+            str(concurrency["group"]),
+            "github.event_name == 'workflow_dispatch' && inputs.dry_run"
+            " && format('code-monkey-dry-run-{0}', github.run_id)"
+            " || 'code-monkey'",
+        )
         self.assertIs(concurrency["cancel-in-progress"], False)
 
     def test_dispatch_form(self) -> None:
@@ -1274,6 +1286,18 @@ class TestingCallerContracts(WorkflowCase):
     """Pull request plumbing: secretless selection and the offline suite."""
 
     WORKFLOW = TESTING
+
+    def test_concurrency_keys_pull_requests_on_ref_and_dispatches_on_run(
+        self,
+    ) -> None:
+        """A newer push cancels its PR's run; a dispatch never shares it."""
+        concurrency = cast(dict[str, Any], self.workflow["concurrency"])
+        self.assert_expression(
+            str(concurrency["group"]),
+            "format('testing-{0}', github.event_name == 'pull_request'"
+            " && github.ref || github.run_id)",
+        )
+        self.assertIs(concurrency["cancel-in-progress"], True)
 
     def test_plumbing_is_secretless_selection_of_the_pr_head(self) -> None:
         """PR runs select only, dry, with no secrets, from the PR's own assets."""
