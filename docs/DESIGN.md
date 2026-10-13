@@ -464,6 +464,16 @@ which bounds `max_runtime_minutes` at 330.
   checkout.
 - The prompt (`prompt/author.md`), from this repository's checkout
   at the reusable workflow's pinned SHA.
+- A placeholder git identity, `Code Monkey
+  <code-monkey@example.invalid>`, which the packet step configures in
+  the checkout, plainly not an account: the publisher replaces every
+  `*-by` trailer and authors each commit as the App (§5), so the
+  local identity need do no more than pass the target's hooks. The App's
+  own sign-off runs to 113 characters and fails gitlint's B1 in a
+  target whose `.gitlint` lacks the organisation's trailer exemption;
+  the placeholder's fits within 72 columns. The runtime context names
+  it as a placeholder, and the bot identity never reaches the author
+  job's git configuration.
 
 ### 7.2 Copilot CLI invocation
 
@@ -538,14 +548,18 @@ The workflow facts the prompt adds:
 1. *Signing.* The agent commits with `git commit -s` and no `-S`: the
    runner holds no signing key, and the publisher's replay signs the
    commits and appends the Copilot co-author and the bot's sign-off
-   (§5).
+   (§5). The local identity is the placeholder of §7.1, which the
+   replay replaces.
 2. *Replay limits.* No executable bits, symlinks or mode changes; at
    most five commits and 100 file changes per commit; under 4 MiB in
-   total; hands off `AGENTS.md`, `LICENSE*`, `REUSE.toml` and
-   `.gitlint`. Workflow files are in scope. Where the fix needs a
-   step the replay cannot take, the agent finishes the rest and
-   opens the pull request body with an `INFO` banner naming the
-   human follow-up.
+   total; a subject within the target's `.gitlint`
+   `title-max-length`, or 50 where it sets none, as the publisher
+   enforces (§8) even where the target's gitlint is looser; hands
+   off `AGENTS.md`, `LICENSE*`, `REUSE.toml` and `.gitlint`.
+   Workflow files are in scope. Where the fix needs a step the
+   replay cannot take, the agent finishes the rest and opens the
+   pull request body with an `INFO` banner naming the human
+   follow-up.
 3. *Publication.* The agent cannot push; the workflow opens the pull
    request and runs its review, so the agent skips those steps of
    the guidance.
@@ -1099,9 +1113,9 @@ Still to confirm during rollout rather than before it:
    The first live `branches` run proves it, and if the app exempts
    bot authors the check passes regardless.
 2. **Pre-commit DCO lint and bot commits.** The coming hook runs on
-   the agent's local commits, which carry the bot identity and the
-   `-s` trailer; API replay does not run hooks. Confirm the hook
-   accepts the `[bot]` form when it lands.
+   the agent's local commits, which carry the placeholder identity
+   of §7.1 and its `-s` trailer; API replay does not run hooks.
+   Confirm the hook accepts the placeholder when it lands.
 3. **`createCommitOnBranch` payload limit** (§5). If a 4 MiB diff
    fails in rollout, lower the cap; the agent's abstention path
    covers larger changes.

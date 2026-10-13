@@ -535,20 +535,17 @@ jobs:
           mkdir -p artefacts
           jq -e --arg key "$KEY" '.issues[] | select(.key == $key)' \
             evidence/selection.json > artefacts/issue.json
-          bot_login="$(jq -r '.bot.login' evidence/selection.json)"
-          bot_email="$(jq -r '.bot.email' evidence/selection.json)"
-          # Bracket expressions holding literal brackets must come from a
-          # variable: written inline in [[ =~ ]], bash rejects "[bot]".
-          login_re='^[][A-Za-z0-9_.-]+$'
-          email_re='^[][A-Za-z0-9_.+@-]+$'
-          [[ "$bot_login" =~ $login_re ]]
-          [[ "$bot_email" =~ $email_re ]]
-          git -C workspace config user.name "$bot_login"
-          git -C workspace config user.email "$bot_email"
+          # A placeholder, not the App: the publisher replaces every
+          # *-by trailer, and the bot's own sign-off is too long for a
+          # target .gitlint without the trailer exemption (DESIGN.md 7.1).
+          git_name='Code Monkey'
+          git_email='code-monkey@example.invalid'
+          git -C workspace config user.name "$git_name"
+          git -C workspace config user.email "$git_email"
           git -C workspace config commit.gpgsign false
           [ "$(git -C workspace rev-parse HEAD)" = "$BASE_SHA" ]
           {
-            echo "bot_login=$bot_login"
+            echo "git_identity=$git_name <$git_email>"
             echo "branch=$(jq -r '.branch' artefacts/issue.json)"
             echo "repository=$(jq -r '.repository' artefacts/issue.json)"
           } >> "$GITHUB_OUTPUT"
@@ -558,7 +555,7 @@ jobs:
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           BRANCH: "${{ steps.packet.outputs.branch }}"
           BASE_SHA: "${{ matrix.base_sha }}"
-          BOT_LOGIN: "${{ steps.packet.outputs.bot_login }}"
+          GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
         run: |
           artefacts="$(pwd)/artefacts"
@@ -574,7 +571,8 @@ jobs:
             printf -- '- repository: `%s`\n' "$REPOSITORY"
             printf -- '- base_sha: `%s`\n' "$BASE_SHA"
             printf -- '- branch: `%s`\n' "$BRANCH"
-            printf -- '- bot identity: `%s` (configured in git)\n' "$BOT_LOGIN"
+            printf -- '- git identity: `%s` (placeholder, set in git)\n' \
+              "$GIT_IDENTITY"
             printf -- '- mode: `%s`\n' "$MODE"
             printf -- '- issue packet: `%s/issue.json`\n' "$artefacts"
             printf -- '- organisation guidance: `%s/agents.md`\n' "$artefacts"

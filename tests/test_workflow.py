@@ -271,7 +271,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         )
         self.assert_expression(author["if"], "needs.select.outputs.run_agent == 'true'")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(
         shutil.which("jq") and shutil.which("bash") and shutil.which("git"), "needs jq"
     )
@@ -350,7 +349,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
             self.assertIn(f"git_identity={name} <{mail}>", outputs)
             self.assertNotIn("[bot]", outputs)
 
-    @unittest.expectedFailure
     def test_runtime_context_names_the_placeholder_identity(self) -> None:
         """The prompt presents the git identity as a placeholder, not the bot."""
         assemble = self.step("author", "Assemble prompt")
@@ -360,7 +358,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("placeholder", str(assemble["run"]))
         self.assertNotIn("bot identity", str(assemble["run"]))
 
-    @unittest.expectedFailure
     def test_prompt_states_the_publisher_subject_limit(self) -> None:
         """The agent learns the subject limit the publisher enforces.
 
