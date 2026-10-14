@@ -437,7 +437,7 @@ jobs:
       - name: 'Publish selection evidence'
         id: evidence
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: "monkey-evidence-${{ steps.identity.outputs.namespace }}"
           path: 'artefacts/'
@@ -685,7 +685,7 @@ jobs:
         id: proposal
         if: always() && steps.packet.outcome == 'success'
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # yamllint disable-line rule:line-length
           name: "monkey-proposal-${{ needs.select.outputs.namespace }}-${{ matrix.key }}"
@@ -703,7 +703,7 @@ jobs:
       - name: 'Preserve session output'
         if: always()
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # yamllint disable-line rule:line-length
           name: "monkey-session-${{ needs.select.outputs.namespace }}-${{ matrix.key }}-${{ github.run_attempt }}"
@@ -1137,7 +1137,7 @@ jobs:
       - name: 'Attach publish result'
         if: always()
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # yamllint disable-line rule:line-length
           name: "monkey-result-${{ needs.select.outputs.namespace }}-${{ matrix.key }}-${{ github.run_attempt }}"
@@ -1205,7 +1205,7 @@ jobs:
 
       - name: 'Attach run report'
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # yamllint disable-line rule:line-length
           name: "code-monkey-${{ needs.select.outputs.namespace }}-${{ github.run_attempt }}"
