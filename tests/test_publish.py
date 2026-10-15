@@ -112,6 +112,21 @@ def result_json(**overrides: Any) -> dict[str, Any]:
     return data
 
 
+def review_json(
+    verdict: str, assessment: str | None, threads: int = 0, suppressed: int = 0
+) -> dict[str, Any]:
+    """The ``review`` record ``review-await`` writes."""
+    return {
+        "verdict": verdict,
+        "assessment": assessment,
+        "unresolved_threads": threads,
+        "suppressed": suppressed,
+        "reasons": [],
+        "review_id": 5,
+        "commit_id": "e" * 40,
+    }
+
+
 class NoNetworkCase(unittest.TestCase):
     """Base class failing any test that reaches a real subprocess."""
 
@@ -171,6 +186,64 @@ class CommentBodyTest(unittest.TestCase):
             "🐒 An AI agent has proposed a change for this issue: pull request "
             f"https://github.com/{REPOSITORY}/pull/8",
         )
+
+    @unittest.expectedFailure
+    def test_clean_review_is_stated(self) -> None:
+        """A clean review of the head is said to be clean."""
+        body = comments.comment_body(
+            result_json(review=review_json("clean", "approval recommended")), ""
+        )
+        self.assertTrue(
+            (body or "").endswith(
+                "pull/8. Copilot's review of its head commit is clean."
+            ),
+            body,
+        )
+
+    @unittest.expectedFailure
+    def test_findings_need_a_maintainer(self) -> None:
+        """Findings state their counts and are never called ready."""
+        review = review_json("findings", "needs a closer look", threads=2, suppressed=1)
+        body = comments.comment_body(result_json(review=review), "") or ""
+        self.assertIn("has findings (2 unresolved thread(s), 1 suppressed", body)
+        self.assertIn("assessment: needs a closer look", body)
+        self.assertIn("a maintainer must act on them", body)
+        self.assertIn("not ready to merge", body)
+        self.assertNotIn("is clean", body)
+
+    @unittest.expectedFailure
+    def test_findings_without_assessment(self) -> None:
+        """A legacy body's missing assessment is named as such."""
+        review = review_json("findings", None)
+        body = comments.comment_body(result_json(review=review), "") or ""
+        self.assertIn("assessment: no assessment", body)
+
+    @unittest.expectedFailure
+    def test_pending_review_is_stated(self) -> None:
+        """No review within the wait is pending, and so is anything unknown."""
+        for verdict in ("pending", "forged"):
+            with self.subTest(verdict=verdict):
+                body = (
+                    comments.comment_body(result_json(review={"verdict": verdict}), "")
+                    or ""
+                )
+                self.assertIn("No Copilot review of its head commit arrived", body)
+                self.assertIn("pending", body)
+                self.assertNotIn("is clean", body)
+
+    @unittest.expectedFailure
+    def test_review_fields_never_reach_the_comment(self) -> None:
+        """Only fixed words and counts appear, whatever the record holds."""
+        review = {
+            "verdict": "findings",
+            "assessment": "@alice\n# Owned",
+            "unresolved_threads": "@bob",
+            "suppressed": -3,
+        }
+        body = comments.comment_body(result_json(review=review), "") or ""
+        for fragment in ("@alice", "@bob", "Owned", "-3", "\n"):
+            self.assertNotIn(fragment, body)
+        self.assertIn("(0 unresolved thread(s), 0 suppressed", body)
 
     def test_proposed_branch_only(self) -> None:
         """Without a pull request the branch URL is named."""
@@ -1058,6 +1131,7 @@ class RunCommentTest(NoNetworkCase):
 class ReportRowTest(unittest.TestCase):
     """``report_row`` renders one escaped table cell whatever the source."""
 
+    @unittest.expectedFailure
     def test_title_fallback_is_escaped_and_flattened(self) -> None:
         """A title with a pipe and a newline stays inside its cell."""
         row = reporting.report_row(
@@ -1073,7 +1147,7 @@ class ReportRowTest(unittest.TestCase):
         self.assertEqual(row.count("\n"), 0)
         self.assertIn("A \\| B", row)
         self.assertNotIn("::error::", row)
-        self.assertEqual(row.count("|") - row.count("\\|"), 6)
+        self.assertEqual(row.count("|") - row.count("\\|"), 7)
 
 
 class RunReportTest(NoNetworkCase):
@@ -1160,6 +1234,7 @@ class RunReportTest(NoNetworkCase):
         self.assertEqual(report["results"][0]["run_attempt"], 3)
         self.assertEqual(report["premium_requests"], 35)
 
+    @unittest.expectedFailure
     def test_forged_fields_stay_inside_their_cells(self) -> None:
         """Newlines and pipes in any field cannot add rows or headings."""
         results = self.root / "results" / "forged"
@@ -1185,7 +1260,7 @@ class RunReportTest(NoNetworkCase):
         self.assertFalse(
             [line for line in lines if line.startswith(("#", "- "))][1:], lines
         )
-        self.assertEqual(rows[2].count(" | "), 4, rows[2])
+        self.assertEqual(rows[2].count(" | "), 5, rows[2])
 
     def test_malformed_note_fields_do_not_abort_the_report(self) -> None:
         """Non-list reasons or warnings still yield one row per result."""
@@ -1211,6 +1286,7 @@ class RunReportTest(NoNetworkCase):
         ]
         self.assertEqual(len(rows), 2, rows)
 
+    @unittest.expectedFailure
     def test_report(self) -> None:
         """One row per result, an unreadable row and correct totals."""
         results = self.root / "results"
@@ -1247,10 +1323,12 @@ class RunReportTest(NoNetworkCase):
         markdown = output_md.read_text(encoding="utf-8")
         self.assertIn(
             f"| {REPOSITORY}#7 | proposed | https://github.com/{REPOSITORY}/pull/8 "
-            "| 4 | Fix: Both |",
+            "| — | 4 | Fix: Both |",
             markdown,
         )
-        self.assertIn(f"| {REPOSITORY}#2 | rejected | — | 3 | a \\| b; w |", markdown)
+        self.assertIn(
+            f"| {REPOSITORY}#2 | rejected | — | — | 3 | a \\| b; w |", markdown
+        )
         self.assertEqual(markdown.count("| unreadable |"), 1)
         self.assertIn(
             "Proposed 1, abstained 0, rejected 1, failed 0, publish failures 0; "
@@ -1284,6 +1362,39 @@ class RunReportTest(NoNetworkCase):
             )
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
+
+    @unittest.expectedFailure
+    def test_review_column_and_totals(self) -> None:
+        """Each review verdict shows in its column and in the totals."""
+        results = self.root / "results"
+        cases = {
+            "a-1": review_json("clean", "approval recommended"),
+            "b-2": review_json("findings", "needs a closer look", threads=1),
+            "c-3": review_json("findings", None, suppressed=2),
+            "d-4": {"verdict": "pending"},
+            "e-5": {"verdict": "forged | row"},
+        }
+        for key, review in cases.items():
+            (results / key).mkdir(parents=True)
+            (results / key / "result.json").write_text(
+                json.dumps(result_json(key=key, review=review)), encoding="utf-8"
+            )
+        md = self.root / "report.md"
+        out = self.root / "report.json"
+        reporting.run_report(
+            argparse.Namespace(results=results, output_md=md, output_json=out)
+        )
+        text = md.read_text(encoding="utf-8")
+        self.assertIn("| Copilot review |", text)
+        self.assertIn("/pull/8 | clean | 4 |", text)
+        self.assertIn("/pull/8 | findings (1 unresolved) | 4 |", text)
+        self.assertIn("/pull/8 | findings (2 suppressed, no assessment) | 4 |", text)
+        self.assertEqual(text.count("/pull/8 | pending | 4 |"), 2)
+        self.assertNotIn("forged", text)
+        self.assertIn("Copilot reviews: clean 1, findings 2, pending 2.", text)
+        self.assertIn("cannot yet revise its own pull requests", text)
+        report = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(report["reviews"], {"clean": 1, "findings": 2, "pending": 2})
 
     def test_dry_run_row(self) -> None:
         """A dry-run proposed result shows ``dry run`` instead of a URL."""
