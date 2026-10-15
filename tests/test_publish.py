@@ -1079,6 +1079,23 @@ class ReportRowTest(unittest.TestCase):
 class RunReportTest(NoNetworkCase):
     """``run_report`` merges nested result files into one table."""
 
+    def test_states_the_revision_limit_once(self) -> None:
+        """The summary says, once, that the pipeline cannot revise its PRs."""
+        results = self.root / "results"
+        for key in ("a-1", "b-2"):
+            directory = results / key
+            directory.mkdir(parents=True)
+            (directory / "result.json").write_text(
+                json.dumps(result_json(key=key)), encoding="utf-8"
+            )
+        md = self.root / "report.md"
+        out = self.root / "report.json"
+        reporting.run_report(
+            argparse.Namespace(results=results, output_md=md, output_json=out)
+        )
+        text = md.read_text(encoding="utf-8")
+        self.assertEqual(text.count(policy.REVISION_DISCLOSURE), 1)
+
     def test_fractional_spend_is_kept(self) -> None:
         """Half-requests add up; nothing rounds away."""
         results = self.root / "results"

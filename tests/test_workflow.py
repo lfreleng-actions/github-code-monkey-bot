@@ -83,6 +83,65 @@ def dumped(node: object) -> str:
     return json.dumps(node, sort_keys=True)
 
 
+# A step names a review and something done about one: a request, a
+# wait, a reply. The author step names Copilot but no review.
+REVIEW_WORD = re.compile(r"\breview", re.I)
+REVIEW_ACTION = re.compile(r"copilot|request|await|wait|reply|resolv|classif", re.I)
+
+# A prompt clause claims review when a part of the workflow does
+# something to a review, unless the clause negates it.
+CLAUSE_BREAK = re.compile(r"[.!?;:]\**\s+|,\s+|\s+—\s+")
+REVIEW_ACTOR = re.compile(
+    r"\b(?:workflow|publisher|pipeline|job|something else|another step)\b", re.I
+)
+REVIEW_VERB = re.compile(
+    r"\b(?:request|await|wait|handl|answer|repl|resolv|run|trigger|read|address)",
+    re.I,
+)
+NEGATION = re.compile(r"\b(?:not|never|no|cannot|nor|without)\b|n't\b", re.I)
+SKIP_VERB = re.compile(r"\b(?:skip|omit|ignore|bypass)", re.I)
+REVIEW_CYCLE = re.compile(r"review|§\s*11\b|section 11\b", re.I)
+
+
+def review_steps(jobs: dict[str, dict[str, Any]]) -> list[tuple[str, str]]:
+    """Return (job, step name) for each step that acts on a review."""
+    found: list[tuple[str, str]] = []
+    for job, body in jobs.items():
+        for step in cast(list[dict[str, Any]], body.get("steps", [])):
+            text = dumped(step)
+            if REVIEW_WORD.search(text) and REVIEW_ACTION.search(text):
+                found.append((job, str(step.get("name", step.get("id", "")))))
+    return found
+
+
+def clauses(text: str) -> list[str]:
+    """Split prose into clauses, ignoring line wrapping."""
+    return [part for part in CLAUSE_BREAK.split(squash(text)) if part]
+
+
+def review_claims(text: str) -> list[str]:
+    """Clauses saying some part of the workflow acts on a review."""
+    return [
+        clause
+        for clause in clauses(text)
+        if REVIEW_ACTOR.search(clause)
+        and REVIEW_VERB.search(clause)
+        and REVIEW_WORD.search(clause)
+        and not NEGATION.search(clause)
+    ]
+
+
+def skip_instructions(text: str) -> list[str]:
+    """Clauses telling the reader to skip the review cycle or §11."""
+    return [
+        clause
+        for clause in clauses(text)
+        if SKIP_VERB.search(clause)
+        and REVIEW_CYCLE.search(clause)
+        and not NEGATION.search(clause)
+    ]
+
+
 def line_number(script: str, exact: str) -> int:
     """Return the index of the first line whose stripped text equals `exact`."""
     for number, line in enumerate(script.splitlines()):
@@ -512,6 +571,113 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assert_expression(cleanup["if"], "always()")
         self.assertIs(cleanup["continue-on-error"], True)
         self.assertRegex(flatten(cleanup["run"]), r"rm -rf .*\bworkspace\b")
+
+
+class PromptReviewContracts(ReusableWorkflowCase):
+    """The prompt claims only the review steps the workflow has.
+
+    The organisation guidance (AGENTS.md §11.6) forbids a pipeline to
+    tell its agent to skip §11, or that something else handles review
+    unless a job does. Once a job requests a review, the prompt may
+    say so; these contracts must keep passing when it does.
+    """
+
+    OLD_PUBLICATION = (
+        "*Publication.* You cannot push, and the workflow opens the pull\n"
+        "request and handles the Copilot review, so skip the guidance's\n"
+        "pull request and review-cycle steps."
+    )
+
+    @staticmethod
+    def fixture_jobs() -> dict[str, dict[str, Any]]:
+        """Jobs shaped like the workflow's, with no review step."""
+        return {
+            "author": {
+                "steps": [
+                    {
+                        "name": "Run coding agent (Copilot)",
+                        "env": {"COPILOT_GITHUB_TOKEN": "x"},
+                        "run": 'copilot -p "$PROMPT"',
+                    }
+                ]
+            },
+            "publish": {
+                "steps": [
+                    {"name": "Open pull request", "run": "python publish.py open"}
+                ]
+            },
+            "report": {"steps": [{"name": "Report", "run": "python report.py"}]},
+        }
+
+    def test_review_step_detection(self) -> None:
+        """A step requesting a Copilot review is found; others are not.
+
+        This runs against its own fixture, never the real workflow, so
+        adding a genuine review step there cannot break it.
+        """
+        jobs = self.fixture_jobs()
+        self.assertEqual(review_steps(jobs), [])
+        jobs["publish"]["steps"].append(
+            {
+                "name": "Request Copilot review",
+                "run": 'gh pr edit "$PR" --add-reviewer @copilot',
+            }
+        )
+        self.assertEqual(review_steps(jobs), [("publish", "Request Copilot review")])
+
+    def test_claim_detection(self) -> None:
+        """Positive claims are caught; negated or actorless ones are not."""
+        claims = (
+            self.OLD_PUBLICATION,
+            "The workflow requests a Copilot review once the pull request opens.",
+            "Something else handles the review.",
+            "A later job awaits the review and answers each finding.",
+        )
+        for text in claims:
+            with self.subTest(text=text):
+                self.assertNotEqual(review_claims(text), [])
+        truthful = (
+            "The Copilot review happens after this session ends; you never see it.",
+            "This pipeline cannot yet act on review findings.",
+            "No job in this workflow requests, awaits or answers a review.",
+            "A human reviews everything you produce before it merges.",
+            "The workflow handles cleanup.",
+        )
+        for text in truthful:
+            with self.subTest(text=text):
+                self.assertEqual(review_claims(text), [])
+
+    def test_skip_detection(self) -> None:
+        """An instruction to skip §11 or the review cycle is caught."""
+        for text in (
+            self.OLD_PUBLICATION,
+            "Skip §11 of the guidance.",
+            "You may omit the review steps.",
+        ):
+            with self.subTest(text=text):
+                self.assertNotEqual(skip_instructions(text), [])
+        for text in (
+            "Do not skip §11.",
+            "Review your own diff the way a reviewer would.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(skip_instructions(text), [])
+
+    def test_prompt_claims_no_review_the_workflow_lacks(self) -> None:
+        """Without a review step, the prompt claims none.
+
+        The one test that reads the real workflow's review steps: once
+        a genuine step exists, the prompt may describe it.
+        """
+        if review_steps(self.jobs):
+            self.skipTest("the workflow has a review step")
+        prompt = PROMPT.read_text(encoding="utf-8")
+        self.assertEqual(review_claims(prompt), [])
+
+    def test_prompt_never_tells_the_agent_to_skip_review(self) -> None:
+        """The prompt never tells the agent to skip §11 or the review cycle."""
+        prompt = PROMPT.read_text(encoding="utf-8")
+        self.assertEqual(skip_instructions(prompt), [])
 
 
 class PublishJobContracts(ReusableWorkflowCase):

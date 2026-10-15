@@ -66,6 +66,12 @@ VERDICTS = ("proposed", "abstain", "rejected", "author-failed", "publish-failed"
 MANIFEST_OUTCOMES = ("proposed", "abstain", "author-failed")
 # The one manifest schema this publisher reads (docs/DESIGN.md 18.2).
 MANIFEST_SCHEMA = 1
+# AGENTS.md §11.6: a pipeline that cannot yet revise its own pull
+# requests says so in each one it opens and in its report.
+REVISION_DISCLOSURE = (
+    "This pipeline cannot yet revise its own pull requests, "
+    "so a maintainer must act on any review findings."
+)
 
 
 class PublishError(Exception):
@@ -319,6 +325,7 @@ def provenance_block(
     lines += [
         "The `github-code-monkey-bot` workflow opened this pull request.",
         "Nobody has merged it; a maintainer must review it first.",
+        REVISION_DISCLOSURE,
         "</details>",
         "",
     ]

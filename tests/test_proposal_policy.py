@@ -557,6 +557,20 @@ class ProvenanceBlockTest(unittest.TestCase):
         self.assertNotIn("| Command |", block)
         self.assertIn("- Run: n/a", block)
 
+    def test_states_the_revision_limit(self) -> None:
+        """Every block says the pipeline cannot revise its own pull requests.
+
+        AGENTS.md §11.6 requires that disclosure in each pull request.
+        """
+        block = policy.provenance_block(
+            model="m", run_url="", issue_url="u", base_sha="e" * 40, commands=[]
+        )
+        self.assertIn("cannot yet revise", policy.REVISION_DISCLOSURE)
+        self.assertEqual(block.count(policy.REVISION_DISCLOSURE), 1)
+        self.assertLess(
+            block.index(policy.REVISION_DISCLOSURE), block.index("</details>")
+        )
+
 
 class IdentityTest(unittest.TestCase):
     """``Identity`` renders the sign-off trailer."""

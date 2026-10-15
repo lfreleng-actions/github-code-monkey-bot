@@ -56,9 +56,11 @@ them.
 
 - **Merging.** The workflow never merges, never approves and never
   dismisses a review.
-- **Revising an open bot pull request.** Copilot reviews every
-  pull request on creation; responding to that review, or to a
-  human one, is a later capability (§16).
+- **Revising an open bot pull request.** No job yet requests,
+  awaits or answers a Copilot review; responding to a review,
+  Copilot's or a human's, is a later capability (§16). Until then
+  each pull request and each report says so (§8), as the
+  organisation guidance requires (its §11.6).
 - **Working the `.github` repository.** Its issues track
   organisation-wide tasks that span repositories. It stays out of
   scope unless a dispatcher opts in.
@@ -566,9 +568,18 @@ The workflow facts the prompt adds:
    replay cannot take, the agent finishes the rest and opens the
    pull request body with an `INFO` banner naming the human
    follow-up.
-3. *Publication.* The agent cannot push; the workflow opens the pull
-   request and runs its review, so the agent skips those steps of
-   the guidance.
+3. *Publication and review.* The agent cannot push, so the workflow
+   publishes its commits and opens the pull request. Any review
+   arrives after the session ends and the agent never sees it, and
+   this pipeline cannot yet revise its own pull requests, so a
+   finding reaches a human. So the prompt asks for a change
+   that passes review the first time: the agent reviews its own diff
+   as a reviewer would and names in the body what a reviewer would
+   question. It states the review-cycle steps that need GitHub
+   (requesting, waiting, replying, resolving) as steps the session
+   cannot take, and never tells the agent to skip them or that
+   something else takes them; `tests/test_workflow.py` pins the
+   prompt to the workflow's review steps.
 
 The publisher's mechanical checks (§8) do overlap the guidance on
 purpose: they are the gate that decides whether a proposal can merge,
@@ -697,14 +708,19 @@ For each selected issue:
    title from the manifest (equal to the subject on
    a single commit, enforced); a body the publisher heads with its
    own `Closes #<n>` line and a provenance block (run URL, model,
-   issue link, commands run, the AI authorship disclosure), which
-   nothing the agent writes can precede, hide or turn into code, so
-   the merge closes the issue and the disclosure always shows;
-   then, below a rule, the manifest's body with `@mentions`
-   defused, so agent text cannot notify anyone before a human reads
-   it; label `code-monkey` if the label exists. Not a draft: a
-   ready pull request triggers the automatic Copilot review and
-   notifies code owners; a draft does neither by default. A failure
+   issue link, commands run, the AI authorship disclosure, and the
+   statement that this pipeline cannot yet revise its own pull
+   requests), which nothing the agent writes can precede, hide or
+   turn into code, so the merge closes the issue and the disclosure
+   always shows; then, below a rule, the manifest's body with
+   `@mentions` defused, so agent text cannot notify anyone before a
+   human reads it; label `code-monkey` if the label exists. Not a
+   draft: a ready pull request notifies code owners, and a draft
+   does not by default. Opening it does not bring a Copilot review:
+   GitHub's documentation limits ruleset-driven automatic review to
+   pull requests "created by a Copilot user", and this App is not
+   one, so a target's `copilot_code_review` ruleset leaves a bot
+   pull request unreviewed. No step yet requests one. A failure
    here keeps the fork branch and records `publish-failed`, since a
    pushed branch is not a publication; the next run's selection sees
    the orphan, selects the issue with `resume` set, and its publisher
@@ -739,7 +755,9 @@ For each selected issue:
     every selected issue reaches the report. A final
     report job gathers every `result.json` by artifact-name pattern
     and renders one table: issue, verdict, output URL, premium
-    requests consumed (from `usage.json`), detail. A report covers one
+    requests consumed (from `usage.json`), detail. Below the totals
+    it states, once, that this pipeline cannot yet revise its own
+    pull requests. A report covers one
     selection, its namespace: a retried entry shows its latest
     attempt's row, but the spend total counts each author session
     once, since a rerun author job uploads a new proposal artifact
