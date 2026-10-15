@@ -14,6 +14,7 @@ import bot_github as github
 import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
+import review_verdict as verdicts
 
 
 def _proposed_comment(
@@ -23,7 +24,43 @@ def _proposed_comment(
     if not url:
         return None
     noun = "pull request" if result.get("pull_request_url") else "branch"
-    return f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
+    text = f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
+    review = review_sentence(result.get("review"))
+    return f"{text}. {review}" if review else text
+
+
+def count_of(value: Any) -> int:
+    """A count from the review record, or zero for anything else."""
+    return value if type(value) is int and value >= 0 else 0
+
+
+def review_sentence(review: Any) -> str | None:
+    """The Copilot review verdict in fixed words, or None without a record.
+
+    Only fixed text and counts reach the comment: the review body is
+    untrusted, and ``result.json`` carries none of it.
+    """
+    if not isinstance(review, dict):
+        return None
+    record = cast("dict[str, Any]", review)
+    verdict = record.get("verdict")
+    if verdict == verdicts.CLEAN:
+        return "Copilot's review of its head commit is clean."
+    if verdict == verdicts.FINDINGS:
+        assessment = record.get("assessment")
+        label = assessment if assessment in verdicts.ASSESSMENTS.values() else None
+        return (
+            "Copilot's review of its head commit has findings "
+            f"({count_of(record.get('unresolved_threads'))} unresolved thread(s), "
+            f"{count_of(record.get('suppressed'))} suppressed, "
+            f"assessment: {label or verdicts.NO_ASSESSMENT}); a maintainer must "
+            "act on them, since this pipeline cannot yet revise its own pull "
+            "requests, so it is not ready to merge."
+        )
+    return (
+        "No Copilot review of its head commit arrived within the wait; "
+        "the review is pending, so it is not ready to merge."
+    )
 
 
 def _abstain_comment(_result: dict[str, Any], reasons: str, _run_url: str) -> str:

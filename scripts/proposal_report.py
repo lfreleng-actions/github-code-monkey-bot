@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import proposal_model as model
 import proposal_policy as policy
+import review_verdict as verdicts
 from proposal_policy import PublishError
 
 SCHEMA = 1
@@ -34,6 +35,41 @@ def notes_of(value: Any) -> list[str]:
     return [str(value)]
 
 
+def review_of(item: dict[str, Any]) -> str | None:
+    """The Copilot review verdict a result records, if it records one."""
+    review = item.get("review")
+    if not isinstance(review, dict):
+        return None
+    verdict = cast("dict[str, Any]", review).get("verdict")
+    return verdict if verdict in verdicts.VERDICTS else verdicts.PENDING
+
+
+def review_cell(item: dict[str, Any]) -> str:
+    """The review column: the verdict, with counts when there are findings.
+
+    A record this table does not recognise reads as pending, never clean.
+    """
+    verdict = review_of(item)
+    if verdict is None:
+        return "—"
+    if verdict != verdicts.FINDINGS:
+        return verdict
+    review = cast("dict[str, Any]", item["review"])
+    counts = [
+        f"{value} {label}"
+        for label, value in (
+            ("unresolved", review.get("unresolved_threads")),
+            ("suppressed", review.get("suppressed")),
+        )
+        if type(value) is int and value > 0
+    ]
+    if review.get("assessment") not in verdicts.ASSESSMENTS.values():
+        counts.append(verdicts.NO_ASSESSMENT)
+    elif review.get("assessment") == verdicts.YELLOW:
+        counts.append(verdicts.YELLOW)
+    return f"findings ({', '.join(counts)})" if counts else "findings"
+
+
 def report_row(item: dict[str, Any]) -> str:
     """One table row for a result."""
     verdict = str(item.get("verdict"))
@@ -48,6 +84,7 @@ def report_row(item: dict[str, Any]) -> str:
     issue = cell(f"{item.get('repository')}#{item.get('issue')}")
     return (
         f"| {issue} | {cell(verdict)} | {cell(output)} "
+        f"| {cell(review_cell(item))} "
         f"| {'—' if requests is None else f'{requests:g}'} | {cell(text)} |"
     )
 
@@ -103,25 +140,35 @@ def run_report(args: argparse.Namespace) -> None:
     lines = [
         "## Code monkey results",
         "",
-        "| Issue | Verdict | Output | Premium requests | Detail |",
-        "| --- | --- | --- | --- | --- |",
+        "| Issue | Verdict | Output | Copilot review | Premium requests | Detail |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     totals: dict[str, int] = dict.fromkeys(policy.VERDICTS, 0)
+    reviews: dict[str, int] = dict.fromkeys(verdicts.VERDICTS, 0)
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
+        review = review_of(item)
+        if review is not None:
+            reviews[review] += 1
         lines.append(report_row(item))
     spend = total_spend(every, results)
     for problem in unreadable:
-        lines.append(f"| — | unreadable | — | — | {cell(problem)} |")
+        lines.append(f"| — | unreadable | — | — | — | {cell(problem)} |")
     if not results and not unreadable:
-        lines.append("| — | — | — | — | no proposals |")
+        lines.append("| — | — | — | — | — | no proposals |")
     lines += [
         "",
         f"Proposed {totals['proposed']}, abstained {totals['abstain']}, "
         f"rejected {totals['rejected']}, failed {totals['author-failed']}, "
         f"publish failures {totals.get('publish-failed', 0)}; "
         f"premium requests {spend:g}.",
+        "",
+        f"Copilot reviews: clean {reviews[verdicts.CLEAN]}, "
+        f"findings {reviews[verdicts.FINDINGS]}, "
+        f"pending {reviews[verdicts.PENDING]}. A pull request with findings "
+        "needs a maintainer to act on them: this pipeline cannot yet revise "
+        "its own pull requests, and only a clean review means ready.",
         "",
     ]
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +178,7 @@ def run_report(args: argparse.Namespace) -> None:
             {
                 "schema": SCHEMA,
                 "totals": totals,
+                "reviews": reviews,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,

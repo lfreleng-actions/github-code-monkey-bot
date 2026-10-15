@@ -187,7 +187,6 @@ class CommentBodyTest(unittest.TestCase):
             f"https://github.com/{REPOSITORY}/pull/8",
         )
 
-    @unittest.expectedFailure
     def test_clean_review_is_stated(self) -> None:
         """A clean review of the head is said to be clean."""
         body = comments.comment_body(
@@ -200,7 +199,6 @@ class CommentBodyTest(unittest.TestCase):
             body,
         )
 
-    @unittest.expectedFailure
     def test_findings_need_a_maintainer(self) -> None:
         """Findings state their counts and are never called ready."""
         review = review_json("findings", "needs a closer look", threads=2, suppressed=1)
@@ -211,14 +209,12 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("not ready to merge", body)
         self.assertNotIn("is clean", body)
 
-    @unittest.expectedFailure
     def test_findings_without_assessment(self) -> None:
         """A legacy body's missing assessment is named as such."""
         review = review_json("findings", None)
         body = comments.comment_body(result_json(review=review), "") or ""
         self.assertIn("assessment: no assessment", body)
 
-    @unittest.expectedFailure
     def test_pending_review_is_stated(self) -> None:
         """No review within the wait is pending, and so is anything unknown."""
         for verdict in ("pending", "forged"):
@@ -231,7 +227,6 @@ class CommentBodyTest(unittest.TestCase):
                 self.assertIn("pending", body)
                 self.assertNotIn("is clean", body)
 
-    @unittest.expectedFailure
     def test_review_fields_never_reach_the_comment(self) -> None:
         """Only fixed words and counts appear, whatever the record holds."""
         review = {
@@ -1131,7 +1126,6 @@ class RunCommentTest(NoNetworkCase):
 class ReportRowTest(unittest.TestCase):
     """``report_row`` renders one escaped table cell whatever the source."""
 
-    @unittest.expectedFailure
     def test_title_fallback_is_escaped_and_flattened(self) -> None:
         """A title with a pipe and a newline stays inside its cell."""
         row = reporting.report_row(
@@ -1234,7 +1228,6 @@ class RunReportTest(NoNetworkCase):
         self.assertEqual(report["results"][0]["run_attempt"], 3)
         self.assertEqual(report["premium_requests"], 35)
 
-    @unittest.expectedFailure
     def test_forged_fields_stay_inside_their_cells(self) -> None:
         """Newlines and pipes in any field cannot add rows or headings."""
         results = self.root / "results" / "forged"
@@ -1286,7 +1279,6 @@ class RunReportTest(NoNetworkCase):
         ]
         self.assertEqual(len(rows), 2, rows)
 
-    @unittest.expectedFailure
     def test_report(self) -> None:
         """One row per result, an unreadable row and correct totals."""
         results = self.root / "results"
@@ -1363,7 +1355,6 @@ class RunReportTest(NoNetworkCase):
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
 
-    @unittest.expectedFailure
     def test_review_column_and_totals(self) -> None:
         """Each review verdict shows in its column and in the totals."""
         results = self.root / "results"
