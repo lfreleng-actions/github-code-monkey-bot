@@ -3,7 +3,7 @@
 
 """Verify an agent's proposal, replay it into the fork, and open the PR.
 
-Five commands, run in the trusted publish and report jobs:
+Seven commands, run in the trusted publish and report jobs:
 
 ``check`` works offline (see ``proposal_check``) and writes
 ``check.json`` with a verdict and the composed messages.
@@ -17,6 +17,10 @@ commit through ``createCommitOnBranch``, which GitHub signs.
 branch and the mode asks for one, it opens the pull request from
 the fork. Two commands because the two writes need two tokens
 (DESIGN.md section 4.3): neither token can do the other's job.
+
+``review-request`` asks Copilot to review the pull request, and
+``review-await`` waits a bounded time for that review of the head and
+records its verdict (see ``copilot_review``).
 
 ``comment`` posts one line on the issue describing the outcome.
 
@@ -35,6 +39,7 @@ from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import bot_github as github
+import copilot_review as reviews
 import issue_comment as comments
 import proposal_check as checks
 import proposal_model as model
@@ -288,7 +293,7 @@ def write_open(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Describe the five commands."""
+    """Describe the seven commands."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -321,6 +326,24 @@ def build_parser() -> argparse.ArgumentParser:
     opener.add_argument("--check", type=Path, required=True)
     opener.add_argument("--output", type=Path, required=True)
     opener.set_defaults(handler=write_open)
+
+    requester = commands.add_parser(
+        "review-request", help="request a Copilot review (target token)"
+    )
+    requester.add_argument("--result", type=Path, required=True)
+    requester.add_argument("--output", type=Path, required=True)
+    requester.set_defaults(handler=reviews.run_request)
+
+    waiter = commands.add_parser(
+        "review-await", help="wait for and classify the review (read token)"
+    )
+    waiter.add_argument("--result", type=Path, required=True)
+    waiter.add_argument("--output", type=Path, required=True)
+    waiter.add_argument("--wait-seconds", type=int, default=reviews.WAIT_SECONDS)
+    waiter.add_argument(
+        "--interval-seconds", type=int, default=reviews.INTERVAL_SECONDS
+    )
+    waiter.set_defaults(handler=reviews.run_await)
 
     comment = commands.add_parser("comment", help="comment the outcome on the issue")
     comment.add_argument("--result", type=Path, required=True)

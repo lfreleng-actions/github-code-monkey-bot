@@ -73,9 +73,11 @@ part and note it in your manifest reason.
      cannot take, do the rest and open the pull request body with an
      `> **INFO**` banner listing the follow-up a human must make and
      why you could not.
-   - *Publication.* You cannot push, and the workflow opens the pull
-     request and handles the Copilot review, so skip the guidance's
-     pull request and review-cycle steps.
+   - *Publication.* You cannot push. The workflow opens the pull
+     request, requests a Copilot review of it, waits a bounded time
+     for that review and reports its verdict on the issue; a
+     maintainer acts on any findings. Skip the guidance's pull
+     request and review-cycle steps.
 6. **Do not** push, call `gh`, open a pull request, fetch URLs
    outside the repository's own toolchain needs, write outside the
    checkout and the artefacts directory, or delete scratch files.

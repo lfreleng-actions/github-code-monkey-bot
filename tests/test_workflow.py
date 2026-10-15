@@ -376,6 +376,23 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
+    def test_prompt_describes_the_review_steps_the_workflow_runs(self) -> None:
+        """The prompt claims only the review work a publish step does.
+
+        The organisation guidance (section 11.6) forbids telling the
+        agent that something else handles review unless a job does.
+        """
+        prompt = squash(PROMPT.read_text(encoding="utf-8"))
+        self.assertNotIn("handles the Copilot review", prompt)
+        self.assertIn("requests a Copilot review", prompt)
+        self.assertIn("reports its verdict", prompt)
+        self.assertIn("a maintainer acts on any findings", prompt)
+        names = {step.get("name") for step in self.steps("publish")}
+        self.assertLessEqual(
+            {"Request Copilot review", "Await Copilot review", "Comment on the issue"},
+            names,
+        )
+
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
         checkout = self.step("author", "Checkout target repository")
@@ -787,21 +804,78 @@ class PublishJobContracts(ReusableWorkflowCase):
         )
         for step in (push, opened, comment):
             self.assertNotIn("github.token", dumped(step))
-        # The native token appears twice in the job: reading this run's
-        # artifacts, and reading whether a public fork exists; the job
-        # grants it actions: read and nothing more.
+        # The native token appears three times in the job, each a read:
+        # this run's artifacts, whether a public fork exists, and the
+        # public pull request's review; the job grants it actions: read
+        # and contents: read and nothing more.
         users = [
             step.get("name")
             for step in self.steps("publish")
             if "github.token" in dumped(step)
         ]
         self.assertEqual(
-            users, ["Fetch and accept bounded proposal", "Check fork exists"]
+            users,
+            [
+                "Fetch and accept bounded proposal",
+                "Check fork exists",
+                "Await Copilot review",
+            ],
         )
         self.assertEqual(
             self.jobs["publish"]["permissions"],
             {"actions": "read", "contents": "read"},
         )
+
+    def test_review_is_requested_with_the_pull_request_token(self) -> None:
+        """The request reuses the open step's token and gate; no new grant."""
+        request = self.step("publish", "review-request")
+        self.assertEqual(request["name"], "Request Copilot review")
+        condition = unwrap(str(request["if"]))
+        self.assertIn("!cancelled()", condition)
+        self.assertIn("steps.open.outcome == 'success'", condition)
+        self.assert_expression(
+            request["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        script = flatten(request["run"])
+        self.assertIn("publish.py review-request", script)
+        self.assertIn("--result artefacts/result.json", script)
+        self.assertIn("--output artefacts/result.json", script)
+        self.assertNotIn("github.token", dumped(request))
+        pr_with = cast(dict[str, Any], self.step("publish", "pr-token")["with"])
+        self.assertEqual(
+            {key for key in pr_with if key.startswith("permission-")},
+            {"permission-pull-requests", "permission-metadata"},
+        )
+
+    def test_review_is_awaited_with_the_native_token_and_bounded(self) -> None:
+        """Reads use github.token; the wait fits inside the step and the job."""
+        waiter = self.step("publish", "review")
+        self.assertEqual(waiter["name"], "Await Copilot review")
+        condition = unwrap(str(waiter["if"]))
+        self.assertIn("!cancelled()", condition)
+        self.assertIn("steps.open.outcome == 'success'", condition)
+        self.assert_expression(waiter["env"]["GH_TOKEN"], "github.token")
+        script = flatten(waiter["run"])
+        self.assertIn("publish.py review-await", script)
+        match = re.search(r"--wait-seconds (\d+)", script)
+        self.assertIsNotNone(match)
+        wait_minutes = int(match.group(1) if match else "0") / 60
+        self.assertEqual(wait_minutes, 15)
+        self.assertGreater(int(waiter["timeout-minutes"]), wait_minutes)
+        self.assertGreaterEqual(
+            int(self.jobs["publish"]["timeout-minutes"]),
+            20 + int(waiter["timeout-minutes"]),
+        )
+        self.assertNotIn("secrets.", dumped(waiter))
+
+    def test_review_runs_after_open_and_before_the_comment(self) -> None:
+        """The comment states the verdict, so the review comes first."""
+        order = [
+            self.position("publish", identity)
+            for identity in ("open", "review-request", "review", "comment-token")
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertLess(order[-1], self.position("publish", "Ensure a result exists"))
 
     def test_provenance_inputs_are_shape_checked(self) -> None:
         """Select outputs are validated as SHA, ID, digests and key patterns."""
@@ -948,10 +1022,13 @@ class MintProvenanceContracts(ReusableWorkflowCase):
             set(re.findall(r"steps\.([a-z-]+)\.outputs\.token", push)),
             set(self.FORK_MINTS),
         )
-        opened = unwrap(str(self.step("publish", "open")["env"]["GH_TOKEN"]))
-        self.assertEqual(
-            re.findall(r"steps\.([a-z-]+)\.outputs\.token", opened), ["pr-token"]
-        )
+        for identity in ("open", "review-request"):
+            with self.subTest(step=identity):
+                token = unwrap(str(self.step("publish", identity)["env"]["GH_TOKEN"]))
+                self.assertEqual(
+                    re.findall(r"steps\.([a-z-]+)\.outputs\.token", token),
+                    ["pr-token"],
+                )
 
     def test_fork_organisation_is_proven_before_any_fork_mint(self) -> None:
         """The resolve step guards the pattern and the mapping, then the mints run."""
