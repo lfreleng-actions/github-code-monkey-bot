@@ -706,7 +706,9 @@ For each selected issue:
    title from the manifest (equal to the subject on
    a single commit, enforced); a body the publisher heads with its
    own `Closes #<n>` line and a provenance block (run URL, model,
-   issue link, commands run, the AI authorship disclosure), which
+   issue link, commands run, the AI authorship disclosure, and the
+   statement that this pipeline cannot yet revise its own pull
+   requests, so review findings need a maintainer), which
    nothing the agent writes can precede, hide or turn into code, so
    the merge closes the issue and the disclosure always shows;
    then, below a rule, the manifest's body with `@mentions`
@@ -748,12 +750,15 @@ For each selected issue:
     every selected issue reaches the report. A final
     report job gathers every `result.json` by artifact-name pattern
     and renders one table: issue, verdict, output URL, premium
-    requests consumed (from `usage.json`), detail. A report covers one
-    selection, its namespace: a retried entry shows its latest
-    attempt's row, but the spend total counts each author session
-    once, since a rerun author job uploads a new proposal artifact
-    and the ID of each proposal artifact names the session that
-    produced it. A full rerun selects afresh under a new namespace
+    requests consumed (from `usage.json`), detail. Below the totals
+    it carries the same statement as the provenance block, once:
+    organisation `AGENTS.md` §11.6 requires it in each report of a
+    pipeline that cannot revise its own pull requests. A report
+    covers one selection, its namespace: a retried entry shows its
+    latest attempt's row, but the spend total counts each author
+    session once, since a rerun author job uploads a new proposal
+    artifact and the ID of each proposal artifact names the session
+    that produced it. A full rerun selects afresh under a new namespace
     and gets its own report; the earlier report keeps the earlier
     sessions' spend, so a run's cost is the sum of its reports.
 

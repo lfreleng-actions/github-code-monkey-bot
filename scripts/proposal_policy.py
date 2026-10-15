@@ -54,6 +54,13 @@ HEADLINE_RE = re.compile(
 TRAILER_RE = re.compile(r"^[A-Za-z][A-Za-z-]*: .+$")
 URL_RE = re.compile(r"https?://")
 
+# Organisation AGENTS.md 11.6: until the pipeline can revise its own
+# pull requests, each one it opens and each report says so.
+REVISION_DISCLOSURE = (
+    "This pipeline cannot yet revise its own pull requests, "
+    "so review findings need a maintainer."
+)
+
 PROTECTED_PATHS = ("AGENTS.md", "REUSE.toml", ".gitlint")
 PROTECTED_PREFIXES = ("LICENSE", "LICENSES/")
 WORKFLOW_PREFIX = ".github/workflows/"
@@ -319,6 +326,7 @@ def provenance_block(
     lines += [
         "The `github-code-monkey-bot` workflow opened this pull request.",
         "Nobody has merged it; a maintainer must review it first.",
+        REVISION_DISCLOSURE,
         "</details>",
         "",
     ]

@@ -1272,7 +1272,6 @@ class RunReportTest(NoNetworkCase):
         self.assertEqual(len(report["unreadable"]), 1)
         self.assertEqual(len(report["results"]), 2)
 
-    @unittest.expectedFailure
     def test_report_discloses_that_review_findings_need_a_maintainer(self) -> None:
         """The report states once that the pipeline cannot revise its PRs."""
         results = self.root / "results"

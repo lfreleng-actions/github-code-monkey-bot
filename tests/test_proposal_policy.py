@@ -556,7 +556,6 @@ class ProvenanceBlockTest(unittest.TestCase):
         self.assertTrue(block.startswith("<details>\n"))
         self.assertTrue(block.endswith("</details>\n"))
 
-    @unittest.expectedFailure
     def test_discloses_that_review_findings_need_a_maintainer(self) -> None:
         """Every pull request says the pipeline cannot act on its review."""
         block = policy.provenance_block(
