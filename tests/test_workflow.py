@@ -663,7 +663,6 @@ class PromptReviewContracts(ReusableWorkflowCase):
             with self.subTest(text=text):
                 self.assertEqual(skip_instructions(text), [])
 
-    @unittest.expectedFailure
     def test_prompt_claims_no_review_the_workflow_lacks(self) -> None:
         """Without a review step, the prompt claims none.
 
@@ -675,7 +674,6 @@ class PromptReviewContracts(ReusableWorkflowCase):
         prompt = PROMPT.read_text(encoding="utf-8")
         self.assertEqual(review_claims(prompt), [])
 
-    @unittest.expectedFailure
     def test_prompt_never_tells_the_agent_to_skip_review(self) -> None:
         """The prompt never tells the agent to skip §11 or the review cycle."""
         prompt = PROMPT.read_text(encoding="utf-8")

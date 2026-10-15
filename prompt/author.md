@@ -73,9 +73,19 @@ part and note it in your manifest reason.
      cannot take, do the rest and open the pull request body with an
      `> **INFO**` banner listing the follow-up a human must make and
      why you could not.
-   - *Publication.* You cannot push, and the workflow opens the pull
-     request and handles the Copilot review, so skip the guidance's
-     pull request and review-cycle steps.
+   - *Publication and review.* You cannot push, so the workflow
+     publishes your commits and opens the pull request once this
+     session ends. Any Copilot review of that pull request arrives
+     after the session has ended, and you never see it. This
+     pipeline cannot yet revise its own pull requests, so every
+     review finding reaches a human. Make a change that passes
+     review the first time: before you write the manifest, review
+     your own diff the way a reviewer would, and name in the pull
+     request body anything you expect a reviewer to question. The
+     guidance's pull request steps and the parts of its review
+     cycle that need GitHub (requesting a review, waiting for it,
+     replying to findings, resolving threads) are steps this
+     session cannot take.
 6. **Do not** push, call `gh`, open a pull request, fetch URLs
    outside the repository's own toolchain needs, write outside the
    checkout and the artefacts directory, or delete scratch files.
@@ -115,6 +125,7 @@ The pull request body:
 - Explains what changed and why, in the terms the guidance uses for
   pull request descriptions.
 - Lists what you ran and what it showed.
+- Names anything you expect a reviewer to question.
 
 The workflow opens the body with the line that closes the issue;
 do not add one.
