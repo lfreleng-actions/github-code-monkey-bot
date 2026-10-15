@@ -56,9 +56,10 @@ them.
 
 - **Merging.** The workflow never merges, never approves and never
   dismisses a review.
-- **Revising an open bot pull request.** Copilot reviews every
-  pull request on creation; responding to that review, or to a
-  human one, is a later capability (§16).
+- **Revising an open bot pull request.** Responding to a Copilot
+  review, or to a human one, is a later capability (§16). Until
+  then each pull request and each report says so, and review
+  findings reach a maintainer (§7.3, §8).
 - **Working the `.github` repository.** Its issues track
   organisation-wide tasks that span repositories. It stays out of
   scope unless a dispatcher opts in.
@@ -714,8 +715,12 @@ For each selected issue:
    then, below a rule, the manifest's body with `@mentions`
    defused, so agent text cannot notify anyone before a human reads
    it; label `code-monkey` if the label exists. Not a draft: a
-   ready pull request triggers the automatic Copilot review and
-   notifies code owners; a draft does neither by default. A failure
+   ready pull request notifies code owners; a draft does not by
+   default. A ready pull request does not by itself get a Copilot
+   review: GitHub limits ruleset-driven automatic review to pull
+   requests "created by a Copilot user", and this App is not one,
+   so a repository's `copilot_code_review` ruleset does not fire on
+   it. No step here requests a review either. A failure
    here keeps the fork branch and records `publish-failed`, since a
    pushed branch is not a publication; the next run's selection sees
    the orphan, selects the issue with `resume` set, and its publisher
@@ -1092,8 +1097,7 @@ write-good and `aislop` at threshold 100.
    `repositories`. Confirm Verified commits, DCO status, message
    format and that the branch-exists guard trips on a second run.
 3. Dispatch `pull-requests` mode live against the same repository.
-   Confirm the PR title check, Copilot's automatic review, label and
-   provenance block.
+   Confirm the PR title check, label and provenance block.
 4. Flip the schedule to live. Watch spend from `usage.json` and the
    ratio of merged to closed bot pull requests.
 
