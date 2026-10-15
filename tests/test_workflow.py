@@ -78,6 +78,72 @@ def is_action(step: dict[str, Any], action: str) -> bool:
     return uses_of(step).startswith(action + "@")
 
 
+# A sentence claiming some part of the pipeline acts on a review: it
+# names the review, an actor other than the agent, and an action, and
+# carries no negation. A truthful prompt says what the session cannot
+# do; it never says something else does it unless a step really does.
+REVIEW_WORD = re.compile(r"\breview", re.IGNORECASE)
+REVIEW_ACTOR = re.compile(
+    r"\b(?:workflow|pipeline|publisher|job|something else|someone else)\b",
+    re.IGNORECASE,
+)
+REVIEW_ACTION = re.compile(
+    r"\b(?:request|await|wait|handl|run|answer|repl|resolv|respond|address|"
+    r"trigger|act|take)\w*",
+    re.IGNORECASE,
+)
+NEGATION = re.compile(
+    r"\b(?:not|cannot|can't|never|no|nothing|nobody|none)\b", re.IGNORECASE
+)
+SKIP_REVIEW = re.compile(
+    r"\bskip\w*\b.*(?:\breview|§\s*11\b|section 11\b)"
+    r"|(?:\breview|§\s*11\b|section 11\b).*\bskip",
+    re.IGNORECASE,
+)
+# A step that requests, awaits or answers a review names it somewhere:
+# gh copilot-review, --add-reviewer, requested_reviewers, its own name.
+REVIEW_STEP = re.compile(r"review", re.IGNORECASE)
+
+
+def sentences(markdown: str) -> list[str]:
+    """Split prose into sentences, treating paragraphs and list items as ends."""
+    blocks = re.split(r"\n\s*\n|\n\s*(?:[-*]|\d+\.)\s+", markdown)
+    found: list[str] = []
+    for block in blocks:
+        found += [part for part in re.split(r"(?<=[.!?])\s+", squash(block)) if part]
+    return found
+
+
+def claims_review(clause: str) -> bool:
+    """Whether one clause says an actor other than the agent acts on a review."""
+    return bool(
+        REVIEW_WORD.search(clause)
+        and REVIEW_ACTOR.search(clause)
+        and REVIEW_ACTION.search(clause)
+        and not NEGATION.search(clause)
+    )
+
+
+def review_claims(markdown: str) -> list[str]:
+    """Sentences claiming something other than the agent acts on a review.
+
+    Judged clause by clause, so "you cannot push, and the workflow
+    handles the review" is caught despite its negated first clause.
+    """
+    return [
+        sentence
+        for sentence in sentences(markdown)
+        if any(claims_review(clause) for clause in re.split(r"[,;:]", sentence))
+    ]
+
+
+def skip_review_orders(markdown: str) -> list[str]:
+    """Sentences telling the agent to skip the review cycle or AGENTS.md 11."""
+    return [
+        sentence for sentence in sentences(markdown) if SKIP_REVIEW.search(sentence)
+    ]
+
+
 def dumped(node: object) -> str:
     """Serialise a YAML subtree so a regex can scan every value in it."""
     return json.dumps(node, sort_keys=True)
@@ -375,6 +441,64 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("title-max-length", prompt)
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
+
+    def review_steps(self) -> list[str]:
+        """Steps of any job that request, await or answer a review."""
+        return [
+            f"{job}: {step.get('name') or step.get('id')}"
+            for job in self.jobs
+            for step in self.jobs[job].get("steps", [])
+            if REVIEW_STEP.search(dumped(step))
+        ]
+
+    @unittest.expectedFailure
+    def test_prompt_claims_no_review_the_workflow_lacks(self) -> None:
+        """The prompt says nothing else handles review unless a step does.
+
+        AGENTS.md 11.6. A later change that adds a real review step may
+        word the prompt to match; until then any such claim is false.
+        """
+        if self.review_steps():
+            self.skipTest("the workflow has a review step")
+        prompt = PROMPT.read_text(encoding="utf-8")
+        self.assertEqual(review_claims(prompt), [])
+
+    @unittest.expectedFailure
+    def test_prompt_never_orders_the_review_cycle_skipped(self) -> None:
+        """The prompt never tells the agent to skip AGENTS.md 11."""
+        prompt = PROMPT.read_text(encoding="utf-8")
+        self.assertEqual(skip_review_orders(prompt), [])
+
+    def test_review_claim_detection(self) -> None:
+        """The detectors flag a false claim and pass a truthful statement."""
+        false = (
+            "*Publication.* You cannot push, and the workflow opens the pull\n"
+            "  request and handles the Copilot review, so skip the guidance's\n"
+            "  pull request and review-cycle steps."
+        )
+        truthful = (
+            "Any Copilot review comes after this session ends, and you never "
+            "see it. This pipeline cannot yet act on review findings."
+        )
+        self.assertEqual(len(review_claims(false)), 1)
+        self.assertEqual(len(skip_review_orders(false)), 1)
+        self.assertEqual(
+            review_claims("The workflow requests a Copilot review."),
+            ["The workflow requests a Copilot review."],
+        )
+        self.assertEqual(
+            skip_review_orders("Skip AGENTS.md § 11."), ["Skip AGENTS.md § 11."]
+        )
+        self.assertEqual(review_claims(truthful), [])
+        self.assertEqual(skip_review_orders(truthful), [])
+
+    def test_review_step_detection(self) -> None:
+        """A step requesting a review counts; today's workflow has none."""
+        self.assertEqual(self.review_steps(), [])
+        self.jobs["publish"]["steps"].append(
+            {"name": "Request review", "run": "gh copilot-review --wait 1"}
+        )
+        self.assertEqual(self.review_steps(), ["publish: Request review"])
 
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""

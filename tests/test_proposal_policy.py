@@ -14,6 +14,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 policy = import_module("proposal_policy")
 
+# AGENTS.md 11.6: a pipeline that cannot revise its own pull requests
+# says so in each one it opens and in its report.
+REVISION_DISCLOSURE = (
+    "This pipeline cannot yet revise its own pull requests, "
+    "so review findings need a maintainer."
+)
+
 IDENTITY = policy.Identity(
     coauthor="Claude <noreply@anthropic.com>",
     bot_login="code-monkey[bot]",
@@ -548,6 +555,14 @@ class ProvenanceBlockTest(unittest.TestCase):
         )
         self.assertTrue(block.startswith("<details>\n"))
         self.assertTrue(block.endswith("</details>\n"))
+
+    @unittest.expectedFailure
+    def test_discloses_that_review_findings_need_a_maintainer(self) -> None:
+        """Every pull request says the pipeline cannot act on its review."""
+        block = policy.provenance_block(
+            model="m", run_url="", issue_url="u", base_sha="e" * 40, commands=[]
+        )
+        self.assertEqual(block.count(REVISION_DISCLOSURE), 1)
 
     def test_without_commands_or_run(self) -> None:
         """No commands means no table; an empty run URL renders n/a."""

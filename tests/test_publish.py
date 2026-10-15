@@ -1272,6 +1272,32 @@ class RunReportTest(NoNetworkCase):
         self.assertEqual(len(report["unreadable"]), 1)
         self.assertEqual(len(report["results"]), 2)
 
+    @unittest.expectedFailure
+    def test_report_discloses_that_review_findings_need_a_maintainer(self) -> None:
+        """The report states once that the pipeline cannot revise its PRs."""
+        results = self.root / "results"
+        for key in ("a-1", "b-2"):
+            (results / key).mkdir(parents=True)
+            (results / key / "result.json").write_text(
+                json.dumps(result_json(key=key)), encoding="utf-8"
+            )
+        output_md = self.root / "report.md"
+        reporting.run_report(
+            argparse.Namespace(
+                results=results,
+                output_md=output_md,
+                output_json=self.root / "report.json",
+            )
+        )
+        markdown = output_md.read_text(encoding="utf-8")
+        self.assertEqual(
+            markdown.count(
+                "This pipeline cannot yet revise its own pull requests, "
+                "so review findings need a maintainer."
+            ),
+            1,
+        )
+
     def test_empty_report(self) -> None:
         """No results renders the placeholder row."""
         results = self.root / "results"
