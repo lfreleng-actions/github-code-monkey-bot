@@ -566,9 +566,18 @@ The workflow facts the prompt adds:
    replay cannot take, the agent finishes the rest and opens the
    pull request body with an `INFO` banner naming the human
    follow-up.
-3. *Publication.* The agent cannot push; the workflow opens the pull
-   request and runs its review, so the agent skips those steps of
-   the guidance.
+3. *Publication.* The agent cannot push; the workflow publishes its
+   commits and opens the pull request. Any Copilot review comes after
+   the session ends and the agent never sees it, and this pipeline
+   cannot yet act on findings (§16), so each one reaches a human.
+   The prompt states the review-cycle steps that need GitHub as
+   steps the session cannot take, never as steps to skip or steps
+   something else takes, as organisation `AGENTS.md` §11.6 requires.
+   It asks instead for a change that passes review the first time:
+   the agent reviews its own diff and names in the pull request body
+   anything a reviewer would question. A contract test in
+   `tests/test_workflow.py` fails if the prompt claims a review the
+   workflow has no step for, or orders the review cycle skipped.
 
 The publisher's mechanical checks (§8) do overlap the guidance on
 purpose: they are the gate that decides whether a proposal can merge,

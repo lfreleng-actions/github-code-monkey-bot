@@ -451,7 +451,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
             if REVIEW_STEP.search(dumped(step))
         ]
 
-    @unittest.expectedFailure
     def test_prompt_claims_no_review_the_workflow_lacks(self) -> None:
         """The prompt says nothing else handles review unless a step does.
 
@@ -463,7 +462,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         prompt = PROMPT.read_text(encoding="utf-8")
         self.assertEqual(review_claims(prompt), [])
 
-    @unittest.expectedFailure
     def test_prompt_never_orders_the_review_cycle_skipped(self) -> None:
         """The prompt never tells the agent to skip AGENTS.md 11."""
         prompt = PROMPT.read_text(encoding="utf-8")
