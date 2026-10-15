@@ -557,7 +557,6 @@ class ProvenanceBlockTest(unittest.TestCase):
         self.assertNotIn("| Command |", block)
         self.assertIn("- Run: n/a", block)
 
-    @unittest.expectedFailure
     def test_states_the_revision_limit(self) -> None:
         """Every block says the pipeline cannot revise its own pull requests.
 

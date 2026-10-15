@@ -123,6 +123,8 @@ def run_report(args: argparse.Namespace) -> None:
         f"publish failures {totals.get('publish-failed', 0)}; "
         f"premium requests {spend:g}.",
         "",
+        policy.REVISION_DISCLOSURE,
+        "",
     ]
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
     args.output_md.write_text("\n".join(lines), encoding="utf-8")

@@ -1079,7 +1079,6 @@ class ReportRowTest(unittest.TestCase):
 class RunReportTest(NoNetworkCase):
     """``run_report`` merges nested result files into one table."""
 
-    @unittest.expectedFailure
     def test_states_the_revision_limit_once(self) -> None:
         """The summary says, once, that the pipeline cannot revise its PRs."""
         results = self.root / "results"
