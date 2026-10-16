@@ -161,15 +161,49 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn("no assessment", verdict.reasons)
 
-    def test_body_is_read_to_a_bound(self) -> None:
-        """An assessment past the size cap is not read."""
+    @unittest.expectedFailure
+    def test_body_over_the_bound_is_findings(self) -> None:
+        """A body the classifier cannot read whole is never clean.
+
+        Reading the first 64 KiB alone could pass an assessment and
+        miss suppressed findings behind it.
+        """
         filler = "x" * (verdicts.MAX_BODY_BYTES + 10)
-        text = filler + "\n### 🟢 Approval recommended\n"
-        self.assertIn("no assessment", verdicts.classify(text, 0).reasons)
+        for text in (
+            filler + "\n### 🟢 Approval recommended\n",
+            BODIES["v2-green-clean"] + filler + SUPPRESSED_SUMMARY,
+        ):
+            with self.subTest(text=text[:20]):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn("review body over 65536 bytes", verdict.reasons)
         self.assertEqual(
-            verdicts.classify(text[:10] + "\n### 🟢 Approval recommended\n", 0).verdict,
+            verdicts.classify("x" * 10 + "\n### 🟢 Approval recommended\n", 0).verdict,
             "clean",
         )
+
+    @unittest.expectedFailure
+    def test_closing_fence_takes_no_trailing_text(self) -> None:
+        """A fence line with text after it opens or continues a block; it closes none."""
+        text = (
+            BODIES["legacy-no-comments"]
+            + "\n```markdown\nAn example reads:\n```markdown\n"
+            + "### 🟢 Approval recommended\n```\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertIn("no assessment", verdict.reasons)
+
+    @unittest.expectedFailure
+    def test_earliest_heading_is_the_assessment(self) -> None:
+        """With conflicting headings the first one in the body decides."""
+        text = (
+            "<!-- ccr-overview-v2 -->\n\n### 🟡 Changes recommended\n\nFix it.\n\n"
+            "### 🟢 Approval recommended\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.assessment, "changes")
+        self.assertEqual(verdict.verdict, "findings")
 
     def test_negative_or_odd_thread_counts_are_refused(self) -> None:
         """A thread count must be a non-negative integer."""
