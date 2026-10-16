@@ -263,6 +263,42 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("suppressed count unreadable", verdict.reasons)
 
+    @unittest.expectedFailure
+    def test_hidden_fence_opener_hides_nothing_visible(self) -> None:
+        """A fence opener inside a closed comment opens no fence outside it."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n<!--\n```\n-->\n\nVisible again.\n"
+            + SUPPRESSED_HEADING
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 2)
+        self.assertEqual(verdict.verdict, "findings")
+
+    @unittest.expectedFailure
+    def test_inline_code_opens_no_comment(self) -> None:
+        """A comment opener inside inline code is prose, and hides nothing."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\nUse `<!--` to open a comment.\n"
+            + SUPPRESSED_HEADING
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 2)
+        self.assertEqual(verdict.verdict, "findings")
+
+    def test_comment_closing_mid_line_shows_the_rest(self) -> None:
+        """Text after a closing comment on the same line is visible."""
+        text = (
+            BODIES["legacy-no-comments"]
+            + "\n<!-- hidden --> ### 🟢 Approval recommended\n"
+            + "<!-- a -->\n### 🟢 Approval recommended\n"
+        )
+        # The first heading is not at the line start; the second is.
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.assessment, "approval")
+        self.assertEqual(verdict.verdict, "clean")
+
     def test_earliest_heading_is_the_assessment(self) -> None:
         """With conflicting headings the first one in the body decides."""
         text = (
