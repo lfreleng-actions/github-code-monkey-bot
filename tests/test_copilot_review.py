@@ -254,7 +254,6 @@ class HandlersTest(unittest.TestCase):
         """The result as written back."""
         return json.loads(self.path.read_text(encoding="utf-8"))
 
-    @unittest.expectedFailure
     def test_request_records_success_and_refusal(self) -> None:
         """The request is recorded; a refusal is a warning, never a failure."""
         self.write()
@@ -268,7 +267,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIs(stored["review"]["requested"], False)
         self.assertTrue(any("Copilot review" in w for w in stored["warnings"]))
 
-    @unittest.expectedFailure
     def test_nothing_published_means_nothing_to_request_or_await(self) -> None:
         """Without a pull request, or in a dry run, both commands are no-ops."""
         for overrides in ({"pull_request_url": None}, {"dry_run": True}):
@@ -287,7 +285,6 @@ class HandlersTest(unittest.TestCase):
                     )
                 self.assertNotIn("review", self.stored())
 
-    @unittest.expectedFailure
     def test_await_records_the_verdict_against_the_head(self) -> None:
         """The record names the verdict, counts, review id and the head it judged."""
         self.write(review={"requested": True})

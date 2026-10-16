@@ -692,7 +692,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
     findings as work outstanding, never as complete.
     """
 
-    @unittest.expectedFailure
     def test_request_review_input(self) -> None:
         """The gate is on by default and a caller may switch it off."""
         inputs = cast(
@@ -701,7 +700,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
         self.assertEqual(inputs["request_review"]["type"], "boolean")
         self.assertIs(inputs["request_review"]["default"], True)
 
-    @unittest.expectedFailure
     def test_request_uses_the_pull_request_token_after_open(self) -> None:
         """The request is a write to the target: the pull request token alone."""
         step = self.step("publish", "review-request")
@@ -714,7 +712,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
             self.position("publish", "open"), self.position("publish", "review-request")
         )
 
-    @unittest.expectedFailure
     def test_wait_reads_with_the_native_token_and_fits_the_job(self) -> None:
         """The wait reads a public target with the job's own token, within its budget."""
         step = self.step("publish", "review")
@@ -737,7 +734,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
         ]
         self.assertEqual(order, sorted(order))
 
-    @unittest.expectedFailure
     def test_caller_forwards_the_gate_on_by_default(self) -> None:
         """The cron form offers the switch; schedules and dispatches default on."""
         cron = cast(
@@ -1027,16 +1023,21 @@ class PublishJobContracts(ReusableWorkflowCase):
         )
         for step in (push, opened, comment):
             self.assertNotIn("github.token", dumped(step))
-        # The native token appears twice in the job: reading this run's
-        # artifacts, and reading whether a public fork exists; the job
-        # grants it actions: read and nothing more.
+        # The native token reads alone in the job: this run's artifacts,
+        # whether a public fork exists, and the public target's reviews;
+        # the job grants it actions: read and nothing more.
         users = [
             step.get("name")
             for step in self.steps("publish")
             if "github.token" in dumped(step)
         ]
         self.assertEqual(
-            users, ["Fetch and accept bounded proposal", "Check fork exists"]
+            users,
+            [
+                "Fetch and accept bounded proposal",
+                "Check fork exists",
+                "Await Copilot review",
+            ],
         )
         self.assertEqual(
             self.jobs["publish"]["permissions"],
@@ -1543,6 +1544,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "include_dotgithub",
                 "include_assigned",
                 "load_repo_skills",
+                "request_review",
                 "repositories",
                 "exclude_repos",
                 "guidance_repository",
@@ -1577,6 +1579,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_dotgithub": False,
             "include_assigned": False,
             "load_repo_skills": False,
+            "request_review": True,
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
             "assets_repository": "lfreleng-actions/github-code-monkey-bot",

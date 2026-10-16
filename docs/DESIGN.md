@@ -56,10 +56,11 @@ them.
 
 - **Merging.** The workflow never merges, never approves and never
   dismisses a review.
-- **Revising an open bot pull request.** No job yet requests,
-  awaits or answers a Copilot review; responding to a review,
-  Copilot's or a human's, is a later capability (§16). Until then
-  each pull request and each report says so (§8), as the
+- **Revising an open bot pull request.** The publisher requests
+  and awaits the Copilot review of each pull request it opens and
+  reports the verdict (§8), but no job yet answers a review,
+  Copilot's or a human's; that is a later capability (§16). Until
+  then each pull request and each report says so, as the
   organisation guidance requires (its §11.6).
 - **Working the `.github` repository.** Its issues track
   organisation-wide tasks that span repositories. It stays out of
@@ -613,7 +614,8 @@ The workflow facts the prompt adds:
    pull request body with an `INFO` banner naming the human
    follow-up.
 3. *Publication and review.* The agent cannot push, so the workflow
-   publishes its commits and opens the pull request. Any review
+   publishes its commits, opens the pull request, requests the
+   Copilot review, waits for it and reports its verdict. The review
    arrives after the session ends and the agent never sees it, and
    this pipeline cannot yet revise its own pull requests, so a
    finding reaches a human. So the prompt asks for a change
@@ -764,12 +766,42 @@ For each selected issue:
    GitHub's documentation limits ruleset-driven automatic review to
    pull requests "created by a Copilot user", and this App is not
    one, so a target's `copilot_code_review` ruleset leaves a bot
-   pull request unreviewed. No step yet requests one. A failure
+   pull request unreviewed; step 10 asks for one. A failure
    here keeps the fork branch and records `publish-failed`, since a
    pushed branch is not a publication; the next run's selection sees
    the orphan, selects the issue with `resume` set, and its publisher
    adopts the branch and opens the pull request.
-10. **Comment on the issue** with one line: the pull request URL on
+10. **Request the Copilot review** (`request_review`, on by default)
+    with the pull request token, through
+    `gh pr edit --add-reviewer @copilot`, the form GitHub accepts
+    (the organisation guidance, Appendix B). The request is best
+    effort: a refusal becomes a warning in `result.json` with
+    GitHub's answer, the publish goes on, and no token gains a
+    permission for it. Whether GitHub accepts the request from an
+    App installation token is the open point of §17; if it does not,
+    the fallback is a credential that can, held by this step alone.
+11. **Await the Copilot review** with the job's own token, since the
+    target is public: poll for a review by
+    `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
+    head the publisher pushed, read the pull request's unresolved
+    review threads through GraphQL, and classify the pair by the
+    organisation definition (`AGENTS.md` §11.5) in a pure function
+    with offline tests built from real review bodies: **clean** when
+    every thread has a resolution, the overview lists no suppressed
+    finding and the assessment is `🟢 Approval recommended` (`🟢 Ready to approve`
+    in older reviews) or `🔵 Needs a closer look`; **findings**
+    otherwise, `🟡 Changes recommended` and the older format with no
+    assessment included; **pending** when no review of the head
+    arrives within the wait. The body is text from outside: the
+    classifier reads 64 KiB at most, drops fenced code first so an
+    example heading is not a verdict, and records labels and counts,
+    never the text. The wait checks its deadline before every read
+    and keeps a reserve for the two reads a hit needs, so it cannot
+    overrun the job's budget by a read's worst case; a review of another head, a
+    read failure the shared wrapper's retries did not cure, and no
+    review at all end as pending, never clean. The record goes into
+    `result.json` as `review` (§18.4).
+12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
     provenance rejection, which check failed and the run URL. The
     reason descends from the untrusted manifest; the publisher cuts
@@ -790,18 +822,25 @@ For each selected issue:
     before any write, the offline check or a token mint, posts
     nothing: the target saw no change, the verdict may be unknown,
     and one publisher fault would otherwise comment on every issue
-    in the run. Step 11 records it in the report instead; a failure
+    in the run. Step 13 records it in the report instead; a failure
     during or after the writes (step 7 on) still comments, since the
-    fork saw a branch and its rollback.
-11. **Record** `result.json` and a step-summary section. A step that
+    fork saw a branch and its rollback. On a published pull request
+    the line states the review's verdict: clean; findings, with the
+    counts and the assessment and the statement that a maintainer
+    must act on them; or pending. The marker carries the review
+    verdict too, so a rerun whose wait ended differently posts again
+    instead of leaving the issue at odds with `result.json`, and a
+    record the publisher does not recognise reads as pending.
+13. **Record** `result.json` and a step-summary section. A step that
     runs whatever came before writes a `publish-failed` result when an
     earlier failure (the offline check, a token mint) left none, so
     every selected issue reaches the report. A final
     report job gathers every `result.json` by artifact-name pattern
-    and renders one table: issue, verdict, output URL, premium
-    requests consumed (from `usage.json`), detail. Below the totals
-    it states, once, that this pipeline cannot yet revise its own
-    pull requests. A report covers one
+    and renders one table: issue, verdict, output URL, Copilot
+    review verdict, premium requests consumed (from `usage.json`),
+    detail. Below the totals it counts the review verdicts and
+    states, once, that this pipeline cannot yet revise its own pull
+    requests. A report covers one
     selection, its namespace: a retried entry shows its latest
     attempt's row, but the spend total counts each author session
     once, since a rerun author job uploads a new proposal artifact
@@ -828,6 +867,7 @@ For each selected issue:
 | `include_dotgithub` | boolean | `false` | §6 |
 | `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
+| `request_review` | boolean | `true` | §8 steps 10–11: request, await, report |
 | `repositories` | string | `''` | Commas and/or spaces; split per §6 |
 | `issues` | string | `''` | Issues to work instead of scanning (§6) |
 | `exclude_repos` | string | `''` | Same form; overrides bundled list |
@@ -863,6 +903,7 @@ outside the stated ranges.
 | `include_dotgithub` | boolean | `false` |
 | `include_assigned` | boolean | `false` |
 | `load_repo_skills` | boolean | `false` |
+| `request_review` | boolean | `true` |
 | `repositories` | string | `''` |
 | `issues` | string | `''` |
 | `categories` | string | `'all'` |
@@ -1088,6 +1129,8 @@ conflicts while producer artifacts survive.
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
+| Copilot refuses the App's review request | No review arrives | Recorded as a warning and `pending` (§8 steps 10–11); the fallback credential of §17 |
+| Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1123,6 +1166,8 @@ scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report
+scripts/review_verdict.py                classify a Copilot review (§8 step 11)
+scripts/copilot_review.py                request and await the review
 tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
 docs/DESIGN.md                           this document
@@ -1219,6 +1264,16 @@ Still to confirm during rollout rather than before it:
 3. **`createCommitOnBranch` payload limit** (§5). If a 4 MiB diff
    fails in rollout, lower the cap; the agent's abstention path
    covers larger changes.
+4. **Requesting a Copilot review with an App token** (§8 step 10).
+   GitHub's documentation bills a review "when a bot requests" it
+   to the organisation, which implies an App may ask, but nobody has
+   yet tried with this App's installation token. The first live
+   `pull-requests` run settles it. If GitHub refuses, the warning in
+   `result.json` records the answer and the review stays pending;
+   the agreed fallback is a fine-grained token with Pull requests:
+   write on the target organisation, held as a secret and used by
+   that one step alone, flagged here as a follow-up and a possible
+   redesign rather than widened into any App mint.
 
 ## 18. Data Contracts
 
@@ -1384,12 +1439,28 @@ line and provenance block first, then the agent's text.
   "premium_requests": 37.5,
   "agent_seconds": 1543,
   "run_attempt": 1,
-  "author_session": "<proposal artifact ID>"
+  "author_session": "<proposal artifact ID>",
+  "review": {
+    "requested": true,
+    "verdict": "findings",
+    "assessment": "closer-look",
+    "unresolved_threads": 1,
+    "suppressed": 0,
+    "reasons": ["1 unresolved review thread"],
+    "review_id": 5425770192,
+    "commit_id": "<40 hex>"
+  }
 }
 ```
 
 URLs are `null` where the mode or a rejection stopped short, and
-`author_session` where no proposal arrived. The report job merges
+`author_session` where no proposal arrived. `review` is present on
+a published pull request when `request_review` is on: `requested`
+says whether GitHub accepted the request, `verdict` is `clean`,
+`findings` or `pending`, `assessment` is `approval`, `closer-look`,
+`changes` or `null`, and `commit_id` is the head the review judged.
+The comment and the report read a record with any other shape or
+verdict as `pending`. The report job merges
 every `result.json` into one table.
 
 **Open gap.** The publisher writes this file, but the report cannot
@@ -1424,11 +1495,15 @@ publish.py apply --check check.json --workdir DIR --mode MODE
     [--dry-run] [--run-attempt N] [--author-session ID]
     --output result.json
 publish.py comment --result result.json [--run-url URL]
+publish.py review-request --result result.json --output result.json
+publish.py review-await --result result.json --output result.json
+    [--wait-minutes N]
 publish.py report --results DIR --output-md PATH --output-json PATH
 ```
 
-`select_issues.py`, `publish.py apply` and `publish.py comment` read
-`GH_TOKEN`. Everything else runs offline. A verdict other than
+`select_issues.py`, `publish.py push`, `open`, `comment`,
+`review-request` and `review-await` read `GH_TOKEN`. Everything else
+runs offline. A verdict other than
 `proposed` is data, not an error: the scripts exit non-zero for
 operational failures alone.
 
