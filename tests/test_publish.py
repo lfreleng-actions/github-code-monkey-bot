@@ -1121,6 +1121,54 @@ class RunCommentTest(NoNetworkCase):
             body.endswith("<!-- code-monkey https://run proposed review=findings -->")
         )
 
+    @unittest.expectedFailure
+    def test_only_the_latest_outcome_of_the_run_suppresses_a_repeat(self) -> None:
+        """pending, clean, pending: the third posts, since the latest says clean."""
+        path = self.write_result(
+            result_json(bot_login=BOT, review=review_record("pending"))
+        )
+        earlier = [
+            {
+                "id": 1,
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://run proposed review=pending -->",
+                "html_url": "https://x/c/1",
+            },
+            {
+                "id": 2,
+                "user": {"login": BOT},
+                "body": "b\n\n<!-- code-monkey https://run proposed review=clean -->",
+                "html_url": "https://x/c/2",
+            },
+        ]
+        with (
+            patch.object(reads, "api_page", return_value=earlier),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/3"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_called_once()
+        # And when the latest already says what this result says, nothing posts.
+        later = [
+            {**earlier[1], "id": 1},
+            {**earlier[0], "id": 2, "html_url": "https://x/c/9"},
+        ]
+        with (
+            patch.object(reads, "api_page", return_value=later),
+            patch.object(github, "api_write") as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_not_called()
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["comment_url"], "https://x/c/9")
+
     def test_dry_run_and_silent_verdicts_skip(self) -> None:
         """Dry run and results with nothing to say post nothing."""
         for data in (result_json(dry_run=True), result_json(verdict="weird")):

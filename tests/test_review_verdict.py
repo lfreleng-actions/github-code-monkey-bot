@@ -192,6 +192,14 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("no assessment", verdict.reasons)
 
+    @unittest.expectedFailure
+    def test_longer_closing_fence_closes_the_block(self) -> None:
+        """Markdown closes a fence with a run at least as long; findings after it count."""
+        text = BODIES["v2-green-clean"] + "\n```\nexample\n````\n" + SUPPRESSED_SUMMARY
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 1)
+        self.assertEqual(verdict.verdict, "findings")
+
     def test_earliest_heading_is_the_assessment(self) -> None:
         """With conflicting headings the first one in the body decides."""
         text = (
