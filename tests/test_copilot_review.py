@@ -1,0 +1,224 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+"""Requesting and awaiting the Copilot review, against a fake GitHub."""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from importlib import import_module
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+github = import_module("bot_github")
+review = import_module("copilot_review")
+BODIES = import_module("review_fixtures").BODIES
+
+HEAD = "a" * 40
+OTHER = "b" * 40
+REPO = "org/repo"
+
+
+def copilot(review_id: int, commit: str, body: str) -> dict[str, Any]:
+    """A review object as the REST listing returns it."""
+    return {
+        "id": review_id,
+        "user": {"login": review.REVIEWER_LOGIN},
+        "commit_id": commit,
+        "body": body,
+        "state": "COMMENTED",
+    }
+
+
+def threads_reply(flags: list[bool], *, more: bool = False) -> dict[str, Any]:
+    """A GraphQL page of review threads."""
+    return {
+        "repository": {
+            "pullRequest": {
+                "reviewThreads": {
+                    "pageInfo": {"hasNextPage": more, "endCursor": "c"},
+                    "nodes": [{"isResolved": flag} for flag in flags],
+                }
+            }
+        }
+    }
+
+
+class Clock:
+    """A fake monotonic clock the sleep double advances."""
+
+    def __init__(self) -> None:
+        """Start at zero."""
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        """The current fake time."""
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        """Advance the clock instead of waiting."""
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class PullReferenceTest(unittest.TestCase):
+    """The pull request URL names the repository and number."""
+
+    def test_parses_and_refuses(self) -> None:
+        """A GitHub pull request URL parses; anything else is refused."""
+        self.assertEqual(
+            review.pull_reference("https://github.com/org/repo/pull/41"),
+            ("org/repo", 41),
+        )
+        for bad in ("https://github.com/org/repo/issues/41", "org/repo#41", ""):
+            with self.subTest(url=bad), self.assertRaises(github.GitHubError):
+                review.pull_reference(bad)
+
+
+class RequestReviewTest(unittest.TestCase):
+    """The request uses the form GitHub accepts and never raises."""
+
+    def test_request_form(self) -> None:
+        """``gh pr edit --add-reviewer @copilot`` on the repository's pull request."""
+        with patch.object(github, "run_gh", return_value="") as gh:
+            self.assertIsNone(review.request_review(REPO, 41))
+        self.assertEqual(
+            gh.call_args.args[0],
+            ["pr", "edit", "41", "--repo", REPO, "--add-reviewer", "@copilot"],
+        )
+
+    def test_failure_is_a_warning(self) -> None:
+        """A refusal is recorded, in log-safe form, and the publish goes on."""
+        failure = github.GitHubError(
+            "gh: Resource not accessible::by integration (HTTP 403)"
+        )
+        with patch.object(github, "run_gh", side_effect=failure):
+            warning = review.request_review(REPO, 41)
+        assert warning is not None
+        self.assertIn("could not request a Copilot review", warning)
+        self.assertNotIn("::", warning)
+
+
+class ReadsTest(unittest.TestCase):
+    """The review of the head and the unresolved thread count."""
+
+    def test_head_review_picks_the_newest_copilot_review_of_the_head(self) -> None:
+        """Other authors, other heads and older reviews are passed over."""
+        listing = [
+            {"id": 1, "user": {"login": "alice"}, "commit_id": HEAD, "body": "x"},
+            copilot(2, OTHER, "old head"),
+            copilot(3, HEAD, "first of head"),
+            copilot(4, HEAD, "second of head"),
+        ]
+        with patch.object(github, "api_list", return_value=listing):
+            found = review.head_review(REPO, 41, HEAD)
+        assert found is not None
+        self.assertEqual(found["id"], 4)
+        with patch.object(github, "api_list", return_value=listing[:2]):
+            self.assertIsNone(review.head_review(REPO, 41, HEAD))
+
+    def test_pull_head(self) -> None:
+        """The head SHA comes from the pull request itself."""
+        with patch.object(github, "api_object", return_value={"head": {"sha": HEAD}}):
+            self.assertEqual(review.pull_head(REPO, 41), HEAD)
+        with (
+            patch.object(github, "api_object", return_value={"head": {"sha": "short"}}),
+            self.assertRaises(github.GitHubError),
+        ):
+            review.pull_head(REPO, 41)
+
+    def test_unresolved_threads_count_every_page(self) -> None:
+        """Pages are followed and only ``isResolved: false`` counts."""
+        pages = [
+            threads_reply([False, True, False], more=True),
+            threads_reply([True, False]),
+        ]
+        with patch.object(github, "graphql", side_effect=pages) as gql:
+            self.assertEqual(review.unresolved_threads(REPO, 41), 3)
+        self.assertEqual(len(gql.call_args_list), 2)
+        self.assertIs(gql.call_args_list[0].kwargs.get("read"), True)
+        self.assertEqual(gql.call_args_list[1].args[1]["after"], "c")
+
+    def test_thread_query_without_data_is_an_error(self) -> None:
+        """A reply missing the thread connection is a failure, not zero."""
+        with (
+            patch.object(github, "graphql", return_value={"repository": None}),
+            self.assertRaises(github.GitHubError),
+        ):
+            review.unresolved_threads(REPO, 41)
+
+
+class AwaitReviewTest(unittest.TestCase):
+    """The bounded wait."""
+
+    def test_review_found_is_classified(self) -> None:
+        """A review of the head with its threads yields a verdict and the id."""
+        clock = Clock()
+        listings = [[], [copilot(7, HEAD, BODIES["v2-green-clean"])]]
+        with (
+            patch.object(github, "api_list", side_effect=listings),
+            patch.object(github, "graphql", return_value=threads_reply([])),
+        ):
+            verdict, review_id = review.await_review(
+                REPO, 41, HEAD, wait_minutes=20, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "clean")
+        self.assertEqual(review_id, 7)
+        self.assertEqual(clock.sleeps, [review.POLL_SECONDS])
+
+    def test_no_review_within_the_wait_is_pending(self) -> None:
+        """Polling stops while a hit's reads still fit; the wait never overruns."""
+        clock = Clock()
+        with patch.object(github, "api_list", return_value=[]) as listing:
+            verdict, review_id = review.await_review(
+                REPO, 41, HEAD, wait_minutes=20, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "pending")
+        self.assertIsNone(review_id)
+        self.assertIn("within 20 minutes", verdict.reasons[0])
+        # Every read began with the reserve still available, and the
+        # clock never passed the deadline.
+        self.assertLessEqual(clock.now, 20 * 60)
+        self.assertGreater(len(listing.call_args_list), 1)
+        self.assertGreaterEqual(20 * 60 - sum(clock.sleeps), review.RESERVE_SECONDS)
+
+    def test_a_read_failure_ends_the_wait_as_pending(self) -> None:
+        """Failures the wrapper's retries did not cure are pending, not clean."""
+        clock = Clock()
+        failure = github.GitHubError("gh: Server Error (HTTP 502)")
+        with patch.object(github, "api_list", side_effect=failure):
+            verdict, _ = review.await_review(
+                REPO, 41, HEAD, wait_minutes=20, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "pending")
+        self.assertIn("could not read the review", verdict.reasons[0])
+
+    def test_review_of_another_head_does_not_count(self) -> None:
+        """A review requested against the previous push is not this round's."""
+        clock = Clock()
+        with patch.object(
+            github,
+            "api_list",
+            return_value=[copilot(7, OTHER, BODIES["v2-green-clean"])],
+        ):
+            verdict, _ = review.await_review(
+                REPO, 41, HEAD, wait_minutes=20, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "pending")
+
+    def test_reserve_covers_two_reads(self) -> None:
+        """The reserve is the worst case of the two reads a hit needs."""
+        worst = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
+            github.RETRY_DELAY_SECONDS * n for n in range(1, github.READ_ATTEMPTS)
+        )
+        self.assertEqual(review.RESERVE_SECONDS, 2 * worst)
+        self.assertLess(review.RESERVE_SECONDS, review.DEFAULT_WAIT_MINUTES * 60 / 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
