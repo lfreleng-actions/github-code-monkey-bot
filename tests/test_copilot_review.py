@@ -250,6 +250,52 @@ class AwaitReviewTest(unittest.TestCase):
         self.assertEqual(len(gql.call_args_list), 1)
         self.assertLessEqual(clock.now, wait * 60 + review.READ_BUDGET_SECONDS)
 
+    @unittest.expectedFailure
+    def test_head_that_moved_during_the_wait_is_pending(self) -> None:
+        """A clean review of the old head is not a review of the new one."""
+        clock = Clock()
+        heads = iter([HEAD, OTHER])
+
+        def pull(_endpoint: str) -> dict[str, Any]:
+            return {"head": {"sha": next(heads)}}
+
+        with (
+            patch.object(github, "api_object", side_effect=pull),
+            patch.object(
+                github,
+                "api_list",
+                return_value=[copilot(7, HEAD, BODIES["v2-green-clean"])],
+            ),
+            patch.object(github, "graphql", return_value=threads_reply([])),
+        ):
+            verdict, review_id = review.await_review(
+                REPO, 41, HEAD, wait_minutes=20, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "pending")
+        self.assertIsNone(review_id)
+        self.assertIn("head moved", verdict.reasons[0])
+
+    @unittest.expectedFailure
+    def test_head_is_confirmed_before_a_verdict_is_accepted(self) -> None:
+        """The head is read again once the review lands, and a hit then stands."""
+        clock = Clock()
+        with (
+            patch.object(
+                github, "api_object", return_value={"head": {"sha": HEAD}}
+            ) as head,
+            patch.object(
+                github,
+                "api_list",
+                return_value=[copilot(7, HEAD, BODIES["v2-green-clean"])],
+            ),
+            patch.object(github, "graphql", return_value=threads_reply([])),
+        ):
+            verdict, _ = review.await_review(
+                REPO, 41, HEAD, wait_minutes=20, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "clean")
+        self.assertEqual(head.call_args.args[0], f"repos/{REPO}/pulls/41")
+
     def test_reserve_covers_two_reads(self) -> None:
         """The reserve is the worst case of the two reads a hit needs."""
         worst = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
@@ -320,6 +366,21 @@ class HandlersTest(unittest.TestCase):
                         )
                     )
                 self.assertNotIn("review", self.stored())
+
+    @unittest.expectedFailure
+    def test_failed_head_read_records_pending(self) -> None:
+        """A head read the wrapper's retries did not cure still writes a record."""
+        self.write(review={"requested": True})
+        failure = github.GitHubError("gh: Server Error (HTTP 502)")
+        with patch.object(github, "api_object", side_effect=failure):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        record = self.stored()["review"]
+        self.assertEqual(record["verdict"], "pending")
+        self.assertIn("could not read the pull request head", record["reasons"][0])
+        self.assertIsNone(record["commit_id"])
+        self.assertIs(record["requested"], True)
 
     def test_await_records_the_verdict_against_the_head(self) -> None:
         """The record names the verdict, counts, review id and the head it judged."""
