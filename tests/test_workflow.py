@@ -42,6 +42,7 @@ HARDEN_RUNNER = "step-security/harden-runner"
 BLOCK_ACTION = "lfreleng-actions/harden-runner-block-action"
 CHECKOUT = "actions/checkout"
 APP_TOKEN = "actions/create-github-app-token"
+SPLITTER = "lfreleng-actions/list-splitter-action"
 DOWNLOAD = "actions/download-artifact"
 UPLOAD = "actions/upload-artifact"
 REUSABLE_CALL = "$/.github/workflows/code-monkey.yaml"
@@ -1237,6 +1238,77 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         final = self.step("report", "Attach run report")
         self.assertTrue(is_action(final, UPLOAD))
         self.assertEqual(final["with"]["retention-days"], 90)
+
+
+class ListInputContracts(ReusableWorkflowCase):
+    """Operator lists are split and checked once, before any token exists."""
+
+    # Splitter step id for each list input.
+    LISTS: ClassVar[dict[str, str]] = {
+        "repositories": "repositories",
+        "exclude_repos": "exclusions",
+    }
+
+    @unittest.expectedFailure
+    def test_each_list_is_split_as_repository_names_of_the_org(self) -> None:
+        """Bare names of the trusted owner, offline, with no token to hand."""
+        self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
+        for name, identity in self.LISTS.items():
+            with self.subTest(input=name):
+                split = self.step("select", identity)
+                self.assertTrue(is_action(split, SPLITTER))
+                with_ = cast(dict[str, Any], split["with"])
+                self.assert_expression(with_["list"], f"inputs.{name}")
+                self.assertEqual(with_["validate"], "repository")
+                self.assert_expression(with_["owner"], "inputs.org")
+                self.assertEqual(with_["token"], "")
+                self.assertNotIn("verify", with_)
+
+    @unittest.expectedFailure
+    def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
+        """A bad name fails the run before the App key is used."""
+        check = self.position("select", "budget")
+        mint = self.position("select", "app-token")
+        for identity in self.LISTS.values():
+            with self.subTest(step=identity):
+                self.assertLess(self.position("select", identity), check)
+                self.assertLess(self.position("select", identity), mint)
+
+    @unittest.expectedFailure
+    def test_read_mint_scope_derives_from_the_split_list(self) -> None:
+        """The scope is the splitter's names plus the guidance repository."""
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(
+            env["REPOSITORIES"], "steps.repositories.outputs.repositories"
+        )
+        script = squash(str(budget["run"]))
+        for tool in ("tr ", "sed ", "paste "):
+            self.assertNotIn(tool, script)
+        self.assertIn('repositories="$repositories,$guidance_name"', script)
+        mint = self.step("select", "app-token")
+        self.assert_expression(
+            cast(dict[str, Any], mint["with"])["repositories"],
+            "steps.budget.outputs.repositories",
+        )
+
+    @unittest.expectedFailure
+    def test_selection_reads_the_split_lists(self) -> None:
+        """The raw inputs reach the splitters and nothing else."""
+        env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
+        self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
+        self.assert_expression(env["EXCLUDE_REPOS"], "steps.exclusions.outputs.csv")
+        splitters = {id(s) for s in self.actions("select", SPLITTER)}
+        for job in self.jobs:
+            if "steps" not in self.jobs[job]:
+                continue
+            for step in self.steps(job):
+                if id(step) in splitters:
+                    continue
+                with self.subTest(job=job, step=step.get("name")):
+                    text = json.dumps(step)
+                    for name in self.LISTS:
+                        self.assertNotRegex(text, rf"inputs\.{name}\b")
 
 
 class InterfaceContracts(ReusableWorkflowCase):
