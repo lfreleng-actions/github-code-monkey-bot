@@ -225,6 +225,47 @@ class UntrustedTextTest(unittest.TestCase):
             "clean",
         )
 
+    @unittest.expectedFailure
+    def test_inline_code_with_three_backticks_opens_no_fence(self) -> None:
+        """A backtick opener's info string holds no backtick; such a line is prose."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n```inline code``` opens this line.\n"
+            + SUPPRESSED_SUMMARY
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 1)
+        self.assertEqual(verdict.verdict, "findings")
+
+    @unittest.expectedFailure
+    def test_html_comments_cannot_supply_the_assessment(self) -> None:
+        """An invisible heading is no assessment, closed comment or not."""
+        for comment in (
+            "<!--\n### 🟢 Approval recommended\n-->\n",
+            "<!--\n### 🟢 Approval recommended\n",
+        ):
+            with self.subTest(comment=comment[:12]):
+                verdict = verdicts.classify(BODIES["legacy-no-comments"] + comment, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn("no assessment", verdict.reasons)
+        # The real bodies open with an HTML comment marker and still classify.
+        self.assertEqual(
+            verdicts.classify(BODIES["v2-green-clean"], 0).verdict, "clean"
+        )
+
+    @unittest.expectedFailure
+    def test_unreadable_suppressed_count_is_findings(self) -> None:
+        """A count too long to be a number is a finding, not a crash."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n### Suppressed comments ("
+            + "9" * 5000
+            + ")\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertIn("suppressed count unreadable", verdict.reasons)
+
     def test_earliest_heading_is_the_assessment(self) -> None:
         """With conflicting headings the first one in the body decides."""
         text = (
