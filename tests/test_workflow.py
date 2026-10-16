@@ -1272,7 +1272,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
-    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
         """Issues scope the token to the repositories that exist; with a scan they fail."""
         budget = self.step("select", "budget")
@@ -1292,7 +1291,6 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
-    @unittest.expectedFailure
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 

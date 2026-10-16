@@ -832,7 +832,6 @@ class RepositoryMetaTest(ReadsCase):
         self.assertFalse(meta["public"])
         self.assertIsNone(meta["default_branch"])
 
-    @unittest.expectedFailure
     def test_empty_repository_reads_as_having_no_branch(self) -> None:
         """REST names a default branch even with no commits; the branch read settles it."""
         payload = {
@@ -856,7 +855,6 @@ class RepositoryMetaTest(ReadsCase):
             ["repos/org/empty", "repos/org/empty/branches/main"],
         )
 
-    @unittest.expectedFailure
     def test_branch_read_failure_propagates(self) -> None:
         """A server failure on the branch read is an error, not an empty repository."""
         payload = {"name": "alpha", "visibility": "public", "default_branch": "main"}

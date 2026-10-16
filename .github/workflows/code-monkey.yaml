@@ -237,6 +237,53 @@ jobs:
           owner: "${{ inputs.org }}"
           token: ''
 
+      # The token action finds the installation through the first
+      # repository in its scope, so an absent name there fails the mint
+      # before selection could say so. Public repositories answer the
+      # native token: a named issue's repository that does not exist,
+      # or is not public, leaves the scope here and the selector then
+      # records the issue as skipped. A scan repository that does not
+      # exist is an error either way; this names it plainly.
+      - name: 'Resolve named repositories'
+        id: named
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          ORG: "${{ inputs.org }}"
+          ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
+          REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
+        run: |
+          exists() {
+            local output status
+            set +e
+            output="$(gh api "repos/$ORG/$1" --jq .name 2>&1)"
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then return 0; fi
+            if grep -q 'HTTP 404' <<< "$output"; then return 1; fi
+            echo "::error::Could not read $ORG/$1: $output"
+            exit 2
+          }
+          IFS=, read -ra scan <<< "$REPOSITORIES"
+          for name in "${scan[@]}"; do
+            [ -n "$name" ] || continue
+            exists "$name" || {
+              echo "::error::repository $ORG/$name not found"; exit 1; }
+          done
+          IFS=, read -ra named <<< "$ISSUE_REPOSITORIES"
+          kept=()
+          for name in "${named[@]}"; do
+            [ -n "$name" ] || continue
+            if exists "$name"; then kept+=("$name"); fi
+          done
+          if [ -n "$ISSUE_REPOSITORIES" ] && [ "${#kept[@]}" -eq 0 ]; then
+            echo "::error::none of the named issues' repositories exist" \
+              "in $ORG: $ISSUE_REPOSITORIES"
+            exit 1
+          fi
+          joined=''
+          for name in "${kept[@]}"; do joined="${joined:+$joined,}$name"; done
+          echo "repositories=$joined" >> "$GITHUB_OUTPUT"
+
       - name: 'Check inputs'
         id: budget
         env:
@@ -251,7 +298,7 @@ jobs:
           # repositories instead.
           REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
           REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
-          ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
+          ISSUE_REPOSITORIES: "${{ steps.named.outputs.repositories }}"
           ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length

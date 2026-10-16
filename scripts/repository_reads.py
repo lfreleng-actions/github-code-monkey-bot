@@ -81,6 +81,16 @@ def repository_meta(org: str, name: str) -> dict[str, Any] | None:
         raise
     visibility = data.get("visibility")
     branch = data.get("default_branch")
+    default_branch = branch if isinstance(branch, str) and branch else None
+    # REST names a default branch for a repository with no commits;
+    # only the branch itself proves there is something to build on.
+    if default_branch is not None:
+        try:
+            github.api_object(f"repos/{org}/{name}/branches/{default_branch}")
+        except github.GitHubError as exc:
+            if not github.is_absent(exc):
+                raise
+            default_branch = None
     return {
         "name": github.require_str(data, "name", "repository"),
         "archived": bool(data.get("archived")),
@@ -89,5 +99,5 @@ def repository_meta(org: str, name: str) -> dict[str, Any] | None:
         "public": not data.get("private")
         and isinstance(visibility, str)
         and visibility.lower() == "public",
-        "default_branch": branch if isinstance(branch, str) and branch else None,
+        "default_branch": default_branch,
     }

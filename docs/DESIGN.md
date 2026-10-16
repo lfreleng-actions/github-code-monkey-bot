@@ -460,6 +460,11 @@ and the summary lists them, so a maintainer who named five issues
 and sees three in the matrix learns why. Issues and `repositories`
 exclude each other: the input check fails a run naming both. The read
 mint scopes to the issues' repositories plus the guidance repository.
+The token action finds the installation through the first repository
+in that scope, so a step before the mint reads each named repository
+with the native token and keeps the public ones that exist; a run
+whose named repositories all fail that read stops there, and the
+step names a scan repository that fails it.
 
 **Outputs.** `selection.json` lists, per chosen issue: repository,
 number, title, body, Priority, Type, labels, `created_at`, the
