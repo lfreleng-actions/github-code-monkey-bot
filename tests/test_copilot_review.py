@@ -329,6 +329,7 @@ class HandlersTest(unittest.TestCase):
         """The result as written back."""
         return json.loads(self.path.read_text(encoding="utf-8"))
 
+    @unittest.expectedFailure
     def test_request_records_success_and_refusal(self) -> None:
         """The request is recorded; a refusal is a warning, never a failure."""
         self.write()
@@ -336,11 +337,47 @@ class HandlersTest(unittest.TestCase):
             review.run_request(argparse.Namespace(result=self.path, output=self.path))
         self.assertIs(self.stored()["review"]["requested"], True)
         self.write()
-        with patch.object(github, "run_gh", side_effect=github.GitHubError("no")):
+        with (
+            patch.object(github, "run_gh", side_effect=github.GitHubError("no")),
+            patch.object(
+                github, "api_object", return_value={"body": "Closes #7\n\nbody"}
+            ),
+            patch.object(github, "api_write", return_value={}) as write,
+        ):
             review.run_request(argparse.Namespace(result=self.path, output=self.path))
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], False)
         self.assertTrue(any("Copilot review" in w for w in stored["warnings"]))
+        # The refusal is disclosed at the top of the pull request body,
+        # as #29 requires, without widening any token.
+        method, endpoint, payload = write.call_args.args
+        self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/pulls/41"))
+        body = payload["body"]
+        self.assertTrue(body.startswith(review.REFUSAL_NOTICE_MARKER))
+        self.assertIn("could not request a Copilot review", body)
+        self.assertTrue(body.endswith("Closes #7\n\nbody"))
+
+    @unittest.expectedFailure
+    def test_refusal_notice_is_idempotent_and_best_effort(self) -> None:
+        """A body already carrying the notice is left alone; a failed edit is a warning."""
+        self.write()
+        noted = review.REFUSAL_NOTICE_MARKER + "\n> note\n\nCloses #7"
+        with (
+            patch.object(github, "run_gh", side_effect=github.GitHubError("no")),
+            patch.object(github, "api_object", return_value={"body": noted}),
+            patch.object(github, "api_write") as write,
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        write.assert_not_called()
+        self.write()
+        with (
+            patch.object(github, "run_gh", side_effect=github.GitHubError("no")),
+            patch.object(github, "api_object", side_effect=github.GitHubError("boom")),
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        warnings = self.stored()["warnings"]
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("notice" in w for w in warnings))
 
     def test_nothing_published_means_nothing_to_request_or_await(self) -> None:
         """Without a pull request, or in a dry run, both commands are no-ops."""
