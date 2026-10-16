@@ -1559,6 +1559,16 @@ class TestingCallerContracts(WorkflowCase):
             with_["assets_ref"], "github.event.pull_request.head.sha"
         )
 
+    def test_manual_dry_run_takes_the_target_lists(self) -> None:
+        """A dispatch names repositories to scan or issues to work."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["issues"]["default"], "")
+        with_ = cast(dict[str, Any], self.jobs["dry-run"]["with"])
+        self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assert_expression(with_["issues"], "inputs.issues || ''")
+
     def test_callers_read_guidance_from_the_organisation_default(self) -> None:
         """Test runs use the reusable default, <org>/.github at main.
 

@@ -13,6 +13,10 @@ on:
         description: 'Repositories for the manual dry-run (commas/spaces)'
         type: string
         default: ''
+      issues:
+        description: 'Issues for the manual dry-run instead of a scan'
+        type: string
+        default: ''
       max_pull_requests:
         description: 'Pull requests to attempt in the manual dry-run'
         type: string
@@ -77,6 +81,7 @@ jobs:
       max_runtime_minutes: '60'
       max_concurrent_agents: '2'
       repositories: "${{ inputs.repositories || '' }}"
+      issues: "${{ inputs.issues || '' }}"
       egress_policy: 'block'
       # yamllint disable-line rule:line-length
       egress_allow_config: '@ac32415b91e0b6db1166bc451024c472cdbcbd3d'  # v0.16.8
