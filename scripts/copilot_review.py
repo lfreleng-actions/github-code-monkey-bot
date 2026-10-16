@@ -43,6 +43,10 @@ READ_BUDGET_SECONDS = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
 # A hit costs the review listing, the thread count and the head check.
 RESERVE_SECONDS = 3 * READ_BUDGET_SECONDS
 PULL_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
+# A refused review request is disclosed at the top of the pull request
+# body (#29), once; the marker makes a retry idempotent.
+REFUSAL_NOTICE_MARKER = "<!-- code-monkey review-request-refused -->"
+MAX_PR_BODY = 65_536
 
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -87,6 +91,34 @@ def request_review(repository: str, number: int) -> str | None:
         )
     except github.GitHubError as exc:
         return f"could not request a Copilot review: {github.safe_message(exc)}"
+    return None
+
+
+def add_refusal_notice(repository: str, number: int, warning: str) -> str | None:
+    """Put the refusal at the top of the pull request body, once; warn on failure.
+
+    The notice tells a maintainer the review they expect was never
+    requested, in the place they read first. Best effort with the
+    token the publish already holds: no permission widens for it.
+    """
+    try:
+        data = github.api_object(f"repos/{repository}/pulls/{number}")
+        body = data.get("body")
+        current = body if isinstance(body, str) else ""
+        if current.startswith(REFUSAL_NOTICE_MARKER):
+            return None
+        notice = (
+            f"{REFUSAL_NOTICE_MARKER}\n> **INFO** The workflow {warning}; "
+            "no Copilot review was requested for this pull request, so a "
+            "maintainer should request one.\n\n"
+        )
+        if len(notice) + len(current) > MAX_PR_BODY:
+            return "could not add the review notice: the body is at its size limit"
+        github.api_write(
+            "PATCH", f"repos/{repository}/pulls/{number}", {"body": notice + current}
+        )
+    except github.GitHubError as exc:
+        return f"could not add the review notice: {github.safe_message(exc)}"
     return None
 
 
@@ -288,7 +320,11 @@ def run_request(args: argparse.Namespace) -> None:
     record["requested"] = warning is None
     result["review"] = record
     if warning is not None:
-        cast("list[Any]", result.setdefault("warnings", [])).append(warning)
+        warnings = cast("list[Any]", result.setdefault("warnings", []))
+        warnings.append(warning)
+        notice = add_refusal_notice(*target, warning)
+        if notice is not None:
+            warnings.append(notice)
     write_result(args.output, result)
     print(f"review request: {'sent' if warning is None else 'refused'}")
 

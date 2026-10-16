@@ -329,7 +329,6 @@ class HandlersTest(unittest.TestCase):
         """The result as written back."""
         return json.loads(self.path.read_text(encoding="utf-8"))
 
-    @unittest.expectedFailure
     def test_request_records_success_and_refusal(self) -> None:
         """The request is recorded; a refusal is a warning, never a failure."""
         self.write()
@@ -357,7 +356,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
 
-    @unittest.expectedFailure
     def test_refusal_notice_is_idempotent_and_best_effort(self) -> None:
         """A body already carrying the notice is left alone; a failed edit is a warning."""
         self.write()

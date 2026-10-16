@@ -263,7 +263,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("suppressed count unreadable", verdict.reasons)
 
-    @unittest.expectedFailure
     def test_hidden_fence_opener_hides_nothing_visible(self) -> None:
         """A fence opener inside a closed comment opens no fence outside it."""
         text = (
@@ -275,7 +274,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 2)
         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_inline_code_opens_no_comment(self) -> None:
         """A comment opener inside inline code is prose, and hides nothing."""
         text = (
