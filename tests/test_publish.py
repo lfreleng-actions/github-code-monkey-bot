@@ -245,6 +245,62 @@ class CommentBodyTest(unittest.TestCase):
                 self.assertIn("https://run", text or "")
                 self.assertNotIn("eligible", text or "")
 
+    @unittest.expectedFailure
+    def test_review_verdict_is_stated(self) -> None:
+        """The comment says what Copilot's review of the head concluded."""
+        clean = comments.comment_body(
+            result_json(review=review_record("clean", assessment="approval")), ""
+        )
+        self.assertIn("pull request", clean or "")
+        self.assertIn("Copilot review of it is clean", clean or "")
+        findings = comments.comment_body(
+            result_json(
+                review=review_record(
+                    "findings", assessment="changes", unresolved_threads=2, suppressed=1
+                )
+            ),
+            "",
+        )
+        self.assertIn("2 unresolved review threads", findings or "")
+        self.assertIn("1 suppressed finding", findings or "")
+        self.assertIn("changes recommended", findings or "")
+        self.assertIn("a maintainer must act", findings or "")
+        self.assertNotIn("ready", (findings or "").lower())
+        pending = comments.comment_body(
+            result_json(review=review_record("pending")), ""
+        )
+        self.assertIn("no Copilot review", pending or "")
+        self.assertNotIn("clean", pending or "")
+
+    @unittest.expectedFailure
+    def test_unrecognised_review_record_reads_as_pending(self) -> None:
+        """A record the publisher does not know is never read as clean."""
+        for record in (
+            {"verdict": "approved"},
+            {"verdict": "clean", "extra": 1},
+            "clean",
+        ):
+            with self.subTest(record=record):
+                text = comments.comment_body(result_json(review=record), "") or ""
+                self.assertNotIn("is clean", text)
+                self.assertIn("no Copilot review", text)
+
+
+def review_record(verdict: str, **overrides: Any) -> dict[str, Any]:
+    """The ``review`` record result.json carries (DESIGN.md 18.4)."""
+    record: dict[str, Any] = {
+        "verdict": verdict,
+        "assessment": None,
+        "unresolved_threads": 0,
+        "suppressed": 0,
+        "reasons": [],
+        "review_id": 5 if verdict != "pending" else None,
+        "commit_id": "e" * 40,
+        "requested": True,
+    }
+    record.update(overrides)
+    return record
+
 
 class RunPushTest(NoNetworkCase):
     """``run_push`` gates fork writes on verdict, dry-run and mode."""
@@ -1040,6 +1096,33 @@ class RunCommentTest(NoNetworkCase):
             )
         write.assert_called_once()
 
+    @unittest.expectedFailure
+    def test_marker_carries_the_review_verdict(self) -> None:
+        """A rerun whose review verdict changed is a new outcome, not a repeat."""
+        path = self.write_result(
+            result_json(bot_login=BOT, review=review_record("findings"))
+        )
+        earlier = {
+            "user": {"login": BOT},
+            "body": "<!-- code-monkey https://run proposed review=pending -->",
+            "html_url": "https://x/c/1",
+        }
+        with (
+            patch.object(reads, "api_page", return_value=[earlier]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/2"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_called_once()
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith("<!-- code-monkey https://run proposed review=findings -->")
+        )
+
     def test_dry_run_and_silent_verdicts_skip(self) -> None:
         """Dry run and results with nothing to say post nothing."""
         for data in (result_json(dry_run=True), result_json(verdict="weird")):
@@ -1301,6 +1384,37 @@ class RunReportTest(NoNetworkCase):
             )
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
+
+    @unittest.expectedFailure
+    def test_review_column_and_totals(self) -> None:
+        """Each row states the Copilot verdict; the summary counts them."""
+        results = self.root / "results"
+        for key, record in (
+            ("a-1", review_record("clean", assessment="approval")),
+            ("b-2", review_record("findings", unresolved_threads=1)),
+            ("c-3", None),
+        ):
+            directory = results / key
+            directory.mkdir(parents=True)
+            data = result_json(key=key)
+            if record is not None:
+                data["review"] = record
+            (directory / "result.json").write_text(json.dumps(data), encoding="utf-8")
+        md = self.root / "report.md"
+        out = self.root / "report.json"
+        reporting.run_report(
+            argparse.Namespace(results=results, output_md=md, output_json=out)
+        )
+        text = md.read_text(encoding="utf-8")
+        self.assertIn("| Copilot review |", text)
+        self.assertIn("| clean |", text)
+        self.assertIn("| findings |", text)
+        self.assertIn("Copilot reviews: clean 1, findings 1, pending 0, none 1.", text)
+        report = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(
+            report["review_totals"],
+            {"clean": 1, "findings": 1, "pending": 0, "none": 1},
+        )
 
     def test_dry_run_row(self) -> None:
         """A dry-run proposed result shows ``dry run`` instead of a URL."""

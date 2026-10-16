@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import sys
+import tempfile
 import unittest
 from importlib import import_module
 from pathlib import Path
@@ -218,6 +221,92 @@ class AwaitReviewTest(unittest.TestCase):
         )
         self.assertEqual(review.RESERVE_SECONDS, 2 * worst)
         self.assertLess(review.RESERVE_SECONDS, review.DEFAULT_WAIT_MINUTES * 60 / 2)
+
+
+class HandlersTest(unittest.TestCase):
+    """The publish.py commands that wrap the request and the wait."""
+
+    def setUp(self) -> None:
+        """A result.json for a published pull request, in a scratch directory."""
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.root = Path(holder.name)
+        self.path = self.root / "result.json"
+
+    def write(self, **overrides: Any) -> None:
+        """Write a proposed, published result."""
+        data: dict[str, Any] = {
+            "schema": 1,
+            "key": "repo-7",
+            "repository": REPO,
+            "issue": 7,
+            "verdict": "proposed",
+            "reasons": [],
+            "warnings": [],
+            "dry_run": False,
+            "mode": "pull-requests",
+            "pull_request_url": f"https://github.com/{REPO}/pull/41",
+        }
+        data.update(overrides)
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+
+    def stored(self) -> dict[str, Any]:
+        """The result as written back."""
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    @unittest.expectedFailure
+    def test_request_records_success_and_refusal(self) -> None:
+        """The request is recorded; a refusal is a warning, never a failure."""
+        self.write()
+        with patch.object(github, "run_gh", return_value=""):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        self.assertIs(self.stored()["review"]["requested"], True)
+        self.write()
+        with patch.object(github, "run_gh", side_effect=github.GitHubError("no")):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        stored = self.stored()
+        self.assertIs(stored["review"]["requested"], False)
+        self.assertTrue(any("Copilot review" in w for w in stored["warnings"]))
+
+    @unittest.expectedFailure
+    def test_nothing_published_means_nothing_to_request_or_await(self) -> None:
+        """Without a pull request, or in a dry run, both commands are no-ops."""
+        for overrides in ({"pull_request_url": None}, {"dry_run": True}):
+            with self.subTest(overrides=overrides):
+                self.write(**overrides)
+                with patch.object(
+                    github, "run_gh", side_effect=AssertionError("no network")
+                ):
+                    review.run_request(
+                        argparse.Namespace(result=self.path, output=self.path)
+                    )
+                    review.run_await(
+                        argparse.Namespace(
+                            result=self.path, output=self.path, wait_minutes=1
+                        )
+                    )
+                self.assertNotIn("review", self.stored())
+
+    @unittest.expectedFailure
+    def test_await_records_the_verdict_against_the_head(self) -> None:
+        """The record names the verdict, counts, review id and the head it judged."""
+        self.write(review={"requested": True})
+        listing = [copilot(9, HEAD, BODIES["v2-blue-with-findings"])]
+        with (
+            patch.object(github, "api_object", return_value={"head": {"sha": HEAD}}),
+            patch.object(github, "api_list", return_value=listing),
+            patch.object(github, "graphql", return_value=threads_reply([False])),
+        ):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        record = self.stored()["review"]
+        self.assertEqual(record["verdict"], "findings")
+        self.assertEqual(record["assessment"], "closer-look")
+        self.assertEqual(record["unresolved_threads"], 1)
+        self.assertEqual(record["review_id"], 9)
+        self.assertEqual(record["commit_id"], HEAD)
+        self.assertIs(record["requested"], True)
 
 
 if __name__ == "__main__":

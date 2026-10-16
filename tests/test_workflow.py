@@ -681,6 +681,76 @@ class PromptReviewContracts(ReusableWorkflowCase):
         self.assertEqual(skip_instructions(prompt), [])
 
 
+class ReviewGateContracts(ReusableWorkflowCase):
+    """The publish job requests, awaits and reports the Copilot review.
+
+    AGENTS.md section 11.6: a pipeline that publishes a pull request
+    waits for the review of what it pushed and reports a review with
+    findings as work outstanding, never as complete.
+    """
+
+    @unittest.expectedFailure
+    def test_request_review_input(self) -> None:
+        """The gate is on by default and a caller may switch it off."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["request_review"]["type"], "boolean")
+        self.assertIs(inputs["request_review"]["default"], True)
+
+    @unittest.expectedFailure
+    def test_request_uses_the_pull_request_token_after_open(self) -> None:
+        """The request is a write to the target: the pull request token alone."""
+        step = self.step("publish", "review-request")
+        condition = unwrap(str(step["if"]))
+        self.assertIn("steps.open.outcome == 'success'", condition)
+        self.assertIn("inputs.request_review", condition)
+        self.assert_expression(step["env"]["GH_TOKEN"], "steps.pr-token.outputs.token")
+        self.assertIn("publish.py review-request", flatten(step["run"]))
+        self.assertLess(
+            self.position("publish", "open"), self.position("publish", "review-request")
+        )
+
+    @unittest.expectedFailure
+    def test_wait_reads_with_the_native_token_and_fits_the_job(self) -> None:
+        """The wait reads a public target with the job's own token, within its budget."""
+        step = self.step("publish", "review")
+        condition = unwrap(str(step["if"]))
+        self.assertIn("steps.open.outcome == 'success'", condition)
+        self.assertIn("inputs.request_review", condition)
+        self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
+        script = flatten(step["run"])
+        self.assertIn("publish.py review-await", script)
+        found = re.search(r"--wait-minutes (\d+)", script)
+        assert found is not None
+        wait = int(found.group(1))
+        self.assertGreaterEqual(wait, 15)
+        # The job must outlast the wait, its read reserve (under seven
+        # minutes) and the twenty minutes the rest of the job had.
+        self.assertGreaterEqual(self.jobs["publish"]["timeout-minutes"], wait + 27)
+        order = [
+            self.position("publish", name)
+            for name in ("open", "review-request", "review", "Comment on the issue")
+        ]
+        self.assertEqual(order, sorted(order))
+
+    @unittest.expectedFailure
+    def test_caller_forwards_the_gate_on_by_default(self) -> None:
+        """The cron form offers the switch; schedules and dispatches default on."""
+        cron = cast(
+            dict[str | bool, Any], yaml.safe_load(CRON.read_text(encoding="utf-8"))
+        )
+        inputs = cast(
+            dict[str, dict[str, Any]], cron[TRIGGERS]["workflow_dispatch"]["inputs"]
+        )
+        self.assertIs(inputs["request_review"]["default"], True)
+        with_ = cast(dict[str, Any], cron["jobs"]["code-monkey"]["with"])
+        self.assert_expression(
+            with_["request_review"],
+            "github.event_name != 'workflow_dispatch' || inputs.request_review",
+        )
+
+
 class PublishJobContracts(ReusableWorkflowCase):
     """The trusted publisher: verify before fetch, App tokens per repository."""
 
