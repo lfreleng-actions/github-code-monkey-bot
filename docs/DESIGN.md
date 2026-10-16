@@ -437,6 +437,25 @@ and the selector receives the split lists, never the raw inputs; it
 still checks each name against `[A-Za-z0-9_.-]+`, so its own tests
 stand behind the splitter's.
 
+**Explicit issues.** When `issues` names one or more issues, the run
+works those and scans nothing. The splitter accepts `repo#N`,
+`owner/repo#N`, `repo/issues/N` and the issue URL, refuses a
+reference to another owner, and publishes each as `owner/repo#N`;
+the selector reads that form and nothing else. Naming an issue is an
+operator's decision, so the triage signals do not apply: no Type,
+label, assignee or category filter, no ranking, and no
+one-per-repository rule, since the operator chose the set. What
+remains is what the pipeline cannot work around: a repository the
+author job cannot clone or the publisher cannot fork (archived,
+template, fork, non-public or empty), a closed issue, the `no-agent`
+opt-out, an open bot pull request from an earlier attempt, and an
+open pull request linked to close the issue. The selection records
+every named issue it skipped with its reason, in `skipped_issues`,
+and the summary lists them, so a maintainer who named five issues
+and sees three in the matrix learns why. Issues and `repositories`
+exclude each other: the input check fails a run naming both. The read
+mint scopes to the issues' repositories plus the guidance repository.
+
 **Outputs.** `selection.json` lists, per chosen issue: repository,
 number, title, body, Priority, Type, labels, `created_at`, the
 `main` HEAD SHA observed at selection time, and the comments that
@@ -793,6 +812,7 @@ For each selected issue:
 | `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
 | `repositories` | string | `''` | Commas and/or spaces; split per §6 |
+| `issues` | string | `''` | Issues to work instead of scanning (§6) |
 | `exclude_repos` | string | `''` | Same form; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
@@ -827,8 +847,8 @@ outside the stated ranges.
 | `include_assigned` | boolean | `false` |
 | `load_repo_skills` | boolean | `false` |
 | `repositories` | string | `''` |
-| `bugs`, `features`, `docs`, `ci` | boolean | `true` |
-| `code_quality`, `refactor`, `performance`, `other` | boolean | `true` |
+| `issues` | string | `''` |
+| `categories` | string | `'all'` |
 
 The `model` choice shows display names and the caller maps them to
 the identifiers in §10.3. The schedule runs `pull-requests` mode
@@ -837,12 +857,12 @@ stays dry-run, the path triage took.
 
 `max_pull_requests` semantics: `1` raises at most one pull request,
 `20` at most twenty, and `0` lifts the cap as far as the matrix
-limit; anything non-numeric or negative fails the select job. The
-eight category switches build the `categories` list: untick all but
-`docs` for a run that fixes documentation alone. A schedule passes no inputs,
-which counts as every category enabled; a dispatch with every switch
-off fails before selection. The form holds 19 inputs, within
-GitHub's limit of 25.
+limit; anything non-numeric or negative fails the select job.
+`categories` passes straight through: `docs` for a run that fixes
+documentation alone, `all` or blank for everything, which is what a
+schedule, passing no inputs, gets. The form holds 13 inputs, within
+GitHub's limit of 25; the lists `issues` and `repositories` take the
+place of what used to be one boolean per category.
 
 ### 9.3 Mode and dry-run matrix
 
@@ -1056,6 +1076,8 @@ AGENTS.md                                organisation stub (§12 there)
 config/excluded-repos.txt                repositories to skip
 config/coauthors.json                    model prefix to trailer (§10.3)
 scripts/select_issues.py                 selection policy
+scripts/selection_inputs.py              list and cap input parsing
+scripts/explicit_issues.py               named issues (§6)
 scripts/issue_categories.py              category switches and matching
 scripts/selection_outputs.py             selection files and summary
 scripts/issue_reads.py                   GitHub reads for selection
@@ -1203,6 +1225,9 @@ cross-checked against the trusted `selection.json`.
               "assigned": 2, "label": 5, "category": 0,
               "attempted": 1, "linked_pr": 0, "repository": 12,
               "one_per_repo": 30, "cap": 15},
+  "explicit_repositories": [],
+  "explicit_issues": [],
+  "skipped_issues": [],
   "issues": [
     {
       "key": "sbom-action-40",
@@ -1232,7 +1257,10 @@ cross-checked against the trusted `selection.json`.
 ```
 
 `key` is `<repo_name>-<number>` and doubles as the matrix key and
-the artifact-name suffix. Beside it the select job writes
+the artifact-name suffix. `explicit_issues` holds the named issues
+as `owner/repo#N`, in the order given, and `skipped_issues` one
+`{issue, reason}` per named issue the selection dropped; both are
+empty on a scan. Beside it the select job writes
 `matrix.json` (`{"include": [{key, repository, repo_name, number,
 base_sha, branch}]}`), `agents.md` (the guidance bytes whose SHA-256 the
 `guidance` block records) and `excluded-repos.txt`. The job outputs
@@ -1350,7 +1378,8 @@ the secret that supplies the key.
 
 ```text
 select_issues.py --org ORG --output-dir DIR --mode MODE --model ID
-    [--dry-run] [--repositories "a, b"] [--exclude-file PATH]
+    [--dry-run] [--repositories "a, b"] [--issues "o/r#1,o/r#2"]
+    [--exclude-file PATH]
     [--exclude-repos "a,b"] [--include-dotgithub] [--include-assigned]
     --max-pull-requests N [--categories LIST]
     --guidance-repository O/R [--guidance-ref REF]

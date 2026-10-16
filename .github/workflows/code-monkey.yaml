@@ -71,6 +71,12 @@ on:
         description: 'Repositories to scan; commas and/or spaces'
         type: string
         default: ''
+      issues:
+        description: >-
+          Issues to work instead of scanning: repo#N, owner/repo#N,
+          repo/issues/N or URLs; commas and/or spaces
+        type: string
+        default: ''
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -195,11 +201,12 @@ jobs:
           [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]]
           echo "created_at=$created" >> "$GITHUB_OUTPUT"
 
-      # Operator lists: commas, spaces or newlines between bare names
-      # of the target owner. Each splits offline, with no token, and a
-      # bad name fails the run before the App key is used, every
+      # Operator lists: commas, spaces or newlines between items of
+      # the target owner. Each splits offline, with no token, and a
+      # bad item fails the run before the App key is used, every
       # mistake reported at once. Repeats collapse without regard to
-      # case, as GitHub compares repository names.
+      # case, as GitHub compares repository names; an issue publishes
+      # as owner/repo#N whichever of the accepted spellings named it.
       - name: 'Split repositories'
         id: repositories
         # yamllint disable-line rule:line-length
@@ -220,6 +227,16 @@ jobs:
           owner: "${{ inputs.org }}"
           token: ''
 
+      - name: 'Split issues'
+        id: issues
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/list-splitter-action@b56a625474875d05ca8d1c1eb3314c29c526c9a6 # v0.1.0
+        with:
+          list: "${{ inputs.issues }}"
+          validate: 'issue'
+          owner: "${{ inputs.org }}"
+          token: ''
+
       - name: 'Check inputs'
         id: budget
         env:
@@ -230,8 +247,12 @@ jobs:
           MODEL: "${{ inputs.model }}"
           # Already split, checked and comma-joined, as the App token
           # action takes it; empty keeps the read token organisation-wide,
-          # which the scan needs.
+          # which the scan needs. Named issues scope it to their own
+          # repositories instead.
           REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
+          REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
+          ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
+          ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -252,7 +273,11 @@ jobs:
             echo '::error::model must be a lower-case identifier'; exit 1; }
           # Expressions cannot add, so the job budget (session plus
           # toolchain setup and upload) is computed here.
-          repositories="$REPOSITORIES"
+          if [ "$ISSUE_COUNT" != 0 ] && [ "$REPOSITORY_COUNT" != 0 ]; then
+            echo '::error::issues and repositories cannot both be given'
+            exit 1
+          fi
+          repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
           # A scoped token must still reach the guidance repository
           # when it lives in the same organisation.
           guidance_owner="${GUIDANCE_REPOSITORY%%/*}"
@@ -393,6 +418,7 @@ jobs:
           MODEL: "${{ inputs.model }}"
           DRY_RUN: "${{ inputs.dry_run }}"
           REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
+          ISSUES: "${{ steps.issues.outputs.csv }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
@@ -415,6 +441,7 @@ jobs:
             --org "$ORG" --output-dir artefacts \
             --mode "$MODE" --model "$MODEL" \
             --repositories "$REPOSITORIES" \
+            --issues "$ISSUES" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \

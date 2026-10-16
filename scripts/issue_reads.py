@@ -188,6 +188,7 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
     state = issue.get("state")
     if state not in ("open", "closed"):
         raise github.GitHubError(f"{repo}#{number}: unexpected state {state!r}")
+    association = issue.get("author_association")
     return {
         "state": state,
         "title": github.require_str(issue, "title", "issue"),
@@ -196,6 +197,11 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
         "type": type_name,
         "assignees": assignees,
         "priority": read_priority(repo, number),
+        # The scan reads these from the search payload; a named issue
+        # has no search payload, so the direct read supplies them.
+        "url": github.require_str(issue, "html_url", "issue"),
+        "created_at": github.require_str(issue, "created_at", "issue"),
+        "author_association": association if isinstance(association, str) else None,
     }
 
 

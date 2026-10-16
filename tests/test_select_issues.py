@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
 reads = import_module("issue_reads")
 select = import_module("select_issues")
+explicit_targets = import_module("explicit_issues")
+inputs = import_module("selection_inputs")
 categories = import_module("issue_categories")
 
 ALL = frozenset(categories.ALL_CATEGORIES)
@@ -144,38 +146,36 @@ class ParseRepositoriesTest(unittest.TestCase):
 
     def test_mixed_separators(self) -> None:
         """Commas and whitespace both separate; empties vanish."""
-        self.assertEqual(select.parse_repositories("a, b c,,d"), ["a", "b", "c", "d"])
+        self.assertEqual(inputs.parse_repositories("a, b c,,d"), ["a", "b", "c", "d"])
 
     def test_case_folding_and_dedup(self) -> None:
         """Names fold to lower case and repeats collapse, keeping order."""
-        self.assertEqual(select.parse_repositories("Foo bar FOO Bar"), ["foo", "bar"])
+        self.assertEqual(inputs.parse_repositories("Foo bar FOO Bar"), ["foo", "bar"])
 
     def test_empty_text(self) -> None:
         """Whitespace only yields no names."""
-        self.assertEqual(select.parse_repositories("  \n "), [])
+        self.assertEqual(inputs.parse_repositories("  \n "), [])
 
     def test_rejects_bad_names(self) -> None:
         """Traversal, slashes and punctuation are refused."""
         for bad in ("..", ".", "a/b", "x y!", "a,b/c"):
             with self.subTest(bad=bad), self.assertRaises(reads.SelectionError):
-                select.parse_repositories(bad)
+                inputs.parse_repositories(bad)
 
 
 class ParseIssuesTest(unittest.TestCase):
-    """``parse_issues`` reads the splitter's canonical ``owner/repo#N`` form."""
+    """``explicit_issues.parse_issues`` reads the splitter's canonical ``owner/repo#N`` form."""
 
-    @unittest.expectedFailure
     def test_order_kept_and_repeats_dropped(self) -> None:
         """Items keep the given order; case differences are repeats."""
         self.assertEqual(
-            select.parse_issues(
+            explicit_targets.parse_issues(
                 "org/beta#2, Org/Alpha#1 org/alpha#1\norg/beta#3", "org"
             ),
             [("beta", 2), ("alpha", 1), ("beta", 3)],
         )
-        self.assertEqual(select.parse_issues("  ", "org"), [])
+        self.assertEqual(explicit_targets.parse_issues("  ", "org"), [])
 
-    @unittest.expectedFailure
     def test_rejects_other_owners_and_bad_forms(self) -> None:
         """A stranger's issue, a bad number or an unexpected spelling fails."""
         for text in (
@@ -186,7 +186,7 @@ class ParseIssuesTest(unittest.TestCase):
             "org/a b#1",
         ):
             with self.subTest(text=text), self.assertRaises(reads.SelectionError):
-                select.parse_issues(text, "org")
+                explicit_targets.parse_issues(text, "org")
 
 
 class ExplicitIssuesTest(NoSubprocessCase):
@@ -268,7 +268,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
             ]
         )
 
-    @unittest.expectedFailure
     def test_named_issues_are_worked_in_order_without_triage_filters(self) -> None:
         """No scan, no Type, label, assignee, category or one-per-repository rule."""
         selection, _ = select.build_selection(
@@ -309,7 +308,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertIn("closed", reasons["org/delta#5"])
         self.assertIn("no-agent", reasons["org/delta#6"])
 
-    @unittest.expectedFailure
     def test_prior_attempt_is_named(self) -> None:
         """An issue with an open bot pull request is skipped with a reason."""
         patch.object(reads, "prior_attempt", return_value="pull_request").start()
@@ -318,13 +316,11 @@ class ExplicitIssuesTest(NoSubprocessCase):
         (entry,) = selection["skipped_issues"]
         self.assertIn("pull request", entry["reason"])
 
-    @unittest.expectedFailure
     def test_issues_and_repositories_exclude_each_other(self) -> None:
         """Naming issues and repositories at once is refused."""
         with self.assertRaises(reads.SelectionError):
             select.build_selection(self.args("org/alpha#3", repositories="alpha"))
 
-    @unittest.expectedFailure
     def test_summary_lists_skipped_issues(self) -> None:
         """The step summary names each skipped issue and its reason."""
         selection, _ = select.build_selection(self.args("org/gamma#4"))
@@ -338,17 +334,17 @@ class ParseMaxPullRequestsTest(unittest.TestCase):
 
     def test_zero_lifts_cap(self) -> None:
         """Zero is valid and means unbounded."""
-        self.assertEqual(select.parse_max_pull_requests("0"), 0)
+        self.assertEqual(inputs.parse_max_pull_requests("0"), 0)
 
     def test_positive(self) -> None:
         """A positive integer, with surrounding whitespace, parses."""
-        self.assertEqual(select.parse_max_pull_requests(" 10 "), 10)
+        self.assertEqual(inputs.parse_max_pull_requests(" 10 "), 10)
 
     def test_rejects_invalid(self) -> None:
         """Negatives, words and empty strings are refused."""
         for bad in ("-1", "ten", "", "1.5"):
             with self.subTest(bad=bad), self.assertRaises(reads.SelectionError):
-                select.parse_max_pull_requests(bad)
+                inputs.parse_max_pull_requests(bad)
 
 
 class LoadExclusionsTest(unittest.TestCase):
@@ -360,7 +356,7 @@ class LoadExclusionsTest(unittest.TestCase):
             file = Path(tmp) / "ex.txt"
             file.write_text("from-file\n", encoding="utf-8")
             self.assertEqual(
-                select.load_exclusions(file, "Over, ride"), ["over", "ride"]
+                inputs.load_exclusions(file, "Over, ride"), ["over", "ride"]
             )
 
     def test_file_comments_and_blanks(self) -> None:
@@ -371,20 +367,20 @@ class LoadExclusionsTest(unittest.TestCase):
                 "# heading\n\nAlpha  # trailing\n  \nbeta, Gamma\n", encoding="utf-8"
             )
             self.assertEqual(
-                select.load_exclusions(file, ""), ["alpha", "beta", "gamma"]
+                inputs.load_exclusions(file, ""), ["alpha", "beta", "gamma"]
             )
 
     def test_no_file_no_override(self) -> None:
         """Nothing configured means nothing excluded."""
-        self.assertEqual(select.load_exclusions(None, "  "), [])
+        self.assertEqual(inputs.load_exclusions(None, "  "), [])
 
     def test_non_file_raises(self) -> None:
         """A missing path or a directory is an operational failure."""
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(reads.SelectionError):
-                select.load_exclusions(Path(tmp) / "absent", "")
+                inputs.load_exclusions(Path(tmp) / "absent", "")
             with self.assertRaises(reads.SelectionError):
-                select.load_exclusions(Path(tmp), "")
+                inputs.load_exclusions(Path(tmp), "")
 
 
 class RankKeyTest(unittest.TestCase):

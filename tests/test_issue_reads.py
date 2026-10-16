@@ -366,6 +366,9 @@ class IssueDetailsTest(ReadsCase):
             "labels": [{"name": "bug"}, "enhancement"],
             "type": {"name": "Bug"},
             "assignees": [{"login": "alice"}, {"login": 5}, "bob"],
+            "html_url": "https://github.com/org/repo/issues/7",
+            "created_at": "2026-01-07T00:00:00Z",
+            "author_association": "MEMBER",
         }
         data.update(overrides)
         return data
@@ -406,6 +409,9 @@ class IssueDetailsTest(ReadsCase):
                 "type": "Bug",
                 "assignees": ["alice"],
                 "priority": "High",
+                "url": "https://github.com/org/repo/issues/7",
+                "created_at": "2026-01-07T00:00:00Z",
+                "author_association": "MEMBER",
             },
         )
 

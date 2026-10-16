@@ -1249,7 +1249,6 @@ class ListInputContracts(ReusableWorkflowCase):
         "issues": ("issues", "issue"),
     }
 
-    @unittest.expectedFailure
     def test_each_list_is_split_as_objects_of_the_org(self) -> None:
         """Names or references of the trusted owner, offline, with no token."""
         self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
@@ -1264,7 +1263,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertEqual(with_["token"], "")
                 self.assertNotIn("verify", with_)
 
-    @unittest.expectedFailure
     def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
         """A bad name fails the run before the App key is used."""
         check = self.position("select", "budget")
@@ -1274,7 +1272,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
-    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
         """Issues scope the token to their repositories; with a scan they fail."""
         budget = self.step("select", "budget")
@@ -1332,7 +1329,6 @@ class ListInputContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
-    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -1415,7 +1411,6 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
 
-    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2 with safe defaults."""
         inputs = cast(
@@ -1457,7 +1452,6 @@ class CronCallerContracts(WorkflowCase):
         # GitHub caps a dispatch form at 25 inputs.
         self.assertLessEqual(len(inputs), 25)
 
-    @unittest.expectedFailure
     def test_categories_and_targets_are_forwarded_as_typed(self) -> None:
         """One categories string and the target lists reach the reusable workflow."""
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])

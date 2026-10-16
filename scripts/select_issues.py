@@ -5,11 +5,13 @@
 
 Runs in the trusted select job with a read token. Scans the open
 issues of an owner, drops the ones policy excludes, ranks the rest
-by Priority then age, keeps one per repository, and caps the list.
-For each survivor it records the default-branch SHA the agent will
-build on, the filtered comments, and the branch name the publisher
-will create. It also fetches the organisation's ``AGENTS.md`` at a
-recorded commit so the author job never reads it live.
+by Priority then age, keeps one per repository, and caps the list;
+or, when the caller names issues, works those alone in the order
+given (``explicit_issues``). For each survivor it records the
+default-branch SHA the agent will build on, the filtered comments,
+and the branch name the publisher will create. It also fetches the
+organisation's ``AGENTS.md`` at a recorded commit so the author job
+never reads it live.
 
 Outputs in ``--output-dir``: ``selection.json``, ``matrix.json``,
 ``agents.md``, ``excluded-repos.txt`` and ``selection-summary.md``.
@@ -21,22 +23,26 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import explicit_issues as explicit_targets
 import fork_orgs as forks
 import issue_categories as categories
 import issue_reads as reads
 import selection_outputs as outputs
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
+from selection_inputs import (
+    load_exclusions,
+    parse_max_pull_requests,
+    parse_repositories,
+)
 
 SCHEMA = 1
-REPO_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 PRIORITY_RANK = {"Urgent": 0, "High": 1, "Medium": 2, "Low": 3}
 SKIP_LABELS = frozenset({"question", "breaking-change", "chore", "no-agent"})
 BRANCH_PREFIX = "code-monkey/issue-"
@@ -48,45 +54,6 @@ MATRIX_LIMIT = 256
 # that, so the cumulative serialised size stops the selection first,
 # with headroom for the header fields and indentation.
 MAX_SELECTION_BYTES = 12 * 1024 * 1024
-
-
-def parse_repositories(text: str) -> list[str]:
-    """Split a repository list on commas and whitespace, in given order."""
-    names: list[str] = []
-    for token in re.split(r"[,\s]+", text.strip()):
-        if not token:
-            continue
-        if not REPO_NAME_RE.fullmatch(token) or token in (".", ".."):
-            raise SelectionError(f"invalid repository name {token!r}")
-        lowered = token.lower()
-        if lowered not in names:
-            names.append(lowered)
-    return names
-
-
-def load_exclusions(file: Path | None, override: str) -> list[str]:
-    """Resolve the exclusion list: an explicit override beats the bundled file."""
-    if override.strip():
-        return parse_repositories(override)
-    if file is None:
-        return []
-    if not file.is_file():
-        raise SelectionError(f"exclusion file {file} is not a regular file")
-    names: list[str] = []
-    for line in file.read_text(encoding="utf-8").splitlines():
-        stripped = line.split("#", 1)[0].strip()
-        if stripped:
-            names.extend(parse_repositories(stripped))
-    return names
-
-
-def parse_max_pull_requests(text: str) -> int:
-    """Accept a non-negative integer; zero lifts the cap."""
-    if not re.fullmatch(r"\d+", text.strip()):
-        raise SelectionError(
-            f"max_pull_requests must be a non-negative integer, got {text!r}"
-        )
-    return int(text)
 
 
 def rank_key(candidate: dict[str, Any]) -> tuple[int, str, str, int]:
@@ -202,8 +169,22 @@ def choose(
     fork_orgs: dict[str, Any],
     max_pull_requests: int,
     skipped: dict[str, int],
+    one_per_repository: bool = True,
+    skipped_issues: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Keep one issue per repository, run the expensive checks, and cap."""
+    """Run the expensive checks and cap; keep one issue per repository on a scan.
+
+    ``skipped_issues`` collects a reason per skipped issue when the
+    caller named them, so an operator learns why a named issue is
+    missing from the matrix.
+    """
+
+    def skip(candidate: dict[str, Any], counter: str, reason: str) -> None:
+        skipped[counter] += 1
+        if skipped_issues is not None:
+            reference = f"{candidate['repository']}#{candidate['number']}"
+            skipped_issues.append({"issue": reference, "reason": reason})
+
     seen: set[str] = set()
     chosen: list[dict[str, Any]] = []
     # One issue yields at most one pull request, so capping the issues
@@ -212,11 +193,11 @@ def choose(
     used_bytes = 0
     for candidate in ranked:
         repo = str(candidate["repository"])
-        if repo in seen:
+        if one_per_repository and repo in seen:
             skipped["one_per_repo"] += 1
             continue
         if len(chosen) >= cap or used_bytes >= MAX_SELECTION_BYTES:
-            skipped["cap"] += 1
+            skip(candidate, "cap", "over the pull request cap")
             continue
         number = int(candidate["number"])
         branch = f"{BRANCH_PREFIX}{number}"
@@ -233,10 +214,14 @@ def choose(
         # issue so the publisher can adopt the branch and finish.
         prior = reads.prior_attempt(repo, fork_repository, branch)
         if prior == "pull_request":
-            skipped["attempted"] += 1
+            skip(
+                candidate,
+                "attempted",
+                "an earlier attempt's pull request from the bot fork exists",
+            )
             continue
         if reads.has_open_linked_pr(repo, number):
-            skipped["linked_pr"] += 1
+            skip(candidate, "linked_pr", "an open pull request is linked to close it")
             continue
         comments, dropped, truncated = reads.filtered_comments(repo, number)
         entry: dict[str, Any] = {
@@ -253,7 +238,7 @@ def choose(
         }
         size = len(json.dumps(entry, indent=2).encode("utf-8"))
         if used_bytes + size > MAX_SELECTION_BYTES:
-            skipped["cap"] += 1
+            skip(candidate, "cap", "over the selection size budget")
             continue
         used_bytes += size
         seen.add(repo)
@@ -261,36 +246,31 @@ def choose(
     return chosen
 
 
-def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
-    """Run the whole selection and return it with the guidance bytes."""
-    explicit = parse_repositories(args.repositories)
-    exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
-    max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
-    try:
-        enabled = categories.parse_categories(args.categories)
-    except categories.CategoryError as exc:
-        raise SelectionError(str(exc)) from exc
-    try:
-        fork_orgs = forks.load(args.fork_orgs)
-    except ForkOrgError as exc:
-        raise SelectionError(str(exc)) from exc
-    skipped: dict[str, int] = dict.fromkeys(
-        (
-            "pull_request",
-            "repository",
-            "label",
-            "no_type",
-            "closed",
-            "category",
-            "assigned",
-            "attempted",
-            "linked_pr",
-            "one_per_repo",
-            "cap",
-        ),
-        0,
-    )
-    repositories = reads.list_repositories(args.org)
+SKIP_COUNTERS = (
+    "pull_request",
+    "repository",
+    "label",
+    "no_type",
+    "closed",
+    "category",
+    "assigned",
+    "attempted",
+    "linked_pr",
+    "one_per_repo",
+    "cap",
+)
+
+
+def scan_candidates(
+    args: argparse.Namespace,
+    repositories: dict[str, dict[str, Any]],
+    *,
+    explicit: list[str],
+    exclusions: set[str],
+    enabled: frozenset[str],
+    skipped: dict[str, int],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Scan the owner or the named repositories; return the count seen and the ranking."""
     for name in explicit:
         if name not in repositories:
             raise SelectionError(f"repository {args.org}/{name} not found")
@@ -309,12 +289,54 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         enabled=enabled,
         skipped=skipped,
     )
-    ranked = sorted(enriched, key=rank_key)
+    return len(issues), sorted(enriched, key=rank_key)
+
+
+def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
+    """Run the whole selection and return it with the guidance bytes."""
+    targets = explicit_targets.parse_issues(args.issues, args.org)
+    explicit = parse_repositories(args.repositories)
+    if targets and explicit:
+        raise SelectionError("issues and repositories cannot both be given")
+    exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
+    max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
+    try:
+        enabled = categories.parse_categories(args.categories)
+    except categories.CategoryError as exc:
+        raise SelectionError(str(exc)) from exc
+    try:
+        fork_orgs = forks.load(args.fork_orgs)
+    except ForkOrgError as exc:
+        raise SelectionError(str(exc)) from exc
+    skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
+    repositories = reads.list_repositories(args.org)
+    skipped_issues: list[dict[str, str]] = []
+    if targets:
+        # Named issues: no scan, no ranking, the given order kept.
+        seen = len(targets)
+        ranked = explicit_targets.candidates(
+            args.org,
+            targets,
+            repositories,
+            skipped=skipped,
+            skipped_issues=skipped_issues,
+        )
+    else:
+        seen, ranked = scan_candidates(
+            args,
+            repositories,
+            explicit=explicit,
+            exclusions=exclusions,
+            enabled=enabled,
+            skipped=skipped,
+        )
     chosen = choose(
         ranked,
         fork_orgs=fork_orgs,
         max_pull_requests=max_pull_requests,
         skipped=skipped,
+        one_per_repository=not targets,
+        skipped_issues=skipped_issues if targets else None,
     )
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
@@ -336,9 +358,11 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             "commit": commit,
             "sha256": hashlib.sha256(guidance).hexdigest(),
         },
-        "exclusions": sorted(exclusions) if not explicit else [],
+        "exclusions": sorted(exclusions) if not (explicit or targets) else [],
         "explicit_repositories": explicit,
-        "candidates_seen": len(issues),
+        "explicit_issues": [f"{args.org}/{repo}#{number}" for repo, number in targets],
+        "skipped_issues": skipped_issues,
+        "candidates_seen": seen,
         "skipped": skipped,
         "issues": chosen,
     }
@@ -356,6 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--repositories", default="")
+    parser.add_argument("--issues", default="")
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)
