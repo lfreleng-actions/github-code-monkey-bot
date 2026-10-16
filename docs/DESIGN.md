@@ -425,9 +425,17 @@ agent read.
 **Explicit repositories.** When `repositories` names one or more
 repositories, the candidate scan covers those alone and lifts the
 exclusion list and the `.github` rule; an archived, template, forked
-or non-public repository stays out of scope whoever names it. Separators are commas,
-spaces, or both; the selector normalises and rejects a name that is
-not `[A-Za-z0-9_.-]+`.
+or non-public repository stays out of scope whoever names it. The
+select job hands `repositories` and `exclude_repos` to
+[`list-splitter-action`](https://github.com/lfreleng-actions/list-splitter-action)
+before the input check and the read mint: each splits on commas and
+whitespace, drops repeats without regard to case, and must hold bare
+repository names of `org`, every bad name reported before the run
+fails. The splitter works offline and takes no token. The read
+mint's scope is the splitter's names plus the guidance repository,
+and the selector receives the split lists, never the raw inputs; it
+still checks each name against `[A-Za-z0-9_.-]+`, so its own tests
+stand behind the splitter's.
 
 **Outputs.** `selection.json` lists, per chosen issue: repository,
 number, title, body, Priority, Type, labels, `created_at`, the
@@ -784,8 +792,8 @@ For each selected issue:
 | `include_dotgithub` | boolean | `false` | §6 |
 | `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
-| `repositories` | string | `''` | Comma and/or space separated |
-| `exclude_repos` | string | `''` | Overrides bundled list |
+| `repositories` | string | `''` | Commas and/or spaces; split per §6 |
+| `exclude_repos` | string | `''` | Same form; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
 | `egress_policy` | string | `block` | Trusted jobs; author is always `audit` |

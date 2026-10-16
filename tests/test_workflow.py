@@ -1210,7 +1210,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         budget = squash(str(self.step("select", "budget")["run"]))
         self.assertIn('guidance_name="${GUIDANCE_REPOSITORY#*/}"', budget)
         self.assertIn('repositories="$repositories,$guidance_name"', budget)
-        self.assertIn("sed '/^$/d'", budget)
 
     def test_manifest_outcome_is_printed_by_known_value(self) -> None:
         """The author job prints a recognised outcome, never raw manifest text."""
@@ -1249,7 +1248,6 @@ class ListInputContracts(ReusableWorkflowCase):
         "exclude_repos": "exclusions",
     }
 
-    @unittest.expectedFailure
     def test_each_list_is_split_as_repository_names_of_the_org(self) -> None:
         """Bare names of the trusted owner, offline, with no token to hand."""
         self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
@@ -1264,7 +1262,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertEqual(with_["token"], "")
                 self.assertNotIn("verify", with_)
 
-    @unittest.expectedFailure
     def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
         """A bad name fails the run before the App key is used."""
         check = self.position("select", "budget")
@@ -1274,7 +1271,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
-    @unittest.expectedFailure
     def test_read_mint_scope_derives_from_the_split_list(self) -> None:
         """The scope is the splitter's names plus the guidance repository."""
         budget = self.step("select", "budget")
@@ -1292,7 +1288,6 @@ class ListInputContracts(ReusableWorkflowCase):
             "steps.budget.outputs.repositories",
         )
 
-    @unittest.expectedFailure
     def test_selection_reads_the_split_lists(self) -> None:
         """The raw inputs reach the splitters and nothing else."""
         env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
