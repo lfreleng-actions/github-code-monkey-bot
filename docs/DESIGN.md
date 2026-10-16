@@ -795,9 +795,11 @@ For each selected issue:
     findings; drops fenced code first, closed by a fence line
     carrying nothing else, so an example heading is not a verdict;
     takes the earliest heading as the assessment; and records labels
-    and counts, never the text, matching headings on one line and
-    reading a CRLF body as its LF twin. The wait checks its deadline
-    before every read and keeps a reserve for the reads a hit needs
+    and counts, never the text, matching headings on one line,
+    reading a CRLF body as its LF twin, and taking an HTML comment or
+    an unreadable count as a finding rather than reading into it.
+    The wait checks its deadline before every read and keeps a
+    reserve for the reads a hit needs
     (the listing, the threads page by page, and a second read of the
     head), so it cannot overrun the job's budget by a read's worst
     case. Once a review lands, the publisher reads the head again: a
