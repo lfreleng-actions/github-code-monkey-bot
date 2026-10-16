@@ -1291,7 +1291,6 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
-    @unittest.expectedFailure
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 

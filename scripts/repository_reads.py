@@ -12,6 +12,7 @@ at the listing ceiling can still have an issue named.
 
 from __future__ import annotations
 
+import urllib.parse
 from typing import Any, cast
 
 import bot_github as github
@@ -85,8 +86,9 @@ def repository_meta(org: str, name: str) -> dict[str, Any] | None:
     # REST names a default branch for a repository with no commits;
     # only the branch itself proves there is something to build on.
     if default_branch is not None:
+        encoded = urllib.parse.quote(default_branch, safe="")
         try:
-            github.api_object(f"repos/{org}/{name}/branches/{default_branch}")
+            github.api_object(f"repos/{org}/{name}/branches/{encoded}")
         except github.GitHubError as exc:
             if not github.is_absent(exc):
                 raise

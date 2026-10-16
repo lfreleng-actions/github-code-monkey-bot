@@ -870,7 +870,6 @@ class RepositoryMetaTest(ReadsCase):
         ):
             repository_reads.repository_meta("org", "alpha")
 
-    @unittest.expectedFailure
     def test_branch_name_is_url_encoded(self) -> None:
         """A reserved character in the branch name travels encoded, never as a fragment."""
         payload = {

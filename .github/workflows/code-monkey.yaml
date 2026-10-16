@@ -240,10 +240,12 @@ jobs:
       # The token action finds the installation through the first
       # repository in its scope, so an absent name there fails the mint
       # before selection could say so. Public repositories answer the
-      # native token: a named issue's repository that does not exist,
-      # or is not public, leaves the scope here and the selector then
-      # records the issue as skipped. A scan repository that does not
-      # exist is an error either way; this names it plainly.
+      # native token, and so does this private caller repository where
+      # the App may not be installed, so the read must also say the
+      # repository is public. A named issue's repository that fails
+      # that leaves the scope here and the selector then records the
+      # issue as skipped. A scan repository that fails it is an error
+      # either way; this names it plainly.
       - name: 'Resolve named repositories'
         id: named
         env:
@@ -252,13 +254,18 @@ jobs:
           ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
           REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
         run: |
-          exists() {
+          # Whether the repository exists and is public; 2 on any
+          # other failure.
+          usable() {
             local output status
             set +e
-            output="$(gh api "repos/$ORG/$1" --jq .name 2>&1)"
+            output="$(gh api "repos/$ORG/$1" --jq .private 2>&1)"
             status=$?
             set -e
-            if [ "$status" -eq 0 ]; then return 0; fi
+            if [ "$status" -eq 0 ]; then
+              [ "$output" = false ] && return 0
+              return 1
+            fi
             if grep -q 'HTTP 404' <<< "$output"; then return 1; fi
             echo "::error::Could not read $ORG/$1: $output"
             exit 2
@@ -266,18 +273,19 @@ jobs:
           IFS=, read -ra scan <<< "$REPOSITORIES"
           for name in "${scan[@]}"; do
             [ -n "$name" ] || continue
-            exists "$name" || {
-              echo "::error::repository $ORG/$name not found"; exit 1; }
+            usable "$name" || {
+              echo "::error::repository $ORG/$name not found or not public"
+              exit 1; }
           done
           IFS=, read -ra named <<< "$ISSUE_REPOSITORIES"
           kept=()
           for name in "${named[@]}"; do
             [ -n "$name" ] || continue
-            if exists "$name"; then kept+=("$name"); fi
+            if usable "$name"; then kept+=("$name"); fi
           done
           if [ -n "$ISSUE_REPOSITORIES" ] && [ "${#kept[@]}" -eq 0 ]; then
             echo "::error::none of the named issues' repositories exist" \
-              "in $ORG: $ISSUE_REPOSITORIES"
+              "as public repositories in $ORG: $ISSUE_REPOSITORIES"
             exit 1
           fi
           joined=''
