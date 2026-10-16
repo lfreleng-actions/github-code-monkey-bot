@@ -122,6 +122,27 @@ def add_refusal_notice(repository: str, number: int, warning: str) -> str | None
     return None
 
 
+def remove_refusal_notice(repository: str, number: int) -> str | None:
+    """Take an earlier refusal notice off the body once a request succeeds.
+
+    The notice is the publisher's own block: the marker and the INFO
+    paragraph, up to the first blank line. Best effort, like placing
+    it; a failure is a warning.
+    """
+    try:
+        data = github.api_object(f"repos/{repository}/pulls/{number}")
+        body = data.get("body")
+        current = body if isinstance(body, str) else ""
+        if not current.startswith(REFUSAL_NOTICE_MARKER):
+            return None
+        end = current.find("\n\n")
+        rest = current[end + 2 :] if end >= 0 else ""
+        github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"body": rest})
+    except github.GitHubError as exc:
+        return f"could not remove the review notice: {github.safe_message(exc)}"
+    return None
+
+
 def pull_head(repository: str, number: int) -> str:
     """The pull request's current head commit."""
     data = github.api_object(f"repos/{repository}/pulls/{number}")
@@ -319,12 +340,15 @@ def run_request(args: argparse.Namespace) -> None:
     record = cast("dict[str, Any]", result.get("review") or {})
     record["requested"] = warning is None
     result["review"] = record
+    warnings = cast("list[Any]", result.setdefault("warnings", []))
     if warning is not None:
-        warnings = cast("list[Any]", result.setdefault("warnings", []))
         warnings.append(warning)
         notice = add_refusal_notice(*target, warning)
-        if notice is not None:
-            warnings.append(notice)
+    else:
+        # A retry that succeeded after a refusal: the notice is stale.
+        notice = remove_refusal_notice(*target)
+    if notice is not None:
+        warnings.append(notice)
     write_result(args.output, result)
     print(f"review request: {'sent' if warning is None else 'refused'}")
 
