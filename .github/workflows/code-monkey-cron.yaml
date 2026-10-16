@@ -71,38 +71,18 @@ on:
         description: 'Repositories to scan (commas and/or spaces)'
         type: string
         default: ''
-      bugs:
-        description: 'Work bugs'
-        type: boolean
-        default: true
-      features:
-        description: 'Work feature requests'
-        type: boolean
-        default: true
-      docs:
-        description: 'Work documentation issues'
-        type: boolean
-        default: true
-      ci:
-        description: 'Work CI and workflow issues'
-        type: boolean
-        default: true
-      code_quality:
-        description: 'Work code-quality issues'
-        type: boolean
-        default: true
-      refactor:
-        description: 'Work refactoring issues'
-        type: boolean
-        default: true
-      performance:
-        description: 'Work performance issues'
-        type: boolean
-        default: true
-      other:
-        description: 'Work issues with none of the labels above'
-        type: boolean
-        default: true
+      issues:
+        description: >-
+          Issues to work instead of scanning: repo#N, owner/repo#N,
+          repo/issues/N or URLs (commas and/or spaces)
+        type: string
+        default: ''
+      categories:
+        description: >-
+          Issue categories to work: all, or any of bugs, features, docs,
+          ci, code_quality, refactor, performance, other
+        type: string
+        default: 'all'
 
 permissions: {}
 
@@ -126,7 +106,6 @@ jobs:
     permissions: {}
     outputs:
       model: "${{ steps.map.outputs.id }}"
-      categories: "${{ steps.categories.outputs.list }}"
     steps:
       # Block mode needs the allow-list in this job too: the
       # environment variable does not cross job boundaries.
@@ -161,37 +140,6 @@ jobs:
           esac
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
-      # One boolean per category in the form; the reusable workflow
-      # takes a list. A schedule passes no inputs, and an empty value
-      # counts as enabled, so scheduled runs work every category.
-      - name: 'Collect issue categories'
-        id: categories
-        env:
-          BUGS: "${{ inputs.bugs }}"
-          FEATURES: "${{ inputs.features }}"
-          DOCS: "${{ inputs.docs }}"
-          CI_ISSUES: "${{ inputs.ci }}"
-          CODE_QUALITY: "${{ inputs.code_quality }}"
-          REFACTOR: "${{ inputs.refactor }}"
-          PERFORMANCE: "${{ inputs.performance }}"
-          OTHER: "${{ inputs.other }}"
-        run: |
-          list=''
-          add() { if [ "$2" != false ]; then list="${list:+$list,}$1"; fi; }
-          add bugs "$BUGS"
-          add features "$FEATURES"
-          add docs "$DOCS"
-          add ci "$CI_ISSUES"
-          add code_quality "$CODE_QUALITY"
-          add refactor "$REFACTOR"
-          add performance "$PERFORMANCE"
-          add other "$OTHER"
-          if [ -z "$list" ]; then
-            echo '::error::Enable at least one issue category'
-            exit 1
-          fi
-          echo "list=$list" >> "$GITHUB_OUTPUT"
-
   code-monkey:
     name: 'Code Monkey'
     needs: 'options'
@@ -207,7 +155,9 @@ jobs:
       dry_run: >-
         ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run }}
       model: "${{ needs.options.outputs.model }}"
-      categories: "${{ needs.options.outputs.categories }}"
+      # A schedule passes no inputs; empty means every category, as
+      # the reusable workflow's default does.
+      categories: "${{ inputs.categories || 'all' }}"
       max_pull_requests: "${{ inputs.max_pull_requests || '10' }}"
       max_runtime_minutes: "${{ inputs.max_runtime_minutes || '180' }}"
       max_concurrent_agents: "${{ inputs.max_concurrent_agents || '10' }}"
@@ -218,6 +168,7 @@ jobs:
       include_assigned: ${{ inputs.include_assigned || false }}
       load_repo_skills: ${{ inputs.load_repo_skills || false }}
       repositories: "${{ inputs.repositories || '' }}"
+      issues: "${{ inputs.issues || '' }}"
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       egress_policy: 'block'

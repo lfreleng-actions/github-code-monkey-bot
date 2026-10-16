@@ -27,6 +27,19 @@ def summary_markdown(selection: dict[str, Any]) -> str:
     ]
     for reason, count in sorted(cast("dict[str, int]", selection["skipped"]).items()):
         lines.append(f"| {reason} | {count} |")
+    named = cast("list[str]", selection.get("explicit_issues") or [])
+    if named:
+        lines += [
+            "",
+            f"Named issues ({len(named)}), worked in the order given; the"
+            " triage filters do not apply.",
+        ]
+    skipped_issues = cast("list[dict[str, str]]", selection.get("skipped_issues") or [])
+    if skipped_issues:
+        lines += ["", "| Skipped issue | Reason |", "| --- | --- |"]
+        for entry in skipped_issues:
+            # Both fields are the selector's own text, not issue content.
+            lines.append(f"| {entry['issue']} | {entry['reason']} |")
     lines += ["", "| Issue | Priority | Type | Title |", "| --- | --- | --- | --- |"]
     for issue in cast("list[dict[str, Any]]", selection["issues"]):
         # Public input: flatten line breaks before escaping, so a title

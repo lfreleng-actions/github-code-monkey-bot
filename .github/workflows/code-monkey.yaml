@@ -71,8 +71,14 @@ on:
         description: 'Repositories to scan; commas and/or spaces'
         type: string
         default: ''
+      issues:
+        description: >-
+          Issues to work instead of scanning: repo#N, owner/repo#N,
+          repo/issues/N or URLs; commas and/or spaces
+        type: string
+        default: ''
       exclude_repos:
-        description: 'Comma-separated repos to skip (overrides bundled list)'
+        description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
         default: ''
       guidance_repository:
@@ -195,6 +201,97 @@ jobs:
           [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]]
           echo "created_at=$created" >> "$GITHUB_OUTPUT"
 
+      # Operator lists: commas, spaces or newlines between items of
+      # the target owner. Each splits offline, with no token, and a
+      # bad item fails the run before the App key is used, every
+      # mistake reported at once. Repeats collapse without regard to
+      # case, as GitHub compares repository names; an issue publishes
+      # as owner/repo#N whichever of the accepted spellings named it.
+      - name: 'Split repositories'
+        id: repositories
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/list-splitter-action@b56a625474875d05ca8d1c1eb3314c29c526c9a6 # v0.1.0
+        with:
+          list: "${{ inputs.repositories }}"
+          validate: 'repository'
+          owner: "${{ inputs.org }}"
+          token: ''
+
+      - name: 'Split excluded repositories'
+        id: exclusions
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/list-splitter-action@b56a625474875d05ca8d1c1eb3314c29c526c9a6 # v0.1.0
+        with:
+          list: "${{ inputs.exclude_repos }}"
+          validate: 'repository'
+          owner: "${{ inputs.org }}"
+          token: ''
+
+      - name: 'Split issues'
+        id: issues
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/list-splitter-action@b56a625474875d05ca8d1c1eb3314c29c526c9a6 # v0.1.0
+        with:
+          list: "${{ inputs.issues }}"
+          validate: 'issue'
+          owner: "${{ inputs.org }}"
+          token: ''
+
+      # The token action finds the installation through the first
+      # repository in its scope, so an absent name there fails the mint
+      # before selection could say so. Public repositories answer the
+      # native token, and so does this private caller repository where
+      # the App may not be installed, so the read must also say the
+      # repository is public. A named issue's repository that fails
+      # that leaves the scope here and the selector then records the
+      # issue as skipped. A scan repository that fails it is an error
+      # either way; this names it plainly.
+      - name: 'Resolve named repositories'
+        id: named
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          ORG: "${{ inputs.org }}"
+          ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
+          REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
+        run: |
+          # Whether the repository exists and is public; 2 on any
+          # other failure.
+          usable() {
+            local output status
+            set +e
+            output="$(gh api "repos/$ORG/$1" --jq .private 2>&1)"
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              [ "$output" = false ] && return 0
+              return 1
+            fi
+            if grep -q 'HTTP 404' <<< "$output"; then return 1; fi
+            echo "::error::Could not read $ORG/$1: $output"
+            exit 2
+          }
+          IFS=, read -ra scan <<< "$REPOSITORIES"
+          for name in "${scan[@]}"; do
+            [ -n "$name" ] || continue
+            usable "$name" || {
+              echo "::error::repository $ORG/$name not found or not public"
+              exit 1; }
+          done
+          IFS=, read -ra named <<< "$ISSUE_REPOSITORIES"
+          kept=()
+          for name in "${named[@]}"; do
+            [ -n "$name" ] || continue
+            if usable "$name"; then kept+=("$name"); fi
+          done
+          if [ -n "$ISSUE_REPOSITORIES" ] && [ "${#kept[@]}" -eq 0 ]; then
+            echo "::error::none of the named issues' repositories exist" \
+              "as public repositories in $ORG: $ISSUE_REPOSITORIES"
+            exit 1
+          fi
+          joined=''
+          for name in "${kept[@]}"; do joined="${joined:+$joined,}$name"; done
+          echo "repositories=$joined" >> "$GITHUB_OUTPUT"
+
       - name: 'Check inputs'
         id: budget
         env:
@@ -203,7 +300,14 @@ jobs:
           MAX_RUNTIME: "${{ inputs.max_runtime_minutes }}"
           MAX_AGENTS: "${{ inputs.max_concurrent_agents }}"
           MODEL: "${{ inputs.model }}"
-          REPOSITORIES: "${{ inputs.repositories }}"
+          # Already split, checked and comma-joined, as the App token
+          # action takes it; empty keeps the read token organisation-wide,
+          # which the scan needs. Named issues scope it to their own
+          # repositories instead.
+          REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
+          REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
+          ISSUE_REPOSITORIES: "${{ steps.named.outputs.repositories }}"
+          ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -223,14 +327,12 @@ jobs:
           [[ "$MODEL" =~ ^[a-z0-9.-]+$ ]] || {
             echo '::error::model must be a lower-case identifier'; exit 1; }
           # Expressions cannot add, so the job budget (session plus
-          # toolchain setup and upload) is computed here. The
-          # repository list is normalised to commas for the App token
-          # action, which does not split on spaces; empty keeps the
-          # read token organisation-wide, which the scan needs.
-          # sed rather than grep -v: grep exits 1 on empty input, which
-          # would fail this assignment under pipefail.
-          repositories="$(printf '%s' "$REPOSITORIES" | tr ', ' '\n' \
-            | sed '/^$/d' | paste -sd, -)"
+          # toolchain setup and upload) is computed here.
+          if [ "$ISSUE_COUNT" != 0 ] && [ "$REPOSITORY_COUNT" != 0 ]; then
+            echo '::error::issues and repositories cannot both be given'
+            exit 1
+          fi
+          repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
           # A scoped token must still reach the guidance repository
           # when it lives in the same organisation.
           guidance_owner="${GUIDANCE_REPOSITORY%%/*}"
@@ -370,8 +472,9 @@ jobs:
           MODE: "${{ inputs.mode }}"
           MODEL: "${{ inputs.model }}"
           DRY_RUN: "${{ inputs.dry_run }}"
-          REPOSITORIES: "${{ inputs.repositories }}"
-          EXCLUDE_REPOS: "${{ inputs.exclude_repos }}"
+          REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
+          ISSUES: "${{ steps.issues.outputs.csv }}"
+          EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
@@ -393,6 +496,7 @@ jobs:
             --org "$ORG" --output-dir artefacts \
             --mode "$MODE" --model "$MODEL" \
             --repositories "$REPOSITORIES" \
+            --issues "$ISSUES" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \

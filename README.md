@@ -65,7 +65,9 @@ after the daily issues triage, and stays in dry-run until the
 rollout in the design document clears it. Organisation
 administrators can dispatch it by hand with a model, a mode
 (`select`, `branches`, `pull-requests`), issue and runtime caps,
-and a repository list.
+a category list, and either a repository list to scan or a list of
+issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
+skips the scan and the triage filters.
 
 ## Reusable workflow
 

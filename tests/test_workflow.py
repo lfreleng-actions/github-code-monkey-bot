@@ -42,6 +42,7 @@ HARDEN_RUNNER = "step-security/harden-runner"
 BLOCK_ACTION = "lfreleng-actions/harden-runner-block-action"
 CHECKOUT = "actions/checkout"
 APP_TOKEN = "actions/create-github-app-token"
+SPLITTER = "lfreleng-actions/list-splitter-action"
 DOWNLOAD = "actions/download-artifact"
 UPLOAD = "actions/upload-artifact"
 REUSABLE_CALL = "$/.github/workflows/code-monkey.yaml"
@@ -1209,7 +1210,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         budget = squash(str(self.step("select", "budget")["run"]))
         self.assertIn('guidance_name="${GUIDANCE_REPOSITORY#*/}"', budget)
         self.assertIn('repositories="$repositories,$guidance_name"', budget)
-        self.assertIn("sed '/^$/d'", budget)
 
     def test_manifest_outcome_is_printed_by_known_value(self) -> None:
         """The author job prints a recognised outcome, never raw manifest text."""
@@ -1239,6 +1239,127 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertEqual(final["with"]["retention-days"], 90)
 
 
+class ListInputContracts(ReusableWorkflowCase):
+    """Operator lists are split and checked once, before any token exists."""
+
+    # Splitter step id and validate mode for each list input.
+    LISTS: ClassVar[dict[str, tuple[str, str]]] = {
+        "repositories": ("repositories", "repository"),
+        "exclude_repos": ("exclusions", "repository"),
+        "issues": ("issues", "issue"),
+    }
+
+    def test_each_list_is_split_as_objects_of_the_org(self) -> None:
+        """Names or references of the trusted owner, offline, with no token."""
+        self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
+        for name, (identity, mode) in self.LISTS.items():
+            with self.subTest(input=name):
+                split = self.step("select", identity)
+                self.assertTrue(is_action(split, SPLITTER))
+                with_ = cast(dict[str, Any], split["with"])
+                self.assert_expression(with_["list"], f"inputs.{name}")
+                self.assertEqual(with_["validate"], mode)
+                self.assert_expression(with_["owner"], "inputs.org")
+                self.assertEqual(with_["token"], "")
+                self.assertNotIn("verify", with_)
+
+    def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
+        """A bad name fails the run before the App key is used."""
+        check = self.position("select", "budget")
+        mint = self.position("select", "app-token")
+        for identity, _ in self.LISTS.values():
+            with self.subTest(step=identity):
+                self.assertLess(self.position("select", identity), check)
+                self.assertLess(self.position("select", identity), mint)
+
+    def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
+        """Issues scope the token to the repositories that exist; with a scan they fail."""
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(
+            env["ISSUE_REPOSITORIES"], "steps.named.outputs.repositories"
+        )
+        self.assert_expression(env["ISSUE_COUNT"], "steps.issues.outputs.count")
+        self.assert_expression(
+            env["REPOSITORY_COUNT"], "steps.repositories.outputs.count"
+        )
+        script = squash(str(budget["run"]))
+        self.assertIn("::error::issues and repositories cannot both be given", script)
+        select = cast(dict[str, Any], self.step("select", "Select issues")["env"])
+        self.assert_expression(select["ISSUES"], "steps.issues.outputs.csv")
+        self.assertIn(
+            '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
+        )
+
+    def test_named_repositories_are_resolved_before_the_mint(self) -> None:
+        """A missing named repository leaves the token scope; none left fails.
+
+        The token action looks the installation up through the first
+        repository in its scope, so an absent name there fails the mint
+        before selection could report it. The public read with the
+        native token settles which names exist; the selector then
+        records the rest as not found.
+        """
+        named = self.step("select", "named")
+        env = cast(dict[str, Any], named["env"])
+        self.assert_expression(env["GH_TOKEN"], "github.token")
+        self.assert_expression(env["ORG"], "inputs.org")
+        self.assert_expression(
+            env["ISSUE_REPOSITORIES"], "steps.issues.outputs.repositories"
+        )
+        self.assert_expression(
+            env["REPOSITORIES"], "steps.repositories.outputs.repositories"
+        )
+        script = squash(str(named["run"]))
+        self.assertIn("HTTP 404", script)
+        # Readable is not public: the native token reads the private
+        # caller repository too, and the App may not be installed there.
+        self.assertIn("--jq .private", script)
+        self.assertIn('[ "$output" = false ]', script)
+        self.assertIn("::error::none of the named issues' repositories exist", script)
+        self.assertIn("::error::repository", script)
+        self.assertLess(
+            self.position("select", "issues"), self.position("select", "named")
+        )
+        self.assertLess(
+            self.position("select", "named"), self.position("select", "budget")
+        )
+
+    def test_read_mint_scope_derives_from_the_split_list(self) -> None:
+        """The scope is the splitter's names plus the guidance repository."""
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(
+            env["REPOSITORIES"], "steps.repositories.outputs.repositories"
+        )
+        script = squash(str(budget["run"]))
+        for tool in ("tr ", "sed ", "paste "):
+            self.assertNotIn(tool, script)
+        self.assertIn('repositories="$repositories,$guidance_name"', script)
+        mint = self.step("select", "app-token")
+        self.assert_expression(
+            cast(dict[str, Any], mint["with"])["repositories"],
+            "steps.budget.outputs.repositories",
+        )
+
+    def test_selection_reads_the_split_lists(self) -> None:
+        """The raw inputs reach the splitters and nothing else."""
+        env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
+        self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
+        self.assert_expression(env["EXCLUDE_REPOS"], "steps.exclusions.outputs.csv")
+        splitters = {id(s) for s in self.actions("select", SPLITTER)}
+        for job in self.jobs:
+            if "steps" not in self.jobs[job]:
+                continue
+            for step in self.steps(job):
+                if id(step) in splitters:
+                    continue
+                with self.subTest(job=job, step=step.get("name")):
+                    text = json.dumps(step)
+                    for name in self.LISTS:
+                        self.assertNotRegex(text, rf"inputs\.{name}\b")
+
+
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
@@ -1255,6 +1376,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "model",
                 "max_pull_requests",
                 "categories",
+                "issues",
                 "max_runtime_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
@@ -1353,18 +1475,9 @@ class CronCallerContracts(WorkflowCase):
             "include_assigned": False,
             "load_repo_skills": False,
             "repositories": "",
+            "issues": "",
+            "categories": "all",
         }
-        for name in (
-            "bugs",
-            "features",
-            "docs",
-            "ci",
-            "code_quality",
-            "refactor",
-            "performance",
-            "other",
-        ):
-            defaults[name] = True
         for name, default in defaults.items():
             with self.subTest(input=name):
                 actual: object = inputs[name]["default"]
@@ -1373,14 +1486,15 @@ class CronCallerContracts(WorkflowCase):
         # GitHub caps a dispatch form at 25 inputs.
         self.assertLessEqual(len(inputs), 25)
 
-    def test_category_booleans_build_the_list(self) -> None:
-        """Each form boolean feeds the list; a schedule's empty inputs enable all."""
-        step = self.step("options", "categories")
-        script = squash(str(step["run"]))
-        env = cast(dict[str, Any], step["env"])
-        self.assertEqual(len(env), 8)
-        self.assertIn('if [ "$2" != false ]', script)
-        self.assertIn("::error::Enable at least one issue category", script)
+    def test_categories_and_targets_are_forwarded_as_typed(self) -> None:
+        """One categories string and the target lists reach the reusable workflow."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(with_["categories"], "inputs.categories || 'all'")
+        self.assert_expression(with_["issues"], "inputs.issues || ''")
+        self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assertEqual(
+            [s.get("id") for s in self.steps("options") if s.get("id")], ["map"]
+        )
 
     def test_model_display_names_map_to_identifiers(self) -> None:
         """Each form choice resolves to a CLI identifier; anything else fails."""
@@ -1403,7 +1517,6 @@ class CronCallerContracts(WorkflowCase):
         self.assertEqual(job["uses"], REUSABLE_CALL)
         with_ = cast(dict[str, Any], job["with"])
         self.assert_expression(with_["model"], "needs.options.outputs.model")
-        self.assert_expression(with_["categories"], "needs.options.outputs.categories")
         self.assert_expression(
             with_["dry_run"],
             "github.event_name != 'workflow_dispatch' || inputs.dry_run",
@@ -1479,6 +1592,16 @@ class TestingCallerContracts(WorkflowCase):
         self.assert_expression(
             with_["assets_ref"], "github.event.pull_request.head.sha"
         )
+
+    def test_manual_dry_run_takes_the_target_lists(self) -> None:
+        """A dispatch names repositories to scan or issues to work."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["issues"]["default"], "")
+        with_ = cast(dict[str, Any], self.jobs["dry-run"]["with"])
+        self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assert_expression(with_["issues"], "inputs.issues || ''")
 
     def test_callers_read_guidance_from_the_organisation_default(self) -> None:
         """Test runs use the reusable default, <org>/.github at main.

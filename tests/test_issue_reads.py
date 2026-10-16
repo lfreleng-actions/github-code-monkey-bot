@@ -17,6 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
 reads = import_module("issue_reads")
+repository_reads = import_module("repository_reads")
 
 SHA = "c" * 40
 REF_COMMIT: dict[str, Any] = {
@@ -366,6 +367,9 @@ class IssueDetailsTest(ReadsCase):
             "labels": [{"name": "bug"}, "enhancement"],
             "type": {"name": "Bug"},
             "assignees": [{"login": "alice"}, {"login": 5}, "bob"],
+            "html_url": "https://github.com/org/repo/issues/7",
+            "created_at": "2026-01-07T00:00:00Z",
+            "author_association": "MEMBER",
         }
         data.update(overrides)
         return data
@@ -406,6 +410,9 @@ class IssueDetailsTest(ReadsCase):
                 "type": "Bug",
                 "assignees": ["alice"],
                 "priority": "High",
+                "url": "https://github.com/org/repo/issues/7",
+                "created_at": "2026-01-07T00:00:00Z",
+                "author_association": "MEMBER",
             },
         )
 
@@ -737,7 +744,7 @@ class ListRepositoriesTest(ReadsCase):
             ]
         )
         with patch.object(github, "run_gh", return_value=payload):
-            repositories = reads.list_repositories("org")
+            repositories = repository_reads.list_repositories("org")
         self.assertEqual(
             repositories,
             {
@@ -783,7 +790,109 @@ class ListRepositoriesTest(ReadsCase):
             patch.object(github, "run_gh", return_value=payload),
             self.assertRaises(reads.SelectionError),
         ):
-            reads.list_repositories("org")
+            repository_reads.list_repositories("org")
+
+
+class RepositoryMetaTest(ReadsCase):
+    """``repository_meta`` reads one repository into the listing's shape."""
+
+    def test_public_repository(self) -> None:
+        """REST field names map to the same keys the listing produces."""
+        payload = {
+            "name": "Alpha",
+            "archived": False,
+            "is_template": True,
+            "fork": False,
+            "private": False,
+            "visibility": "public",
+            "default_branch": "develop",
+        }
+        with patch.object(github, "api_object", return_value=payload):
+            self.assertEqual(
+                repository_reads.repository_meta("org", "alpha"),
+                {
+                    "name": "Alpha",
+                    "archived": False,
+                    "template": True,
+                    "fork": False,
+                    "public": True,
+                    "default_branch": "develop",
+                },
+            )
+
+    def test_absent_and_internal(self) -> None:
+        """A missing repository is None; internal is not public; an empty one has no branch."""
+        absent = github.GitHubError("gh: Not Found (HTTP 404)")
+        with patch.object(github, "api_object", side_effect=absent):
+            self.assertIsNone(repository_reads.repository_meta("org", "gone"))
+        payload = {"name": "inner", "private": False, "visibility": "internal"}
+        with patch.object(github, "api_object", return_value=payload):
+            meta = repository_reads.repository_meta("org", "inner")
+        assert meta is not None
+        self.assertFalse(meta["public"])
+        self.assertIsNone(meta["default_branch"])
+
+    def test_empty_repository_reads_as_having_no_branch(self) -> None:
+        """REST names a default branch even with no commits; the branch read settles it."""
+        payload = {
+            "name": "empty",
+            "private": False,
+            "visibility": "public",
+            "default_branch": "main",
+        }
+
+        def read(endpoint: str) -> dict[str, Any]:
+            if endpoint.endswith("/branches/main"):
+                raise github.GitHubError("gh: Branch not found (HTTP 404)")
+            return payload
+
+        with patch.object(github, "api_object", side_effect=read) as reads_made:
+            meta = repository_reads.repository_meta("org", "empty")
+        assert meta is not None
+        self.assertIsNone(meta["default_branch"])
+        self.assertEqual(
+            [call.args[0] for call in reads_made.call_args_list],
+            ["repos/org/empty", "repos/org/empty/branches/main"],
+        )
+
+    def test_branch_read_failure_propagates(self) -> None:
+        """A server failure on the branch read is an error, not an empty repository."""
+        payload = {"name": "alpha", "visibility": "public", "default_branch": "main"}
+
+        def read(endpoint: str) -> dict[str, Any]:
+            if endpoint.endswith("/branches/main"):
+                raise github.GitHubError("gh: Server Error (HTTP 502)")
+            return payload
+
+        with (
+            patch.object(github, "api_object", side_effect=read),
+            self.assertRaises(github.GitHubError),
+        ):
+            repository_reads.repository_meta("org", "alpha")
+
+    def test_branch_name_is_url_encoded(self) -> None:
+        """A reserved character in the branch name travels encoded, never as a fragment."""
+        payload = {
+            "name": "alpha",
+            "visibility": "public",
+            "default_branch": "release#1",
+        }
+        with patch.object(github, "api_object", return_value=payload) as reads_made:
+            meta = repository_reads.repository_meta("org", "alpha")
+        assert meta is not None
+        self.assertEqual(meta["default_branch"], "release#1")
+        self.assertEqual(
+            reads_made.call_args_list[1].args[0], "repos/org/alpha/branches/release%231"
+        )
+
+    def test_other_failures_propagate(self) -> None:
+        """A server failure is an error, not an absent repository."""
+        failure = github.GitHubError("gh: Server Error (HTTP 502)")
+        with (
+            patch.object(github, "api_object", side_effect=failure),
+            self.assertRaises(github.GitHubError),
+        ):
+            repository_reads.repository_meta("org", "alpha")
 
 
 class DeclaredReadsTest(unittest.TestCase):
@@ -798,7 +907,7 @@ class DeclaredReadsTest(unittest.TestCase):
     def test_repo_list_and_issue_search_are_declared_reads(self) -> None:
         """Both CLI reads pass ``read=True`` to the shared wrapper."""
         with patch.object(github, "run_gh", return_value="[]") as gh:
-            reads.list_repositories("org")
+            repository_reads.list_repositories("org")
             reads.search_open_issues("org", ["a"])
         self.assertEqual(len(gh.call_args_list), 2)
         for call in gh.call_args_list:

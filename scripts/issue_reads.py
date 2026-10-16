@@ -44,6 +44,10 @@ class SelectionError(Exception):
     """The selection cannot proceed; an operational failure, not a skip."""
 
 
+class NotAnIssue(github.GitHubError):
+    """The number names a pull request, which this pipeline does not work."""
+
+
 def api_page(endpoint: str) -> list[dict[str, Any]]:
     """Read one page of a list endpoint, without following pagination."""
     parsed = github.decode_response(github.run_gh(["api", endpoint]))
@@ -55,53 +59,6 @@ def api_page(endpoint: str) -> list[dict[str, Any]]:
             raise github.GitHubError(f"expected an object entry from {endpoint}")
         entries.append(cast("dict[str, Any]", entry))
     return entries
-
-
-def list_repositories(org: str) -> dict[str, dict[str, Any]]:
-    """Map lower-cased repository names to the metadata selection needs."""
-    raw = github.run_gh(
-        [
-            "repo",
-            "list",
-            org,
-            "--limit",
-            str(SEARCH_LIMIT),
-            "--json",
-            "name,isArchived,isTemplate,isFork,isPrivate,visibility,defaultBranchRef",
-        ],
-        read=True,
-    )
-    parsed = github.decode_response(raw)
-    if not isinstance(parsed, list):
-        raise github.GitHubError("expected a repository array")
-    repositories: dict[str, dict[str, Any]] = {}
-    for entry in cast("list[Any]", parsed):
-        if not isinstance(entry, dict):
-            raise github.GitHubError("expected repository objects")
-        data = cast("dict[str, Any]", entry)
-        name = github.require_str(data, "name", "repository")
-        default = data.get("defaultBranchRef")
-        branch = (
-            cast("dict[str, Any]", default).get("name")
-            if isinstance(default, dict)
-            else None
-        )
-        visibility = data.get("visibility")
-        repositories[name.lower()] = {
-            "name": name,
-            "archived": bool(data.get("isArchived")),
-            "template": bool(data.get("isTemplate")),
-            "fork": bool(data.get("isFork")),
-            # Private and internal repositories are out of scope (DESIGN
-            # 2, 16): the author job clones without a credential.
-            "public": not data.get("isPrivate")
-            and isinstance(visibility, str)
-            and visibility.upper() == "PUBLIC",
-            "default_branch": branch if isinstance(branch, str) and branch else None,
-        }
-    if len(repositories) >= SEARCH_LIMIT:
-        raise SelectionError("repository listing reached the search ceiling")
-    return repositories
 
 
 def search_open_issues(org: str, repositories: list[str]) -> list[dict[str, Any]]:
@@ -167,7 +124,7 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
     if github.require_int(issue, "number", "issue") != number:
         raise github.GitHubError("issue response does not match the request")
     if issue.get("pull_request") is not None:
-        raise github.GitHubError(f"{repo}#{number} is a pull request")
+        raise NotAnIssue(f"{repo}#{number} is a pull request")
     body = issue.get("body")
     if body is not None and not isinstance(body, str):
         raise github.GitHubError("invalid issue body")
@@ -188,6 +145,7 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
     state = issue.get("state")
     if state not in ("open", "closed"):
         raise github.GitHubError(f"{repo}#{number}: unexpected state {state!r}")
+    association = issue.get("author_association")
     return {
         "state": state,
         "title": github.require_str(issue, "title", "issue"),
@@ -196,6 +154,11 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
         "type": type_name,
         "assignees": assignees,
         "priority": read_priority(repo, number),
+        # The scan reads these from the search payload; a named issue
+        # has no search payload, so the direct read supplies them.
+        "url": github.require_str(issue, "html_url", "issue"),
+        "created_at": github.require_str(issue, "created_at", "issue"),
+        "author_association": association if isinstance(association, str) else None,
     }
 
 
