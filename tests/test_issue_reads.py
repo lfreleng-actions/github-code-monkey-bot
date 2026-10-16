@@ -870,6 +870,22 @@ class RepositoryMetaTest(ReadsCase):
         ):
             repository_reads.repository_meta("org", "alpha")
 
+    @unittest.expectedFailure
+    def test_branch_name_is_url_encoded(self) -> None:
+        """A reserved character in the branch name travels encoded, never as a fragment."""
+        payload = {
+            "name": "alpha",
+            "visibility": "public",
+            "default_branch": "release#1",
+        }
+        with patch.object(github, "api_object", return_value=payload) as reads_made:
+            meta = repository_reads.repository_meta("org", "alpha")
+        assert meta is not None
+        self.assertEqual(meta["default_branch"], "release#1")
+        self.assertEqual(
+            reads_made.call_args_list[1].args[0], "repos/org/alpha/branches/release%231"
+        )
+
     def test_other_failures_propagate(self) -> None:
         """A server failure is an error, not an absent repository."""
         failure = github.GitHubError("gh: Server Error (HTTP 502)")

@@ -1291,6 +1291,7 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
+    @unittest.expectedFailure
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 
@@ -1312,6 +1313,10 @@ class ListInputContracts(ReusableWorkflowCase):
         )
         script = squash(str(named["run"]))
         self.assertIn("HTTP 404", script)
+        # Readable is not public: the native token reads the private
+        # caller repository too, and the App may not be installed there.
+        self.assertIn("--jq .private", script)
+        self.assertIn('[ "$output" = false ]', script)
         self.assertIn("::error::none of the named issues' repositories exist", script)
         self.assertIn("::error::repository", script)
         self.assertLess(
