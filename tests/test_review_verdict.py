@@ -199,7 +199,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 1)
         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_line_breaks_do_not_make_a_heading(self) -> None:
         """A heading is one line; a break inside it is not an assessment."""
         for text in (
@@ -211,7 +210,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn("no assessment", verdict.reasons)
 
-    @unittest.expectedFailure
     def test_crlf_bodies_classify_like_lf_bodies(self) -> None:
         """Windows line endings change nothing: the fence closes, the findings count."""
         text = (

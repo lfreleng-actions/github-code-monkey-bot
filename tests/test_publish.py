@@ -472,7 +472,6 @@ class RunPushTest(NoNetworkCase):
             lookup.assert_called_once_with(REPOSITORY, BRANCH, BOT, FORK)
         return result
 
-    @unittest.expectedFailure
     def test_adopted_branch_records_its_chain(self) -> None:
         """The verified chain's commits are the published head the review binds to."""
         result = self.reconcile_existing("pull-requests", same_tree=True)
