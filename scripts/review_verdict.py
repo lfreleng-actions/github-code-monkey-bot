@@ -44,18 +44,16 @@ ASSESSMENTS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 
-# A fenced code block: an unindented (up to three spaces) run of three
-# or more backticks or tildes, to a closing run of the same character
-# at least as long with nothing but whitespace after it, or to the end.
-# A backtick opener's info string holds no backtick, as Markdown
-# requires, so a line of inline code opens nothing.
-FENCE = re.compile(
-    r"^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)\n.*?(?:^ {0,3}(?(1)\1`*|\2~*)[ \t]*$|\Z)",
-    re.M | re.S,
-)
-# An HTML comment hides its content from the reader; one left open
-# hides the rest of the body.
-HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+# A fenced code block opens with an unindented (up to three spaces)
+# run of three or more backticks or tildes; a backtick opener's info
+# string holds no backtick, as Markdown requires, so a line of inline
+# code opens nothing. It closes on a run of the same character at
+# least as long with nothing but whitespace after it.
+FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
+# Inline code: a run of backticks closed by a run of the same length.
+BACKTICKS = re.compile(r"`+")
+COMMENT_OPEN = "<!--"
+COMMENT_CLOSE = "-->"
 # Digits beyond this are no count GitHub would write.
 MAX_COUNT_DIGITS = 9
 
@@ -105,9 +103,81 @@ def bounded(body: str | None) -> tuple[str, bool]:
     return raw[:MAX_BODY_BYTES].decode("utf-8", "ignore"), True
 
 
-def without_fences(text: str) -> str:
-    """Drop fenced code and HTML comments: what a reader cannot see is no verdict."""
-    return HTML_COMMENT.sub("", FENCE.sub("", text))
+def fence_closes(line: str, char: str, length: int) -> bool:
+    """Whether a line closes an open fence of ``char`` repeated ``length`` times."""
+    stripped = line.lstrip(" ")
+    if len(line) - len(stripped) > 3:
+        return False
+    run = len(stripped) - len(stripped.lstrip(char))
+    return run >= length and stripped[run:].strip(" \t") == ""
+
+
+def visible_span(line: str, start: int, in_comment: bool) -> tuple[str, bool]:
+    """The part of one line a reader sees, tracking inline code and comments.
+
+    Inline code is kept whole, so a comment opener inside it is prose;
+    a comment hides to its close, on this line or a later one.
+    """
+    out: list[str] = []
+    i = start
+    while i < len(line):
+        if in_comment:
+            close = line.find(COMMENT_CLOSE, i)
+            if close < 0:
+                return "".join(out), True
+            i = close + len(COMMENT_CLOSE)
+            in_comment = False
+            continue
+        ticks = BACKTICKS.search(line, i)
+        comment = line.find(COMMENT_OPEN, i)
+        if ticks is None and comment < 0:
+            out.append(line[i:])
+            break
+        if ticks is not None and (comment < 0 or ticks.start() < comment):
+            run = ticks.group()
+            close = line.find(run, ticks.end())
+            while close >= 0 and (
+                (close + len(run) < len(line) and line[close + len(run)] == "`")
+                or (close > 0 and line[close - 1] == "`")
+            ):
+                close = line.find(run, close + 1)
+            if close < 0:
+                out.append(line[i : ticks.end()])
+                i = ticks.end()
+            else:
+                out.append(line[i : close + len(run)])
+                i = close + len(run)
+            continue
+        out.append(line[i:comment])
+        i = comment + len(COMMENT_OPEN)
+        in_comment = True
+    return "".join(out), in_comment
+
+
+def visible(text: str) -> str:
+    """The body as a reader sees it: no fenced code, no HTML comments.
+
+    One pass in document order, so a fence opener inside a comment
+    opens nothing, a comment opener inside inline code opens nothing,
+    and an example heading inside either is no verdict.
+    """
+    lines: list[str] = []
+    fence: tuple[str, int] | None = None
+    in_comment = False
+    for line in text.split("\n"):
+        if fence is not None:
+            if fence_closes(line, *fence):
+                fence = None
+            continue
+        if not in_comment:
+            opened = FENCE_OPEN.match(line)
+            if opened:
+                run = opened.group(1) or opened.group(2)
+                fence = (run[0], len(run))
+                continue
+        shown, in_comment = visible_span(line, 0, in_comment)
+        lines.append(shown)
+    return "\n".join(lines)
 
 
 def assessment_of(text: str) -> str | None:
@@ -148,7 +218,7 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
         raise ValueError("unresolved_threads must be a non-negative integer")
     text, oversized = bounded(body)
     # One line-ending convention, so a CRLF body reads as its LF twin.
-    text = without_fences(text.replace("\r\n", "\n").replace("\r", "\n"))
+    text = visible(text.replace("\r\n", "\n").replace("\r", "\n"))
     assessment = assessment_of(text)
     suppressed, unreadable = suppressed_count(text)
     reasons: list[str] = []

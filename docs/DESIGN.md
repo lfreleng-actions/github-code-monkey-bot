@@ -771,10 +771,13 @@ For each selected issue:
     `gh pr edit --add-reviewer @copilot`, the form GitHub accepts
     (the organisation guidance, Appendix B). The request is best
     effort: a refusal becomes a warning in `result.json` with
-    GitHub's answer, the publish goes on, and no token gains a
-    permission for it. Whether GitHub accepts the request from an
-    App installation token is the open point of §17; if it does not,
-    the fallback is a credential that can, held by this step alone.
+    GitHub's answer and an `INFO` notice at the top of the pull
+    request body, placed once with the same token, so a maintainer
+    reading the pull request knows the workflow requested no review;
+    the publish goes on, and no token gains a permission for it.
+    Whether GitHub accepts the request from an App installation token
+    is the open point of §17; if it does not, the fallback is a
+    credential that can, held by this step alone.
 11. **Await the Copilot review** with the job's own token, since the
     target is public: poll for a review by
     `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
@@ -792,12 +795,13 @@ For each selected issue:
     arrives within the wait. The body is text from outside: the
     classifier reads 64 KiB at most and treats a longer body as
     findings, since the part it cannot read may hold suppressed
-    findings; drops fenced code first, closed by a fence line
-    carrying nothing else, so an example heading is not a verdict;
-    takes the earliest heading as the assessment; and records labels
-    and counts, never the text, matching headings on one line,
-    reading a CRLF body as its LF twin, and taking an HTML comment or
-    an unreadable count as a finding rather than reading into it.
+    findings; reads the body as a reader sees it, in one pass that
+    tracks fenced code, inline code and HTML comments together, so an
+    example heading inside any of them is no verdict and none of them
+    can hide a visible finding; takes the earliest heading as the
+    assessment; and records labels and counts, never the text,
+    matching headings on one line, reading a CRLF body as its LF twin,
+    and taking an unreadable count as a finding.
     The wait checks its deadline before every read and keeps a
     reserve for the reads a hit needs
     (the listing, the threads page by page, and a second read of the
