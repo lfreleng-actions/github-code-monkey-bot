@@ -116,12 +116,28 @@ def head_review(repository: str, number: int, head_sha: str) -> dict[str, Any] |
     return newest
 
 
-def unresolved_threads(repository: str, number: int) -> int:
-    """Count the pull request's unresolved review threads, every page."""
+class WaitExpired(Exception):
+    """The next read would not fit the wait; the review stays pending."""
+
+
+def unresolved_threads(
+    repository: str,
+    number: int,
+    *,
+    budget: Callable[[], float] | None = None,
+) -> int:
+    """Count the pull request's unresolved review threads, every page.
+
+    Each page is a read with the shared wrapper's own retries, so with
+    a ``budget`` (seconds left in the wait) a page that may not fit
+    stops the count with ``WaitExpired`` rather than overrun it.
+    """
     owner, _, name = repository.partition("/")
     after: str | None = None
     count = 0
     while True:
+        if budget is not None and budget() < READ_BUDGET_SECONDS:
+            raise WaitExpired("could not read every review thread within the wait")
         data = github.graphql(
             THREADS_QUERY,
             {"owner": owner, "name": name, "number": number, "after": after},
@@ -187,7 +203,11 @@ def await_review(
             threads = 0
             review = head_review(repository, number, head_sha)
             if review is not None:
-                threads = unresolved_threads(repository, number)
+                threads = unresolved_threads(
+                    repository, number, budget=lambda: deadline - clock()
+                )
+        except WaitExpired as exc:
+            return verdicts.pending(str(exc)), None
         except github.GitHubError as exc:
             return (
                 verdicts.pending(

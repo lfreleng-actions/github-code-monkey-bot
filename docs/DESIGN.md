@@ -788,11 +788,15 @@ For each selected issue:
     otherwise, `🟡 Changes recommended` and the older format with no
     assessment included; **pending** when no review of the head
     arrives within the wait. The body is text from outside: the
-    classifier reads 64 KiB at most, drops fenced code first so an
-    example heading is not a verdict, and records labels and counts,
-    never the text. The wait checks its deadline before every read
-    and keeps a reserve for the two reads a hit needs, so it cannot
-    overrun the job's budget by a read's worst case; a review of another head, a
+    classifier reads 64 KiB at most and treats a longer body as
+    findings, since the part it cannot read may hold suppressed
+    findings; drops fenced code first, closed by a fence line
+    carrying nothing else, so an example heading is not a verdict;
+    takes the earliest heading as the assessment; and records labels
+    and counts, never the text. The wait checks its deadline before every read
+    and keeps a reserve for the two reads a hit needs, each further
+    page of threads included, so it cannot overrun the job's budget
+    by a read's worst case; a review of another head, a
     read failure the shared wrapper's retries did not cure, and no
     review at all end as pending, never clean. The record goes into
     `result.json` as `review` (§18.4).
@@ -1445,8 +1449,8 @@ a published pull request when `request_review` is on: `requested`
 says whether GitHub accepted the request, `verdict` is `clean`,
 `findings` or `pending`, `assessment` is `approval`, `closer-look`,
 `changes` or `null`, and `commit_id` is the head the review judged.
-The comment and the report read a record with any other shape or
-verdict as `pending`. The report job merges
+The comment and the report read a record with any field missing or
+added, or any other verdict, as `pending`. The report job merges
 every `result.json` into one table.
 
 **Open gap.** The publisher writes this file, but the report cannot
