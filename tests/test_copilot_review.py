@@ -164,6 +164,7 @@ class AwaitReviewTest(unittest.TestCase):
         clock = Clock()
         listings = [[], [copilot(7, HEAD, BODIES["v2-green-clean"])]]
         with (
+            patch.object(github, "api_object", return_value={"head": {"sha": HEAD}}),
             patch.object(github, "api_list", side_effect=listings),
             patch.object(github, "graphql", return_value=threads_reply([])),
         ):
@@ -220,11 +221,9 @@ class AwaitReviewTest(unittest.TestCase):
         wait = 20
 
         def listing(_endpoint: str) -> list[dict[str, Any]]:
-            # The review lands late and the listing itself is the
-            # slowest read: afterwards one thread page fits the wait,
-            # a second would not.
-            clock.now = wait * 60 - review.RESERVE_SECONDS - 1
-            clock.now += review.READ_BUDGET_SECONDS
+            # The review lands late: after the listing one thread page
+            # fits the wait and a second would not.
+            clock.now = wait * 60 - review.READ_BUDGET_SECONDS - 1
             return [copilot(7, HEAD, BODIES["v2-green-clean"])]
 
         pages = 0
@@ -250,17 +249,11 @@ class AwaitReviewTest(unittest.TestCase):
         self.assertEqual(len(gql.call_args_list), 1)
         self.assertLessEqual(clock.now, wait * 60 + review.READ_BUDGET_SECONDS)
 
-    @unittest.expectedFailure
     def test_head_that_moved_during_the_wait_is_pending(self) -> None:
         """A clean review of the old head is not a review of the new one."""
         clock = Clock()
-        heads = iter([HEAD, OTHER])
-
-        def pull(_endpoint: str) -> dict[str, Any]:
-            return {"head": {"sha": next(heads)}}
-
         with (
-            patch.object(github, "api_object", side_effect=pull),
+            patch.object(github, "api_object", return_value={"head": {"sha": OTHER}}),
             patch.object(
                 github,
                 "api_list",
@@ -275,7 +268,6 @@ class AwaitReviewTest(unittest.TestCase):
         self.assertIsNone(review_id)
         self.assertIn("head moved", verdict.reasons[0])
 
-    @unittest.expectedFailure
     def test_head_is_confirmed_before_a_verdict_is_accepted(self) -> None:
         """The head is read again once the review lands, and a hit then stands."""
         clock = Clock()
@@ -296,12 +288,12 @@ class AwaitReviewTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "clean")
         self.assertEqual(head.call_args.args[0], f"repos/{REPO}/pulls/41")
 
-    def test_reserve_covers_two_reads(self) -> None:
-        """The reserve is the worst case of the two reads a hit needs."""
+    def test_reserve_covers_a_hit(self) -> None:
+        """The reserve is the worst case of the three reads a hit needs."""
         worst = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
             github.RETRY_DELAY_SECONDS * n for n in range(1, github.READ_ATTEMPTS)
         )
-        self.assertEqual(review.RESERVE_SECONDS, 2 * worst)
+        self.assertEqual(review.RESERVE_SECONDS, 3 * worst)
         self.assertLess(review.RESERVE_SECONDS, review.DEFAULT_WAIT_MINUTES * 60 / 2)
 
 
@@ -367,7 +359,6 @@ class HandlersTest(unittest.TestCase):
                     )
                 self.assertNotIn("review", self.stored())
 
-    @unittest.expectedFailure
     def test_failed_head_read_records_pending(self) -> None:
         """A head read the wrapper's retries did not cure still writes a record."""
         self.write(review={"requested": True})

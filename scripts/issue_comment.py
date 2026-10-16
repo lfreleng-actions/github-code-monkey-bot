@@ -169,7 +169,9 @@ def run_comment(args: argparse.Namespace) -> None:
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (
-        posted(repository, issue, marker, args.since, bot_login) if bot_login else None
+        posted(repository, issue, marker, args.since, bot_login, run_url=args.run_url)
+        if bot_login
+        else None
     )
     if earlier is not None:
         # A retry after the POST succeeded but its reply was lost, or
@@ -187,15 +189,28 @@ def run_comment(args: argparse.Namespace) -> None:
 
 
 def posted(
-    repository: str, issue: int, marker: str, since: str, bot_login: str
+    repository: str,
+    issue: int,
+    marker: str,
+    since: str,
+    bot_login: str,
+    *,
+    run_url: str,
 ) -> str | None:
-    """The URL of this run's comment carrying ``marker``, if one exists.
+    """The URL of this run's comment carrying ``marker``, if it is the latest.
 
     Searches the comments made since the run's selection, which bounds
-    the read to what this run can have posted.
+    the read to what this run can have posted, and compares against
+    the bot's latest outcome for this run alone: an outcome that
+    changed and changed back is a new outcome to report, so an older
+    matching marker does not suppress it.
     """
     if not since:
         return None
+    # Every marker of this run opens the same way: the run URL, then
+    # the outcome. The outcome part is what may change between attempts.
+    prefix = f"<!-- code-monkey {run_url} "
+    latest: dict[str, Any] | None = None
     for page in range(1, 4):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
@@ -210,9 +225,13 @@ def posted(
             )
             # Anyone can paste the marker; only the bot's own comment
             # proves the outcome is on record.
-            if login == bot_login and marker in str(entry.get("body") or ""):
-                url = entry.get("html_url")
-                return url if isinstance(url, str) else ""
+            if login != bot_login or prefix not in str(entry.get("body") or ""):
+                continue
+            if latest is None or int(entry.get("id") or 0) > int(latest.get("id") or 0):
+                latest = entry
         if len(entries) < 100:
             break
-    return None
+    if latest is None or marker not in str(latest.get("body") or ""):
+        return None
+    url = latest.get("html_url")
+    return url if isinstance(url, str) else ""

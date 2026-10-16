@@ -40,10 +40,11 @@ ASSESSMENTS: tuple[tuple[str, re.Pattern[str]], ...] = (
 CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 
 # A fenced code block: an unindented (up to three spaces) run of three
-# or more backticks or tildes, to a closing fence of the same run with
-# nothing but whitespace after it, or to the end.
+# or more backticks or tildes, to a closing run of the same character
+# at least as long with nothing but whitespace after it, or to the end.
 FENCE = re.compile(
-    r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)", re.M | re.S
+    r"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n.*?(?:^ {0,3}(?(1)\1`*|\2~*)[ \t]*$|\Z)",
+    re.M | re.S,
 )
 
 # Suppressed findings sit under a heading or a <summary>; each entry

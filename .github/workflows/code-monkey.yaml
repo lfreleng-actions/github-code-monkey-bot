@@ -857,7 +857,7 @@ jobs:
     runs-on: 'ubuntu-latest'
     # Twenty minutes for the publish itself, plus the Copilot review
     # wait and the read reserve copilot_review.py keeps for it.
-    timeout-minutes: 50
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
@@ -1176,7 +1176,7 @@ jobs:
         run: |
           python3 monkey-assets/scripts/publish.py review-await \
             --result artefacts/result.json --output artefacts/result.json \
-            --wait-minutes 20
+            --wait-minutes 30
 
       # Runs after a failed push or open as well, so a publish failure
       # and its rollback reach the issue; never after cancellation.

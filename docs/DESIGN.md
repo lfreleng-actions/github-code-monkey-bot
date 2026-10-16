@@ -828,8 +828,10 @@ For each selected issue:
     counts and the assessment and the statement that a maintainer
     must act on them; or pending. The marker carries the review
     verdict too, so a rerun whose wait ended differently posts again
-    instead of leaving the issue at odds with `result.json`, and a
-    record the publisher does not recognise reads as pending.
+    instead of leaving the issue at odds with `result.json`; the
+    bot's latest outcome for the run alone suppresses a repeat, so an
+    outcome that changed and changed back posts as well. A record
+    the publisher does not recognise reads as pending.
 13. **Record** `result.json` and a step-summary section. A step that
     runs whatever came before writes a `publish-failed` result when an
     earlier failure (the offline check, a token mint) left none, so

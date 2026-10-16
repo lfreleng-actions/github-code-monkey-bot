@@ -1121,7 +1121,6 @@ class RunCommentTest(NoNetworkCase):
             body.endswith("<!-- code-monkey https://run proposed review=findings -->")
         )
 
-    @unittest.expectedFailure
     def test_only_the_latest_outcome_of_the_run_suppresses_a_repeat(self) -> None:
         """pending, clean, pending: the third posts, since the latest says clean."""
         path = self.write_result(
