@@ -1272,12 +1272,13 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
+    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
-        """Issues scope the token to their repositories; with a scan they fail."""
+        """Issues scope the token to the repositories that exist; with a scan they fail."""
         budget = self.step("select", "budget")
         env = cast(dict[str, Any], budget["env"])
         self.assert_expression(
-            env["ISSUE_REPOSITORIES"], "steps.issues.outputs.repositories"
+            env["ISSUE_REPOSITORIES"], "steps.named.outputs.repositories"
         )
         self.assert_expression(env["ISSUE_COUNT"], "steps.issues.outputs.count")
         self.assert_expression(
@@ -1289,6 +1290,37 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assert_expression(select["ISSUES"], "steps.issues.outputs.csv")
         self.assertIn(
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
+        )
+
+    @unittest.expectedFailure
+    def test_named_repositories_are_resolved_before_the_mint(self) -> None:
+        """A missing named repository leaves the token scope; none left fails.
+
+        The token action looks the installation up through the first
+        repository in its scope, so an absent name there fails the mint
+        before selection could report it. The public read with the
+        native token settles which names exist; the selector then
+        records the rest as not found.
+        """
+        named = self.step("select", "named")
+        env = cast(dict[str, Any], named["env"])
+        self.assert_expression(env["GH_TOKEN"], "github.token")
+        self.assert_expression(env["ORG"], "inputs.org")
+        self.assert_expression(
+            env["ISSUE_REPOSITORIES"], "steps.issues.outputs.repositories"
+        )
+        self.assert_expression(
+            env["REPOSITORIES"], "steps.repositories.outputs.repositories"
+        )
+        script = squash(str(named["run"]))
+        self.assertIn("HTTP 404", script)
+        self.assertIn("::error::none of the named issues' repositories exist", script)
+        self.assertIn("::error::repository", script)
+        self.assertLess(
+            self.position("select", "issues"), self.position("select", "named")
+        )
+        self.assertLess(
+            self.position("select", "named"), self.position("select", "budget")
         )
 
     def test_read_mint_scope_derives_from_the_split_list(self) -> None:

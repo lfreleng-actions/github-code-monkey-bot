@@ -832,6 +832,46 @@ class RepositoryMetaTest(ReadsCase):
         self.assertFalse(meta["public"])
         self.assertIsNone(meta["default_branch"])
 
+    @unittest.expectedFailure
+    def test_empty_repository_reads_as_having_no_branch(self) -> None:
+        """REST names a default branch even with no commits; the branch read settles it."""
+        payload = {
+            "name": "empty",
+            "private": False,
+            "visibility": "public",
+            "default_branch": "main",
+        }
+
+        def read(endpoint: str) -> dict[str, Any]:
+            if endpoint.endswith("/branches/main"):
+                raise github.GitHubError("gh: Branch not found (HTTP 404)")
+            return payload
+
+        with patch.object(github, "api_object", side_effect=read) as reads_made:
+            meta = repository_reads.repository_meta("org", "empty")
+        assert meta is not None
+        self.assertIsNone(meta["default_branch"])
+        self.assertEqual(
+            [call.args[0] for call in reads_made.call_args_list],
+            ["repos/org/empty", "repos/org/empty/branches/main"],
+        )
+
+    @unittest.expectedFailure
+    def test_branch_read_failure_propagates(self) -> None:
+        """A server failure on the branch read is an error, not an empty repository."""
+        payload = {"name": "alpha", "visibility": "public", "default_branch": "main"}
+
+        def read(endpoint: str) -> dict[str, Any]:
+            if endpoint.endswith("/branches/main"):
+                raise github.GitHubError("gh: Server Error (HTTP 502)")
+            return payload
+
+        with (
+            patch.object(github, "api_object", side_effect=read),
+            self.assertRaises(github.GitHubError),
+        ):
+            repository_reads.repository_meta("org", "alpha")
+
     def test_other_failures_propagate(self) -> None:
         """A server failure is an error, not an absent repository."""
         failure = github.GitHubError("gh: Server Error (HTTP 502)")

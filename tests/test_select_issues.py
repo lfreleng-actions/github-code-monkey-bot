@@ -358,6 +358,15 @@ class ExplicitIssuesTest(NoSubprocessCase):
         with self.assertRaises(github.GitHubError):
             select.build_selection(self.args("org/alpha#3"))
 
+    def test_empty_repository_is_a_named_skip(self) -> None:
+        """An issue in a repository with no commits skips alone; the rest proceed."""
+        self.repositories["empty"] = repo_meta("empty", default_branch=None)
+        selection, _ = select.build_selection(self.args("org/empty#1,org/alpha#3"))
+        self.assertEqual([i["key"] for i in selection["issues"]], ["alpha-3"])
+        (entry,) = selection["skipped_issues"]
+        self.assertEqual(entry["issue"], "org/empty#1")
+        self.assertIn("empty", entry["reason"])
+
     def test_prior_attempt_is_named(self) -> None:
         """An issue with an open bot pull request is skipped with a reason."""
         patch.object(reads, "prior_attempt", return_value="pull_request").start()
