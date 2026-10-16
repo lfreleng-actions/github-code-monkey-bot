@@ -214,6 +214,42 @@ class AwaitReviewTest(unittest.TestCase):
             )
         self.assertEqual(verdict.verdict, "pending")
 
+    @unittest.expectedFailure
+    def test_late_review_with_many_thread_pages_stays_within_the_wait(self) -> None:
+        """Each thread page is a read; one that would overrun the wait ends pending."""
+        clock = Clock()
+        wait = 20
+        # The review lands with exactly the reserve left: the listing
+        # and one thread page fit, a second page would not.
+        clock.now = wait * 60 - review.RESERVE_SECONDS - 1
+
+        def listing(_endpoint: str) -> list[dict[str, Any]]:
+            clock.now += review.READ_BUDGET_SECONDS  # the slowest read
+            return [copilot(7, HEAD, BODIES["v2-green-clean"])]
+
+        pages = 0
+
+        def threads(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            nonlocal pages
+            pages += 1
+            if pages > 3:
+                raise AssertionError("paging past the wait")
+            clock.now += review.READ_BUDGET_SECONDS
+            return threads_reply([False], more=True)
+
+        with (
+            patch.object(github, "api_list", side_effect=listing),
+            patch.object(github, "graphql", side_effect=threads) as gql,
+        ):
+            verdict, review_id = review.await_review(
+                REPO, 41, HEAD, wait_minutes=wait, clock=clock, sleep=clock.sleep
+            )
+        self.assertEqual(verdict.verdict, "pending")
+        self.assertIsNone(review_id)
+        self.assertIn("thread", verdict.reasons[0])
+        self.assertEqual(len(gql.call_args_list), 1)
+        self.assertLessEqual(clock.now, wait * 60 + review.READ_BUDGET_SECONDS)
+
     def test_reserve_covers_two_reads(self) -> None:
         """The reserve is the worst case of the two reads a hit needs."""
         worst = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
