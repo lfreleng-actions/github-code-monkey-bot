@@ -320,6 +320,7 @@ class HandlersTest(unittest.TestCase):
             "dry_run": False,
             "mode": "pull-requests",
             "pull_request_url": f"https://github.com/{REPO}/pull/41",
+            "commits": [HEAD],
         }
         data.update(overrides)
         self.path.write_text(json.dumps(data), encoding="utf-8")
@@ -372,6 +373,34 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("could not read the pull request head", record["reasons"][0])
         self.assertIsNone(record["commit_id"])
         self.assertIs(record["requested"], True)
+
+    @unittest.expectedFailure
+    def test_wait_is_bound_to_the_published_head(self) -> None:
+        """The head the publisher pushed is the one judged; a moved one is pending."""
+        self.write(review={"requested": True})
+        with (
+            patch.object(github, "api_object", return_value={"head": {"sha": OTHER}}),
+            patch.object(github, "api_list", side_effect=AssertionError("no wait")),
+        ):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        record = self.stored()["review"]
+        self.assertEqual(record["verdict"], "pending")
+        self.assertIn("head moved", record["reasons"][0])
+        self.assertEqual(record["commit_id"], HEAD)
+
+    @unittest.expectedFailure
+    def test_no_recorded_head_is_pending(self) -> None:
+        """Without the replayed chain there is nothing to bind the review to."""
+        self.write(review={"requested": True}, commits=[])
+        with patch.object(github, "api_object", side_effect=AssertionError("no read")):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        record = self.stored()["review"]
+        self.assertEqual(record["verdict"], "pending")
+        self.assertIn("no published head", record["reasons"][0])
 
     def test_await_records_the_verdict_against_the_head(self) -> None:
         """The record names the verdict, counts, review id and the head it judged."""

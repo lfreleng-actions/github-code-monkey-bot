@@ -199,6 +199,34 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 1)
         self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
+    def test_line_breaks_do_not_make_a_heading(self) -> None:
+        """A heading is one line; a break inside it is not an assessment."""
+        for text in (
+            "###\n🟢 Approval recommended\n",
+            "### 🟢\nApproval recommended\n",
+        ):
+            with self.subTest(text=text):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn("no assessment", verdict.reasons)
+
+    @unittest.expectedFailure
+    def test_crlf_bodies_classify_like_lf_bodies(self) -> None:
+        """Windows line endings change nothing: the fence closes, the findings count."""
+        text = (
+            BODIES["v2-green-clean"] + "\n```\nexample\n```\n" + SUPPRESSED_SUMMARY
+        ).replace("\n", "\r\n")
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 1)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertEqual(
+            verdicts.classify(
+                BODIES["v2-green-clean"].replace("\n", "\r\n"), 0
+            ).verdict,
+            "clean",
+        )
+
     def test_earliest_heading_is_the_assessment(self) -> None:
         """With conflicting headings the first one in the body decides."""
         text = (
