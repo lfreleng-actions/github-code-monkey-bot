@@ -225,7 +225,6 @@ class UntrustedTextTest(unittest.TestCase):
             "clean",
         )
 
-    @unittest.expectedFailure
     def test_inline_code_with_three_backticks_opens_no_fence(self) -> None:
         """A backtick opener's info string holds no backtick; such a line is prose."""
         text = (
@@ -237,7 +236,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 1)
         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_html_comments_cannot_supply_the_assessment(self) -> None:
         """An invisible heading is no assessment, closed comment or not."""
         for comment in (
@@ -253,7 +251,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-green-clean"], 0).verdict, "clean"
         )
 
-    @unittest.expectedFailure
     def test_unreadable_suppressed_count_is_findings(self) -> None:
         """A count too long to be a number is a finding, not a crash."""
         text = (

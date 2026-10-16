@@ -47,10 +47,17 @@ CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 # A fenced code block: an unindented (up to three spaces) run of three
 # or more backticks or tildes, to a closing run of the same character
 # at least as long with nothing but whitespace after it, or to the end.
+# A backtick opener's info string holds no backtick, as Markdown
+# requires, so a line of inline code opens nothing.
 FENCE = re.compile(
-    r"^ {0,3}(?:(`{3,})|(~{3,}))[^\n]*\n.*?(?:^ {0,3}(?(1)\1`*|\2~*)[ \t]*$|\Z)",
+    r"^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)\n.*?(?:^ {0,3}(?(1)\1`*|\2~*)[ \t]*$|\Z)",
     re.M | re.S,
 )
+# An HTML comment hides its content from the reader; one left open
+# hides the rest of the body.
+HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+# Digits beyond this are no count GitHub would write.
+MAX_COUNT_DIGITS = 9
 
 # Suppressed findings sit under a heading or a <summary>; each entry
 # opens with the bold path and line.
@@ -99,8 +106,8 @@ def bounded(body: str | None) -> tuple[str, bool]:
 
 
 def without_fences(text: str) -> str:
-    """Drop fenced code: an example heading inside one is not a verdict."""
-    return FENCE.sub("", text)
+    """Drop fenced code and HTML comments: what a reader cannot see is no verdict."""
+    return HTML_COMMENT.sub("", FENCE.sub("", text))
 
 
 def assessment_of(text: str) -> str | None:
@@ -113,16 +120,26 @@ def assessment_of(text: str) -> str | None:
     return earliest[1] if earliest else None
 
 
-def suppressed_count(text: str) -> int:
-    """Suppressed findings: the entries listed, or the stated count if larger."""
+def suppressed_count(text: str) -> tuple[int, bool]:
+    """Suppressed findings: the entries listed, or the stated count if larger.
+
+    The second value says a stated count was unreadable, which is a
+    finding in itself rather than a crash.
+    """
     total = 0
+    unreadable = False
     for head in SUPPRESSED_HEAD.finditer(text):
-        stated = int(head.group(1))
+        digits = head.group(1)
         rest = text[head.end() :]
         end = SUPPRESSED_END.search(rest)
         block = rest[: end.start()] if end else rest
-        total += max(stated, len(SUPPRESSED_ENTRY.findall(block)))
-    return total
+        listed = len(SUPPRESSED_ENTRY.findall(block))
+        if len(digits) > MAX_COUNT_DIGITS:
+            unreadable = True
+            total += listed
+            continue
+        total += max(int(digits), listed)
+    return total, unreadable
 
 
 def classify(body: str | None, unresolved_threads: int) -> Verdict:
@@ -133,8 +150,10 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
     # One line-ending convention, so a CRLF body reads as its LF twin.
     text = without_fences(text.replace("\r\n", "\n").replace("\r", "\n"))
     assessment = assessment_of(text)
-    suppressed = suppressed_count(text)
+    suppressed, unreadable = suppressed_count(text)
     reasons: list[str] = []
+    if unreadable:
+        reasons.append("suppressed count unreadable")
     if oversized:
         # The part past the cap may hold suppressed findings; a body
         # the classifier cannot read whole is never clean.
