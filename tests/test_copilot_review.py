@@ -356,6 +356,34 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
 
+    @unittest.expectedFailure
+    def test_successful_retry_removes_the_refusal_notice(self) -> None:
+        """A request that succeeds on a rerun takes its earlier notice down."""
+        self.write()
+        noted = (
+            review.REFUSAL_NOTICE_MARKER
+            + "\n> **INFO** The workflow x.\n\nCloses #7\n\nbody"
+        )
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "api_object", return_value={"body": noted}),
+            patch.object(github, "api_write", return_value={}) as write,
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        method, endpoint, payload = write.call_args.args
+        self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/pulls/41"))
+        self.assertEqual(payload["body"], "Closes #7\n\nbody")
+        self.assertIs(self.stored()["review"]["requested"], True)
+        # Without a notice there is nothing to remove, and nothing is read.
+        self.write()
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "api_object", return_value={"body": "Closes #7"}),
+            patch.object(github, "api_write") as write,
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        write.assert_not_called()
+
     def test_refusal_notice_is_idempotent_and_best_effort(self) -> None:
         """A body already carrying the notice is left alone; a failed edit is a warning."""
         self.write()
