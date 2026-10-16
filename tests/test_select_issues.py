@@ -161,6 +161,178 @@ class ParseRepositoriesTest(unittest.TestCase):
                 select.parse_repositories(bad)
 
 
+class ParseIssuesTest(unittest.TestCase):
+    """``parse_issues`` reads the splitter's canonical ``owner/repo#N`` form."""
+
+    @unittest.expectedFailure
+    def test_order_kept_and_repeats_dropped(self) -> None:
+        """Items keep the given order; case differences are repeats."""
+        self.assertEqual(
+            select.parse_issues(
+                "org/beta#2, Org/Alpha#1 org/alpha#1\norg/beta#3", "org"
+            ),
+            [("beta", 2), ("alpha", 1), ("beta", 3)],
+        )
+        self.assertEqual(select.parse_issues("  ", "org"), [])
+
+    @unittest.expectedFailure
+    def test_rejects_other_owners_and_bad_forms(self) -> None:
+        """A stranger's issue, a bad number or an unexpected spelling fails."""
+        for text in (
+            "other/alpha#1",
+            "org/alpha#0",
+            "alpha#1",
+            "org/alpha",
+            "org/a b#1",
+        ):
+            with self.subTest(text=text), self.assertRaises(reads.SelectionError):
+                select.parse_issues(text, "org")
+
+
+class ExplicitIssuesTest(NoSubprocessCase):
+    """Named issues skip the scan and the triage filters, not the safety ones."""
+
+    def setUp(self) -> None:
+        """Patch the reads an explicit selection performs."""
+        super().setUp()
+        repositories = {
+            "alpha": repo_meta("alpha"),
+            "beta": repo_meta("beta", archived=True),
+            "delta": repo_meta("delta"),
+        }
+        self.details: dict[tuple[str, int], dict[str, Any]] = {
+            ("org/alpha", 1): self.detail(
+                type=None, assignees=["someone"], labels=["chore"]
+            ),
+            ("org/alpha", 3): self.detail(),
+            ("org/delta", 5): self.detail(state="closed"),
+            ("org/delta", 6): self.detail(labels=["no-agent"]),
+        }
+        patch.object(reads, "list_repositories", return_value=repositories).start()
+        self.search = patch.object(reads, "search_open_issues").start()
+        patch.object(reads, "issue_details", side_effect=self.lookup).start()
+        patch.object(reads, "prior_attempt", return_value=None).start()
+        patch.object(reads, "has_open_linked_pr", return_value=False).start()
+        patch.object(reads, "branch_head", return_value=SHA_A).start()
+        patch.object(reads, "filtered_comments", return_value=([], 0, False)).start()
+        patch.object(reads, "fetch_guidance", return_value=(b"g\n", SHA_B)).start()
+        patch.object(
+            reads, "bot_identity", return_value={"login": "b[bot]", "email": "e"}
+        ).start()
+        self.addCleanup(patch.stopall)
+
+    @staticmethod
+    def detail(**overrides: Any) -> dict[str, Any]:
+        """An ``issue_details`` reply, with the fields a direct read adds."""
+        data: dict[str, Any] = {
+            "state": "open",
+            "title": "Title",
+            "body": "Body",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": "Low",
+            "url": "https://github.com/org/x/issues/1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "author_association": "MEMBER",
+        }
+        data.update(overrides)
+        return data
+
+    def lookup(self, repo: str, number: int) -> dict[str, Any]:
+        """Serve the fixture details for a known issue."""
+        return self.details[(repo, number)]
+
+    def args(self, issues: str, repositories: str = "") -> Any:
+        """The parsed arguments of an explicit run."""
+        return select.build_parser().parse_args(
+            [
+                "--org",
+                "org",
+                "--output-dir",
+                "out",
+                "--mode",
+                "pull-requests",
+                "--model",
+                "m",
+                "--guidance-repository",
+                "org/.github",
+                "--fork-orgs",
+                str(FORK_ORGS_PATH),
+                "--categories",
+                "docs",
+                "--issues",
+                issues,
+                "--repositories",
+                repositories,
+            ]
+        )
+
+    @unittest.expectedFailure
+    def test_named_issues_are_worked_in_order_without_triage_filters(self) -> None:
+        """No scan, no Type, label, assignee, category or one-per-repository rule."""
+        selection, _ = select.build_selection(
+            self.args(
+                "org/alpha#3,org/alpha#1,org/beta#2,org/gamma#4,org/delta#5,org/delta#6"
+            )
+        )
+        self.search.assert_not_called()
+        self.assertEqual(
+            [i["key"] for i in selection["issues"]], ["alpha-3", "alpha-1"]
+        )
+        self.assertEqual(selection["issues"][1]["type"], None)
+        self.assertEqual(selection["candidates_seen"], 6)
+        self.assertEqual(selection["skipped"]["one_per_repo"], 0)
+        self.assertEqual(selection["skipped"]["category"], 0)
+        self.assertEqual(selection["skipped"]["repository"], 2)
+        self.assertEqual(selection["skipped"]["closed"], 1)
+        self.assertEqual(selection["skipped"]["label"], 1)
+        self.assertEqual(
+            selection["explicit_issues"],
+            [
+                "org/alpha#3",
+                "org/alpha#1",
+                "org/beta#2",
+                "org/gamma#4",
+                "org/delta#5",
+                "org/delta#6",
+            ],
+        )
+        reasons = {
+            entry["issue"]: entry["reason"] for entry in selection["skipped_issues"]
+        }
+        self.assertEqual(
+            set(reasons), {"org/beta#2", "org/gamma#4", "org/delta#5", "org/delta#6"}
+        )
+        self.assertIn("archived", reasons["org/beta#2"])
+        self.assertIn("not found", reasons["org/gamma#4"])
+        self.assertIn("closed", reasons["org/delta#5"])
+        self.assertIn("no-agent", reasons["org/delta#6"])
+
+    @unittest.expectedFailure
+    def test_prior_attempt_is_named(self) -> None:
+        """An issue with an open bot pull request is skipped with a reason."""
+        patch.object(reads, "prior_attempt", return_value="pull_request").start()
+        selection, _ = select.build_selection(self.args("org/alpha#3"))
+        self.assertEqual(selection["issues"], [])
+        (entry,) = selection["skipped_issues"]
+        self.assertIn("pull request", entry["reason"])
+
+    @unittest.expectedFailure
+    def test_issues_and_repositories_exclude_each_other(self) -> None:
+        """Naming issues and repositories at once is refused."""
+        with self.assertRaises(reads.SelectionError):
+            select.build_selection(self.args("org/alpha#3", repositories="alpha"))
+
+    @unittest.expectedFailure
+    def test_summary_lists_skipped_issues(self) -> None:
+        """The step summary names each skipped issue and its reason."""
+        selection, _ = select.build_selection(self.args("org/gamma#4"))
+        text = outputs.summary_markdown(selection)
+        self.assertIn("org/gamma#4", text)
+        self.assertIn("not found", text)
+
+
 class ParseMaxPullRequestsTest(unittest.TestCase):
     """``parse_max_pull_requests`` accepts non-negative integers only."""
 

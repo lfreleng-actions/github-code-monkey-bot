@@ -1242,34 +1242,57 @@ class SelectAndReportContracts(ReusableWorkflowCase):
 class ListInputContracts(ReusableWorkflowCase):
     """Operator lists are split and checked once, before any token exists."""
 
-    # Splitter step id for each list input.
-    LISTS: ClassVar[dict[str, str]] = {
-        "repositories": "repositories",
-        "exclude_repos": "exclusions",
+    # Splitter step id and validate mode for each list input.
+    LISTS: ClassVar[dict[str, tuple[str, str]]] = {
+        "repositories": ("repositories", "repository"),
+        "exclude_repos": ("exclusions", "repository"),
+        "issues": ("issues", "issue"),
     }
 
-    def test_each_list_is_split_as_repository_names_of_the_org(self) -> None:
-        """Bare names of the trusted owner, offline, with no token to hand."""
+    @unittest.expectedFailure
+    def test_each_list_is_split_as_objects_of_the_org(self) -> None:
+        """Names or references of the trusted owner, offline, with no token."""
         self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
-        for name, identity in self.LISTS.items():
+        for name, (identity, mode) in self.LISTS.items():
             with self.subTest(input=name):
                 split = self.step("select", identity)
                 self.assertTrue(is_action(split, SPLITTER))
                 with_ = cast(dict[str, Any], split["with"])
                 self.assert_expression(with_["list"], f"inputs.{name}")
-                self.assertEqual(with_["validate"], "repository")
+                self.assertEqual(with_["validate"], mode)
                 self.assert_expression(with_["owner"], "inputs.org")
                 self.assertEqual(with_["token"], "")
                 self.assertNotIn("verify", with_)
 
+    @unittest.expectedFailure
     def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
         """A bad name fails the run before the App key is used."""
         check = self.position("select", "budget")
         mint = self.position("select", "app-token")
-        for identity in self.LISTS.values():
+        for identity, _ in self.LISTS.values():
             with self.subTest(step=identity):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
+
+    @unittest.expectedFailure
+    def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
+        """Issues scope the token to their repositories; with a scan they fail."""
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(
+            env["ISSUE_REPOSITORIES"], "steps.issues.outputs.repositories"
+        )
+        self.assert_expression(env["ISSUE_COUNT"], "steps.issues.outputs.count")
+        self.assert_expression(
+            env["REPOSITORY_COUNT"], "steps.repositories.outputs.count"
+        )
+        script = squash(str(budget["run"]))
+        self.assertIn("::error::issues and repositories cannot both be given", script)
+        select = cast(dict[str, Any], self.step("select", "Select issues")["env"])
+        self.assert_expression(select["ISSUES"], "steps.issues.outputs.csv")
+        self.assertIn(
+            '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
+        )
 
     def test_read_mint_scope_derives_from_the_split_list(self) -> None:
         """The scope is the splitter's names plus the guidance repository."""
@@ -1309,6 +1332,7 @@ class ListInputContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
+    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -1322,6 +1346,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "model",
                 "max_pull_requests",
                 "categories",
+                "issues",
                 "max_runtime_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
@@ -1390,6 +1415,7 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
 
+    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2 with safe defaults."""
         inputs = cast(
@@ -1420,18 +1446,9 @@ class CronCallerContracts(WorkflowCase):
             "include_assigned": False,
             "load_repo_skills": False,
             "repositories": "",
+            "issues": "",
+            "categories": "all",
         }
-        for name in (
-            "bugs",
-            "features",
-            "docs",
-            "ci",
-            "code_quality",
-            "refactor",
-            "performance",
-            "other",
-        ):
-            defaults[name] = True
         for name, default in defaults.items():
             with self.subTest(input=name):
                 actual: object = inputs[name]["default"]
@@ -1440,14 +1457,16 @@ class CronCallerContracts(WorkflowCase):
         # GitHub caps a dispatch form at 25 inputs.
         self.assertLessEqual(len(inputs), 25)
 
-    def test_category_booleans_build_the_list(self) -> None:
-        """Each form boolean feeds the list; a schedule's empty inputs enable all."""
-        step = self.step("options", "categories")
-        script = squash(str(step["run"]))
-        env = cast(dict[str, Any], step["env"])
-        self.assertEqual(len(env), 8)
-        self.assertIn('if [ "$2" != false ]', script)
-        self.assertIn("::error::Enable at least one issue category", script)
+    @unittest.expectedFailure
+    def test_categories_and_targets_are_forwarded_as_typed(self) -> None:
+        """One categories string and the target lists reach the reusable workflow."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(with_["categories"], "inputs.categories || 'all'")
+        self.assert_expression(with_["issues"], "inputs.issues || ''")
+        self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assertEqual(
+            [s.get("id") for s in self.steps("options") if s.get("id")], ["map"]
+        )
 
     def test_model_display_names_map_to_identifiers(self) -> None:
         """Each form choice resolves to a CLI identifier; anything else fails."""
@@ -1470,7 +1489,6 @@ class CronCallerContracts(WorkflowCase):
         self.assertEqual(job["uses"], REUSABLE_CALL)
         with_ = cast(dict[str, Any], job["with"])
         self.assert_expression(with_["model"], "needs.options.outputs.model")
-        self.assert_expression(with_["categories"], "needs.options.outputs.categories")
         self.assert_expression(
             with_["dry_run"],
             "github.event_name != 'workflow_dispatch' || inputs.dry_run",
