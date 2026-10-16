@@ -778,8 +778,10 @@ For each selected issue:
 11. **Await the Copilot review** with the job's own token, since the
     target is public: poll for a review by
     `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
-    head the publisher pushed, read the pull request's unresolved
-    review threads through GraphQL, and classify the pair by the
+    head the publisher pushed (the last commit of the replayed, or
+    adopted, chain; the publisher reads the pull request's current
+    head to confirm it, never to choose it), read the pull request's
+    unresolved review threads through GraphQL, and classify the pair by the
     organisation definition (`AGENTS.md` §11.5) in a pure function
     with offline tests built from real review bodies: **clean** when
     every thread has a resolution, the overview lists no suppressed
@@ -793,13 +795,18 @@ For each selected issue:
     findings; drops fenced code first, closed by a fence line
     carrying nothing else, so an example heading is not a verdict;
     takes the earliest heading as the assessment; and records labels
-    and counts, never the text. The wait checks its deadline before every read
-    and keeps a reserve for the two reads a hit needs, each further
-    page of threads included, so it cannot overrun the job's budget
-    by a read's worst case; a review of another head, a
-    read failure the shared wrapper's retries did not cure, and no
-    review at all end as pending, never clean. The record goes into
-    `result.json` as `review` (§18.4).
+    and counts, never the text, matching headings on one line and
+    reading a CRLF body as its LF twin. The wait checks its deadline
+    before every read and keeps a reserve for the reads a hit needs
+    (the listing, the threads page by page, and a second read of the
+    head), so it cannot overrun the job's budget by a read's worst
+    case. Once a review lands, the publisher reads the head again: a
+    push during the wait makes it a review of the old head. That, a
+    head that moved before the wait began, a review of another head,
+    a read failure the shared wrapper's retries did not cure, a head
+    it could not read at all, and no review within the wait all end
+    as pending, never clean. The record goes into `result.json` as
+    `review` (§18.4).
 12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
     provenance rejection, which check failed and the run URL. The

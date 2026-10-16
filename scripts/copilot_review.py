@@ -259,6 +259,17 @@ def published(result: dict[str, Any]) -> tuple[str, int] | None:
     return pull_reference(url)
 
 
+def published_head(result: dict[str, Any]) -> str | None:
+    """The last commit the publisher replayed or adopted, or None."""
+    commits = result.get("commits")
+    if not isinstance(commits, list) or not commits:
+        return None
+    last = cast("list[Any]", commits)[-1]
+    if not isinstance(last, str) or not github.SHA_RE.fullmatch(last):
+        return None
+    return last
+
+
 def write_result(path: Path, result: dict[str, Any]) -> None:
     """Write result.json back."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -291,19 +302,30 @@ def run_await(args: argparse.Namespace) -> None:
         return
     repository, number = target
     record = cast("dict[str, Any]", result.get("review") or {})
-    head: str | None = None
     review_id: int | None = None
-    try:
-        head = pull_head(repository, number)
-    except github.GitHubError as exc:
-        # The wait never started; the record still says why.
-        verdict = verdicts.pending(
-            f"could not read the pull request head: {github.safe_message(exc)}"
-        )
+    # The review must judge what the publisher pushed: the last commit
+    # of the replayed, or adopted, chain. The pull request's current
+    # head is read to confirm, never to choose.
+    head = published_head(result)
+    if head is None:
+        verdict = verdicts.pending("no published head recorded to bind the review to")
     else:
-        verdict, review_id = await_review(
-            repository, number, head, wait_minutes=int(args.wait_minutes)
-        )
+        try:
+            current = pull_head(repository, number)
+        except github.GitHubError as exc:
+            # The wait never started; the record still says why.
+            verdict = verdicts.pending(
+                f"could not read the pull request head: {github.safe_message(exc)}"
+            )
+        else:
+            if current != head:
+                verdict = verdicts.pending(
+                    f"head moved from {head[:7]} to {current[:7]} before the wait"
+                )
+            else:
+                verdict, review_id = await_review(
+                    repository, number, head, wait_minutes=int(args.wait_minutes)
+                )
     record.update(verdict.to_json(review_id=review_id, commit_id=head))
     record.setdefault("requested", False)
     result["review"] = record

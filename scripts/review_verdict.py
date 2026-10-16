@@ -26,16 +26,21 @@ from typing import Any
 MAX_BODY_BYTES = 64 * 1024
 
 # The assessment heading: an h3 at the start of a line (up to three
-# spaces of indentation, as Markdown allows) opening with the colour.
+# spaces of indentation, as Markdown allows) opening with the colour,
+# all on one line.
 ASSESSMENTS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "approval",
         re.compile(
-            r"^ {0,3}###\s+🟢\s+(?:Approval recommended|Ready to approve)\b", re.M
+            r"^ {0,3}###[ \t]+🟢[ \t]+(?:Approval recommended|Ready to approve)\b",
+            re.M,
         ),
     ),
-    ("closer-look", re.compile(r"^ {0,3}###\s+🔵\s+Needs a closer look\b", re.M)),
-    ("changes", re.compile(r"^ {0,3}###\s+🟡\s+Changes recommended\b", re.M)),
+    (
+        "closer-look",
+        re.compile(r"^ {0,3}###[ \t]+🔵[ \t]+Needs a closer look\b", re.M),
+    ),
+    ("changes", re.compile(r"^ {0,3}###[ \t]+🟡[ \t]+Changes recommended\b", re.M)),
 )
 CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 
@@ -125,7 +130,8 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
     if type(unresolved_threads) is not int or unresolved_threads < 0:
         raise ValueError("unresolved_threads must be a non-negative integer")
     text, oversized = bounded(body)
-    text = without_fences(text)
+    # One line-ending convention, so a CRLF body reads as its LF twin.
+    text = without_fences(text.replace("\r\n", "\n").replace("\r", "\n"))
     assessment = assessment_of(text)
     suppressed = suppressed_count(text)
     reasons: list[str] = []

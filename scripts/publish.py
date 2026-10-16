@@ -184,10 +184,14 @@ def reconcile(
     branch = str(check["branch"])
     bot = str(check["bot_login"])
     commits = cast("list[dict[str, Any]]", check["commits"])
-    if not branch_matches(fork, branch, str(check["base_sha"]), commits, bot):
+    chain = branch_matches(fork, branch, str(check["base_sha"]), commits, bot)
+    if chain is None:
         result["verdict"] = "rejected"
         cast("list[str]", result["reasons"]).append(str(conflict))
         return result
+    # The adopted chain is the published work; its head is what a
+    # review must judge.
+    result["commits"] = chain
     earlier = existing_pull_request(str(check["repository"]), branch, bot, fork)
     warnings = cast("list[str]", result["warnings"])
     result["branch_url"] = fork_tree_url(check)

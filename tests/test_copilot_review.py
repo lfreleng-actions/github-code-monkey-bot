@@ -371,10 +371,11 @@ class HandlersTest(unittest.TestCase):
         record = self.stored()["review"]
         self.assertEqual(record["verdict"], "pending")
         self.assertIn("could not read the pull request head", record["reasons"][0])
-        self.assertIsNone(record["commit_id"])
+        # The published head is known from the replay; the read that
+        # failed was the confirmation.
+        self.assertEqual(record["commit_id"], HEAD)
         self.assertIs(record["requested"], True)
 
-    @unittest.expectedFailure
     def test_wait_is_bound_to_the_published_head(self) -> None:
         """The head the publisher pushed is the one judged; a moved one is pending."""
         self.write(review={"requested": True})
@@ -390,7 +391,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("head moved", record["reasons"][0])
         self.assertEqual(record["commit_id"], HEAD)
 
-    @unittest.expectedFailure
     def test_no_recorded_head_is_pending(self) -> None:
         """Without the replayed chain there is nothing to bind the review to."""
         self.write(review={"requested": True}, commits=[])
