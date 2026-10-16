@@ -725,9 +725,9 @@ class ReviewGateContracts(ReusableWorkflowCase):
         assert found is not None
         wait = int(found.group(1))
         self.assertGreaterEqual(wait, 15)
-        # The job must outlast the wait, its read reserve (under seven
+        # The job must outlast the wait, its read reserve (under ten
         # minutes) and the twenty minutes the rest of the job had.
-        self.assertGreaterEqual(self.jobs["publish"]["timeout-minutes"], wait + 27)
+        self.assertGreaterEqual(self.jobs["publish"]["timeout-minutes"], wait + 30)
         order = [
             self.position("publish", name)
             for name in ("open", "review-request", "review", "Comment on the issue")

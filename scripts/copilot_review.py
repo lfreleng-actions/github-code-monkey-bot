@@ -33,15 +33,15 @@ import review_verdict as verdicts
 from review_verdict import Verdict
 
 REVIEWER_LOGIN = "copilot-pull-request-reviewer[bot]"
-DEFAULT_WAIT_MINUTES = 20
+DEFAULT_WAIT_MINUTES = 30
 POLL_SECONDS = 30
 # The worst one read can cost through bot_github.run_gh: every attempt
 # timing out, plus the backoff between attempts.
 READ_BUDGET_SECONDS = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
     github.RETRY_DELAY_SECONDS * attempt for attempt in range(1, github.READ_ATTEMPTS)
 )
-# A hit costs two reads: the review listing and the thread count.
-RESERVE_SECONDS = 2 * READ_BUDGET_SECONDS
+# A hit costs the review listing, the thread count and the head check.
+RESERVE_SECONDS = 3 * READ_BUDGET_SECONDS
 PULL_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
 
 THREADS_QUERY = """
@@ -216,6 +216,29 @@ def await_review(
                 None,
             )
         if review is not None:
+            # A push during the wait makes this a review of the old head;
+            # confirm the head still stands before accepting the verdict.
+            if deadline - clock() < READ_BUDGET_SECONDS:
+                return (
+                    verdicts.pending("could not confirm the head within the wait"),
+                    None,
+                )
+            try:
+                current = pull_head(repository, number)
+            except github.GitHubError as exc:
+                return (
+                    verdicts.pending(
+                        f"could not confirm the head: {github.safe_message(exc)}"
+                    ),
+                    None,
+                )
+            if current != head_sha:
+                return (
+                    verdicts.pending(
+                        f"head moved from {head_sha[:7]} to {current[:7]} during the wait"
+                    ),
+                    None,
+                )
             review_id = review.get("id")
             return (
                 verdicts.classify(review.get("body"), threads),
@@ -267,11 +290,20 @@ def run_await(args: argparse.Namespace) -> None:
         print("no pull request to await a review of")
         return
     repository, number = target
-    head = pull_head(repository, number)
-    verdict, review_id = await_review(
-        repository, number, head, wait_minutes=int(args.wait_minutes)
-    )
     record = cast("dict[str, Any]", result.get("review") or {})
+    head: str | None = None
+    review_id: int | None = None
+    try:
+        head = pull_head(repository, number)
+    except github.GitHubError as exc:
+        # The wait never started; the record still says why.
+        verdict = verdicts.pending(
+            f"could not read the pull request head: {github.safe_message(exc)}"
+        )
+    else:
+        verdict, review_id = await_review(
+            repository, number, head, wait_minutes=int(args.wait_minutes)
+        )
     record.update(verdict.to_json(review_id=review_id, commit_id=head))
     record.setdefault("requested", False)
     result["review"] = record
