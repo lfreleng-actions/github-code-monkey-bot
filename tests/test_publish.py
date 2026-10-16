@@ -245,7 +245,6 @@ class CommentBodyTest(unittest.TestCase):
                 self.assertIn("https://run", text or "")
                 self.assertNotIn("eligible", text or "")
 
-    @unittest.expectedFailure
     def test_review_verdict_is_stated(self) -> None:
         """The comment says what Copilot's review of the head concluded."""
         clean = comments.comment_body(
@@ -272,7 +271,6 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
-    @unittest.expectedFailure
     def test_unrecognised_review_record_reads_as_pending(self) -> None:
         """A record the publisher does not know is never read as clean."""
         for record in (
@@ -1096,7 +1094,6 @@ class RunCommentTest(NoNetworkCase):
             )
         write.assert_called_once()
 
-    @unittest.expectedFailure
     def test_marker_carries_the_review_verdict(self) -> None:
         """A rerun whose review verdict changed is a new outcome, not a repeat."""
         path = self.write_result(
@@ -1156,7 +1153,7 @@ class ReportRowTest(unittest.TestCase):
         self.assertEqual(row.count("\n"), 0)
         self.assertIn("A \\| B", row)
         self.assertNotIn("::error::", row)
-        self.assertEqual(row.count("|") - row.count("\\|"), 6)
+        self.assertEqual(row.count("|") - row.count("\\|"), 7)
 
 
 class RunReportTest(NoNetworkCase):
@@ -1285,7 +1282,7 @@ class RunReportTest(NoNetworkCase):
         self.assertFalse(
             [line for line in lines if line.startswith(("#", "- "))][1:], lines
         )
-        self.assertEqual(rows[2].count(" | "), 4, rows[2])
+        self.assertEqual(rows[2].count(" | "), 5, rows[2])
 
     def test_malformed_note_fields_do_not_abort_the_report(self) -> None:
         """Non-list reasons or warnings still yield one row per result."""
@@ -1347,10 +1344,12 @@ class RunReportTest(NoNetworkCase):
         markdown = output_md.read_text(encoding="utf-8")
         self.assertIn(
             f"| {REPOSITORY}#7 | proposed | https://github.com/{REPOSITORY}/pull/8 "
-            "| 4 | Fix: Both |",
+            "| — | 4 | Fix: Both |",
             markdown,
         )
-        self.assertIn(f"| {REPOSITORY}#2 | rejected | — | 3 | a \\| b; w |", markdown)
+        self.assertIn(
+            f"| {REPOSITORY}#2 | rejected | — | — | 3 | a \\| b; w |", markdown
+        )
         self.assertEqual(markdown.count("| unreadable |"), 1)
         self.assertIn(
             "Proposed 1, abstained 0, rejected 1, failed 0, publish failures 0; "
@@ -1385,7 +1384,6 @@ class RunReportTest(NoNetworkCase):
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
 
-    @unittest.expectedFailure
     def test_review_column_and_totals(self) -> None:
         """Each row states the Copilot verdict; the summary counts them."""
         results = self.root / "results"

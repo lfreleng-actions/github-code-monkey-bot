@@ -19,12 +19,16 @@ stops while enough budget remains for the two reads a hit needs.
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import proposal_model as model
 import review_verdict as verdicts
 from review_verdict import Verdict
 
@@ -200,3 +204,56 @@ def await_review(
         # Past this point remaining > RESERVE_SECONDS, so the sleep is
         # positive and the loop always advances.
         sleep(min(POLL_SECONDS, remaining - RESERVE_SECONDS))
+
+
+def published(result: dict[str, Any]) -> tuple[str, int] | None:
+    """The pull request a result published, or None when there is none to review."""
+    url = result.get("pull_request_url")
+    if result.get("dry_run") or result.get("verdict") != "proposed":
+        return None
+    if not isinstance(url, str) or not url:
+        return None
+    return pull_reference(url)
+
+
+def write_result(path: Path, result: dict[str, Any]) -> None:
+    """Write result.json back."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+
+def run_request(args: argparse.Namespace) -> None:
+    """``publish.py review-request``: ask for the review, record the answer."""
+    result = model.load_json(args.result, "result")
+    target = published(result)
+    if target is None:
+        print("no pull request to request a review of")
+        return
+    warning = request_review(*target)
+    record = cast("dict[str, Any]", result.get("review") or {})
+    record["requested"] = warning is None
+    result["review"] = record
+    if warning is not None:
+        cast("list[Any]", result.setdefault("warnings", [])).append(warning)
+    write_result(args.output, result)
+    print(f"review request: {'sent' if warning is None else 'refused'}")
+
+
+def run_await(args: argparse.Namespace) -> None:
+    """``publish.py review-await``: wait for the head's review and record it."""
+    result = model.load_json(args.result, "result")
+    target = published(result)
+    if target is None:
+        print("no pull request to await a review of")
+        return
+    repository, number = target
+    head = pull_head(repository, number)
+    verdict, review_id = await_review(
+        repository, number, head, wait_minutes=int(args.wait_minutes)
+    )
+    record = cast("dict[str, Any]", result.get("review") or {})
+    record.update(verdict.to_json(review_id=review_id, commit_id=head))
+    record.setdefault("requested", False)
+    result["review"] = record
+    write_result(args.output, result)
+    print(f"review: {verdict.verdict}; {'; '.join(verdict.reasons)}")

@@ -75,16 +75,16 @@ part and note it in your manifest reason.
      why you could not.
    - *Publication and review.* You cannot push, so the workflow
      publishes your commits and opens the pull request once this
-     session ends. Any Copilot review of that pull request arrives
-     after the session has ended, and you never see it. This
-     pipeline cannot yet revise its own pull requests, so every
-     review finding reaches a human. Make a change that passes
-     review the first time: before you write the manifest, review
-     your own diff the way a reviewer would, and name in the pull
-     request body anything you expect a reviewer to question. The
-     guidance's pull request steps and the parts of its review
-     cycle that need GitHub (requesting a review, waiting for it,
-     replying to findings, resolving threads) are steps this
+     session ends. It then requests a Copilot review of that pull
+     request, waits for it and reports its verdict on the issue. You
+     never see that review. This pipeline cannot yet revise its own
+     pull requests, so every review finding reaches a human. Make a
+     change that passes review the first time: before you write the
+     manifest, review your own diff the way a reviewer would, and
+     name in the pull request body anything you expect a reviewer to
+     question. The guidance's pull request steps and the parts of its
+     review cycle that need GitHub (requesting a review, waiting for
+     it, replying to findings, resolving threads) are steps this
      session cannot take.
 6. **Do not** push, call `gh`, open a pull request, fetch URLs
    outside the repository's own toolchain needs, write outside the
