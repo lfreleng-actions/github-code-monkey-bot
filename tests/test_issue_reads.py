@@ -792,6 +792,58 @@ class ListRepositoriesTest(ReadsCase):
             reads.list_repositories("org")
 
 
+class RepositoryMetaTest(ReadsCase):
+    """``repository_meta`` reads one repository into the listing's shape."""
+
+    @unittest.expectedFailure
+    def test_public_repository(self) -> None:
+        """REST field names map to the same keys the listing produces."""
+        payload = {
+            "name": "Alpha",
+            "archived": False,
+            "is_template": True,
+            "fork": False,
+            "private": False,
+            "visibility": "public",
+            "default_branch": "develop",
+        }
+        with patch.object(github, "api_object", return_value=payload):
+            self.assertEqual(
+                reads.repository_meta("org", "alpha"),
+                {
+                    "name": "Alpha",
+                    "archived": False,
+                    "template": True,
+                    "fork": False,
+                    "public": True,
+                    "default_branch": "develop",
+                },
+            )
+
+    @unittest.expectedFailure
+    def test_absent_and_internal(self) -> None:
+        """A missing repository is None; internal is not public; an empty one has no branch."""
+        absent = github.GitHubError("gh: Not Found (HTTP 404)")
+        with patch.object(github, "api_object", side_effect=absent):
+            self.assertIsNone(reads.repository_meta("org", "gone"))
+        payload = {"name": "inner", "private": False, "visibility": "internal"}
+        with patch.object(github, "api_object", return_value=payload):
+            meta = reads.repository_meta("org", "inner")
+        assert meta is not None
+        self.assertFalse(meta["public"])
+        self.assertIsNone(meta["default_branch"])
+
+    @unittest.expectedFailure
+    def test_other_failures_propagate(self) -> None:
+        """A server failure is an error, not an absent repository."""
+        failure = github.GitHubError("gh: Server Error (HTTP 502)")
+        with (
+            patch.object(github, "api_object", side_effect=failure),
+            self.assertRaises(github.GitHubError),
+        ):
+            reads.repository_meta("org", "alpha")
+
+
 class DeclaredReadsTest(unittest.TestCase):
     """The ``gh`` CLI reads this bot makes are declared so they retry.
 
