@@ -456,7 +456,11 @@ class RunPushTest(NoNetworkCase):
                 publish, "create_branch", side_effect=policy.Rejection("branch exists")
             ),
             patch.object(publish, "existing_pull_request", return_value=pr) as lookup,
-            patch.object(publish, "branch_matches", return_value=same_tree) as match,
+            patch.object(
+                publish,
+                "branch_matches",
+                return_value=["c" * 40] if same_tree else None,
+            ) as match,
             patch.object(publish, "replay_commits") as replay,
             patch.object(publish, "delete_branch") as delete,
         ):
@@ -467,6 +471,12 @@ class RunPushTest(NoNetworkCase):
         if same_tree:
             lookup.assert_called_once_with(REPOSITORY, BRANCH, BOT, FORK)
         return result
+
+    @unittest.expectedFailure
+    def test_adopted_branch_records_its_chain(self) -> None:
+        """The verified chain's commits are the published head the review binds to."""
+        result = self.reconcile_existing("pull-requests", same_tree=True)
+        self.assertEqual(result["commits"], ["c" * 40])
 
     def test_rerun_after_success_reports_the_existing_pull_request(self) -> None:
         """A retry meeting its own open PR is published, not rejected, and silent."""
@@ -511,7 +521,7 @@ class RunPushTest(NoNetworkCase):
             patch.object(
                 publish, "create_branch", side_effect=policy.Rejection("branch exists")
             ),
-            patch.object(publish, "branch_matches", return_value=True),
+            patch.object(publish, "branch_matches", return_value=["c" * 40]),
             patch.object(
                 publish,
                 "existing_pull_request",
