@@ -772,9 +772,10 @@ For each selected issue:
     (the organisation guidance, Appendix B). The request is best
     effort: a refusal becomes a warning in `result.json` with
     GitHub's answer and an `INFO` notice at the top of the pull
-    request body, placed once with the same token, so a maintainer
-    reading the pull request knows the workflow requested no review;
-    the publish goes on, and no token gains a permission for it.
+    request body, placed once with the same token and taken down by
+    a retry whose request succeeds, so a maintainer reading the pull
+    request knows whether the workflow requested a review; the
+    publish goes on, and no token gains a permission for it.
     Whether GitHub accepts the request from an App installation token
     is the open point of §17; if it does not, the fallback is a
     credential that can, held by this step alone.
@@ -795,10 +796,12 @@ For each selected issue:
     arrives within the wait. The body is text from outside: the
     classifier reads 64 KiB at most and treats a longer body as
     findings, since the part it cannot read may hold suppressed
-    findings; reads the body as a reader sees it, in one pass that
-    tracks fenced code, inline code and HTML comments together, so an
-    example heading inside any of them is no verdict and none of them
-    can hide a visible finding; takes the earliest heading as the
+    findings; drops fenced code and Copilot's one HTML comment, its
+    format marker, and fails closed on any other HTML comment outside
+    inline code or a code span left open on its line, since parsing
+    what a comment hides is a losing game and a comment can then
+    neither supply an assessment nor hide a finding; takes the
+    earliest heading as the
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,
     and taking an unreadable count as a finding.

@@ -332,9 +332,14 @@ class HandlersTest(unittest.TestCase):
     def test_request_records_success_and_refusal(self) -> None:
         """The request is recorded; a refusal is a warning, never a failure."""
         self.write()
-        with patch.object(github, "run_gh", return_value=""):
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "api_object", return_value={"body": "Closes #7"}),
+        ):
             review.run_request(argparse.Namespace(result=self.path, output=self.path))
-        self.assertIs(self.stored()["review"]["requested"], True)
+        stored = self.stored()
+        self.assertIs(stored["review"]["requested"], True)
+        self.assertEqual(stored["warnings"], [])
         self.write()
         with (
             patch.object(github, "run_gh", side_effect=github.GitHubError("no")),
@@ -356,7 +361,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
 
-    @unittest.expectedFailure
     def test_successful_retry_removes_the_refusal_notice(self) -> None:
         """A request that succeeds on a rerun takes its earlier notice down."""
         self.write()
@@ -374,7 +378,7 @@ class HandlersTest(unittest.TestCase):
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/pulls/41"))
         self.assertEqual(payload["body"], "Closes #7\n\nbody")
         self.assertIs(self.stored()["review"]["requested"], True)
-        # Without a notice there is nothing to remove, and nothing is read.
+        # Without a notice there is nothing to remove, and nothing is written.
         self.write()
         with (
             patch.object(github, "run_gh", return_value=""),

@@ -53,7 +53,11 @@ FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
 # Inline code: a run of backticks closed by a run of the same length.
 BACKTICKS = re.compile(r"`+")
 COMMENT_OPEN = "<!--"
-COMMENT_CLOSE = "-->"
+# The one HTML comment Copilot writes: the format marker, on a line of
+# its own. Any other comment fails closed (``visible``).
+MARKER_LINE = re.compile(r"^[ \t]*<!-- ccr-overview-v\d+ -->[ \t]*$")
+UNREADABLE_COMMENT = "review body holds an HTML comment the classifier does not read"
+UNREADABLE_SPAN = "review body holds a code span the classifier does not read"
 # Digits beyond this are no count GitHub would write.
 MAX_COUNT_DIGITS = 9
 
@@ -112,72 +116,68 @@ def fence_closes(line: str, char: str, length: int) -> bool:
     return run >= length and stripped[run:].strip(" \t") == ""
 
 
-def visible_span(line: str, start: int, in_comment: bool) -> tuple[str, bool]:
-    """The part of one line a reader sees, tracking inline code and comments.
+def scan_line(line: str) -> set[str]:
+    """What on one line the classifier will not read past.
 
-    Inline code is kept whole, so a comment opener inside it is prose;
-    a comment hides to its close, on this line or a later one.
+    Inline code is prose, so a comment opener inside a closed span is
+    fine. A span left open on its line may run on to later lines and
+    show or hide anything, and a comment opener outside code may hide
+    anything to its close: either fails the body closed. Parsing
+    comments instead is a losing game, since escaped openers,
+    indented code and comments closing mid-line each need another
+    rule, and Copilot writes none but its marker.
     """
-    out: list[str] = []
-    i = start
+    problems: set[str] = set()
+    i = 0
     while i < len(line):
-        if in_comment:
-            close = line.find(COMMENT_CLOSE, i)
-            if close < 0:
-                return "".join(out), True
-            i = close + len(COMMENT_CLOSE)
-            in_comment = False
-            continue
         ticks = BACKTICKS.search(line, i)
         comment = line.find(COMMENT_OPEN, i)
         if ticks is None and comment < 0:
-            out.append(line[i:])
             break
         if ticks is not None and (comment < 0 or ticks.start() < comment):
             run = ticks.group()
             close = line.find(run, ticks.end())
             while close >= 0 and (
                 (close + len(run) < len(line) and line[close + len(run)] == "`")
-                or (close > 0 and line[close - 1] == "`")
+                or line[close - 1] == "`"
             ):
                 close = line.find(run, close + 1)
             if close < 0:
-                out.append(line[i : ticks.end()])
+                problems.add(UNREADABLE_SPAN)
                 i = ticks.end()
             else:
-                out.append(line[i : close + len(run)])
                 i = close + len(run)
             continue
-        out.append(line[i:comment])
+        problems.add(UNREADABLE_COMMENT)
         i = comment + len(COMMENT_OPEN)
-        in_comment = True
-    return "".join(out), in_comment
+    return problems
 
 
-def visible(text: str) -> str:
-    """The body as a reader sees it: no fenced code, no HTML comments.
+def visible(text: str) -> tuple[str, list[str]]:
+    """The body as a reader sees it, and the reasons it may not be.
 
-    One pass in document order, so a fence opener inside a comment
-    opens nothing, a comment opener inside inline code opens nothing,
-    and an example heading inside either is no verdict.
+    One pass in document order: fenced code is dropped whole, the
+    format marker is dropped, and every other line is scanned for
+    what the classifier will not read past.
     """
     lines: list[str] = []
+    problems: set[str] = set()
     fence: tuple[str, int] | None = None
-    in_comment = False
     for line in text.split("\n"):
         if fence is not None:
             if fence_closes(line, *fence):
                 fence = None
             continue
-        if not in_comment:
-            opened = FENCE_OPEN.match(line)
-            if opened:
-                run = opened.group(1) or opened.group(2)
-                fence = (run[0], len(run))
-                continue
-        shown, in_comment = visible_span(line, 0, in_comment)
-        lines.append(shown)
-    return "\n".join(lines)
+        opened = FENCE_OPEN.match(line)
+        if opened:
+            run = opened.group(1) or opened.group(2)
+            fence = (run[0], len(run))
+            continue
+        if MARKER_LINE.match(line):
+            continue
+        problems |= scan_line(line)
+        lines.append(line)
+    return "\n".join(lines), sorted(problems)
 
 
 def assessment_of(text: str) -> str | None:
@@ -218,10 +218,10 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
         raise ValueError("unresolved_threads must be a non-negative integer")
     text, oversized = bounded(body)
     # One line-ending convention, so a CRLF body reads as its LF twin.
-    text = visible(text.replace("\r\n", "\n").replace("\r", "\n"))
+    text, problems = visible(text.replace("\r\n", "\n").replace("\r", "\n"))
     assessment = assessment_of(text)
     suppressed, unreadable = suppressed_count(text)
-    reasons: list[str] = []
+    reasons: list[str] = list(problems)
     if unreadable:
         reasons.append("suppressed count unreadable")
     if oversized:

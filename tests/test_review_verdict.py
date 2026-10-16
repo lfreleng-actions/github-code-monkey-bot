@@ -236,7 +236,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 1)
         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_any_comment_but_the_marker_is_unreadable(self) -> None:
         """Copilot writes one HTML comment, its marker; any other fails closed.
 
@@ -270,7 +269,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-green-clean"], 0).verdict, "clean"
         )
 
-    @unittest.expectedFailure
     def test_code_span_left_open_on_its_line_is_unreadable(self) -> None:
         """A span that may run onto later lines could show or hide anything."""
         text = BODIES["v2-green-clean"] + "\nUse `<!--\nto open a comment`.\n"
@@ -314,7 +312,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 2)
         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_comment_closing_mid_line_fails_closed(self) -> None:
         """A comment closing mid-line is still a comment that is not the marker."""
         text = (
