@@ -17,6 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
 reads = import_module("issue_reads")
+repository_reads = import_module("repository_reads")
 
 SHA = "c" * 40
 REF_COMMIT: dict[str, Any] = {
@@ -743,7 +744,7 @@ class ListRepositoriesTest(ReadsCase):
             ]
         )
         with patch.object(github, "run_gh", return_value=payload):
-            repositories = reads.list_repositories("org")
+            repositories = repository_reads.list_repositories("org")
         self.assertEqual(
             repositories,
             {
@@ -789,13 +790,12 @@ class ListRepositoriesTest(ReadsCase):
             patch.object(github, "run_gh", return_value=payload),
             self.assertRaises(reads.SelectionError),
         ):
-            reads.list_repositories("org")
+            repository_reads.list_repositories("org")
 
 
 class RepositoryMetaTest(ReadsCase):
     """``repository_meta`` reads one repository into the listing's shape."""
 
-    @unittest.expectedFailure
     def test_public_repository(self) -> None:
         """REST field names map to the same keys the listing produces."""
         payload = {
@@ -809,7 +809,7 @@ class RepositoryMetaTest(ReadsCase):
         }
         with patch.object(github, "api_object", return_value=payload):
             self.assertEqual(
-                reads.repository_meta("org", "alpha"),
+                repository_reads.repository_meta("org", "alpha"),
                 {
                     "name": "Alpha",
                     "archived": False,
@@ -820,20 +820,18 @@ class RepositoryMetaTest(ReadsCase):
                 },
             )
 
-    @unittest.expectedFailure
     def test_absent_and_internal(self) -> None:
         """A missing repository is None; internal is not public; an empty one has no branch."""
         absent = github.GitHubError("gh: Not Found (HTTP 404)")
         with patch.object(github, "api_object", side_effect=absent):
-            self.assertIsNone(reads.repository_meta("org", "gone"))
+            self.assertIsNone(repository_reads.repository_meta("org", "gone"))
         payload = {"name": "inner", "private": False, "visibility": "internal"}
         with patch.object(github, "api_object", return_value=payload):
-            meta = reads.repository_meta("org", "inner")
+            meta = repository_reads.repository_meta("org", "inner")
         assert meta is not None
         self.assertFalse(meta["public"])
         self.assertIsNone(meta["default_branch"])
 
-    @unittest.expectedFailure
     def test_other_failures_propagate(self) -> None:
         """A server failure is an error, not an absent repository."""
         failure = github.GitHubError("gh: Server Error (HTTP 502)")
@@ -841,7 +839,7 @@ class RepositoryMetaTest(ReadsCase):
             patch.object(github, "api_object", side_effect=failure),
             self.assertRaises(github.GitHubError),
         ):
-            reads.repository_meta("org", "alpha")
+            repository_reads.repository_meta("org", "alpha")
 
 
 class DeclaredReadsTest(unittest.TestCase):
@@ -856,7 +854,7 @@ class DeclaredReadsTest(unittest.TestCase):
     def test_repo_list_and_issue_search_are_declared_reads(self) -> None:
         """Both CLI reads pass ``read=True`` to the shared wrapper."""
         with patch.object(github, "run_gh", return_value="[]") as gh:
-            reads.list_repositories("org")
+            repository_reads.list_repositories("org")
             reads.search_open_issues("org", ["a"])
         self.assertEqual(len(gh.call_args_list), 2)
         for call in gh.call_args_list:

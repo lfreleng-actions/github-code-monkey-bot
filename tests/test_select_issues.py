@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
 reads = import_module("issue_reads")
+repository_reads = import_module("repository_reads")
 select = import_module("select_issues")
 explicit_targets = import_module("explicit_issues")
 inputs = import_module("selection_inputs")
@@ -209,10 +210,10 @@ class ExplicitIssuesTest(NoSubprocessCase):
             ("org/delta", 6): self.detail(labels=["no-agent"]),
         }
         self.repositories = repositories
-        patch.object(reads, "list_repositories", return_value=repositories).start()
         patch.object(
-            reads, "repository_meta", create=True, side_effect=self.meta
+            repository_reads, "list_repositories", return_value=repositories
         ).start()
+        patch.object(repository_reads, "repository_meta", side_effect=self.meta).start()
         self.search = patch.object(reads, "search_open_issues").start()
         patch.object(reads, "issue_details", side_effect=self.lookup).start()
         patch.object(reads, "prior_attempt", return_value=None).start()
@@ -316,11 +317,10 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertIn("closed", reasons["org/delta#5"])
         self.assertIn("no-agent", reasons["org/delta#6"])
 
-    @unittest.expectedFailure
     def test_named_repositories_are_read_one_by_one(self) -> None:
         """No organisation listing: a named run cannot hit the listing ceiling."""
         listing = patch.object(
-            reads, "list_repositories", side_effect=AssertionError("listed")
+            repository_reads, "list_repositories", side_effect=AssertionError("listed")
         ).start()
         self.repositories = {"alpha": repo_meta("alpha")}
         selection, _ = select.build_selection(self.args("org/alpha#3,org/gamma#4"))
@@ -329,7 +329,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         (entry,) = selection["skipped_issues"]
         self.assertIn("not found", entry["reason"])
 
-    @unittest.expectedFailure
     def test_missing_issue_and_pull_request_number_are_skipped(self) -> None:
         """An absent issue, or a pull request's number, skips that item alone."""
 
@@ -998,7 +997,9 @@ class MainTest(NoSubprocessCase):
             "assignees": [],
             "priority": "Urgent",
         }
-        patch.object(reads, "list_repositories", return_value=repositories).start()
+        patch.object(
+            repository_reads, "list_repositories", return_value=repositories
+        ).start()
         patch.object(reads, "search_open_issues", return_value=issues).start()
         patch.object(reads, "issue_details", return_value=details).start()
         patch.object(reads, "prior_attempt", return_value=None).start()
@@ -1110,7 +1111,7 @@ class MainTest(NoSubprocessCase):
         """A ``GitHubError`` from a read takes the same failure path."""
         self.patch_reads()
         patch.object(
-            reads,
+            repository_reads,
             "list_repositories",
             side_effect=github.GitHubError("boom (HTTP 500)"),
         ).start()

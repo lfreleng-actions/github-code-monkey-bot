@@ -33,6 +33,7 @@ import explicit_issues as explicit_targets
 import fork_orgs as forks
 import issue_categories as categories
 import issue_reads as reads
+import repository_reads as repositories
 import selection_outputs as outputs
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
@@ -309,22 +310,21 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     except ForkOrgError as exc:
         raise SelectionError(str(exc)) from exc
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
-    repositories = reads.list_repositories(args.org)
     skipped_issues: list[dict[str, str]] = []
     if targets:
-        # Named issues: no scan, no ranking, the given order kept.
+        # Named issues: no listing, no scan, no ranking, the given
+        # order kept.
         seen = len(targets)
         ranked = explicit_targets.candidates(
             args.org,
             targets,
-            repositories,
             skipped=skipped,
             skipped_issues=skipped_issues,
         )
     else:
         seen, ranked = scan_candidates(
             args,
-            repositories,
+            repositories.list_repositories(args.org),
             explicit=explicit,
             exclusions=exclusions,
             enabled=enabled,

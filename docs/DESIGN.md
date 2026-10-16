@@ -447,9 +447,14 @@ label, assignee or category filter, no ranking, and no
 one-per-repository rule, since the operator chose the set. What
 remains is what the pipeline cannot work around: a repository the
 author job cannot clone or the publisher cannot fork (archived,
-template, fork, non-public or empty), a closed issue, the `no-agent`
-opt-out, an open bot pull request from an earlier attempt, and an
-open pull request linked to close the issue. The selection records
+template, fork, non-public or empty), a closed or absent issue, a
+number that names a pull request, the `no-agent` opt-out, an open
+bot pull request from an earlier attempt, and an open pull request
+linked to close the issue. A named run reads each distinct
+repository on its own and never lists the owner, so an owner at the
+listing ceiling can still have an issue named; a skip never stops
+the issues beside it, while a permission, rate-limit or server
+failure still fails the run. The selection records
 every named issue it skipped with its reason, in `skipped_issues`,
 and the summary lists them, so a maintainer who named five issues
 and sees three in the matrix learns why. Issues and `repositories`
@@ -1081,6 +1086,7 @@ scripts/explicit_issues.py               named issues (§6)
 scripts/issue_categories.py              category switches and matching
 scripts/selection_outputs.py             selection files and summary
 scripts/issue_reads.py                   GitHub reads for selection
+scripts/repository_reads.py              owner listing or one repository
 scripts/bot_github.py                    gh wrapper, REST and GraphQL (shared)
 scripts/bot_evidence.py                  evidence digest verification (shared)
 scripts/artifact_fetch.py                bounded artifact extraction (shared)
