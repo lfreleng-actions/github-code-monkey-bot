@@ -47,7 +47,9 @@ def review_verdict(result: dict[str, Any]) -> str | None:
     if not isinstance(record, dict):
         return "pending"
     data = cast("dict[str, Any]", record)
-    if not set(data) <= REVIEW_FIELDS or data.get("verdict") not in REVIEW_VERDICTS:
+    # Every field, no more and no fewer: a record missing its counts or
+    # the head it judged is not proof of a clean review either.
+    if frozenset(data) != REVIEW_FIELDS or data.get("verdict") not in REVIEW_VERDICTS:
         return "pending"
     return str(data["verdict"])
 

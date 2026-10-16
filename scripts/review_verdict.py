@@ -40,9 +40,10 @@ ASSESSMENTS: tuple[tuple[str, re.Pattern[str]], ...] = (
 CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 
 # A fenced code block: an unindented (up to three spaces) run of three
-# or more backticks or tildes, to the matching fence or the end.
+# or more backticks or tildes, to a closing fence of the same run with
+# nothing but whitespace after it, or to the end.
 FENCE = re.compile(
-    r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[^\n]*$|\Z)", re.M | re.S
+    r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[ \t]*$|\Z)", re.M | re.S
 )
 
 # Suppressed findings sit under a heading or a <summary>; each entry
@@ -81,11 +82,14 @@ class Verdict:
         }
 
 
-def bounded(body: str | None) -> str:
-    """The body as text, cut to the size the classifier reads."""
+def bounded(body: str | None) -> tuple[str, bool]:
+    """The body as text, and whether it exceeded the size the classifier reads."""
     if not isinstance(body, str):
-        return ""
-    return body.encode("utf-8")[:MAX_BODY_BYTES].decode("utf-8", "ignore")
+        return "", False
+    raw = body.encode("utf-8")
+    if len(raw) <= MAX_BODY_BYTES:
+        return body, False
+    return raw[:MAX_BODY_BYTES].decode("utf-8", "ignore"), True
 
 
 def without_fences(text: str) -> str:
@@ -94,11 +98,13 @@ def without_fences(text: str) -> str:
 
 
 def assessment_of(text: str) -> str | None:
-    """The first recognised assessment heading, or None."""
+    """The earliest recognised assessment heading in the body, or None."""
+    earliest: tuple[int, str] | None = None
     for label, pattern in ASSESSMENTS:
-        if pattern.search(text):
-            return label
-    return None
+        found = pattern.search(text)
+        if found and (earliest is None or found.start() < earliest[0]):
+            earliest = (found.start(), label)
+    return earliest[1] if earliest else None
 
 
 def suppressed_count(text: str) -> int:
@@ -117,10 +123,15 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
     """Apply the section 11.5 definition to a review body and its threads."""
     if type(unresolved_threads) is not int or unresolved_threads < 0:
         raise ValueError("unresolved_threads must be a non-negative integer")
-    text = without_fences(bounded(body))
+    text, oversized = bounded(body)
+    text = without_fences(text)
     assessment = assessment_of(text)
     suppressed = suppressed_count(text)
     reasons: list[str] = []
+    if oversized:
+        # The part past the cap may hold suppressed findings; a body
+        # the classifier cannot read whole is never clean.
+        reasons.append(f"review body over {MAX_BODY_BYTES} bytes")
     if unresolved_threads:
         plural = "s" if unresolved_threads != 1 else ""
         reasons.append(f"{unresolved_threads} unresolved review thread{plural}")

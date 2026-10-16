@@ -161,7 +161,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn("no assessment", verdict.reasons)
 
-    @unittest.expectedFailure
     def test_body_over_the_bound_is_findings(self) -> None:
         """A body the classifier cannot read whole is never clean.
 
@@ -182,7 +181,6 @@ class UntrustedTextTest(unittest.TestCase):
             "clean",
         )
 
-    @unittest.expectedFailure
     def test_closing_fence_takes_no_trailing_text(self) -> None:
         """A fence line with text after it opens or continues a block; it closes none."""
         text = (
@@ -194,7 +192,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("no assessment", verdict.reasons)
 
-    @unittest.expectedFailure
     def test_earliest_heading_is_the_assessment(self) -> None:
         """With conflicting headings the first one in the body decides."""
         text = (

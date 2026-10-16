@@ -271,7 +271,6 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
-    @unittest.expectedFailure
     def test_unrecognised_review_record_reads_as_pending(self) -> None:
         """A record the publisher does not know is never read as clean."""
         for record in (

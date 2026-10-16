@@ -214,17 +214,17 @@ class AwaitReviewTest(unittest.TestCase):
             )
         self.assertEqual(verdict.verdict, "pending")
 
-    @unittest.expectedFailure
     def test_late_review_with_many_thread_pages_stays_within_the_wait(self) -> None:
         """Each thread page is a read; one that would overrun the wait ends pending."""
         clock = Clock()
         wait = 20
-        # The review lands with exactly the reserve left: the listing
-        # and one thread page fit, a second page would not.
-        clock.now = wait * 60 - review.RESERVE_SECONDS - 1
 
         def listing(_endpoint: str) -> list[dict[str, Any]]:
-            clock.now += review.READ_BUDGET_SECONDS  # the slowest read
+            # The review lands late and the listing itself is the
+            # slowest read: afterwards one thread page fits the wait,
+            # a second would not.
+            clock.now = wait * 60 - review.RESERVE_SECONDS - 1
+            clock.now += review.READ_BUDGET_SECONDS
             return [copilot(7, HEAD, BODIES["v2-green-clean"])]
 
         pages = 0
