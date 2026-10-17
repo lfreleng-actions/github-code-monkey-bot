@@ -67,6 +67,10 @@ on:
         description: 'Trust skills found in the target checkout'
         type: boolean
         default: false
+      request_review:
+        description: 'Request and await a Copilot review of each pull request'
+        type: boolean
+        default: true
       repositories:
         description: 'Repositories to scan (commas and/or spaces)'
         type: string
@@ -167,6 +171,10 @@ jobs:
       include_dotgithub: ${{ inputs.include_dotgithub || false }}
       include_assigned: ${{ inputs.include_assigned || false }}
       load_repo_skills: ${{ inputs.load_repo_skills || false }}
+      # A schedule passes no inputs; the review gate is on for it.
+      request_review: >-
+        ${{ github.event_name != 'workflow_dispatch'
+            || inputs.request_review }}
       repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
       # Trusted jobs hold App tokens and run in block mode with the

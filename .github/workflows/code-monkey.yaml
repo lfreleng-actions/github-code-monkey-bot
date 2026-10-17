@@ -67,6 +67,12 @@ on:
         description: 'Let the agent use skills from the target checkout'
         type: boolean
         default: false
+      request_review:
+        description: >-
+          Request a Copilot review of each pull request opened, wait for
+          it and report its verdict
+        type: boolean
+        default: true
       repositories:
         description: 'Repositories to scan; commas and/or spaces'
         type: string
@@ -849,7 +855,9 @@ jobs:
       !cancelled() && needs.select.result == 'success' &&
       needs.select.outputs.run_agent == 'true'
     runs-on: 'ubuntu-latest'
-    timeout-minutes: 20
+    # Twenty minutes for the publish itself, plus the Copilot review
+    # wait and the read reserve copilot_review.py keeps for it.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
@@ -1137,6 +1145,38 @@ jobs:
           python3 monkey-assets/scripts/publish.py open \
             --result artefacts/result.json --check artefacts/check.json \
             --output artefacts/result.json
+
+      # GitHub starts no review by itself for a pull request an App
+      # opens (docs/DESIGN.md section 8), so the publisher asks, with
+      # the one token that may write to the target's pull requests.
+      # Best effort: a refusal is a warning in the result, and the wait
+      # below still runs in case a review starts another way.
+      - name: 'Request Copilot review'
+        id: review-request
+        if: >-
+          !cancelled() && steps.open.outcome == 'success' &&
+          inputs.request_review
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py review-request \
+            --result artefacts/result.json --output artefacts/result.json
+
+      # The target is public, so reading its reviews and review threads
+      # needs no App token. The wait is bounded inside the script, with
+      # a reserve for the reads a hit needs, and ends as pending, never
+      # clean, when no review of the published head arrives.
+      - name: 'Await Copilot review'
+        id: review
+        if: >-
+          !cancelled() && steps.open.outcome == 'success' &&
+          inputs.request_review
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py review-await \
+            --result artefacts/result.json --output artefacts/result.json \
+            --wait-minutes 30
 
       # Runs after a failed push or open as well, so a publish failure
       # and its rollback reach the issue; never after cancellation.

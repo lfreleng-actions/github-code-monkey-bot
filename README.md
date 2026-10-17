@@ -33,8 +33,12 @@ The author job never holds a credential that can write to a
 repository. It leaves a git bundle and a manifest; the publish job
 verifies both offline against the trusted selection, then replays
 the commits through GitHub's `createCommitOnBranch`, which signs
-them, and opens the pull request. The agent reads the organisation's
-`AGENTS.md` at a recorded commit and works to its rules.
+them, opens the pull request, requests a Copilot review of it and
+waits for the verdict, which the issue comment and the run report
+state. The pipeline cannot yet revise its own pull requests, so a
+review with findings waits for a maintainer. The agent reads the
+organisation's `AGENTS.md` at a recorded commit and works to its
+rules.
 
 ## Where bot branches live
 
