@@ -295,7 +295,6 @@ class ThreadsTest(unittest.TestCase):
             revisions.THREADS_QUERY,
         )
 
-    @unittest.expectedFailure
     def test_threads_carry_who_and_when(self) -> None:
         """The opener and each reply say whether a maintainer wrote it, and when."""
         opener = {

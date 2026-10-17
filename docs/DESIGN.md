@@ -1377,9 +1377,10 @@ dropped; both are empty on a scan. `explicit_pull_requests` and
 `url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
 `collected_at` (when the selection read the comments; every entry
 carries it), `round_reasons`, `rounds`, `threads` (`thread_id`,
-`comment_id`, `path`, `line`, `outdated`, `author`, `body`, `replies`
-as `{author, body}` for the newest later comments from Copilot or a
-maintainer, and `replies_dropped`), `threads_dropped`,
+`comment_id`, `path`, `line`, `outdated`, `author`, `maintainer`,
+`created_at`, `body`, `replies` as `{author, maintainer, created_at,
+body}` for the newest later comments from Copilot or a maintainer,
+and `replies_dropped`), `threads_dropped`,
 `review` (the §8 step 11 record of the head, with the body),
 `pr_comments`, `new_comments` and `new_pr_comments`; an issue entry
 has `task: "issue"` and `checkout_sha` equal to `base_sha`. Beside it
@@ -1659,8 +1660,9 @@ Three ways in, all through the select job and its read token:
   App's open pull requests and selects those with **work
   outstanding**: an unresolved review thread whose opening comment
   comes from Copilot or an `OWNER`/`MEMBER`; a Copilot review of the
-  head with findings; or an `OWNER`/`MEMBER` comment on the issue or
-  the pull request after the bot's latest footer. A head with no
+  head with findings; or an `OWNER`/`MEMBER` comment on the issue, the
+  pull request or an unresolved review thread, an opener or a reply,
+  after the bot's latest footer. A head with no
   review yet waits for the gate; a clean head with nothing else needs
   no round; and after a handoff (§20.3) the disputed threads bring no
   round on their own, a maintainer's comment does. Revisions come
@@ -1739,8 +1741,9 @@ needs a human's decision: the check reads its replies the same way,
 none may resolve a thread, the publisher replays no chain, posts the
 replies, leaves the threads open, comments the handoff on the issue
 with the agent's reason and round summary, and skips the review
-gate, since the head did not move. The
-next scan leaves the pull request alone until a maintainer comments.
+gate, since the head did not move. The next scan leaves the pull
+request alone until a maintainer comments, on the issue, the pull
+request or one of the disputed threads.
 
 The push syncs the fork, replays the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>`) through `createCommitOnBranch`,
