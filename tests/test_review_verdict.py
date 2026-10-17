@@ -269,7 +269,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-green-clean"], 0).verdict, "clean"
         )
 
-    @unittest.expectedFailure
     def test_html_but_copilots_own_fails_closed(self) -> None:
         """Copilot's bodies use six tags; any other raw HTML is unreadable.
 
@@ -299,7 +298,6 @@ class UntrustedTextTest(unittest.TestCase):
         ):
             self.assertEqual(verdicts.classify(BODIES[name], threads).verdict, expected)
 
-    @unittest.expectedFailure
     def test_escaped_backticks_fail_closed(self) -> None:
         """An escaped backtick is not a span delimiter; the body is unreadable."""
         text = (

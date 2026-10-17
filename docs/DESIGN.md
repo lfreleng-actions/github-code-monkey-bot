@@ -798,9 +798,10 @@ For each selected issue:
     findings, since the part it cannot read may hold suppressed
     findings; drops fenced code and Copilot's one HTML comment, its
     format marker, and fails closed on any other HTML comment outside
-    inline code or a code span left open on its line, since parsing
-    what a comment hides is a losing game and a comment can then
-    neither supply an assessment nor hide a finding; takes the
+    inline code, a code span left open on its line, an escaped
+    backtick, or an HTML tag the real bodies never carry, since
+    parsing what such text hides is a losing game and none of it can
+    then supply an assessment or hide a finding; takes the
     earliest heading as the
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,

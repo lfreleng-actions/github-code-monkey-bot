@@ -58,6 +58,15 @@ COMMENT_OPEN = "<!--"
 MARKER_LINE = re.compile(r"^[ \t]*<!-- ccr-overview-v\d+ -->[ \t]*$")
 UNREADABLE_COMMENT = "review body holds an HTML comment the classifier does not read"
 UNREADABLE_SPAN = "review body holds a code span the classifier does not read"
+UNREADABLE_HTML = "review body holds HTML the classifier does not read"
+# The tags the real review bodies use (tests/review_fixtures.py). Any
+# other raw HTML fails closed: a block could hold an example heading
+# or a fence line, and the classifier does not parse HTML.
+KNOWN_TAGS = frozenset({"details", "img", "picture", "source", "strong", "summary"})
+HTML_TAG = re.compile(r"</?([A-Za-z][A-Za-z0-9-]*)")
+# A backslash makes the backtick after it literal; an escaped one is
+# no span delimiter, and the classifier does not parse escapes.
+ESCAPED_BACKTICK = "\\`"
 # Digits beyond this are no count GitHub would write.
 MAX_COUNT_DIGITS = 9
 
@@ -122,12 +131,17 @@ def scan_line(line: str) -> set[str]:
     Inline code is prose, so a comment opener inside a closed span is
     fine. A span left open on its line may run on to later lines and
     show or hide anything, and a comment opener outside code may hide
-    anything to its close: either fails the body closed. Parsing
-    comments instead is a losing game, since escaped openers,
-    indented code and comments closing mid-line each need another
-    rule, and Copilot writes none but its marker.
+    anything to its close: either fails the body closed, as do an
+    escaped backtick and any HTML tag the real bodies never carry.
+    Parsing these instead is a losing game, since each needs another
+    rule, and Copilot writes none of them.
     """
     problems: set[str] = set()
+    if ESCAPED_BACKTICK in line:
+        problems.add(UNREADABLE_SPAN)
+    for tag in HTML_TAG.findall(line):
+        if tag.lower() not in KNOWN_TAGS:
+            problems.add(UNREADABLE_HTML)
     i = 0
     while i < len(line):
         ticks = BACKTICKS.search(line, i)
