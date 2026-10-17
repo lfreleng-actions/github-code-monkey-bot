@@ -66,11 +66,15 @@ VERDICTS = ("proposed", "abstain", "rejected", "author-failed", "publish-failed"
 MANIFEST_OUTCOMES = ("proposed", "abstain", "author-failed")
 # The one manifest schema this publisher reads (docs/DESIGN.md 18.2).
 MANIFEST_SCHEMA = 1
-# AGENTS.md §11.6: a pipeline that cannot yet revise its own pull
-# requests says so in each one it opens and in its report.
+# AGENTS.md §11.6: a pipeline says in each pull request and its report
+# how review findings reach a fix. Here a later round of this workflow
+# revises the pull request (DESIGN.md section 20), and a human reads
+# every round before anything merges.
 REVISION_DISCLOSURE = (
-    "This pipeline cannot yet revise its own pull requests, "
-    "so a maintainer must act on any review findings."
+    "Review findings on this pull request are answered by a later "
+    "revision round of this workflow, up to ten rounds; a maintainer "
+    "must act on any finding that remains after that, and reviews "
+    "every round before merge."
 )
 
 
