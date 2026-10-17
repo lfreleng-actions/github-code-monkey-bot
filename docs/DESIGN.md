@@ -56,11 +56,11 @@ them.
 
 - **Merging.** The workflow never merges, never approves and never
   dismisses a review.
-- **Revising an open bot pull request.** No job yet requests,
-  awaits or answers a Copilot review; responding to a review,
-  Copilot's or a human's, is a later capability (§16). Until then
-  each pull request and each report says so (§8), as the
-  organisation guidance requires (its §11.6).
+- **Acting on a review in the same run.** The publisher requests
+  and awaits the Copilot review of each pull request it opens and
+  reports the verdict (§8); a revision round in a later run
+  answers it (§20), one round per run, so the trusted jobs never
+  push on the strength of a review the same agent session produced.
 - **Working the `.github` repository.** Its issues track
   organisation-wide tasks that span repositories. It stays out of
   scope unless a dispatcher opts in.
@@ -608,10 +608,11 @@ The workflow facts the prompt adds:
    pull request body with an `INFO` banner naming the human
    follow-up.
 3. *Publication and review.* The agent cannot push, so the workflow
-   publishes its commits and opens the pull request. Any review
-   arrives after the session ends and the agent never sees it, and
-   this pipeline cannot yet revise its own pull requests, so a
-   finding reaches a human. So the prompt asks for a change
+   publishes its commits, opens the pull request, requests the
+   Copilot review, waits for it and reports its verdict. The review
+   arrives after the session ends and the agent never sees it; a
+   later session answers it in a revision round (§20), and a human
+   reads every round. So the prompt asks for a change
    that passes review the first time: the agent reviews its own diff
    as a reviewer would and names in the body what a reviewer would
    question. It states the review-cycle steps that need GitHub
@@ -748,9 +749,9 @@ For each selected issue:
    a single commit, enforced); a body the publisher heads with its
    own `Closes #<n>` line and a provenance block (run URL, model,
    issue link, commands run, the AI authorship disclosure, and the
-   statement that this pipeline cannot yet revise its own pull
-   requests), which nothing the agent writes can precede, hide or
-   turn into code, so the merge closes the issue and the disclosure
+   statement of how a later round answers review findings, §11.6
+   of the organisation guidance), which nothing the agent writes
+   can precede, hide or turn into code, so the merge closes the issue and the disclosure
    always shows; then, below a rule, the manifest's body with
    `@mentions` defused, so agent text cannot notify anyone before a
    human reads it; label `code-monkey` if the label exists. Not a
@@ -759,12 +760,69 @@ For each selected issue:
    GitHub's documentation limits ruleset-driven automatic review to
    pull requests "created by a Copilot user", and this App is not
    one, so a target's `copilot_code_review` ruleset leaves a bot
-   pull request unreviewed. No step yet requests one. A failure
+   pull request unreviewed; step 10 asks for one. A failure
    here keeps the fork branch and records `publish-failed`, since a
    pushed branch is not a publication; the next run's selection sees
    the orphan, selects the issue with `resume` set, and its publisher
    adopts the branch and opens the pull request.
-10. **Comment on the issue** with one line: the pull request URL on
+10. **Request the Copilot review** (`request_review`, on by default)
+    with the pull request token, through
+    `gh pr edit --add-reviewer @copilot`, the form GitHub accepts
+    (the organisation guidance, Appendix B). The request is best
+    effort: a refusal becomes a warning in `result.json` with
+    GitHub's answer and an `INFO` notice at the top of the pull
+    request body, placed once with the same token and taken down by
+    a retry whose request succeeds, so a maintainer reading the pull
+    request knows whether the workflow requested a review; the
+    publish goes on, and no token gains a permission for it.
+    Whether GitHub accepts the request from an App installation token
+    is the open point of §17; if it does not, the fallback is a
+    credential that can, held by this step alone.
+11. **Await the Copilot review** with the job's own token, since the
+    target is public: poll for a review by
+    `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
+    head the publisher pushed (the last commit of the replayed, or
+    adopted, chain; the publisher reads the pull request's current
+    head to confirm it, never to choose it), read the pull request's
+    unresolved review threads through GraphQL, and classify the pair by the
+    organisation definition (`AGENTS.md` §11.5) in a pure function
+    with offline tests built from real review bodies: **clean** when
+    every thread has a resolution, the overview lists no suppressed
+    finding and the assessment is `🟢 Approval recommended` (`🟢 Ready to approve`
+    in older reviews) or `🔵 Needs a closer look`; **findings**
+    otherwise, `🟡 Changes recommended` and the older format with no
+    assessment included; **pending** when no review of the head
+    arrives within the wait. The body is text from outside: the
+    classifier reads 64 KiB at most and treats a longer body as
+    findings, since the part it cannot read may hold suppressed
+    findings; drops fenced code and Copilot's one HTML comment, its
+    format marker, and fails closed on any other HTML comment outside
+    inline code, a code span left open on its line, an escaped
+    backtick, an HTML tag the real bodies never carry, a tag left
+    open on its line, or a heading or fence inside a `<details>`
+    block before its blank line, since
+    parsing what such text hides is a losing game and none of it can
+    then supply an assessment or hide a finding; takes the
+    earliest heading as the
+    assessment; and records labels and counts, never the text,
+    matching headings on one line, reading a CRLF body as its LF twin,
+    and taking an unreadable count as a finding; a `>` inside a quoted
+    attribute closes no tag, a line opening with any of the known
+    tags starts an HTML block, and a declaration, processing
+    instruction or CDATA block outside inline code fails closed as a
+    comment does.
+    The wait checks its deadline before every read and keeps a
+    reserve for the reads a hit needs
+    (the listing, the threads page by page, and a second read of the
+    head), so it cannot overrun the job's budget by a read's worst
+    case. Once a review lands, the publisher reads the head again: a
+    push during the wait makes it a review of the old head. That, a
+    head that moved before the wait began, a review of another head,
+    a read failure the shared wrapper's retries did not cure, a head
+    it could not read at all, and no review within the wait all end
+    as pending, never clean. The record goes into `result.json` as
+    `review` (§18.4).
+12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
     provenance rejection, which check failed and the run URL. The
     reason descends from the untrusted manifest; the publisher cuts
@@ -785,18 +843,27 @@ For each selected issue:
     before any write, the offline check or a token mint, posts
     nothing: the target saw no change, the verdict may be unknown,
     and one publisher fault would otherwise comment on every issue
-    in the run. Step 11 records it in the report instead; a failure
+    in the run. Step 13 records it in the report instead; a failure
     during or after the writes (step 7 on) still comments, since the
-    fork saw a branch and its rollback.
-11. **Record** `result.json` and a step-summary section. A step that
+    fork saw a branch and its rollback. On a published pull request
+    the line states the review's verdict: clean; findings, with the
+    counts and the assessment and the statement that a maintainer
+    must act on them; or pending. The marker carries the review
+    verdict too, so a rerun whose wait ended differently posts again
+    instead of leaving the issue at odds with `result.json`; the
+    bot's latest outcome for the run alone suppresses a repeat, so an
+    outcome that changed and changed back posts as well. A record
+    the publisher does not recognise reads as pending.
+13. **Record** `result.json` and a step-summary section. A step that
     runs whatever came before writes a `publish-failed` result when an
     earlier failure (the offline check, a token mint) left none, so
     every selected issue reaches the report. A final
     report job gathers every `result.json` by artifact-name pattern
-    and renders one table: issue, verdict, output URL, premium
-    requests consumed (from `usage.json`), detail. Below the totals
-    it states, once, that this pipeline cannot yet revise its own
-    pull requests. A report covers one
+    and renders one table: issue, verdict, output URL, Copilot
+    review verdict, premium requests consumed (from `usage.json`),
+    detail. Below the totals it counts the review verdicts and
+    states, once, how a later round answers review findings. A
+    report covers one
     selection, its namespace: a retried entry shows its latest
     attempt's row, but the spend total counts each author session
     once, since a rerun author job uploads a new proposal artifact
@@ -823,8 +890,11 @@ For each selected issue:
 | `include_dotgithub` | boolean | `false` | §6 |
 | `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
+| `request_review` | boolean | `true` | §8 steps 10–11: request, await, report |
 | `repositories` | string | `''` | Commas and/or spaces; split per §6 |
 | `issues` | string | `''` | Issues to work instead of scanning (§6) |
+| `pull_requests` | string | `''` | Bot pull requests to revise (§20) |
+| `revise` | boolean | `true` | §20: revise before working new issues |
 | `exclude_repos` | string | `''` | Same form; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
@@ -858,8 +928,11 @@ outside the stated ranges.
 | `include_dotgithub` | boolean | `false` |
 | `include_assigned` | boolean | `false` |
 | `load_repo_skills` | boolean | `false` |
+| `request_review` | boolean | `true` |
 | `repositories` | string | `''` |
 | `issues` | string | `''` |
+| `pull_requests` | string | `''` |
+| `revise` | boolean | `true` |
 | `categories` | string | `'all'` |
 
 The `model` choice shows display names and the caller maps them to
@@ -872,7 +945,7 @@ stays dry-run, the path triage took.
 limit; anything non-numeric or negative fails the select job.
 `categories` passes straight through: `docs` for a run that fixes
 documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 13 inputs, within
+schedule, passing no inputs, gets. The form holds 15 inputs, within
 GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
 
@@ -1074,6 +1147,8 @@ conflicts while producer artifacts survive.
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
+| Copilot refuses the App's review request | No review arrives | Recorded as a warning and `pending` (§8 steps 10–11); the fallback credential of §17 |
+| Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1109,6 +1184,15 @@ scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report
+scripts/review_verdict.py                classify a Copilot review (§8 step 11)
+scripts/copilot_review.py                request and await the review
+scripts/revision_reads.py                a bot pull request's state (§20)
+scripts/round_reads.py                   the issue's rounds and new comments
+scripts/revision_select.py               revision candidates and entries
+scripts/revision_check.py                a revision's offline checks
+scripts/revision_publish.py              branch move, replies, resolves
+scripts/selection_choose.py              the cap, budget and one-per-repo rule
+prompt/revise.md                         the revision task (§20.2)
 tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
 docs/DESIGN.md                           this document
@@ -1150,9 +1234,13 @@ switch.
 
 ## 16. Later Capabilities
 
-- **Revision mode.** Re-run the agent on an open `code-monkey/*`
-  pull request with unresolved Copilot or human review threads,
-  within the ten-round cap the org guidance sets.
+- **Rounds without a run between them.** §20 performs one round per
+  run; a caller job that re-dispatches while a pull request has work
+  outstanding would close the loop within the day rather than at the
+  next schedule.
+- **A comment at the round cap from the select job.** The publisher
+  of the tenth round says a human must take over; the selector names
+  a pull request it skips at the cap later in the summary alone.
 - **More than one issue per repository per run**, sequentially in
   one session, if the one-per-repository rule starves the backlog.
 - **Stub roll-out.** The organisation `AGENTS.md` is on `main` of
@@ -1205,6 +1293,16 @@ Still to confirm during rollout rather than before it:
 3. **`createCommitOnBranch` payload limit** (§5). If a 4 MiB diff
    fails in rollout, lower the cap; the agent's abstention path
    covers larger changes.
+4. **Requesting a Copilot review with an App token** (§8 step 10).
+   GitHub's documentation bills a review "when a bot requests" it
+   to the organisation, which implies an App may ask, but nobody has
+   yet tried with this App's installation token. The first live
+   `pull-requests` run settles it. If GitHub refuses, the warning in
+   `result.json` records the answer and the review stays pending;
+   the agreed fallback is a fine-grained token with Pull requests:
+   write on the target organisation, held as a secret and used by
+   that one step alone, flagged here as a follow-up and a possible
+   redesign rather than widened into any App mint.
 
 ## 18. Data Contracts
 
@@ -1272,11 +1370,25 @@ cross-checked against the trusted `selection.json`.
 `key` is `<repo_name>-<number>` and doubles as the matrix key and
 the artifact-name suffix. `explicit_issues` holds the named issues
 as `owner/repo#N`, in the order given, and `skipped_issues` one
-`{issue, reason}` per named issue the selection dropped; both are
-empty on a scan. Beside it the select job writes
-`matrix.json` (`{"include": [{key, repository, repo_name, number,
-base_sha, branch}]}`), `agents.md` (the guidance bytes whose SHA-256 the
-`guidance` block records) and `excluded-repos.txt`. The job outputs
+`{issue, reason}` per named issue or pull request the selection
+dropped; both are empty on a scan. `explicit_pull_requests` and
+`revise` record the §20 inputs. A revision entry adds `task:
+"revise"`, `rebase_sha`, `checkout_sha`, `pull_request` (`number`,
+`url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
+`collected_at` (when the selection read the comments; every entry
+carries it), `round_reasons`, `rounds`, `threads` (`thread_id`,
+`comment_id`, `path`, `line`, `outdated`, `author`, `maintainer`,
+`created_at`, `body`, `replies` as `{author, maintainer, created_at,
+body}` for the newest later comments from Copilot or a maintainer,
+and `replies_dropped`), `threads_dropped`,
+`review` (the §8 step 11 record of the head, with the body),
+`pr_comments`, `new_comments` and `new_pr_comments`; an issue entry
+has `task: "issue"` and `checkout_sha` equal to `base_sha`. Beside it
+the select job writes `matrix.json`
+(`{"include": [{key, repository, repo_name, number, base_sha,
+branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
+head_sha, pull_number}]}`), `agents.md` (the guidance bytes whose
+SHA-256 the `guidance` block records) and `excluded-repos.txt`. The job outputs
 `selection_sha256` and `guidance_sha256` over the exact bytes.
 
 ### 18.2 `manifest.json` (author → publish; untrusted)
@@ -1303,9 +1415,13 @@ leaves none, the workflow writes one with `"outcome":
 `schema` must be the integer `1`; the publisher rejects any other
 value, or none, rather than read the fields under a contract it
 does not know. `outcome` is `proposed`, `abstain` or
-`author-failed`; the last two need a `reason`. `changes.bundle`
+`author-failed`, and for a revision `handoff` (§20.3); the last three
+need a `reason`. `changes.bundle`
 sits beside the manifest when the outcome is `proposed`, created by
-the workflow (not the agent) from `base_sha..branch`. `usage.json`
+the workflow (not the agent) from `base_sha..branch`. A revision's
+manifest may set `base_sha` to the entry's `rebase_sha` instead,
+and adds `round_summary` and `responses`, one `{thread_id,
+comment_id, reply, resolve}` per thread answered (§20). `usage.json`
 is the CLI's own usage output. Bounds on acceptance: manifest
 1 MiB, bundle 32 MiB, usage 1 MiB; regular files, no symlinks.
 
@@ -1370,12 +1486,28 @@ line and provenance block first, then the agent's text.
   "premium_requests": 37.5,
   "agent_seconds": 1543,
   "run_attempt": 1,
-  "author_session": "<proposal artifact ID>"
+  "author_session": "<proposal artifact ID>",
+  "review": {
+    "requested": true,
+    "verdict": "findings",
+    "assessment": "closer-look",
+    "unresolved_threads": 1,
+    "suppressed": 0,
+    "reasons": ["1 unresolved review thread"],
+    "review_id": 5425770192,
+    "commit_id": "<40 hex>"
+  }
 }
 ```
 
 URLs are `null` where the mode or a rejection stopped short, and
-`author_session` where no proposal arrived. The report job merges
+`author_session` where no proposal arrived. `review` is present on
+a published pull request when `request_review` is on: `requested`
+says whether GitHub accepted the request, `verdict` is `clean`,
+`findings` or `pending`, `assessment` is `approval`, `closer-look`,
+`changes` or `null`, and `commit_id` is the head the review judged.
+The comment and the report read a record with any field missing or
+added, or any other verdict, as `pending`. The report job merges
 every `result.json` into one table.
 
 **Open gap.** The publisher writes this file, but the report cannot
@@ -1410,11 +1542,17 @@ publish.py apply --check check.json --workdir DIR --mode MODE
     [--dry-run] [--run-attempt N] [--author-session ID]
     --output result.json
 publish.py comment --result result.json [--run-url URL]
+publish.py review-request --result result.json --output result.json
+publish.py review-await --result result.json --output result.json
+    [--wait-minutes N]
+publish.py respond --result result.json --check check.json
+    --output result.json
 publish.py report --results DIR --output-md PATH --output-json PATH
 ```
 
-`select_issues.py`, `publish.py apply` and `publish.py comment` read
-`GH_TOKEN`. Everything else runs offline. A verdict other than
+`select_issues.py`, `publish.py push`, `open`, `respond`, `comment`,
+`review-request` and `review-await` read `GH_TOKEN`. Everything else
+runs offline. A verdict other than
 `proposed` is data, not an error: the scripts exit non-zero for
 operational failures alone.
 
@@ -1494,3 +1632,158 @@ with its existing read token, scoped to include this repository. The
 author job never touches the log. Live runs write the log; dry runs
 put the same content in the step summary and leave the issue alone,
 but still honour its blockers.
+
+## 20. Revision Rounds
+
+A pull request the bot opened is not finished until a Copilot review
+of its head is clean (organisation guidance §11.5), and a review
+with findings, or a maintainer's comment, needs an answer. A
+**revision round** sends a session back to the pull request: it
+reads the review and the comments, revises the same branch in place,
+and the publisher moves the branch, answers each thread, and runs
+the §8 review gate on the new head. One run performs one round; the
+next run, scheduled or dispatched, performs the next, up to ten per
+pull request, the cap the guidance sets.
+
+### 20.1 Selection
+
+Three ways in, all through the select job and its read token:
+
+- `pull_requests` names the bot's open pull requests to revise,
+  through the list splitter in pull-request mode. A named pull
+  request gets a round with or without work outstanding: the
+  operator decided.
+- An issue named in `issues` whose earlier attempt is an open bot
+  pull request becomes a round on that pull request rather than a
+  skip. With `revise` off the earlier behaviour stands.
+- A scan with `revise` on, the default, searches the owner for the
+  App's open pull requests and selects those with **work
+  outstanding**: an unresolved review thread whose opening comment
+  comes from Copilot or an `OWNER`/`MEMBER`; a Copilot review of the
+  head with findings; or an `OWNER`/`MEMBER` comment on the issue, the
+  pull request or an unresolved review thread, an opener or a reply,
+  after the bot's latest footer. A head with no
+  review yet waits for the gate; a clean head with nothing else needs
+  no round; and after a handoff (§20.3) the disputed threads bring no
+  round on their own, a maintainer's comment does. Revisions come
+  before new issues, oldest first, under the same cap and the same
+  one-per-repository rule, and a pull request past the cap costs no
+  reads: the selection builds a candidate when the budget has room.
+  Revisions select in `pull-requests` mode alone, named ones included,
+  since a `branches` run publishes none.
+
+Whatever the way in, the candidate must be the bot's own: open, opened
+by the App, head in the designated fork (§4.3) on a
+`code-monkey/issue-<n>` branch; its repository must pass the §6 safety
+tests, and its issue must be open and carry no `no-agent` label, so
+closing the issue or opting it out stops the rounds. A scan honours the
+run's repository policy, the named repositories or everything but the
+exclusions, before it reads a hit. The round number continues from the
+bot's own footers on the issue: the last line of each of its comments,
+the first publication's included as round zero, read across the whole
+comment history or failing closed when that history outgrows the read. A
+marker in a comment's body text is text. The footer names when its run
+read the comments (`since=`), and that, not the footer's own time, is
+the watermark a maintainer's comment must follow to be new: a comment
+posted while a run was reading is work for the next round. A footer
+whose round published nothing, an abstention, a rejection or a failure,
+counts toward the cap and moves no watermark, since it handled no
+request. At the cap the selector skips the pull request with that
+reason, and the publisher of the tenth round has already said a human
+must take over. One key admits one entry, so a pull request named beside
+its own issue runs once.
+
+The entry (§18.1) carries both bases: `base_sha`, the commit the
+pull request's chain descends from (the compare merge base), and
+`rebase_sha`, the default branch's head. It carries the pull request,
+the unresolved threads with the ids a reply and a resolve need and
+the newest replies from Copilot or a maintainer on each, since a
+maintainer's answer on a thread is an instruction as much as a
+comment on the pull request is, the
+head's review verdict, the maintainers' comments on the pull request,
+the maintainers' comments on the issue and the pull request since the
+last round, newest first within the bounds and one oversized comment
+hiding none behind it, so the instruction that caused the round
+reaches the agent whatever the count of older comments, the earlier
+round
+summaries and the issue packet as before, all as data, bounded as
+the issue comments are. The read mint scopes to the
+named repositories as for issues.
+
+### 20.2 The author job
+
+The author job checks out the default branch head (`checkout_sha`),
+fetches the bot branch from the public fork without a credential,
+refuses any head but the recorded one, and checks it out. The prompt
+is `prompt/revise.md`: weigh each finding as the guidance says, fix
+what deserves a fix, commit by the guidance's review-round rules
+(amend a single commit; one dedicated feedback commit on a
+multi-commit branch), keep the chain on `base_sha` unless a
+maintainer asked for a rebase or the pull request is not mergeable,
+and then rebase onto `rebase_sha` and no other commit. The manifest
+(§18.2) adds a reply per thread with whether to resolve it, the pull
+request body and a round summary. The bundle step reads the base the
+agent chose, accepting nothing but the two recorded values on the
+command line. The trust boundary of §4 stands: the job holds no
+write credential and the fork is public.
+
+### 20.3 The publish job
+
+The offline check verifies the whole chain against whichever
+recorded base the manifest names and rejects any other; types each
+reply and binds it to a thread the selection carried, defusing
+mentions and bounding the text; requires the round summary; and
+warns of a thread left unanswered, which stays open for a human. It
+records a rebase, and the description's round line says so. A
+manifest outcome of `handoff`, open to a revision alone, says the
+agent changed nothing because it disputes every remaining finding or
+needs a human's decision: the check reads its replies the same way,
+none may resolve a thread, the publisher replays no chain, posts the
+replies, leaves the threads open, comments the handoff on the issue
+with the agent's reason and round summary, and skips the review
+gate, since the head did not move. The next scan leaves the pull
+request alone until a maintainer comments, on the issue, the pull
+request or one of the disputed threads.
+
+The push syncs the fork, replays the chain onto a temporary branch
+(`code-monkey/issue-<n>-r<round>`) through `createCommitOnBranch`,
+which signs every commit, then moves `code-monkey/issue-<n>` to the new
+head with `updateRefs`, `beforeOid` set to the recorded head and
+`force: true`: GitHub refuses the move when the branch no longer
+holds that head, and the publisher records a rejection rather than
+force over work the run did not see. The temporary branch goes
+whatever happens, and one the cleanup could not remove is a warning
+in the result whatever the swap's outcome. A `branches` run moves
+nothing: a revision publishes in `pull-requests` mode alone, where
+the replies and the review gate follow. The fork mint is the
+existing one; no new permission.
+
+With the pull request token, `respond` posts each reply on its thread
+prefixed with the AI disclosure, resolves the threads the agent
+marked fixed, and replaces the title and body with the composed
+ones, keeping the publisher's header. One refused write is a warning
+and the rest proceed. The §8 review gate then requests and awaits
+the review of the new head, and the issue comment names the round,
+the pull request, the summary and the verdict, with the round in its
+marker, which is how the next selection counts rounds. At the cap,
+every outcome but a clean proposal says a human must take over and
+promises no further round, since the selector skips the pull
+request from then on, a handoff's "once a maintainer comments"
+included.
+
+### 20.4 What this changes about trust
+
+Nothing in the author job changes: it still holds no write
+credential and never the App key. The publisher gains no permission:
+replies, resolves and the description edit are writes to the
+target's pull requests, which the pull request token already
+covered, and the branch move is a write to the fork, which the fork
+token already covered. The compare-and-swap is the new guard: the
+publisher moves an existing branch to the chain it verified alone,
+and from the head the trusted selection recorded alone. The agent's
+replies are text from outside, defused and bounded like its pull
+request body, and a thread the agent disputes stays unresolved for a
+human, as the guidance requires.
+
+Open points, listed in §16: a comment at the round cap from the
+select job, and rounds within one run.

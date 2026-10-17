@@ -40,17 +40,25 @@ def summary_markdown(selection: dict[str, Any]) -> str:
         for entry in skipped_issues:
             # Both fields are the selector's own text, not issue content.
             lines.append(f"| {entry['issue']} | {entry['reason']} |")
-    lines += ["", "| Issue | Priority | Type | Title |", "| --- | --- | --- | --- |"]
+    lines += [
+        "",
+        "| Issue | Task | Priority | Type | Title |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for issue in cast("list[dict[str, Any]]", selection["issues"]):
         # Public input: flatten line breaks before escaping, so a title
         # cannot end the row and inject content into the summary.
         title = " ".join(str(issue["title"]).split()).replace("|", "\\|")
+        task = str(issue.get("task", "issue"))
+        if task == "revise":
+            pull = cast("dict[str, Any]", issue["pull_request"])
+            task = f"revise #{pull['number']} (round {issue['round']})"
         lines.append(
-            f"| [{issue['repo_name']}#{issue['number']}]({issue['url']}) "
+            f"| [{issue['repo_name']}#{issue['number']}]({issue['url']}) | {task} "
             f"| {issue['priority'] or '—'} | {issue['type']} | {title} |"
         )
     if not selection["issues"]:
-        lines.append("| — | — | — | nothing to work |")
+        lines.append("| — | — | — | — | nothing to work |")
     return "\n".join(lines) + "\n"
 
 
@@ -70,6 +78,15 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
             "branch": issue["branch"],
             "fork_org": issue["fork_org"],
             "fork_repository": issue["fork_repository"],
+            "task": issue.get("task", "issue"),
+            "checkout_sha": issue.get("checkout_sha", issue["base_sha"]),
+            "rebase_sha": issue.get("rebase_sha", ""),
+            "head_sha": cast("dict[str, Any]", issue.get("pull_request") or {}).get(
+                "head_sha", ""
+            ),
+            "pull_number": cast("dict[str, Any]", issue.get("pull_request") or {}).get(
+                "number", 0
+            ),
         }
         for issue in cast("list[dict[str, Any]]", selection["issues"])
     ]

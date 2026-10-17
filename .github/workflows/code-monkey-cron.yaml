@@ -67,6 +67,10 @@ on:
         description: 'Trust skills found in the target checkout'
         type: boolean
         default: false
+      request_review:
+        description: 'Request and await a Copilot review of each pull request'
+        type: boolean
+        default: true
       repositories:
         description: 'Repositories to scan (commas and/or spaces)'
         type: string
@@ -77,6 +81,16 @@ on:
           repo/issues/N or URLs (commas and/or spaces)
         type: string
         default: ''
+      pull_requests:
+        description: >-
+          Open bot pull requests to revise: repo#N, owner/repo#N,
+          repo/pull/N or URLs (commas and/or spaces)
+        type: string
+        default: ''
+      revise:
+        description: 'Revise open bot pull requests with work outstanding'
+        type: boolean
+        default: true
       categories:
         description: >-
           Issue categories to work: all, or any of bugs, features, docs,
@@ -167,8 +181,16 @@ jobs:
       include_dotgithub: ${{ inputs.include_dotgithub || false }}
       include_assigned: ${{ inputs.include_assigned || false }}
       load_repo_skills: ${{ inputs.load_repo_skills || false }}
+      # A schedule passes no inputs; the review gate is on for it.
+      request_review: >-
+        ${{ github.event_name != 'workflow_dispatch'
+            || inputs.request_review }}
       repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
+      pull_requests: "${{ inputs.pull_requests || '' }}"
+      # A schedule passes no inputs; it revises before working issues.
+      revise: >-
+        ${{ github.event_name != 'workflow_dispatch' || inputs.revise }}
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       egress_policy: 'block'

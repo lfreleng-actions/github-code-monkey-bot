@@ -9,11 +9,13 @@ import argparse
 import json
 from typing import Any, cast
 
+import issue_comment as comments
 import proposal_model as model
 import proposal_policy as policy
 from proposal_policy import PublishError
 
 SCHEMA = 1
+REVIEW_COLUMNS = (*comments.REVIEW_VERDICTS, "none")
 
 
 def cell(value: Any, limit: int = 300) -> str:
@@ -45,9 +47,14 @@ def report_row(item: dict[str, Any]) -> str:
     # Choose the text first, then make it one cell: the title and the
     # reasons alike descend from agent output.
     text = "; ".join(notes) or str(item.get("pr_title") or "")
-    issue = cell(f"{item.get('repository')}#{item.get('issue')}")
+    label = f"{item.get('repository')}#{item.get('issue')}"
+    round_number = item.get("round")
+    if type(round_number) is int and round_number > 0:
+        label += f" (round {round_number})"
+    issue = cell(label)
+    copilot = comments.review_verdict(item) or "—"
     return (
-        f"| {issue} | {cell(verdict)} | {cell(output)} "
+        f"| {issue} | {cell(verdict)} | {cell(output)} | {copilot} "
         f"| {'—' if requests is None else f'{requests:g}'} | {cell(text)} |"
     )
 
@@ -103,25 +110,32 @@ def run_report(args: argparse.Namespace) -> None:
     lines = [
         "## Code monkey results",
         "",
-        "| Issue | Verdict | Output | Premium requests | Detail |",
-        "| --- | --- | --- | --- | --- |",
+        "| Issue | Verdict | Output | Copilot review | Premium requests | Detail |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     totals: dict[str, int] = dict.fromkeys(policy.VERDICTS, 0)
+    review_totals: dict[str, int] = dict.fromkeys(REVIEW_COLUMNS, 0)
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
+        review_totals[comments.review_verdict(item) or "none"] += 1
         lines.append(report_row(item))
     spend = total_spend(every, results)
     for problem in unreadable:
-        lines.append(f"| — | unreadable | — | — | {cell(problem)} |")
+        lines.append(f"| — | unreadable | — | — | — | {cell(problem)} |")
     if not results and not unreadable:
-        lines.append("| — | — | — | — | no proposals |")
+        lines.append("| — | — | — | — | — | no proposals |")
     lines += [
         "",
         f"Proposed {totals['proposed']}, abstained {totals['abstain']}, "
+        f"handed off {totals.get('handoff', 0)}, "
         f"rejected {totals['rejected']}, failed {totals['author-failed']}, "
         f"publish failures {totals.get('publish-failed', 0)}; "
         f"premium requests {spend:g}.",
+        "",
+        "Copilot reviews: "
+        + ", ".join(f"{name} {review_totals[name]}" for name in REVIEW_COLUMNS)
+        + ".",
         "",
         policy.REVISION_DISCLOSURE,
         "",
@@ -133,6 +147,7 @@ def run_report(args: argparse.Namespace) -> None:
             {
                 "schema": SCHEMA,
                 "totals": totals,
+                "review_totals": review_totals,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,
