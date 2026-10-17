@@ -80,6 +80,7 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
             "fork_repository": issue["fork_repository"],
             "task": issue.get("task", "issue"),
             "checkout_sha": issue.get("checkout_sha", issue["base_sha"]),
+            "rebase_sha": issue.get("rebase_sha", ""),
             "head_sha": cast("dict[str, Any]", issue.get("pull_request") or {}).get(
                 "head_sha", ""
             ),

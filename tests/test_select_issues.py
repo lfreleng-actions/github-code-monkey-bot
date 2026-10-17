@@ -1106,6 +1106,7 @@ class WriteOutputsTest(unittest.TestCase):
                             "fork_repository": "lfreleng-bot-forks/alpha",
                             "task": "issue",
                             "checkout_sha": SHA_A,
+                            "rebase_sha": "",
                             "head_sha": "",
                             "pull_number": 0,
                         }
