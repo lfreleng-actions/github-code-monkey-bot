@@ -240,6 +240,115 @@ class ThreadsTest(unittest.TestCase):
             kept, _ = revisions.unresolved_threads(REPO, 41)
         self.assertEqual(len(kept[0]["body"].encode()), revisions.MAX_THREAD_BODY)
 
+    @unittest.expectedFailure
+    def test_replies_reach_the_packet(self) -> None:
+        """Later comments from Copilot or a maintainer follow the opener, bounded."""
+        opener = {
+            "databaseId": 100,
+            "body": "Fix this.",
+            "authorAssociation": "NONE",
+            "author": {"login": revisions.COPILOT_LOGIN},
+        }
+        replies = [
+            {
+                "databaseId": 101,
+                "body": "Disputed: the lock is held.",
+                "authorAssociation": "CONTRIBUTOR",
+                "author": {"login": "lf-code-monkey"},
+            },
+            {
+                "databaseId": 102,
+                "body": "No, do it.",
+                "authorAssociation": "MEMBER",
+                "author": {"login": "maintainer"},
+            },
+            {
+                "databaseId": 103,
+                "body": "me too",
+                "authorAssociation": "NONE",
+                "author": {"login": "passer-by"},
+            },
+            {
+                "databaseId": 104,
+                "body": "x" * (revisions.MAX_THREAD_BODY + 50),
+                "authorAssociation": "NONE",
+                "author": {"login": revisions.COPILOT_LOGIN},
+            },
+            {"databaseId": None, "body": 7, "author": None},
+        ]
+        node = thread(
+            replies={"totalCount": len(replies) + 1, "nodes": [opener, *replies]}
+        )
+        with patch.object(github, "graphql", return_value=thread_page([node])):
+            kept, _ = revisions.unresolved_threads(REPO, 41)
+        self.assertEqual(kept[0]["comment_id"], 100)
+        self.assertEqual(kept[0]["body"], "Fix this.")
+        self.assertEqual(
+            [(r["author"], r["body"][:10]) for r in kept[0]["replies"]],
+            [("maintainer", "No, do it."), (revisions.COPILOT_LOGIN, "x" * 10)],
+        )
+        self.assertEqual(
+            len(kept[0]["replies"][1]["body"].encode()), revisions.MAX_THREAD_BODY
+        )
+        self.assertFalse(kept[0]["replies_dropped"])
+        self.assertIn(
+            f"replies: comments(last: {revisions.MAX_THREAD_REPLIES})",
+            revisions.THREADS_QUERY,
+        )
+
+    @unittest.expectedFailure
+    def test_replies_are_bounded_and_count_toward_the_thread_budget(self) -> None:
+        """Over the per-thread cap, the newest replies are kept; bytes count whole."""
+        opener = {
+            "databaseId": 100,
+            "body": "Fix this.",
+            "authorAssociation": "NONE",
+            "author": {"login": revisions.COPILOT_LOGIN},
+        }
+        many = [
+            {
+                "databaseId": 200 + i,
+                "body": f"reply {i}",
+                "authorAssociation": "MEMBER",
+                "author": {"login": "maintainer"},
+            }
+            for i in range(revisions.MAX_THREAD_REPLIES + 2)
+        ]
+        # GitHub answers ``last: N`` with the newest N; a longer reply
+        # is cut to the newest N whatever it holds.
+        node = thread(replies={"totalCount": len(many) + 1, "nodes": many})
+        with patch.object(github, "graphql", return_value=thread_page([node])):
+            kept, _ = revisions.unresolved_threads(REPO, 41)
+        self.assertEqual(len(kept[0]["replies"]), revisions.MAX_THREAD_REPLIES)
+        self.assertEqual(kept[0]["replies"][-1]["body"], f"reply {len(many) - 1}")
+        self.assertTrue(kept[0]["replies_dropped"])
+        # The thread budget counts replies: full threads fill it sooner.
+        full = [
+            {
+                "databaseId": 300 + i,
+                "body": "y" * revisions.MAX_THREAD_BODY,
+                "authorAssociation": "MEMBER",
+                "author": {"login": "maintainer"},
+            }
+            for i in range(revisions.MAX_THREAD_REPLIES)
+        ]
+        per_thread = revisions.MAX_THREAD_BODY * (revisions.MAX_THREAD_REPLIES + 1)
+        count = revisions.MAX_THREAD_BYTES // per_thread + 1
+        nodes = [
+            thread(
+                id=f"PRRT_{i}",
+                comments={
+                    "nodes": [{**opener, "body": "z" * revisions.MAX_THREAD_BODY}]
+                },
+                replies={"totalCount": len(full) + 1, "nodes": full},
+            )
+            for i in range(count)
+        ]
+        with patch.object(github, "graphql", return_value=thread_page(nodes)):
+            kept, dropped = revisions.unresolved_threads(REPO, 41)
+        self.assertLess(len(kept), count)
+        self.assertEqual(len(kept) + dropped, count)
+
 
 class ReviewAndRoundsTest(unittest.TestCase):
     """The head's review verdict and the rounds recorded on the issue."""
