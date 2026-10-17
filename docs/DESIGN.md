@@ -804,7 +804,9 @@ For each selected issue:
     findings; drops fenced code and Copilot's one HTML comment, its
     format marker, and fails closed on any other HTML comment outside
     inline code, a code span left open on its line, an escaped
-    backtick, or an HTML tag the real bodies never carry, since
+    backtick, an HTML tag the real bodies never carry, a tag left
+    open on its line, or a heading or fence inside a `<details>`
+    block before its blank line, since
     parsing what such text hides is a losing game and none of it can
     then supply an assessment or hide a finding; takes the
     earliest heading as the

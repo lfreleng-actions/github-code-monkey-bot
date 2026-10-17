@@ -64,6 +64,14 @@ UNREADABLE_HTML = "review body holds HTML the classifier does not read"
 # or a fence line, and the classifier does not parse HTML.
 KNOWN_TAGS = frozenset({"details", "img", "picture", "source", "strong", "summary"})
 HTML_TAG = re.compile(r"</?([A-Za-z][A-Za-z0-9-]*)")
+# A tag that opens an HTML block in Markdown: lines after it, to the
+# next blank line, are HTML and no heading or fence. The real bodies
+# use details alone this way.
+BLOCK_TAG = re.compile(r"^ {0,3}<(details)\b", re.I)
+# A tag the line does not close holds a multi-line attribute, which
+# may carry anything; the real bodies close every tag on its line.
+OPEN_ANGLE = re.compile(r"<[A-Za-z/][^<>]*$")
+MARKDOWN_SHAPE = re.compile(r"^ {0,3}(?:#{1,6}[ \t]|`{3,}|~{3,})")
 # A backslash makes the backtick after it literal; an escaped one is
 # no span delimiter, and the classifier does not parse escapes.
 ESCAPED_BACKTICK = "\\`"
@@ -142,6 +150,8 @@ def scan_line(line: str) -> set[str]:
     for tag in HTML_TAG.findall(line):
         if tag.lower() not in KNOWN_TAGS:
             problems.add(UNREADABLE_HTML)
+    if OPEN_ANGLE.search(line):
+        problems.add(UNREADABLE_HTML)
     i = 0
     while i < len(line):
         ticks = BACKTICKS.search(line, i)
@@ -177,10 +187,26 @@ def visible(text: str) -> tuple[str, list[str]]:
     lines: list[str] = []
     problems: set[str] = set()
     fence: tuple[str, int] | None = None
+    in_html = False
     for line in text.split("\n"):
         if fence is not None:
             if fence_closes(line, *fence):
                 fence = None
+            continue
+        if in_html:
+            # Inside an HTML block a heading or fence is HTML text,
+            # not Markdown; the classifier does not read it either way.
+            if MARKDOWN_SHAPE.match(line):
+                problems.add(UNREADABLE_HTML)
+            in_html = line.strip() != ""
+            if in_html:
+                problems |= scan_line(line)
+                lines.append(line)
+                continue
+        if BLOCK_TAG.match(line):
+            in_html = True
+            problems |= scan_line(line)
+            lines.append(line)
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
