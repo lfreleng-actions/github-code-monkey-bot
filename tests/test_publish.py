@@ -329,6 +329,37 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("round cap of 10", text)
         self.assertIn("a human must take over", text)
 
+    @unittest.expectedFailure
+    def test_round_cap_notice_on_every_unfinished_outcome(self) -> None:
+        """Whatever ends the tenth round short of clean says a human takes over."""
+        unfinished = (
+            result_json(round=10, round_summary="s", review=review_record("pending")),
+            result_json(
+                verdict="handoff", round=10, round_summary="s", reasons=["Wrong."]
+            ),
+            result_json(verdict="rejected", round=10, reasons=["head moved"]),
+            result_json(verdict="author-failed", round=10, reasons=["timed out"]),
+            result_json(verdict="publish-failed", round=10, reasons=["refused"]),
+        )
+        for result in unfinished:
+            with self.subTest(verdict=result["verdict"]):
+                text = comments.comment_body(result, "https://x/run") or ""
+                self.assertIn("round cap of 10", text)
+                self.assertIn("a human must take over", text)
+                self.assertNotIn("once a maintainer comments", text)
+        # A clean tenth round is finished; before the cap, nothing is said.
+        for result in (
+            result_json(
+                round=10,
+                round_summary="s",
+                review=review_record("clean", assessment="approval"),
+            ),
+            result_json(verdict="handoff", round=9, round_summary="s", reasons=["W."]),
+        ):
+            with self.subTest(verdict=result["verdict"], round=result["round"]):
+                text = comments.comment_body(result, "https://x/run") or ""
+                self.assertNotIn("round cap", text)
+
     def test_unrecognised_review_record_reads_as_pending(self) -> None:
         """A record the publisher does not know is never read as clean."""
         for record in (
@@ -748,6 +779,49 @@ class HandoffTest(NoNetworkCase):
         self.assertIn("Both findings are wrong.", text)
         self.assertIn("a maintainer", text)
         self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
+
+    @unittest.expectedFailure
+    def test_handoff_comment_carries_the_round_summary(self) -> None:
+        """The agent's summary of what it disputed reaches the issue, defused."""
+        text = (
+            comments.comment_body(
+                result_json(
+                    verdict="handoff",
+                    round=2,
+                    reasons=["Both findings are wrong."],
+                    round_summary="Thread one misreads the lock; @ops decides.",
+                ),
+                "",
+            )
+            or ""
+        )
+        self.assertIn("Thread one misreads the lock", text)
+        self.assertNotIn("@ops", text)
+
+    @unittest.expectedFailure
+    def test_check_warnings_survive_every_early_return(self) -> None:
+        """An unanswered-thread warning reaches the result when nothing is pushed."""
+        warning = "1 thread left unanswered; they stay open for a human"
+        cases: tuple[tuple[dict[str, Any], str, bool], ...] = (
+            (
+                revision_check(verdict="handoff", commits=[], warnings=[warning]),
+                "pull-requests",
+                False,
+            ),
+            (revision_check(warnings=[warning]), "pull-requests", True),
+            (revision_check(warnings=[warning]), "branches", False),
+        )
+        for check, mode, dry_run in cases:
+            with (
+                self.subTest(verdict=check["verdict"], mode=mode, dry_run=dry_run),
+                patch.object(refs, "ensure_fork"),
+                patch.object(publish.revision_publish, "move_branch"),
+            ):
+                path = self.write_check(check)
+                result = publish.run_push(
+                    self.push_args(path, mode=mode, dry_run=dry_run)
+                )
+            self.assertIn(warning, result["warnings"])
 
     def test_branches_mode_publishes_no_revision(self) -> None:
         """A branch-only run never moves a live pull request's head."""

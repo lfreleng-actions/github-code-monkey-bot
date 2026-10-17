@@ -429,6 +429,27 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 2)
         self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
+    def test_inline_code_holds_no_html(self) -> None:
+        """A tag inside a closed code span is prose; the same tag outside is HTML."""
+        for prose in (
+            "\nPrefer a `<list>` over a `<ul>` here.\n",
+            "\nThe opener `<details` lacks its close.\n",
+            '\nWrite ``<foo attr="a>b">`` as the tag.\n',
+        ):
+            with self.subTest(prose=prose.strip()):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + prose, 0)
+                self.assertEqual(verdict.verdict, "clean")
+                self.assertEqual(verdict.reasons, [])
+        for html in (
+            "\nPrefer a <list> here.\n",
+            "\nA `<list>` and a <list>.\n",
+            "\nAn open `<list> runs on.\n",
+        ):
+            with self.subTest(html=html.strip()):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + html, 0)
+                self.assertEqual(verdict.verdict, "findings")
+
     def test_comment_closing_mid_line_fails_closed(self) -> None:
         """A comment closing mid-line is still a comment that is not the marker."""
         text = (
