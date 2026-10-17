@@ -23,6 +23,7 @@ import fork_orgs as forks
 import issue_reads as reads
 import repository_reads as repositories
 import revision_reads as revisions
+import round_reads as rounds_of
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 
@@ -56,7 +57,7 @@ def outstanding(
     if verdict is not None and verdict.get("verdict") == "findings":
         reasons.append("Copilot's review of the head has findings")
     for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
-        if revisions.newer_member_comment(repository, number, since):
+        if rounds_of.newer_member_comment(repository, number, since):
             reasons.append(f"a maintainer commented on the {what} since the last round")
     return reasons
 
@@ -92,9 +93,8 @@ def build_entry(
     if pull is None:
         raise Skip("not an open pull request the bot opened from its fork")
     issue = int(pull["issue"])
-    highest, rounds, since = revisions.rounds_so_far(
-        repository, issue, str(bot["login"])
-    )
+    history = rounds_of.round_history(repository, issue, str(bot["login"]))
+    highest, rounds, since = history.highest, history.summaries, history.since
     if highest >= revisions.MAX_ROUNDS:
         raise Skip(
             f"round cap of {revisions.MAX_ROUNDS} reached; a human must take over"
@@ -107,6 +107,12 @@ def build_entry(
         )
         if not reasons:
             raise Skip("nothing outstanding")
+        # After a handoff the threads the agent disputed stay open on
+        # purpose; a maintainer's word, not the threads, resumes rounds.
+        if history.last_verdict == "handoff" and not any(
+            "maintainer commented" in reason for reason in reasons
+        ):
+            raise Skip("handed back to a maintainer; awaiting their comment")
     else:
         reasons = ["named by the operator"]
     details = issue_packet(repository, issue)
@@ -167,8 +173,8 @@ def conversation(
     """The maintainers' comments, on the issue and the pull request, old and new."""
     comments, dropped, truncated = reads.filtered_comments(repository, issue)
     pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
-    new_comments, new_dropped = revisions.comments_since(repository, issue, since)
-    new_pr_comments, new_pr_dropped = revisions.comments_since(
+    new_comments, new_dropped = rounds_of.comments_since(repository, issue, since)
+    new_pr_comments, new_pr_dropped = rounds_of.comments_since(
         repository, pull_number, since
     )
     return {
@@ -204,6 +210,9 @@ def pull_request_for_branch(
     return None
 
 
+Builder = Callable[[], dict[str, Any] | None]
+
+
 def scan(
     org: str,
     *,
@@ -212,37 +221,40 @@ def scan(
     skipped: dict[str, int],
     skipped_issues: list[dict[str, str]],
     allowed: Callable[[str], bool] | None = None,
-) -> list[dict[str, Any]]:
-    """Every bot pull request in the owner with work outstanding, oldest first.
+) -> list[Builder]:
+    """A builder per bot pull request in the owner, oldest first, read on demand.
 
-    ``allowed`` is the run's repository policy, by lower-cased name:
-    the named repositories, or everything but the exclusions. A hit
-    outside it is passed over before any read.
+    The search is one read; building an entry is many. Each builder
+    reads its pull request when called and returns the entry, or None
+    after recording the skip, so the caller's budget decides what is
+    read at all. ``allowed`` is the run's repository policy, by
+    lower-cased name; a hit outside it gets no builder.
     """
     slug = str(bot["login"]).removesuffix("[bot]")
     found = revisions.search_bot_pull_requests(org, slug)
-    entries: list[dict[str, Any]] = []
+    builders: list[Builder] = []
     for hit in sorted(found, key=lambda h: (str(h["created_at"]), int(h["number"]))):
         repo_name = str(hit["repository"]).partition("/")[2]
         if allowed is not None and not allowed(repo_name.lower()):
             continue
         reference = f"{hit['repository']}#{hit['number']}"
-        try:
-            entries.append(
-                build_entry(
-                    org,
-                    repo_name,
-                    int(hit["number"]),
-                    bot=bot,
-                    fork_orgs=fork_orgs,
-                    explicit=False,
+        number = int(hit["number"])
+
+        def build(
+            repo_name: str = repo_name, number: int = number, reference: str = reference
+        ) -> dict[str, Any] | None:
+            try:
+                return build_entry(
+                    org, repo_name, number, bot=bot, fork_orgs=fork_orgs, explicit=False
                 )
-            )
-        except Skip as exc:
-            if str(exc) != "nothing outstanding":
-                skipped["revision"] += 1
-                skipped_issues.append({"issue": reference, "reason": str(exc)})
-    return entries
+            except Skip as exc:
+                if str(exc) != "nothing outstanding":
+                    skipped["revision"] += 1
+                    skipped_issues.append({"issue": reference, "reason": str(exc)})
+                return None
+
+        builders.append(build)
+    return builders
 
 
 class Rounds:
@@ -268,13 +280,16 @@ class Rounds:
         self.skipped, self.skipped_issues = skips
         self.allowed = allowed
 
-    def named(self, pulls: list[tuple[str, int]]) -> list[dict[str, Any]]:
-        """Rounds on the pull requests the operator named; a miss is a named skip."""
-        entries: list[dict[str, Any]] = []
+    def named(self, pulls: list[tuple[str, int]]) -> list[Builder]:
+        """A builder per pull request the operator named; a miss is a named skip."""
+        builders: list[Builder] = []
         for repo_name, number in pulls:
-            try:
-                entries.append(
-                    build_entry(
+
+            def build(
+                repo_name: str = repo_name, number: int = number
+            ) -> dict[str, Any] | None:
+                try:
+                    return build_entry(
                         self.org,
                         repo_name,
                         number,
@@ -282,16 +297,21 @@ class Rounds:
                         fork_orgs=self.fork_orgs,
                         explicit=True,
                     )
-                )
-            except Skip as exc:
-                self.skipped["revision"] += 1
-                self.skipped_issues.append(
-                    {"issue": f"{self.org}/{repo_name}#{number}", "reason": str(exc)}
-                )
-        return entries
+                except Skip as exc:
+                    self.skipped["revision"] += 1
+                    self.skipped_issues.append(
+                        {
+                            "issue": f"{self.org}/{repo_name}#{number}",
+                            "reason": str(exc),
+                        }
+                    )
+                    return None
 
-    def scan(self) -> list[dict[str, Any]]:
-        """Rounds on the owner's bot pull requests with work, when enabled."""
+            builders.append(build)
+        return builders
+
+    def scan(self) -> list[Builder]:
+        """Builders for the owner's bot pull requests, when enabled."""
         if not self.enabled:
             return []
         return scan(

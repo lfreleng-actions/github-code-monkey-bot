@@ -64,10 +64,10 @@ UNREADABLE_HTML = "review body holds HTML the classifier does not read"
 # or a fence line, and the classifier does not parse HTML.
 KNOWN_TAGS = frozenset({"details", "img", "picture", "source", "strong", "summary"})
 HTML_TAG = re.compile(r"</?([A-Za-z][A-Za-z0-9-]*)")
-# A tag that opens an HTML block in Markdown: lines after it, to the
-# next blank line, are HTML and no heading or fence. The real bodies
-# use details alone this way.
-BLOCK_TAG = re.compile(r"^ {0,3}<(details)\b", re.I)
+# A line opening with a tag the real bodies use, open or close, starts
+# an HTML block: lines after it, to the next blank line, are HTML and
+# no heading or fence. Any other tag fails closed (KNOWN_TAGS).
+BLOCK_TAG = re.compile(r"^ {0,3}</?(" + "|".join(sorted(KNOWN_TAGS)) + r")\b", re.I)
 # A tag the line does not close holds a multi-line attribute, which
 # may carry anything; the real bodies close every tag on its line. A
 # > inside a quoted value closes nothing, so quotes are tracked.

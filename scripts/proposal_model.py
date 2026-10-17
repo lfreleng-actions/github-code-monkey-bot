@@ -74,6 +74,10 @@ class Check:
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
     round_summary: str = ""
+    # When the selection read the issue's comments: the watermark the
+    # round footer carries, so a comment posted during the run is new
+    # work for the next round.
+    collected_at: str = ""
 
     @classmethod
     def from_entry(cls, key: str, entry: dict[str, Any]) -> Check:
@@ -89,6 +93,7 @@ class Check:
             fork_repository=str(entry["fork_repository"]),
             task=str(entry.get("task") or "issue"),
         )
+        check.collected_at = str(entry.get("collected_at") or "")
         if check.task == "revise":
             pull = cast("dict[str, Any]", entry["pull_request"])
             check.rebase_sha = str(entry["rebase_sha"])
@@ -138,6 +143,7 @@ class Check:
             "round": self.round,
             "responses": self.responses,
             "round_summary": self.round_summary,
+            "collected_at": self.collected_at,
         }
 
 

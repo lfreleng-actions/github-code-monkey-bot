@@ -448,6 +448,10 @@ class RevisionIntegrationTest(NoSubprocessCase):
 
     def args(self, *extra: str) -> Any:
         """Parsed arguments for a pull-requests run."""
+        return self.args_mode("pull-requests", *extra)
+
+    def args_mode(self, mode: str, *extra: str) -> Any:
+        """Parsed arguments for a run in ``mode``."""
         return select.build_parser().parse_args(
             [
                 "--org",
@@ -455,7 +459,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 "--output-dir",
                 "out",
                 "--mode",
-                "pull-requests",
+                mode,
                 "--model",
                 "m",
                 "--guidance-repository",
@@ -568,17 +572,34 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertFalse(allowed("beta"))
 
     def test_scan_puts_revisions_first_under_the_cap(self) -> None:
-        """Revisions come before new issues and share the cap and the repository rule."""
+        """Revisions come before new issues and share the cap; past it nothing is read."""
+        built: list[str] = []
+
+        def builder(entry: dict[str, Any]) -> Any:
+            def build() -> dict[str, Any]:
+                built.append(entry["key"])
+                return entry
+
+            return build
+
         patch.object(
             revision_select,
             "scan",
-            return_value=[self.revision("alpha", 41, 7), self.revision("beta", 9, 2)],
+            return_value=[
+                builder(self.revision("alpha", 41, 7)),
+                builder(self.revision("beta", 9, 2)),
+            ],
         ).start()
         selection, _ = select.build_selection(self.args("--max-pull-requests", "1"))
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
+        self.assertEqual(built, ["alpha-7"])
         self.assertEqual(selection["skipped"]["cap"], 1)
         selection, _ = select.build_selection(self.args("--no-revise"))
         self.assertEqual(selection["issues"], [])
+        # Revisions publish in pull-requests mode alone; a branches run selects none.
+        with patch.object(revision_select, "scan", return_value=[]) as scan:
+            select.build_selection(self.args_mode("branches"))
+        scan.assert_not_called()
 
 
 class ParseMaxPullRequestsTest(unittest.TestCase):

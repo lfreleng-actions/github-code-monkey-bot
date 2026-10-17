@@ -128,9 +128,24 @@ def run_push(
     """Move the bot branch to the round's chain by compare-and-swap.
 
     The pull request already exists: the result names it so ``open``
-    has nothing to do and the review gate runs on the new head.
-    ``fail`` is the publisher's own: it records the failure and raises.
+    has nothing to do and the review gate runs on the new head. A
+    handoff moves nothing and names the pull request for ``respond``.
+    Revisions publish in pull-requests mode alone: a branches run
+    must never move a live pull request's head. ``fail`` is the
+    publisher's own: it records the failure and raises.
     """
+    warnings = cast("list[str]", result["warnings"])
+    if result["verdict"] == "handoff":
+        result["pull_request_url"] = str(check["pull_request_url"])
+        return result
+    if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
+        return result
+    if args.mode != "pull-requests":
+        warnings.append(
+            "a revision publishes in pull-requests mode alone; the pull request's "
+            "branch is unchanged"
+        )
+        return result
     target = str(check["repository"])
     fork = str(check["fork_repository"])
     try:
@@ -143,9 +158,10 @@ def run_push(
         return result
     except (PublishError, github.GitHubError) as exc:
         fail(args, result, f"{exc}; the pull request branch is unchanged", exc)
-    cast("list[str]", result["warnings"]).extend(
-        cast("list[str]", check.get("warnings") or [])
-    )
+    finally:
+        # A scratch branch the cleanup could not remove is reported
+        # whatever the swap's outcome.
+        warnings.extend(cast("list[str]", check.get("warnings") or []))
     result["branch_url"] = (
         f"https://github.com/{check['fork_repository']}/tree/{check['branch']}"
     )
@@ -165,11 +181,13 @@ def run_respond(args: argparse.Namespace) -> None:
         raise PublishError("result.json and check.json describe different proposals")
     counts = {"replied": 0, "resolved": 0, "failed": 0}
     warnings = cast("list[str]", result.setdefault("warnings", []))
-    if (
-        check.get("task") == "revise"
-        and result.get("verdict") == "proposed"
-        and result.get("commits")
-    ):
+    verdict = result.get("verdict")
+    # A proposal answers once its chain is on the branch; a handoff
+    # answers without one, leaving every thread open for a human.
+    answering = check.get("task") == "revise" and (
+        (verdict == "proposed" and result.get("commits")) or verdict == "handoff"
+    )
+    if answering:
         repository = str(check["repository"])
         number = int(check["pull_number"])
         for response in cast("list[dict[str, Any]]", check.get("responses") or []):
@@ -188,14 +206,15 @@ def run_respond(args: argparse.Namespace) -> None:
             except github.GitHubError as exc:
                 counts["failed"] += 1
                 warnings.append(f"thread {thread}: {github.safe_message(exc)}")
-        try:
-            update_pull_request(
-                repository, number, str(check["pr_title"]), str(check["pr_body"])
-            )
-        except github.GitHubError as exc:
-            warnings.append(
-                f"could not update the description: {github.safe_message(exc)}"
-            )
+        if verdict == "proposed":
+            try:
+                update_pull_request(
+                    repository, number, str(check["pr_title"]), str(check["pr_body"])
+                )
+            except github.GitHubError as exc:
+                warnings.append(
+                    f"could not update the description: {github.safe_message(exc)}"
+                )
     result["responded"] = counts
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

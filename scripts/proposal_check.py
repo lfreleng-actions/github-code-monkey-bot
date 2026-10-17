@@ -130,6 +130,7 @@ def read_manifest(path: Path, check: Check) -> dict[str, Any]:
             reason if isinstance(reason, str) and reason.strip() else "no reason given"
         )
         check.reasons.append(text[: policy.MAX_REASON])
+        revision.read_handoff(manifest, check)
         return manifest
     commands = manifest.get("commands")
     if isinstance(commands, list):

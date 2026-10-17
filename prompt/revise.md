@@ -125,11 +125,17 @@ round summary.
 }
 ```
 
-`outcome` is `proposed` or `abstain`. For `abstain`, set `reason`
-to one or two sentences a maintainer will read on the issue, and
-omit the rest. Abstain when a finding needs a product decision or a
-human's judgement you cannot supply, or when every remaining finding
-is one you dispute: say so, and let the humans take over.
+`outcome` is `proposed`, `handoff` or `abstain`. Choose `handoff`
+when you changed nothing because every remaining finding is one you
+dispute, or needs a product decision or a human's judgement you
+cannot supply: set `reason` to one or two sentences a maintainer
+will read on the issue, keep `responses` with a reply per thread
+explaining your view and `resolve` false on each, keep
+`round_summary`, and omit `pr_title` and `pr_body`. The workflow
+posts your replies, leaves every thread open, and revises this pull
+request again once a maintainer comments. Choose `abstain`, with a
+`reason` and nothing else, when you cannot work the round at all,
+such as a branch you cannot build or test.
 
 `responses` has one entry per unresolved thread in the packet, with
 the `thread_id` and `comment_id` the packet gives. `reply` is what

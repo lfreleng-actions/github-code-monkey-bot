@@ -128,6 +128,7 @@ def run_report(args: argparse.Namespace) -> None:
     lines += [
         "",
         f"Proposed {totals['proposed']}, abstained {totals['abstain']}, "
+        f"handed off {totals.get('handoff', 0)}, "
         f"rejected {totals['rejected']}, failed {totals['author-failed']}, "
         f"publish failures {totals.get('publish-failed', 0)}; "
         f"premium requests {spend:g}.",

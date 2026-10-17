@@ -662,6 +662,124 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertIsNone(result["pull_request_url"])
 
 
+class HandoffTest(NoNetworkCase):
+    """A handoff writes replies and nothing else; the gate and the move are skipped."""
+
+    def test_push_does_nothing_and_names_the_pull_request(self) -> None:
+        """No sync, no move: the branch is untouched; respond gets the pull request."""
+        path = self.write_check(revision_check(verdict="handoff", commits=[]))
+        with (
+            patch.object(refs, "ensure_fork") as fork,
+            patch.object(publish.revision_publish, "move_branch") as move,
+        ):
+            result = publish.run_push(self.push_args(path))
+        fork.assert_not_called()
+        move.assert_not_called()
+        self.assertEqual(result["verdict"], "handoff")
+        self.assertEqual(
+            result["pull_request_url"], f"https://github.com/{REPOSITORY}/pull/41"
+        )
+        self.assertEqual(result["commits"], [])
+        self.assertFalse(publish.needs_pull_request(result))
+
+    def test_respond_posts_replies_for_a_handoff(self) -> None:
+        """Replies reach the threads, nothing is resolved, the body is left alone."""
+        check = self.write_check(
+            revision_check(
+                verdict="handoff",
+                commits=[],
+                responses=[
+                    {
+                        "thread_id": "PRRT_1",
+                        "comment_id": 100,
+                        "reply": "Disputed.",
+                        "resolve": False,
+                    }
+                ],
+            )
+        )
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    verdict="handoff",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(publish.revision_publish, "reply", return_value=None) as reply,
+            patch.object(publish.revision_publish, "resolve") as resolve,
+            patch.object(publish.revision_publish, "update_pull_request") as update,
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        reply.assert_called_once()
+        resolve.assert_not_called()
+        update.assert_not_called()
+
+    def test_handoff_comment(self) -> None:
+        """The issue hears that the agent handed the pull request back."""
+        text = (
+            comments.comment_body(
+                result_json(
+                    verdict="handoff", round=2, reasons=["Both findings are wrong."]
+                ),
+                "",
+            )
+            or ""
+        )
+        self.assertIn("Round 2", text)
+        self.assertIn("handed", text)
+        self.assertIn("Both findings are wrong.", text)
+        self.assertIn("a maintainer", text)
+        self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
+
+    def test_branches_mode_publishes_no_revision(self) -> None:
+        """A branch-only run never moves a live pull request's head."""
+        path = self.write_check(revision_check())
+        with (
+            patch.object(refs, "ensure_fork") as fork,
+            patch.object(publish.revision_publish, "move_branch") as move,
+        ):
+            result = publish.run_push(self.push_args(path, mode="branches"))
+        fork.assert_not_called()
+        move.assert_not_called()
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertTrue(any("pull-requests mode" in w for w in result["warnings"]))
+
+    def test_cleanup_warning_survives_a_failed_swap(self) -> None:
+        """A scratch branch left after a failed move is reported, not lost."""
+        path = self.write_check(revision_check())
+
+        def move(_clone: Path, check: dict[str, Any]) -> list[str]:
+            check.setdefault("warnings", []).append("branch x stays")
+            raise policy.Rejection("head moved")
+
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(publish.revision_publish, "move_branch", side_effect=move),
+        ):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn("branch x stays", result["warnings"])
+
+
 class RunRespondTest(NoNetworkCase):
     """``publish.py respond`` answers the threads and updates the description."""
 
@@ -1323,6 +1441,28 @@ class RunCommentTest(NoNetworkCase):
             )
         )
 
+    def test_marker_carries_the_read_time(self) -> None:
+        """The footer names when the packet was read, the next round's watermark."""
+        path = self.write_result(
+            result_json(bot_login=BOT, collected_at="2026-10-01T12:00:00Z")
+        )
+        with (
+            patch.object(reads, "api_page", return_value=[]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/1"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed since=2026-10-01T12:00:00Z -->"
+            )
+        )
+
     def test_marker_carries_the_review_verdict(self) -> None:
         """A rerun whose review verdict changed is a new outcome, not a repeat."""
         path = self.write_result(
@@ -1628,8 +1768,8 @@ class RunReportTest(NoNetworkCase):
         )
         self.assertEqual(markdown.count("| unreadable |"), 1)
         self.assertIn(
-            "Proposed 1, abstained 0, rejected 1, failed 0, publish failures 0; "
-            "premium requests 7.",
+            "Proposed 1, abstained 0, handed off 0, rejected 1, failed 0, "
+            "publish failures 0; premium requests 7.",
             markdown,
         )
         report = json.loads(output_json.read_text(encoding="utf-8"))
@@ -1638,6 +1778,7 @@ class RunReportTest(NoNetworkCase):
             {
                 "proposed": 1,
                 "abstain": 0,
+                "handoff": 0,
                 "rejected": 1,
                 "author-failed": 0,
                 "publish-failed": 0,

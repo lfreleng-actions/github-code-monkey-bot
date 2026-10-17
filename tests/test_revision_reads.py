@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 github = import_module("bot_github")
 reads = import_module("issue_reads")
 revisions = import_module("revision_reads")
+round_reads = import_module("round_reads")
 review = import_module("copilot_review")
 BODIES = import_module("review_fixtures").BODIES
 
@@ -290,7 +291,7 @@ class ReviewAndRoundsTest(unittest.TestCase):
             },
         ]
         with patch.object(reads, "api_page", return_value=entries):
-            highest, summaries, latest = revisions.rounds_so_far(REPO, 7, BOT)
+            highest, summaries, latest = round_reads.rounds_so_far(REPO, 7, BOT)
         self.assertEqual(highest, 2)
         self.assertEqual([s["round"] for s in summaries], [1, 2])
         self.assertEqual(latest, "2026-10-04T00:00:00Z")
@@ -311,7 +312,7 @@ class ReviewAndRoundsTest(unittest.TestCase):
             },
         ]
         with patch.object(reads, "api_page", return_value=entries):
-            highest, _, _ = revisions.rounds_so_far(REPO, 7, BOT)
+            highest, _, _ = round_reads.rounds_so_far(REPO, 7, BOT)
         self.assertEqual(highest, 1)
 
     def test_publication_footer_is_round_zero(self) -> None:
@@ -324,7 +325,7 @@ class ReviewAndRoundsTest(unittest.TestCase):
             },
         ]
         with patch.object(reads, "api_page", return_value=entries):
-            highest, summaries, latest = revisions.rounds_so_far(REPO, 7, BOT)
+            highest, summaries, latest = round_reads.rounds_so_far(REPO, 7, BOT)
         self.assertEqual(highest, 0)
         self.assertEqual(summaries, [])
         self.assertEqual(latest, "2026-10-01T00:00:00Z")
@@ -343,13 +344,13 @@ class ReviewAndRoundsTest(unittest.TestCase):
         with patch.object(
             reads, "api_page", side_effect=[page, page, page, page, last]
         ):
-            highest, _, _ = revisions.rounds_so_far(REPO, 7, BOT)
+            highest, _, _ = round_reads.rounds_so_far(REPO, 7, BOT)
         self.assertEqual(highest, 3)
         with (
             patch.object(reads, "api_page", return_value=page),
             self.assertRaises(reads.SelectionError),
         ):
-            revisions.rounds_so_far(REPO, 7, BOT)
+            round_reads.rounds_so_far(REPO, 7, BOT)
 
     def test_newer_member_comment_reads_past_a_full_page(self) -> None:
         """A maintainer's instruction on page two still counts."""
@@ -368,7 +369,7 @@ class ReviewAndRoundsTest(unittest.TestCase):
         pages = [[noise] * reads.COMMENTS_PER_PAGE, [hit]]
         with patch.object(reads, "api_page", side_effect=pages) as page:
             self.assertTrue(
-                revisions.newer_member_comment(REPO, 7, "2026-10-04T00:00:00Z")
+                round_reads.newer_member_comment(REPO, 7, "2026-10-04T00:00:00Z")
             )
         self.assertEqual(len(page.call_args_list), 2)
 
@@ -395,7 +396,7 @@ class ReviewAndRoundsTest(unittest.TestCase):
             },
         ]
         with patch.object(reads, "api_page", return_value=entries):
-            kept, dropped = revisions.comments_since(REPO, 7, "2026-10-04T00:00:00Z")
+            kept, dropped = round_reads.comments_since(REPO, 7, "2026-10-04T00:00:00Z")
         self.assertEqual([c["body"] for c in kept], ["new"])
         self.assertEqual(dropped, 0)
 
@@ -417,29 +418,61 @@ class ReviewAndRoundsTest(unittest.TestCase):
         ]
         with patch.object(reads, "api_page", return_value=entries) as page:
             self.assertTrue(
-                revisions.newer_member_comment(REPO, 7, "2026-10-04T00:00:00Z")
+                round_reads.newer_member_comment(REPO, 7, "2026-10-04T00:00:00Z")
             )
             self.assertIn("since=2026-10-04T00:00:00Z", page.call_args.args[0])
             self.assertFalse(
-                revisions.newer_member_comment(REPO, 7, "2026-10-05T00:00:00Z")
+                round_reads.newer_member_comment(REPO, 7, "2026-10-05T00:00:00Z")
             )
-            self.assertTrue(revisions.newer_member_comment(REPO, 7, None))
+            self.assertTrue(round_reads.newer_member_comment(REPO, 7, None))
 
     def test_merge_base(self) -> None:
-        """The compare endpoint names the chain's base."""
-        with patch.object(
-            github, "api_object", return_value={"merge_base_commit": {"sha": BASE}}
-        ) as read:
+        """The compare endpoint names the chain's base; refs travel encoded."""
+        reply = {"merge_base_commit": {"sha": BASE}}
+        with patch.object(github, "api_object", return_value=reply) as read:
             self.assertEqual(
                 revisions.merge_base(
-                    REPO, "main", "lfreleng-bot-forks", "code-monkey/issue-7"
+                    REPO, "release#1", "lfreleng-bot-forks", "code-monkey/issue-7"
                 ),
                 BASE,
             )
         self.assertEqual(
             read.call_args.args[0],
-            f"repos/{REPO}/compare/main...lfreleng-bot-forks:code-monkey/issue-7",
+            f"repos/{REPO}/compare/release%231...lfreleng-bot-forks%3Acode-monkey%2Fissue-7",
         )
+
+    def test_footer_since_is_the_watermark(self) -> None:
+        """A footer naming when its packet was read sets the time; creation is the fallback."""
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "r\n\n<!-- code-monkey https://r/1 proposed review=clean round=1 since=2026-10-02T12:00:00Z -->",
+                "created_at": "2026-10-02T12:30:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            history = round_reads.round_history(REPO, 7, BOT)
+        self.assertEqual(history.since, "2026-10-02T12:00:00Z")
+
+    def test_last_footer_verdict_is_known(self) -> None:
+        """The selection learns whether the bot last handed the pull request back."""
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://r/1 proposed round=1 -->",
+                "created_at": "2026-10-02T00:00:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "b\n\n<!-- code-monkey https://r/2 handoff round=2 -->",
+                "created_at": "2026-10-03T00:00:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            history = round_reads.round_history(REPO, 7, BOT)
+        self.assertEqual(history.highest, 2)
+        self.assertEqual(history.last_verdict, "handoff")
+        self.assertEqual(history.since, "2026-10-03T00:00:00Z")
 
 
 if __name__ == "__main__":

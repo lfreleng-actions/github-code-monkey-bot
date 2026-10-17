@@ -12,6 +12,7 @@ DESIGN.md section 20.
 from __future__ import annotations
 
 import re
+import urllib.parse
 from typing import Any, cast
 
 import bot_github as github
@@ -32,15 +33,6 @@ MAX_ROUNDS = 10
 # names the reviewer without the [bot] suffix REST gives it.
 THREAD_AUTHORS = reads.COMMENT_ASSOCIATIONS
 COPILOT_LOGIN = review.REVIEWER_LOGIN.removesuffix("[bot]")
-# The publisher's footer: the last line of its comment, nothing after
-# it. A marker in the agent's summary text sits mid-body and is text.
-FOOTER = re.compile(
-    r"(?:^|\n)<!-- code-monkey \S+ \S+(?: review=\S+)?(?: round=(\d+))? -->\s*\Z"
-)
-# Pages of issue comments the round history may span before the
-# read fails closed rather than trust a partial count.
-MAX_HISTORY_PAGES = 30
-
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -166,9 +158,9 @@ def search_bot_pull_requests(org: str, bot_slug: str) -> list[dict[str, Any]]:
 
 def merge_base(repository: str, base_ref: str, fork_owner: str, branch: str) -> str:
     """The commit the pull request's chain descends from."""
-    data = github.api_object(
-        f"repos/{repository}/compare/{base_ref}...{fork_owner}:{branch}"
-    )
+    base = urllib.parse.quote(base_ref, safe="")
+    head = urllib.parse.quote(f"{fork_owner}:{branch}", safe="")
+    data = github.api_object(f"repos/{repository}/compare/{base}...{head}")
     merge = data.get("merge_base_commit")
     if not isinstance(merge, dict):
         raise github.GitHubError("compare reply carries no merge base")
@@ -299,112 +291,3 @@ def latest_review(repository: str, number: int, head_sha: str) -> dict[str, Any]
             review_id=review_id if type(review_id) is int else None, commit_id=head_sha
         ),
     }
-
-
-def rounds_so_far(
-    repository: str, issue: int, bot_login: str
-) -> tuple[int, list[dict[str, Any]], str | None]:
-    """The rounds the bot has recorded on the issue, their summaries, and the last time.
-
-    The bot's own comments carry the footer; anyone else's do not
-    count, and a marker in the body text is text. The first
-    publication's footer carries no round: it sets the time a
-    maintainer's comment must follow to be new, and counts as round
-    zero. Returns the highest round, the summaries as data for the
-    next session, and that time. The whole history is read; one too
-    long to read fails closed rather than yield a partial count.
-    """
-    highest = 0
-    summaries: list[dict[str, Any]] = []
-    latest: str | None = None
-    for page in range(1, MAX_HISTORY_PAGES + 1):
-        entries = reads.api_page(
-            f"repos/{repository}/issues/{issue}/comments"
-            f"?per_page={reads.COMMENTS_PER_PAGE}&page={page}"
-        )
-        for entry in entries:
-            user = entry.get("user")
-            login = (
-                cast("dict[str, Any]", user).get("login")
-                if isinstance(user, dict)
-                else None
-            )
-            body = entry.get("body")
-            if login != bot_login or not isinstance(body, str):
-                continue
-            found = FOOTER.search(body)
-            if found is None:
-                continue
-            created = entry.get("created_at")
-            if isinstance(created, str) and (latest is None or created > latest):
-                latest = created
-            if found.group(1) is None:
-                continue
-            number = int(found.group(1))
-            highest = max(highest, number)
-            summaries.append(
-                {
-                    "round": number,
-                    "created_at": created if isinstance(created, str) else None,
-                    "body": reads.truncate_utf8(body, MAX_THREAD_BODY),
-                }
-            )
-        if len(entries) < reads.COMMENTS_PER_PAGE:
-            return highest, summaries[-MAX_ROUNDS:], latest
-    raise reads.SelectionError(
-        f"{repository}#{issue} holds more comments than the round history reads"
-    )
-
-
-def member_comments_since(
-    repository: str, number: int, since: str | None
-) -> list[dict[str, Any]]:
-    """Every maintainer comment after ``since``, across every page."""
-    found: list[dict[str, Any]] = []
-    for page in range(1, MAX_HISTORY_PAGES + 1):
-        query = f"?per_page={reads.COMMENTS_PER_PAGE}&page={page}"
-        if since:
-            query += f"&since={since}"
-        entries = reads.api_page(f"repos/{repository}/issues/{number}/comments{query}")
-        for entry in entries:
-            comment = reads.member_comment(entry)
-            if comment is None:
-                continue
-            created = comment.get("created_at")
-            if since is None or (isinstance(created, str) and created > since):
-                found.append(comment)
-        if len(entries) < reads.COMMENTS_PER_PAGE:
-            return found
-    raise reads.SelectionError(
-        f"{repository}#{number} holds more comments than the round history reads"
-    )
-
-
-def newer_member_comment(repository: str, number: int, since: str | None) -> bool:
-    """Whether a maintainer commented on the issue or pull request after ``since``.
-
-    ``since`` is the bot's latest footer, round zero included; None
-    means any maintainer comment counts.
-    """
-    return bool(member_comments_since(repository, number, since))
-
-
-def comments_since(
-    repository: str, number: int, since: str | None
-) -> tuple[list[dict[str, Any]], int]:
-    """The maintainers' comments since the last round, for the packet, bounded.
-
-    The comment that caused the round must reach the agent whatever
-    the issue's older comments number; the newest are kept.
-    """
-    found = member_comments_since(repository, number, since)
-    kept: list[dict[str, Any]] = []
-    total = 0
-    for comment in reversed(found):
-        size = len(str(comment["body"]).encode("utf-8"))
-        if len(kept) >= reads.MAX_COMMENTS or total + size > reads.MAX_COMMENT_BYTES:
-            break
-        total += size
-        kept.append(comment)
-    kept.reverse()
-    return kept, len(found) - len(kept)

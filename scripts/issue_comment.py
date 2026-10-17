@@ -119,6 +119,16 @@ def _proposed_comment(
     return opening + review_sentence(result)
 
 
+def _handoff_comment(result: dict[str, Any], reasons: str, _run_url: str) -> str:
+    url = result.get("pull_request_url") or ""
+    return (
+        f"🐒 Round {round_of(result)}: an AI agent handed pull request {url} "
+        f"back to a maintainer. It disputes every remaining finding and changed "
+        f"nothing: {reasons} Its replies are on the threads, which stay open; "
+        "the workflow revises this pull request again once a maintainer comments."
+    )
+
+
 def _abstain_comment(_result: dict[str, Any], reasons: str, _run_url: str) -> str:
     return f"🐒 An AI agent looked at this issue and did not attempt it: {reasons}"
 
@@ -146,6 +156,7 @@ def _publish_failed_comment(_result: dict[str, Any], reasons: str, run_url: str)
 
 COMMENTS: dict[str, Callable[[dict[str, Any], str, str], str | None]] = {
     "proposed": _proposed_comment,
+    "handoff": _handoff_comment,
     "abstain": _abstain_comment,
     "rejected": _rejected_comment,
     "author-failed": _failed_comment,
@@ -190,6 +201,11 @@ def run_comment(args: argparse.Namespace) -> None:
     suffix = f" review={verdict}" if verdict else ""
     if round_of(result):
         suffix += f" round={round_of(result)}"
+    collected = result.get("collected_at")
+    if isinstance(collected, str) and collected:
+        # The watermark for the next round: when this run read the
+        # comments, not when it wrote this one.
+        suffix += f" since={collected}"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (

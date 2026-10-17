@@ -140,6 +140,23 @@ def read_revision(manifest: dict[str, Any], check: Check) -> None:
     read_summary(manifest, check)
 
 
+def read_handoff(manifest: dict[str, Any], check: Check) -> None:
+    """A handoff: the agent disputes every finding and leaves the code alone.
+
+    Only a revision may hand off, since there is a pull request to
+    hand back. Its replies are read as for a proposal, and none may
+    resolve a thread: a disputed finding stays open for a human.
+    """
+    if check.verdict != "handoff":
+        return
+    if check.task != "revise":
+        raise Rejection("an issue session cannot hand off; it abstains")
+    read_responses(manifest, check)
+    read_summary(manifest, check)
+    if any(response["resolve"] for response in check.responses):
+        raise Rejection("a handoff resolves no thread")
+
+
 def round_note(check: Check) -> str:
     """The line the publisher adds to the description for a round."""
     if check.task != "revise":
