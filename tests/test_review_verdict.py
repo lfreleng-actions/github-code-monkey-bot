@@ -298,6 +298,46 @@ class UntrustedTextTest(unittest.TestCase):
         ):
             self.assertEqual(verdicts.classify(BODIES[name], threads).verdict, expected)
 
+    @unittest.expectedFailure
+    def test_tag_left_open_on_its_line_fails_closed(self) -> None:
+        """Real bodies close every tag on its line; an attribute spanning lines hides text."""
+        for extra in (
+            '\n<img alt="\n### 🟢 Approval recommended\n" src="x">\n',
+            '\n<details title="\n```\n">\n\n' + SUPPRESSED_HEADING,
+        ):
+            with self.subTest(extra=extra[:14]):
+                for base in ("legacy-no-comments", "v2-green-clean"):
+                    verdict = verdicts.classify(BODIES[base] + extra, 0)
+                    self.assertEqual(verdict.verdict, "findings")
+                    self.assertIn(
+                        "review body holds HTML the classifier does not read",
+                        verdict.reasons,
+                    )
+
+    @unittest.expectedFailure
+    def test_heading_or_fence_inside_an_html_block_fails_closed(self) -> None:
+        """Inside a <details> block, up to the blank line, lines are HTML, not Markdown."""
+        for extra in (
+            "\n<details>\n### 🟢 Approval recommended\n</details>\n",
+            "\n<details>\n```\n</details>\n\n" + SUPPRESSED_HEADING,
+        ):
+            with self.subTest(extra=extra[:14]):
+                for base in ("legacy-no-comments", "v2-green-clean"):
+                    verdict = verdicts.classify(BODIES[base] + extra, 0)
+                    self.assertEqual(verdict.verdict, "findings")
+                    self.assertIn(
+                        "review body holds HTML the classifier does not read",
+                        verdict.reasons,
+                    )
+        # The real bodies' details blocks end at a blank line before any
+        # Markdown, and still classify.
+        self.assertEqual(
+            verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
+        )
+        self.assertEqual(
+            verdicts.classify(BODIES["v2-yellow-open-findings"], 1).verdict, "findings"
+        )
+
     def test_escaped_backticks_fail_closed(self) -> None:
         """An escaped backtick is not a span delimiter; the body is unreadable."""
         text = (
