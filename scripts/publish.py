@@ -3,7 +3,7 @@
 
 """Verify an agent's proposal, replay it into the fork, and open the PR.
 
-Seven commands, run in the trusted publish and report jobs:
+Eight commands, run in the trusted publish and report jobs:
 
 ``check`` works offline (see ``proposal_check``) and writes
 ``check.json`` with a verdict and the composed messages.
@@ -17,6 +17,9 @@ commit through ``createCommitOnBranch``, which GitHub signs.
 branch and the mode asks for one, it opens the pull request from
 the fork. Two commands because the two writes need two tokens
 (DESIGN.md section 4.3): neither token can do the other's job.
+
+``respond`` answers a revision's review threads and updates the pull
+request's description with the target token (``revision_publish``).
 
 ``comment`` posts one line on the issue describing the outcome.
 
@@ -46,6 +49,7 @@ import proposal_check as checks
 import proposal_model as model
 import proposal_policy as policy
 import proposal_report as reporting
+import revision_publish
 from branch_refs import (
     branch_matches,
     create_branch,
@@ -92,6 +96,9 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "pr_title": check.get("pr_title") or None,
         "premium_requests": check.get("premium_requests"),
         "agent_seconds": check.get("agent_seconds"),
+        "task": check.get("task") or "issue",
+        "round": check.get("round") or 0,
+        "round_summary": check.get("round_summary") or None,
     }
 
 
@@ -101,6 +108,8 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
     result = base_result(args, check)
     if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
         return result
+    if check.get("task") == "revise":
+        return revision_publish.run_push(args, check, result, fail=fail)
     target = str(check["repository"])
     fork = str(check["fork_repository"])
     branch = str(check["branch"])
@@ -298,7 +307,7 @@ def write_open(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Describe the seven commands."""
+    """Describe the eight commands."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -331,6 +340,14 @@ def build_parser() -> argparse.ArgumentParser:
     opener.add_argument("--check", type=Path, required=True)
     opener.add_argument("--output", type=Path, required=True)
     opener.set_defaults(handler=write_open)
+
+    respond = commands.add_parser(
+        "respond", help="answer the review threads of a revision (target token)"
+    )
+    respond.add_argument("--result", type=Path, required=True)
+    respond.add_argument("--check", type=Path, required=True)
+    respond.add_argument("--output", type=Path, required=True)
+    respond.set_defaults(handler=revision_publish.run_respond)
 
     comment = commands.add_parser("comment", help="comment the outcome on the issue")
     comment.add_argument("--result", type=Path, required=True)

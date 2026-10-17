@@ -763,7 +763,6 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn("manifest base_sha is neither recorded base", script)
         self.assertIn('"$BASE_SHA" | "$REBASE_SHA")', script)
 
-    @unittest.expectedFailure
     def test_publisher_answers_threads_with_the_pull_request_token(self) -> None:
         """Replies and resolves are writes to the target: the pull request token alone."""
         respond = self.step("publish", "respond")
@@ -783,7 +782,6 @@ class RevisionContracts(ReusableWorkflowCase):
         mint = self.step("publish", "pr-token")
         self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
 
-    @unittest.expectedFailure
     def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
         """head_sha and task are checked before any step reads them."""
         guard = flatten(self.step("publish", "Require trusted provenance")["run"])

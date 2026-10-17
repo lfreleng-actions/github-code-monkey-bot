@@ -86,6 +86,15 @@ def review_sentence(result: dict[str, Any]) -> str:
     )
 
 
+MAX_ROUNDS = 10
+
+
+def round_of(result: dict[str, Any]) -> int:
+    """The revision round a result records, or 0 for a first proposal."""
+    value = result.get("round")
+    return value if type(value) is int and value > 0 else 0
+
+
 def _proposed_comment(
     result: dict[str, Any], _reasons: str, _run_url: str
 ) -> str | None:
@@ -93,6 +102,19 @@ def _proposed_comment(
     if not url:
         return None
     noun = "pull request" if result.get("pull_request_url") else "branch"
+    round_number = round_of(result)
+    if round_number:
+        summary = policy.comment_safe(str(result.get("round_summary") or ""))
+        opening = f"🐒 Round {round_number}: an AI agent revised {noun} {url}" + (
+            f". {summary}" if summary else ""
+        )
+        text = opening + review_sentence(result)
+        if round_number >= MAX_ROUNDS and review_verdict(result) == "findings":
+            text += (
+                f" This was the round cap of {MAX_ROUNDS}; the workflow selects this"
+                " pull request no further, and a human must take over."
+            )
+        return text
     opening = f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
     return opening + review_sentence(result)
 
@@ -166,6 +188,8 @@ def run_comment(args: argparse.Namespace) -> None:
     # leaving the issue at odds with result.json.
     verdict = review_verdict(result)
     suffix = f" review={verdict}" if verdict else ""
+    if round_of(result):
+        suffix += f" round={round_of(result)}"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (
