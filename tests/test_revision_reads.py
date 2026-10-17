@@ -454,6 +454,52 @@ class ReviewAndRoundsTest(unittest.TestCase):
             history = round_reads.round_history(REPO, 7, BOT)
         self.assertEqual(history.since, "2026-10-02T12:00:00Z")
 
+    @unittest.expectedFailure
+    def test_failed_rounds_count_but_move_no_watermark(self) -> None:
+        """An attempt that published nothing counts toward the cap; the request stays new."""
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://r/1 proposed round=1 since=2026-10-02T00:00:00Z -->",
+                "created_at": "2026-10-02T00:10:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "b\n\n<!-- code-monkey https://r/2 abstain round=2 since=2026-10-05T00:00:00Z -->",
+                "created_at": "2026-10-05T00:10:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "c\n\n<!-- code-monkey https://r/3 publish-failed round=3 since=2026-10-06T00:00:00Z -->",
+                "created_at": "2026-10-06T00:10:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            history = round_reads.round_history(REPO, 7, BOT)
+        self.assertEqual(history.highest, 3)
+        self.assertEqual(history.since, "2026-10-02T00:00:00Z")
+        self.assertEqual(history.last_verdict, "proposed")
+
+    @unittest.expectedFailure
+    def test_oversized_comment_does_not_hide_smaller_ones(self) -> None:
+        """A newest comment past the byte budget is skipped; earlier ones still fit."""
+        big = {
+            "user": {"login": "m"},
+            "author_association": "MEMBER",
+            "body": "x" * (reads.MAX_COMMENT_BYTES + 10),
+            "created_at": "2026-10-06T00:00:00Z",
+        }
+        small = {
+            "user": {"login": "m"},
+            "author_association": "MEMBER",
+            "body": "rebase please",
+            "created_at": "2026-10-05T00:00:00Z",
+        }
+        with patch.object(reads, "api_page", return_value=[small, big]):
+            kept, dropped = round_reads.comments_since(REPO, 7, "2026-10-04T00:00:00Z")
+        self.assertEqual([c["body"] for c in kept], ["rebase please"])
+        self.assertEqual(dropped, 1)
+
     def test_last_footer_verdict_is_known(self) -> None:
         """The selection learns whether the bot last handed the pull request back."""
         entries = [

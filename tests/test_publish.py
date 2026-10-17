@@ -773,6 +773,26 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(result["verdict"], "proposed")
         self.assertTrue(any("pull-requests mode" in w for w in result["warnings"]))
 
+    @unittest.expectedFailure
+    def test_cleanup_warning_survives_an_operational_failure(self) -> None:
+        """A scratch branch left after a failed replay reaches the written result."""
+        path = self.write_check(revision_check())
+
+        def move(_clone: Path, check: dict[str, Any]) -> list[str]:
+            check.setdefault("warnings", []).append("branch x stays")
+            raise policy.PublishError("replay broke")
+
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(publish.revision_publish, "move_branch", side_effect=move),
+            self.assertRaises(policy.PublishError),
+        ):
+            publish.run_push(self.push_args(path))
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertIn("branch x stays", written["warnings"])
+
     def test_cleanup_warning_survives_a_failed_swap(self) -> None:
         """A scratch branch left after a failed move is reported, not lost."""
         path = self.write_check(revision_check())

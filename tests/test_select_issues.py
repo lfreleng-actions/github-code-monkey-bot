@@ -486,6 +486,15 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
 
+    @unittest.expectedFailure
+    def test_named_pull_requests_need_pull_requests_mode(self) -> None:
+        """A round names a live pull request; a branches run cannot publish one."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        with self.assertRaisesRegex(reads.SelectionError, "pull-requests mode"):
+            select.build_selection(
+                self.args_mode("branches", "--pull-requests", "org/alpha#41")
+            )
+
     def test_pull_requests_and_repositories_exclude_each_other(self) -> None:
         """A targeted run and a scan cannot mix."""
         with self.assertRaises(reads.SelectionError):
