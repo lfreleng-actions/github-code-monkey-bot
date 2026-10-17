@@ -752,9 +752,14 @@ jobs:
           if [ -f workspace/AGENTS.md ]; then
             local_stub='present: AGENTS.md'
           fi
+          case "$TASK" in
+            issue) prompt=monkey-assets/prompt/author.md ;;
+            revise) prompt=monkey-assets/prompt/revise.md ;;
+            *) echo "::error::no prompt for task $TASK"; exit 1 ;;
+          esac
           # shellcheck disable=SC2016  # literal backticks for markdown
           {
-            cat monkey-assets/prompt/"$TASK".md
+            cat "$prompt"
             printf '\n## Runtime context\n\n'
             printf -- '- repository: `%s`\n' "$REPOSITORY"
             printf -- '- base_sha: `%s`\n' "$BASE_SHA"

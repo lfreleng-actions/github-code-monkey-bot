@@ -87,6 +87,7 @@ class RevisionCase(unittest.TestCase):
             revisions, "newer_member_comment", side_effect=self.newer_of
         ).start()
         patch.object(revisions, "merge_base", return_value=BASE).start()
+        patch.object(revisions, "comments_since", return_value=([], 0)).start()
         patch.object(
             reads,
             "issue_details",
@@ -198,7 +199,6 @@ class BuildEntryTest(RevisionCase):
         with self.assertRaisesRegex(select.Skip, "not public"):
             self.build(explicit=True)
 
-    @unittest.expectedFailure
     def test_repository_and_issue_safety_still_apply(self) -> None:
         """An archived repository, a closed issue or the opt-out stop a round."""
         self.meta["archived"] = True
@@ -225,7 +225,6 @@ class BuildEntryTest(RevisionCase):
             with self.assertRaisesRegex(select.Skip, "no-agent"):
                 self.build(explicit=True)
 
-    @unittest.expectedFailure
     def test_packet_carries_the_comments_since_the_last_round(self) -> None:
         """The instruction that caused the round reaches the agent, whatever the cap."""
         self.rounds = (1, [{"round": 1, "body": "r1"}], "2026-10-04T00:00:00Z")
@@ -300,7 +299,6 @@ class ScanTest(RevisionCase):
         self.assertEqual(skipped["revision"], 1)
         self.assertEqual(named[0]["issue"], "org/beta#9")
 
-    @unittest.expectedFailure
     def test_scan_honours_the_repository_policy(self) -> None:
         """Hits outside the run's repositories, or excluded, are passed over unread."""
         hits = [

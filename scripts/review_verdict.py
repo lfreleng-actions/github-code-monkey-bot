@@ -69,8 +69,9 @@ HTML_TAG = re.compile(r"</?([A-Za-z][A-Za-z0-9-]*)")
 # use details alone this way.
 BLOCK_TAG = re.compile(r"^ {0,3}<(details)\b", re.I)
 # A tag the line does not close holds a multi-line attribute, which
-# may carry anything; the real bodies close every tag on its line.
-OPEN_ANGLE = re.compile(r"<[A-Za-z/][^<>]*$")
+# may carry anything; the real bodies close every tag on its line. A
+# > inside a quoted value closes nothing, so quotes are tracked.
+TAG_START = re.compile(r"<[A-Za-z/]")
 MARKDOWN_SHAPE = re.compile(r"^ {0,3}(?:#{1,6}[ \t]|`{3,}|~{3,})")
 # A backslash makes the backtick after it literal; an escaped one is
 # no span delimiter, and the classifier does not parse escapes.
@@ -133,6 +134,25 @@ def fence_closes(line: str, char: str, length: int) -> bool:
     return run >= length and stripped[run:].strip(" \t") == ""
 
 
+def tag_left_open(line: str) -> bool:
+    """Whether a tag starts on the line and no unquoted > closes it."""
+    for start in TAG_START.finditer(line):
+        quote: str | None = None
+        closed = False
+        for char in line[start.end() :]:
+            if quote:
+                if char == quote:
+                    quote = None
+            elif char in ('"', "'"):
+                quote = char
+            elif char == ">":
+                closed = True
+                break
+        if not closed:
+            return True
+    return False
+
+
 def scan_line(line: str) -> set[str]:
     """What on one line the classifier will not read past.
 
@@ -150,7 +170,7 @@ def scan_line(line: str) -> set[str]:
     for tag in HTML_TAG.findall(line):
         if tag.lower() not in KNOWN_TAGS:
             problems.add(UNREADABLE_HTML)
-    if OPEN_ANGLE.search(line):
+    if tag_left_open(line):
         problems.add(UNREADABLE_HTML)
     i = 0
     while i < len(line):

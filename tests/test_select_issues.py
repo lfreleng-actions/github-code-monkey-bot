@@ -527,7 +527,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["issues"], [])
         self.assertEqual(selection["skipped"]["attempted"], 1)
 
-    @unittest.expectedFailure
     def test_named_pull_request_and_its_issue_admit_one_entry(self) -> None:
         """The same round named twice runs once."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
@@ -560,7 +559,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
         self.assertEqual(selection["skipped"]["duplicate"], 1)
 
-    @unittest.expectedFailure
     def test_scan_revisions_follow_the_repository_scope(self) -> None:
         """The scan passes the run's repository policy to the revision scan."""
         with patch.object(revision_select, "scan", return_value=[]) as scan:

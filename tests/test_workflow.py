@@ -741,7 +741,6 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
         self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
 
-    @unittest.expectedFailure
     def test_prompt_follows_the_task(self) -> None:
         """The revise prompt exists and the assemble step picks it by task."""
         self.assertTrue(REVISE_PROMPT.is_file())

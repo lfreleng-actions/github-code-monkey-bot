@@ -170,6 +170,7 @@ SKIP_COUNTERS = (
     "one_per_repo",
     "cap",
     "revision",
+    "duplicate",
 )
 
 
@@ -227,6 +228,14 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     skipped_issues: list[dict[str, str]] = []
     bot = reads.bot_identity(args.bot_slug)
     explicit_run = bool(targets or pulls)
+    lowered = {name.lower() for name in exclusions}
+
+    def allowed(name: str) -> bool:
+        """The run's repository policy for a scan, as cheap_filter applies it."""
+        if explicit:
+            return name in explicit
+        return name not in lowered and (name != ".github" or args.include_dotgithub)
+
     rounds = revision_select.Rounds(
         args.org,
         bot=bot,
@@ -234,6 +243,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         enabled=bool(args.revise),
         explicit=explicit_run,
         skips=(skipped, skipped_issues),
+        allowed=allowed,
     )
     if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given

@@ -313,7 +313,6 @@ class UntrustedTextTest(unittest.TestCase):
                         verdict.reasons,
                     )
 
-    @unittest.expectedFailure
     def test_quoted_angle_bracket_does_not_close_a_tag(self) -> None:
         """A > inside an attribute value is text; the tag is still open on its line."""
         text = (
