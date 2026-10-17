@@ -374,7 +374,7 @@ class AuthorJobContracts(ReusableWorkflowCase):
                 encoding="utf-8",
             )
             subprocess.run(["git", "init", "-q", "workspace"], cwd=work, check=True)
-            # The base-commit check needs HEAD to equal BASE_SHA; a
+            # The checkout check needs HEAD to equal CHECKOUT_SHA; a
             # fake rev-parse on PATH answers with the fixture SHA.
             fake = work / "bin"
             fake.mkdir()
@@ -392,7 +392,9 @@ class AuthorJobContracts(ReusableWorkflowCase):
             env = {
                 "PATH": f"{fake}:{os.environ['PATH']}",
                 "KEY": "repo-7",
-                "BASE_SHA": base,
+                "TASK": "issue",
+                "CHECKOUT_SHA": base,
+                "HEAD_SHA": "",
                 "GITHUB_OUTPUT": str(output),
             }
             proc = subprocess.run(
@@ -440,7 +442,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
-    @unittest.expectedFailure
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
         checkout = self.step("author", "Checkout target repository")
@@ -717,7 +718,6 @@ class RevisionContracts(ReusableWorkflowCase):
             with_["revise"], "github.event_name != 'workflow_dispatch' || inputs.revise"
         )
 
-    @unittest.expectedFailure
     def test_author_fetches_the_bot_branch_without_a_credential(self) -> None:
         """The fork is public; the fetch names it and checks the head it recorded."""
         fetch = self.step("author", "Fetch pull request branch")
@@ -744,7 +744,6 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
         self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
 
-    @unittest.expectedFailure
     def test_prompt_follows_the_task(self) -> None:
         """The revise prompt exists and the assemble step picks it by task."""
         self.assertTrue(REVISE_PROMPT.is_file())
@@ -758,7 +757,6 @@ class RevisionContracts(ReusableWorkflowCase):
             skip_instructions(REVISE_PROMPT.read_text(encoding="utf-8")), []
         )
 
-    @unittest.expectedFailure
     def test_bundle_base_comes_from_the_manifest_within_the_recorded_pair(self) -> None:
         """A revision bundles from the base the agent chose, if it is one of the two."""
         bundle = self.step("author", "Bundle proposed commits")

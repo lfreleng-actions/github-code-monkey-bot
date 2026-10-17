@@ -641,10 +641,16 @@ jobs:
         env:
           ASSETS_SHA: "${{ needs.select.outputs.assets_sha }}"
           BASE_SHA: "${{ matrix.base_sha }}"
+          CHECKOUT_SHA: "${{ matrix.checkout_sha }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
+          TASK: "${{ matrix.task }}"
           KEY: "${{ matrix.key }}"
         run: |
           [[ "$ASSETS_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^([0-9a-f]{40})?$ ]]
+          [[ "$TASK" =~ ^(issue|revise)$ ]]
           [[ "$KEY" =~ ^[A-Za-z0-9_.-]+$ ]]
 
       - name: 'Checkout prompt assets'
@@ -675,16 +681,37 @@ jobs:
 
       # The default token has no grant on the target repository; the
       # checkout succeeds because the estate is public. Nothing here
-      # can push (docs/DESIGN.md section 4.1).
+      # can push (docs/DESIGN.md section 4.1). An issue checks out its
+      # base; a revision checks out the default branch head, so the
+      # agent can rebase onto it (docs/DESIGN.md section 20).
       - name: 'Checkout target repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: "${{ matrix.repository }}"
-          ref: "${{ matrix.base_sha }}"
+          ref: "${{ matrix.checkout_sha }}"
           path: 'workspace'
           fetch-depth: 0
           persist-credentials: false
+
+      # The bot branch lives in a public fork, so it fetches without a
+      # credential. The head must be the one the selection recorded:
+      # a branch that moved since is not the work this round was
+      # chosen for, and the publisher would refuse the result anyway.
+      - name: 'Fetch pull request branch'
+        if: matrix.task == 'revise'
+        env:
+          FORK_REPOSITORY: "${{ matrix.fork_repository }}"
+          BRANCH: "${{ matrix.branch }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
+        run: |
+          git -C workspace fetch -q "https://github.com/$FORK_REPOSITORY.git" \
+            "refs/heads/$BRANCH"
+          [ "$(git -C workspace rev-parse FETCH_HEAD)" = "$HEAD_SHA" ] || {
+            echo "::error::$BRANCH in $FORK_REPOSITORY is not at $HEAD_SHA"
+            exit 1; }
+          git -C workspace branch -q "$BRANCH" "$HEAD_SHA"
+          git -C workspace switch -q "$BRANCH"
 
       - name: 'Set up Node.js'
         # yamllint disable-line rule:line-length
@@ -708,7 +735,9 @@ jobs:
         id: packet
         env:
           KEY: "${{ matrix.key }}"
-          BASE_SHA: "${{ matrix.base_sha }}"
+          TASK: "${{ matrix.task }}"
+          CHECKOUT_SHA: "${{ matrix.checkout_sha }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
         run: |
           mkdir -p artefacts
           jq -e --arg key "$KEY" '.issues[] | select(.key == $key)' \
@@ -721,7 +750,9 @@ jobs:
           git -C workspace config user.name "$git_name"
           git -C workspace config user.email "$git_email"
           git -C workspace config commit.gpgsign false
-          [ "$(git -C workspace rev-parse HEAD)" = "$BASE_SHA" ]
+          expected="$CHECKOUT_SHA"
+          if [ "$TASK" = revise ]; then expected="$HEAD_SHA"; fi
+          [ "$(git -C workspace rev-parse HEAD)" = "$expected" ]
           {
             echo "git_identity=$git_name <$git_email>"
             echo "branch=$(jq -r '.branch' artefacts/issue.json)"
@@ -733,6 +764,10 @@ jobs:
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           BRANCH: "${{ steps.packet.outputs.branch }}"
           BASE_SHA: "${{ matrix.base_sha }}"
+          REBASE_SHA: "${{ matrix.rebase_sha }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
+          PULL_NUMBER: "${{ matrix.pull_number }}"
+          TASK: "${{ matrix.task }}"
           GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
         run: |
@@ -744,10 +779,15 @@ jobs:
           fi
           # shellcheck disable=SC2016  # literal backticks for markdown
           {
-            cat monkey-assets/prompt/author.md
+            cat monkey-assets/prompt/"$TASK".md
             printf '\n## Runtime context\n\n'
             printf -- '- repository: `%s`\n' "$REPOSITORY"
             printf -- '- base_sha: `%s`\n' "$BASE_SHA"
+            if [ "$TASK" = revise ]; then
+              printf -- '- rebase_sha: `%s`\n' "$REBASE_SHA"
+              printf -- '- pull request: #%s, head `%s`\n' \
+                "$PULL_NUMBER" "$HEAD_SHA"
+            fi
             printf -- '- branch: `%s`\n' "$BRANCH"
             printf -- '- git identity: `%s` (placeholder, set in git)\n' \
               "$GIT_IDENTITY"
@@ -816,6 +856,7 @@ jobs:
         env:
           BRANCH: "${{ steps.packet.outputs.branch }}"
           BASE_SHA: "${{ matrix.base_sha }}"
+          REBASE_SHA: "${{ matrix.rebase_sha }}"
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           ISSUE: "${{ matrix.number }}"
           AGENT_OUTCOME: "${{ steps.agent.outcome }}"
@@ -842,10 +883,19 @@ jobs:
             *) outcome=unrecognised ;;
           esac
           if [ "$outcome" = proposed ]; then
+            # A revision may sit on either recorded base; the manifest
+            # says which, and nothing but those two values reaches the
+            # command line.
+            case "$(jq -r '.base_sha // ""' artefacts/manifest.json)" in
+              "$BASE_SHA" | "$REBASE_SHA") base="$(jq -r .base_sha \
+                artefacts/manifest.json)" ;;
+              *) echo "::warning::manifest base_sha is neither recorded base"
+                 base="$BASE_SHA" ;;
+            esac
             ref="refs/heads/$BRANCH"
             if git -C workspace rev-parse --verify -q "$ref" > /dev/null; then
               git -C workspace bundle create "$(pwd)/artefacts/changes.bundle" \
-                "$BASE_SHA..$ref"
+                "$base..$ref"
             else
               echo "::warning::manifest says proposed but $ref is absent"
             fi
