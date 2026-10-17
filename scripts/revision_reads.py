@@ -49,11 +49,15 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {{
           path
           line
           comments(first: 1) {{
-            nodes {{ databaseId body authorAssociation author {{ login }} }}
+            nodes {{
+              databaseId body authorAssociation createdAt author {{ login }}
+            }}
           }}
           replies: comments(last: {MAX_THREAD_REPLIES}) {{
             totalCount
-            nodes {{ databaseId body authorAssociation author {{ login }} }}
+            nodes {{
+              databaseId body authorAssociation createdAt author {{ login }}
+            }}
           }}
         }}
       }}
@@ -264,8 +268,7 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
         "path": str(data.get("path") or ""),
         "line": line if type(line) is int else None,
         "outdated": data.get("isOutdated") is True,
-        "author": login,
-        "body": comment_text(comment),
+        **comment_fields(comment, login),
         "replies": replies,
         "replies_dropped": more,
     }
@@ -306,6 +309,24 @@ def comment_text(comment: dict[str, Any]) -> str:
     return reads.truncate_utf8(body if isinstance(body, str) else "", MAX_THREAD_BODY)
 
 
+def comment_fields(comment: dict[str, Any], login: str) -> dict[str, Any]:
+    """Who wrote a comment that counts, whether a maintainer, when, and what.
+
+    The selection reads ``maintainer`` and ``created_at`` to tell a
+    maintainer's word on a thread after the last round from Copilot's
+    or an older one; a comment GitHub dates oddly carries None, and
+    the selection reads none as after the watermark, as it does for
+    the issue comments.
+    """
+    created = comment.get("createdAt")
+    return {
+        "author": login,
+        "maintainer": comment.get("authorAssociation") in THREAD_AUTHORS,
+        "created_at": created if isinstance(created, str) else None,
+        "body": comment_text(comment),
+    }
+
+
 def thread_replies(
     connection: Any, opener_id: int
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -331,7 +352,7 @@ def thread_replies(
         login = comment_author(comment)
         if login is None:
             continue
-        replies.append({"author": login, "body": comment_text(comment)})
+        replies.append(comment_fields(comment, login))
     total = data.get("totalCount")
     more = type(total) is int and total > MAX_THREAD_REPLIES + 1
     return replies, more

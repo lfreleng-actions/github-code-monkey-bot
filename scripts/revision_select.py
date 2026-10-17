@@ -48,8 +48,11 @@ def outstanding(
     Work is outstanding when a thread from Copilot or a maintainer is
     unresolved, when Copilot's review of the head has findings, or
     when a maintainer commented on the issue or the pull request
-    after the bot's last round. A head with no review yet is left
-    for the gate to await, and a clean head with nothing else is done.
+    after the bot's last round. A maintainer's word on a review thread
+    after that round, an opener or a reply, counts as a comment, since
+    the issue and pull request comments do not carry it. A head with
+    no review yet is left for the gate to await, and a clean head with
+    nothing else is done.
     """
     reasons: list[str] = []
     if threads:
@@ -59,7 +62,26 @@ def outstanding(
     for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
         if rounds_of.newer_member_comment(repository, number, since):
             reasons.append(f"a maintainer commented on the {what} since the last round")
+    if maintainer_spoke_on_a_thread(threads, since):
+        reasons.append("a maintainer commented on a review thread since the last round")
     return reasons
+
+
+def maintainer_spoke_on_a_thread(
+    threads: list[dict[str, Any]], since: str | None
+) -> bool:
+    """Whether a maintainer opened or answered an unresolved thread after ``since``."""
+    for thread in threads:
+        replies = cast("list[dict[str, Any]]", thread.get("replies") or [])
+        for comment in (thread, *replies):
+            created = comment.get("created_at")
+            if (
+                comment.get("maintainer") is True
+                and isinstance(created, str)
+                and (since is None or created > since)
+            ):
+                return True
+    return False
 
 
 def build_entry(

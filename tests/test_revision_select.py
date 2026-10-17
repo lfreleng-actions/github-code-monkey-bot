@@ -195,7 +195,6 @@ class BuildEntryTest(RevisionCase):
         # The operator may still name it.
         self.assertEqual(self.build(explicit=True)["round"], 3)
 
-    @unittest.expectedFailure
     def test_maintainer_reply_on_a_thread_resumes_after_a_handoff(self) -> None:
         """A maintainer's word on the disputed thread itself is as good as a comment."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
