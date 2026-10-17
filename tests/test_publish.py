@@ -1435,8 +1435,8 @@ class ReportRowTest(unittest.TestCase):
 class RunReportTest(NoNetworkCase):
     """``run_report`` merges nested result files into one table."""
 
-    def test_states_the_revision_limit_once(self) -> None:
-        """The summary says, once, that the pipeline cannot revise its PRs."""
+    def test_states_the_revision_disclosure_once(self) -> None:
+        """The summary says, once, how review findings are answered."""
         results = self.root / "results"
         for key in ("a-1", "b-2"):
             directory = results / key
