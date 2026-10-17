@@ -807,8 +807,10 @@ For each selected issue:
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,
     and taking an unreadable count as a finding; a `>` inside a quoted
-    attribute closes no tag, and a line opening with any of the known
-    tags starts an HTML block.
+    attribute closes no tag, a line opening with any of the known
+    tags starts an HTML block, and a declaration, processing
+    instruction or CDATA block outside inline code fails closed as a
+    comment does.
     The wait checks its deadline before every read and keeps a
     reserve for the reads a hit needs
     (the listing, the threads page by page, and a second read of the
@@ -1664,9 +1666,8 @@ Three ways in, all through the select job and its read token:
   before new issues, oldest first, under the same cap and the same
   one-per-repository rule, and a pull request past the cap costs no
   reads: the selection builds a candidate when the budget has room.
-  Revisions
-  select in `pull-requests` mode alone, since a `branches` run
-  publishes none.
+  Revisions select in `pull-requests` mode alone, named ones included,
+  since a `branches` run publishes none.
 
 Whatever the way in, the candidate must be the bot's own: open, opened
 by the App, head in the designated fork (§4.3) on a
@@ -1681,11 +1682,13 @@ comment history or failing closed when that history outgrows the read. A
 marker in a comment's body text is text. The footer names when its run
 read the comments (`since=`), and that, not the footer's own time, is
 the watermark a maintainer's comment must follow to be new: a comment
-posted while a run was reading is work for the next round. At the cap
-the selector skips the pull request with that reason, and the publisher
-of the tenth round has already said a human must take over. One key
-admits one entry, so a pull request named beside its own issue runs
-once.
+posted while a run was reading is work for the next round. A footer
+whose round published nothing, an abstention, a rejection or a failure,
+counts toward the cap and moves no watermark, since it handled no
+request. At the cap the selector skips the pull request with that
+reason, and the publisher of the tenth round has already said a human
+must take over. One key admits one entry, so a pull request named beside
+its own issue runs once.
 
 The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
@@ -1693,8 +1696,10 @@ pull request's chain descends from (the compare merge base), and
 the unresolved threads with the ids a reply and a resolve need, the
 head's review verdict, the maintainers' comments on the pull request,
 the maintainers' comments on the issue and the pull request since the
-last round, so the instruction that caused the round reaches the
-agent whatever the count of older comments, the earlier round
+last round, newest first within the bounds and one oversized comment
+hiding none behind it, so the instruction that caused the round
+reaches the agent whatever the count of older comments, the earlier
+round
 summaries and the issue packet as before, all as data, bounded as
 the issue comments are. The read mint scopes to the
 named repositories as for issues.

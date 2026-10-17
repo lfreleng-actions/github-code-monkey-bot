@@ -325,7 +325,6 @@ class UntrustedTextTest(unittest.TestCase):
             "review body holds HTML the classifier does not read", verdict.reasons
         )
 
-    @unittest.expectedFailure
     def test_declarations_and_instructions_fail_closed(self) -> None:
         """A declaration, processing instruction or CDATA block is HTML the classifier skips."""
         for extra in (

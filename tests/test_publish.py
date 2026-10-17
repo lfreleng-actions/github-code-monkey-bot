@@ -762,7 +762,6 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(result["verdict"], "proposed")
         self.assertTrue(any("pull-requests mode" in w for w in result["warnings"]))
 
-    @unittest.expectedFailure
     def test_cleanup_warning_survives_an_operational_failure(self) -> None:
         """A scratch branch left after a failed replay reaches the written result."""
         path = self.write_check(revision_check())

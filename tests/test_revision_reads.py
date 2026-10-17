@@ -454,7 +454,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
             history = round_reads.round_history(REPO, 7, BOT)
         self.assertEqual(history.since, "2026-10-02T12:00:00Z")
 
-    @unittest.expectedFailure
     def test_failed_rounds_count_but_move_no_watermark(self) -> None:
         """An attempt that published nothing counts toward the cap; the request stays new."""
         entries = [
@@ -480,7 +479,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual(history.since, "2026-10-02T00:00:00Z")
         self.assertEqual(history.last_verdict, "proposed")
 
-    @unittest.expectedFailure
     def test_oversized_comment_does_not_hide_smaller_ones(self) -> None:
         """A newest comment past the byte budget is skipped; earlier ones still fit."""
         big = {

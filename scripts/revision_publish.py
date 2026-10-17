@@ -155,12 +155,16 @@ def run_push(
     except Rejection as exc:
         result["verdict"] = "rejected"
         cast("list[str]", result["reasons"]).append(str(exc))
+        warnings.extend(cast("list[str]", check.get("warnings") or []))
         return result
     except (PublishError, github.GitHubError) as exc:
+        # fail() writes the result before raising: the cleanup warning
+        # must be on it by then.
+        warnings.extend(cast("list[str]", check.get("warnings") or []))
         fail(args, result, f"{exc}; the pull request branch is unchanged", exc)
-    finally:
+    else:
         # A scratch branch the cleanup could not remove is reported
-        # whatever the swap's outcome.
+        # whatever the swap's outcome; the rejection path adds it too.
         warnings.extend(cast("list[str]", check.get("warnings") or []))
     result["branch_url"] = (
         f"https://github.com/{check['fork_repository']}/tree/{check['branch']}"

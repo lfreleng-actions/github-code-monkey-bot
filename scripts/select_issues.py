@@ -217,6 +217,10 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         raise SelectionError(
             "issues or pull requests and repositories cannot both be given"
         )
+    if pulls and args.mode != "pull-requests":
+        # A round moves a live pull request's head and answers its
+        # review; no other mode publishes that.
+        raise SelectionError("pull_requests needs pull-requests mode")
     exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
     try:

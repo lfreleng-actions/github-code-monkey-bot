@@ -53,6 +53,9 @@ FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
 # Inline code: a run of backticks closed by a run of the same length.
 BACKTICKS = re.compile(r"`+")
 COMMENT_OPEN = "<!--"
+# <!DOCTYPE, <![CDATA[ and <?xml: raw HTML blocks the classifier
+# does not read, as it does not read comments.
+DECLARATION = re.compile(r"<[!?]")
 # The one HTML comment Copilot writes: the format marker, on a line of
 # its own. Any other comment fails closed (``visible``).
 MARKER_LINE = re.compile(r"^[ \t]*<!-- ccr-overview-v\d+ -->[ \t]*$")
@@ -176,6 +179,12 @@ def scan_line(line: str) -> set[str]:
     while i < len(line):
         ticks = BACKTICKS.search(line, i)
         comment = line.find(COMMENT_OPEN, i)
+        declaration = DECLARATION.search(line, i)
+        if declaration and (comment < 0 or declaration.start() < comment):
+            # A declaration, processing instruction or CDATA block
+            # hides what follows as a comment does; outside a code
+            # span, that is HTML the classifier does not read.
+            comment = declaration.start()
         if ticks is None and comment < 0:
             break
         if ticks is not None and (comment < 0 or ticks.start() < comment):
@@ -192,8 +201,11 @@ def scan_line(line: str) -> set[str]:
             else:
                 i = close + len(run)
             continue
-        problems.add(UNREADABLE_COMMENT)
-        i = comment + len(COMMENT_OPEN)
+        if line.startswith(COMMENT_OPEN, comment):
+            problems.add(UNREADABLE_COMMENT)
+        else:
+            problems.add(UNREADABLE_HTML)
+        i = comment + 2
     return problems
 
 
