@@ -62,8 +62,15 @@ MODE_EXECUTABLE = "100755"
 MODE_SYMLINK = "120000"
 MODE_SUBMODULE = "160000"
 LABEL = "code-monkey"
-VERDICTS = ("proposed", "abstain", "rejected", "author-failed", "publish-failed")
-MANIFEST_OUTCOMES = ("proposed", "abstain", "author-failed")
+VERDICTS = (
+    "proposed",
+    "abstain",
+    "handoff",
+    "rejected",
+    "author-failed",
+    "publish-failed",
+)
+MANIFEST_OUTCOMES = ("proposed", "abstain", "handoff", "author-failed")
 # The one manifest schema this publisher reads (docs/DESIGN.md 18.2).
 MANIFEST_SCHEMA = 1
 # AGENTS.md §11.6: a pipeline says in each pull request and its report

@@ -823,7 +823,8 @@ For each selected issue:
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,
     and taking an unreadable count as a finding; a `>` inside a quoted
-    attribute closes no tag.
+    attribute closes no tag, and a line opening with any of the known
+    tags starts an HTML block.
     The wait checks its deadline before every read and keeps a
     reserve for the reads a hit needs
     (the listing, the threads page by page, and a second read of the
@@ -1214,6 +1215,7 @@ scripts/review_sections.py               its suppressed and unchanged-code count
 scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
 scripts/revision_reads.py                a bot pull request's state (§20)
+scripts/round_reads.py                   the issue's rounds and new comments
 scripts/revision_select.py               revision candidates and entries
 scripts/revision_check.py                a revision's offline checks
 scripts/revision_publish.py              branch move, replies, resolves
@@ -1401,7 +1403,9 @@ dropped; both are empty on a scan. `explicit_pull_requests` and
 `revise` record the §20 inputs. A revision entry adds `task:
 "revise"`, `rebase_sha`, `checkout_sha`, `pull_request` (`number`,
 `url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
-`round_reasons`, `rounds`, `threads` (`thread_id`, `comment_id`,
+`collected_at` (when the selection read the comments; every entry
+carries it), `round_reasons`, `rounds`, `threads` (`thread_id`,
+`comment_id`,
 `path`, `line`, `outdated`, `author`, `body`), `threads_dropped`,
 `review` (the §8 step 11 record of the head, with the body),
 `pr_comments`, `new_comments` and `new_pr_comments`; an issue entry
@@ -1437,7 +1441,8 @@ leaves none, the workflow writes one with `"outcome":
 `schema` must be the integer `1`; the publisher rejects any other
 value, or none, rather than read the fields under a contract it
 does not know. `outcome` is `proposed`, `abstain` or
-`author-failed`; the last two need a `reason`. `changes.bundle`
+`author-failed`, and for a revision `handoff` (§20.3); the last three
+need a `reason`. `changes.bundle`
 sits beside the manifest when the outcome is `proposed`, created by
 the workflow (not the agent) from `base_sha..branch`. A revision's
 manifest may set `base_sha` to the entry's `rebase_sha` instead,
@@ -1686,26 +1691,35 @@ Three ways in, all through the select job and its read token:
   outstanding**: an unresolved review thread whose opening comment
   comes from Copilot or an `OWNER`/`MEMBER`; a Copilot review of the
   head with findings; or an `OWNER`/`MEMBER` comment on the issue or
-  the pull request after the bot's latest round comment. A head with
-  no review yet waits for the gate; a clean head with nothing else
-  needs no round. Revisions come before new issues, oldest
-  first, under the same cap and the same one-per-repository rule.
+  the pull request after the bot's latest footer. A head with no
+  review yet waits for the gate; a clean head with nothing else needs
+  no round; and after a handoff (§20.3) the disputed threads bring no
+  round on their own, a maintainer's comment does. Revisions come
+  before new issues, oldest first, under the same cap and the same
+  one-per-repository rule, and a pull request past the cap costs no
+  reads: the selection builds a candidate when the budget has room.
+  Revisions
+  select in `pull-requests` mode alone, since a `branches` run
+  publishes none.
 
-Whatever the way in, the candidate must be the bot's own: open,
-opened by the App, head in the designated fork (§4.3) on a
-`code-monkey/issue-<n>` branch; its repository must pass the §6
-safety tests, and its issue must be open and carry no `no-agent`
-label, so closing the issue or opting it out stops the rounds. A
-scan honours the run's repository policy, the named repositories or
-everything but the exclusions, before it reads a hit. The round
-number continues from the bot's own footers on the issue: the last
-line of each of its comments, the first publication's included as
-round zero, read across the whole comment history or failing closed
-when that history outgrows the read. A marker in a comment's body
-text is text. At the cap the selector skips the pull request with
-that reason, and the publisher of the tenth round has already said a
-human must take over. One key admits one entry, so a pull request
-named beside its own issue runs once.
+Whatever the way in, the candidate must be the bot's own: open, opened
+by the App, head in the designated fork (§4.3) on a
+`code-monkey/issue-<n>` branch; its repository must pass the §6 safety
+tests, and its issue must be open and carry no `no-agent` label, so
+closing the issue or opting it out stops the rounds. A scan honours the
+run's repository policy, the named repositories or everything but the
+exclusions, before it reads a hit. The round number continues from the
+bot's own footers on the issue: the last line of each of its comments,
+the first publication's included as round zero, read across the whole
+comment history or failing closed when that history outgrows the read. A
+marker in a comment's body text is text. The footer names when its run
+read the comments (`since=`), and that, not the footer's own time, is
+the watermark a maintainer's comment must follow to be new: a comment
+posted while a run was reading is work for the next round. At the cap
+the selector skips the pull request with that reason, and the publisher
+of the tenth round has already said a human must take over. One key
+admits one entry, so a pull request named beside its own issue runs
+once.
 
 The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
@@ -1743,7 +1757,14 @@ recorded base the manifest names and rejects any other; types each
 reply and binds it to a thread the selection carried, defusing
 mentions and bounding the text; requires the round summary; and
 warns of a thread left unanswered, which stays open for a human. It
-records a rebase, and the description's round line says so.
+records a rebase, and the description's round line says so. A
+manifest outcome of `handoff`, open to a revision alone, says the
+agent changed nothing because it disputes every remaining finding or
+needs a human's decision: the check reads its replies the same way,
+none may resolve a thread, the publisher replays no chain, posts the
+replies, leaves the threads open, comments the handoff on the issue
+and skips the review gate, since the head did not move. The
+next scan leaves the pull request alone until a maintainer comments.
 
 The push syncs the fork, replays the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>`) through `createCommitOnBranch`,
@@ -1752,8 +1773,11 @@ head with `updateRefs`, `beforeOid` set to the recorded head and
 `force: true`: GitHub refuses the move when the branch no longer
 holds that head, and the publisher records a rejection rather than
 force over work the run did not see. The temporary branch goes
-whatever happens. The fork mint is the existing one; no new
-permission.
+whatever happens, and one the cleanup could not remove is a warning
+in the result whatever the swap's outcome. A `branches` run moves
+nothing: a revision publishes in `pull-requests` mode alone, where
+the replies and the review gate follow. The fork mint is the
+existing one; no new permission.
 
 With the pull request token, `respond` posts each reply on its thread
 prefixed with the AI disclosure, resolves the threads the agent

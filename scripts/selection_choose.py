@@ -78,13 +78,15 @@ def choose(
     skipped: dict[str, int],
     one_per_repository: bool = True,
     skipped_issues: list[dict[str, str]] | None = None,
-    revisions: list[dict[str, Any]] | None = None,
+    revisions: list[Callable[[], dict[str, Any] | None]] | None = None,
     reviser: Callable[[dict[str, Any], str, str], dict[str, Any] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the expensive checks and cap; keep one issue per repository on a scan.
 
-    ``revisions`` are entries already built, taken first: a round on an
-    open pull request comes before new work in the same repository.
+    ``revisions`` build a round each, taken first: a round on an open
+    pull request comes before new work in the same repository. A
+    builder runs when the budget has room, so a pull request past the
+    cap costs no reads.
     ``reviser`` turns an issue whose earlier attempt is open into a
     revision entry, or returns None to skip it as before.
     ``skipped_issues`` collects a reason per skipped issue when the
@@ -99,12 +101,18 @@ def choose(
             skipped_issues.append({"issue": reference, "reason": reason})
 
     budget = Budget(max_pull_requests, one_per_repository=one_per_repository)
-    for entry in revisions or []:
+    for build in revisions or []:
+        if budget.full():
+            skipped["cap"] += 1
+            continue
+        entry = build()
+        if entry is None:
+            continue
         if budget.duplicate(str(entry["key"])):
             skip(entry, "duplicate", "already chosen under another name")
         elif budget.repeated(str(entry["repository"])):
             skipped["one_per_repo"] += 1
-        elif budget.full() or not budget.admit(entry):
+        elif not budget.admit(entry):
             skip(entry, "cap", "over the pull request cap")
     for candidate in ranked:
         repo = str(candidate["repository"])

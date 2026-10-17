@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 reads = import_module("issue_reads")
 repository_reads = import_module("repository_reads")
 revisions = import_module("revision_reads")
+round_reads = import_module("round_reads")
 select = import_module("revision_select")
 github = import_module("bot_github")
 
@@ -72,7 +73,12 @@ class RevisionCase(unittest.TestCase):
         self.pull: dict[str, Any] | None = pull()
         self.threads: list[dict[str, Any]] = []
         self.review: dict[str, Any] | None = {"verdict": "clean"}
-        self.rounds: tuple[int, list[dict[str, Any]], str | None] = (0, [], None)
+        self.rounds: tuple[int, list[dict[str, Any]], str | None, str | None] = (
+            0,
+            [],
+            None,
+            None,
+        )
         self.newer = False
         patch.object(
             repository_reads, "repository_meta", side_effect=self.meta_of
@@ -82,12 +88,12 @@ class RevisionCase(unittest.TestCase):
             revisions, "unresolved_threads", side_effect=self.threads_of
         ).start()
         patch.object(revisions, "latest_review", side_effect=self.review_of).start()
-        patch.object(revisions, "rounds_so_far", side_effect=self.rounds_of).start()
+        patch.object(round_reads, "round_history", side_effect=self.rounds_of).start()
         patch.object(
-            revisions, "newer_member_comment", side_effect=self.newer_of
+            round_reads, "newer_member_comment", side_effect=self.newer_of
         ).start()
         patch.object(revisions, "merge_base", return_value=BASE).start()
-        patch.object(revisions, "comments_since", return_value=([], 0)).start()
+        patch.object(round_reads, "comments_since", return_value=([], 0)).start()
         patch.object(
             reads,
             "issue_details",
@@ -124,9 +130,10 @@ class RevisionCase(unittest.TestCase):
         """The fixture verdict."""
         return self.review
 
-    def rounds_of(self, *_args: Any) -> tuple[int, list[dict[str, Any]], str | None]:
+    def rounds_of(self, *_args: Any) -> Any:
         """The fixture rounds."""
-        return self.rounds
+        highest, summaries, since, verdict = self.rounds
+        return round_reads.RoundHistory(highest, summaries, since, verdict)
 
     def newer_of(self, *_args: Any) -> bool:
         """Whether a maintainer commented since."""
@@ -162,6 +169,18 @@ class BuildEntryTest(RevisionCase):
         self.assertNotIn("state", entry)
         self.assertNotIn("assignees", entry)
 
+    def test_handoff_pauses_the_scan_until_a_maintainer_speaks(self) -> None:
+        """After a handoff, unresolved threads alone bring no round; a comment does."""
+        self.threads = [thread()]
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+        with self.assertRaisesRegex(select.Skip, "handed"):
+            self.build(explicit=False)
+        self.newer = True
+        self.assertEqual(self.build(explicit=False)["round"], 3)
+        self.newer = False
+        # The operator may still name it.
+        self.assertEqual(self.build(explicit=True)["round"], 3)
+
     def test_nothing_outstanding_is_skipped_on_a_scan(self) -> None:
         """A clean head with no threads and no new comment needs no round."""
         with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
@@ -187,10 +206,10 @@ class BuildEntryTest(RevisionCase):
 
     def test_round_cap_and_safety(self) -> None:
         """The cap, a foreign pull request and an unusable repository all skip."""
-        self.rounds = (revisions.MAX_ROUNDS, [], "t")
+        self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")
         with self.assertRaisesRegex(select.Skip, "round cap"):
             self.build(explicit=True)
-        self.rounds = (3, [], "t")
+        self.rounds = (3, [], "t", "proposed")
         self.pull = None
         with self.assertRaisesRegex(select.Skip, "not an open pull request"):
             self.build(explicit=True)
@@ -227,7 +246,12 @@ class BuildEntryTest(RevisionCase):
 
     def test_packet_carries_the_comments_since_the_last_round(self) -> None:
         """The instruction that caused the round reaches the agent, whatever the cap."""
-        self.rounds = (1, [{"round": 1, "body": "r1"}], "2026-10-04T00:00:00Z")
+        self.rounds = (
+            1,
+            [{"round": 1, "body": "r1"}],
+            "2026-10-04T00:00:00Z",
+            "proposed",
+        )
         self.newer = True
         new_comment = {
             "author": "m",
@@ -236,7 +260,7 @@ class BuildEntryTest(RevisionCase):
             "body": "please rebase",
         }
         with patch.object(
-            revisions, "comments_since", return_value=([new_comment], 0)
+            round_reads, "comments_since", return_value=([new_comment], 0)
         ) as since:
             entry = self.build(explicit=False)
         self.assertEqual(entry["new_comments"], [new_comment])
@@ -245,7 +269,12 @@ class BuildEntryTest(RevisionCase):
 
     def test_next_round_number_and_summaries(self) -> None:
         """Round numbering continues from the bot's markers."""
-        self.rounds = (2, [{"round": 1, "body": "r1"}, {"round": 2, "body": "r2"}], "t")
+        self.rounds = (
+            2,
+            [{"round": 1, "body": "r1"}, {"round": 2, "body": "r2"}],
+            "t",
+            "proposed",
+        )
         self.newer = True
         entry = self.build(explicit=False)
         self.assertEqual(entry["round"], 3)
@@ -287,13 +316,16 @@ class ScanTest(RevisionCase):
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
         self.threads = [thread()]
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            entries = select.scan(
+            builders = select.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped=skipped,
                 skipped_issues=named,
             )
+        # Nothing is read until a builder is called: the budget decides first.
+        self.assertEqual(calls, [])
+        entries = [entry for build in builders if (entry := build()) is not None]
         self.assertEqual(calls, [40, 41, 9])
         self.assertEqual([e["pull_request"]["number"] for e in entries], [40, 41])
         self.assertEqual(skipped["revision"], 1)
@@ -317,7 +349,7 @@ class ScanTest(RevisionCase):
 
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            entries = select.scan(
+            builders = select.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -325,6 +357,7 @@ class ScanTest(RevisionCase):
                 skipped_issues=[],
                 allowed=alpha_alone,
             )
+        entries = [entry for build in builders if (entry := build()) is not None]
         self.assertEqual(len(entries), 1)
         self.assertEqual(reads_made, [41])
 

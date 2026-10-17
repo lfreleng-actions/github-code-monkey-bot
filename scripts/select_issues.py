@@ -207,6 +207,9 @@ def scan_candidates(
 
 def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     """Run the whole selection and return it with the guidance bytes."""
+    # Before any read: a comment posted while the run reads is new
+    # work for the next round, so every entry carries this time.
+    collected_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     targets = explicit_targets.parse_issues(args.issues, args.org)
     explicit = parse_repositories(args.repositories)
     pulls = explicit_targets.parse_issues(args.pull_requests, args.org)
@@ -240,7 +243,9 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         args.org,
         bot=bot,
         fork_orgs=fork_orgs,
-        enabled=bool(args.revise),
+        # A round moves a live pull request's head; branches mode
+        # publishes none, so it selects none.
+        enabled=bool(args.revise) and args.mode == "pull-requests",
         explicit=explicit_run,
         skips=(skipped, skipped_issues),
         allowed=allowed,
@@ -274,6 +279,8 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
         reviser=rounds.for_issue,
     )
+    for entry in chosen:
+        entry["collected_at"] = collected_at
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
     )

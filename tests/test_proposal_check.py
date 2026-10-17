@@ -170,6 +170,7 @@ class Fixture:
             "task": "revise",
             "rebase_sha": rebase_sha,
             "checkout_sha": rebase_sha,
+            "collected_at": "2026-09-18T00:00:00Z",
             "round": 2,
             "pull_request": {
                 "number": 41,
@@ -1212,6 +1213,54 @@ class RevisionCheckTest(GitCase):
         check = self.run_revision()
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertLessEqual(len(check.round_summary), 2000)
+
+    def test_handoff_outcome_replies_without_a_chain(self) -> None:
+        """Disputing every finding is a handoff: replies validated, nothing to replay."""
+        self.fixture.revision_manifest(
+            outcome="handoff",
+            reason="Both findings are wrong about the cause; a human should decide.",
+            responses=[
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "reply": "Disputed: ...",
+                    "resolve": False,
+                }
+            ],
+        )
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "handoff", check.reasons)
+        self.assertEqual(check.commits, [])
+        (response,) = check.responses
+        self.assertIs(response["resolve"], False)
+        self.assertIn("a human should decide", check.reasons[0])
+        self.assertEqual(check.round_summary, "Fixed the typo the reviewer found.")
+
+    def test_handoff_may_resolve_nothing(self) -> None:
+        """A handoff that resolves a thread is a contradiction."""
+        self.fixture.revision_manifest(
+            outcome="handoff",
+            reason="r",
+            responses=[
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "reply": "x",
+                    "resolve": True,
+                }
+            ],
+        )
+        self.assertEqual(self.run_revision().verdict, "rejected")
+        # And an issue session cannot hand off; it abstains.
+        self.fixture.manifest(outcome="handoff", reason="r")
+        self.assertEqual(self.fixture.run().verdict, "rejected")
+
+    def test_entry_records_when_its_comments_were_read(self) -> None:
+        """The check carries the selection's read time for the round footer."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        check = self.run_revision()
+        self.assertEqual(check.collected_at, "2026-09-18T00:00:00Z")
 
     def test_unanswered_thread_is_a_warning_not_a_rejection(self) -> None:
         """A thread the agent left alone stays open for a human; the check says so."""

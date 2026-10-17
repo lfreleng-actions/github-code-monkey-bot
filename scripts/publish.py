@@ -99,6 +99,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "task": check.get("task") or "issue",
         "round": check.get("round") or 0,
         "round_summary": check.get("round_summary") or None,
+        "collected_at": check.get("collected_at") or None,
     }
 
 
@@ -106,10 +107,10 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
     """Find or create the fork, create the branch there and replay commits."""
     check = model.load_json(args.check, "check")
     result = base_result(args, check)
-    if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
-        return result
     if check.get("task") == "revise":
         return revision_publish.run_push(args, check, result, fail=fail)
+    if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
+        return result
     target = str(check["repository"])
     fork = str(check["fork_repository"])
     branch = str(check["branch"])
