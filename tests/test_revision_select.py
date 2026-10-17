@@ -53,7 +53,21 @@ def thread() -> dict[str, Any]:
         "line": 1,
         "outdated": False,
         "author": "copilot-pull-request-reviewer",
+        "maintainer": False,
+        "created_at": "2026-10-02T00:00:00Z",
         "body": "Fix.",
+        "replies": [],
+        "replies_dropped": False,
+    }
+
+
+def reply(created_at: str, *, maintainer: bool = True) -> dict[str, Any]:
+    """One later comment on a thread, a maintainer's unless said otherwise."""
+    return {
+        "author": "maintainer" if maintainer else "copilot-pull-request-reviewer",
+        "maintainer": maintainer,
+        "created_at": created_at,
+        "body": "No, do it." if maintainer else "Still open.",
     }
 
 
@@ -180,6 +194,40 @@ class BuildEntryTest(RevisionCase):
         self.newer = False
         # The operator may still name it.
         self.assertEqual(self.build(explicit=True)["round"], 3)
+
+    @unittest.expectedFailure
+    def test_maintainer_reply_on_a_thread_resumes_after_a_handoff(self) -> None:
+        """A maintainer's word on the disputed thread itself is as good as a comment."""
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+        disputed = thread()
+        # Copilot's own reply, or a maintainer's from before the
+        # handoff, resumes nothing.
+        disputed["replies"] = [
+            reply("2026-10-04T00:00:00Z", maintainer=False),
+            reply("2026-10-02T12:00:00Z"),
+        ]
+        self.threads = [disputed]
+        with self.assertRaisesRegex(select.Skip, "handed"):
+            self.build(explicit=False)
+        disputed["replies"].append(reply("2026-10-04T01:00:00Z"))
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round"], 3)
+        self.assertTrue(
+            any(
+                "review thread" in r and "maintainer" in r
+                for r in entry["round_reasons"]
+            )
+        )
+        # A thread a maintainer opened after the handoff counts the same.
+        opened = thread()
+        opened.update(
+            thread_id="PRRT_9",
+            author="maintainer",
+            maintainer=True,
+            created_at="2026-10-05T00:00:00Z",
+        )
+        self.threads = [thread(), opened]
+        self.assertEqual(self.build(explicit=False)["round"], 3)
 
     def test_nothing_outstanding_is_skipped_on_a_scan(self) -> None:
         """A clean head with no threads and no new comment needs no round."""
