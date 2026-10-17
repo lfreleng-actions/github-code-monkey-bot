@@ -339,7 +339,6 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("round cap of 10", text)
         self.assertIn("a human must take over", text)
 
-    @unittest.expectedFailure
     def test_round_cap_notice_on_every_unfinished_outcome(self) -> None:
         """Whatever ends the tenth round short of clean says a human takes over."""
         unfinished = (
@@ -791,7 +790,6 @@ class HandoffTest(NoNetworkCase):
         self.assertIn("a maintainer", text)
         self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
 
-    @unittest.expectedFailure
     def test_handoff_comment_carries_the_round_summary(self) -> None:
         """The agent's summary of what it disputed reaches the issue, defused."""
         text = (
@@ -809,7 +807,6 @@ class HandoffTest(NoNetworkCase):
         self.assertIn("Thread one misreads the lock", text)
         self.assertNotIn("@ops", text)
 
-    @unittest.expectedFailure
     def test_check_warnings_survive_every_early_return(self) -> None:
         """An unanswered-thread warning reaches the result when nothing is pushed."""
         warning = "1 thread left unanswered; they stay open for a human"

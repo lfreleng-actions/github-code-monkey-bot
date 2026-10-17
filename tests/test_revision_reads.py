@@ -240,7 +240,6 @@ class ThreadsTest(unittest.TestCase):
             kept, _ = revisions.unresolved_threads(REPO, 41)
         self.assertEqual(len(kept[0]["body"].encode()), revisions.MAX_THREAD_BODY)
 
-    @unittest.expectedFailure
     def test_replies_reach_the_packet(self) -> None:
         """Later comments from Copilot or a maintainer follow the opener, bounded."""
         opener = {
@@ -296,7 +295,6 @@ class ThreadsTest(unittest.TestCase):
             revisions.THREADS_QUERY,
         )
 
-    @unittest.expectedFailure
     def test_replies_are_bounded_and_count_toward_the_thread_budget(self) -> None:
         """Over the per-thread cap, the newest replies are kept; bytes count whole."""
         opener = {
