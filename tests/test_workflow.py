@@ -696,7 +696,6 @@ class RevisionContracts(ReusableWorkflowCase):
     pull request token (DESIGN.md section 20).
     """
 
-    @unittest.expectedFailure
     def test_revise_input_defaults_on_and_the_caller_forwards_it(self) -> None:
         """Revisions are on unless a caller says otherwise."""
         inputs = cast(
@@ -1437,7 +1436,6 @@ class ListInputContracts(ReusableWorkflowCase):
         "pull_requests": ("pulls", "pull-request"),
     }
 
-    @unittest.expectedFailure
     def test_each_list_is_split_as_objects_of_the_org(self) -> None:
         """Names or references of the trusted owner, offline, with no token."""
         self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
@@ -1452,7 +1450,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertEqual(with_["token"], "")
                 self.assertNotIn("verify", with_)
 
-    @unittest.expectedFailure
     def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
         """A bad name fails the run before the App key is used."""
         check = self.position("select", "budget")
@@ -1462,7 +1459,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
-    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
         """Issues scope the token to the repositories that exist; with a scan they fail."""
         budget = self.step("select", "budget")
@@ -1519,6 +1515,7 @@ class ListInputContracts(ReusableWorkflowCase):
             "MODEL": "auto",
             "REPOSITORIES": "",
             "ISSUE_REPOSITORIES": "",
+            "PULL_COUNT": "0",
             "ORG": "o",
             "GUIDANCE_REPOSITORY": "o/.github",
         }
@@ -1558,7 +1555,6 @@ class ListInputContracts(ReusableWorkflowCase):
                     self.assertIn(f"::error::{error}", proc.stdout)
                     self.assertFalse(output.exists())
 
-    @unittest.expectedFailure
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 
@@ -1664,6 +1660,8 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "max_pull_requests",
                 "categories",
                 "issues",
+                "pull_requests",
+                "revise",
                 "max_runtime_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
@@ -1706,6 +1704,8 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_assigned": False,
             "load_repo_skills": False,
             "request_review": True,
+            "revise": True,
+            "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
             "assets_repository": "lfreleng-actions/github-code-monkey-bot",

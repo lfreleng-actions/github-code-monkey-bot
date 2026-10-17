@@ -83,6 +83,18 @@ on:
           repo/issues/N or URLs; commas and/or spaces
         type: string
         default: ''
+      pull_requests:
+        description: >-
+          Open bot pull requests to revise: repo#N, owner/repo#N,
+          repo/pull/N or URLs; commas and/or spaces
+        type: string
+        default: ''
+      revise:
+        description: >-
+          Revise open bot pull requests with review findings or new
+          maintainer comments, before working new issues
+        type: boolean
+        default: true
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -248,6 +260,16 @@ jobs:
           owner: "${{ inputs.org }}"
           token: ''
 
+      - name: 'Split pull requests'
+        id: pulls
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/list-splitter-action@b56a625474875d05ca8d1c1eb3314c29c526c9a6 # v0.1.0
+        with:
+          list: "${{ inputs.pull_requests }}"
+          validate: 'pull-request'
+          owner: "${{ inputs.org }}"
+          token: ''
+
       # The token action finds the installation through the first
       # repository in its scope, so an absent name there fails the mint
       # before selection could say so. Public repositories answer the
@@ -263,6 +285,7 @@ jobs:
           GH_TOKEN: "${{ github.token }}"
           ORG: "${{ inputs.org }}"
           ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
+          PULL_REPOSITORIES: "${{ steps.pulls.outputs.repositories }}"
           REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
         run: |
           # Whether the repository exists and is public; 2 on any
@@ -288,15 +311,19 @@ jobs:
               echo "::error::repository $ORG/$name not found or not public"
               exit 1; }
           done
-          IFS=, read -ra named <<< "$ISSUE_REPOSITORIES"
+          # Named issues and named pull requests share one scope.
+          IFS=, read -ra named <<< "$ISSUE_REPOSITORIES,$PULL_REPOSITORIES"
           kept=()
           for name in "${named[@]}"; do
             [ -n "$name" ] || continue
+            case ",${kept[*]:-}," in *",$name,"*) continue ;; esac
             if usable "$name"; then kept+=("$name"); fi
           done
-          if [ -n "$ISSUE_REPOSITORIES" ] && [ "${#kept[@]}" -eq 0 ]; then
+          if [ -n "$ISSUE_REPOSITORIES$PULL_REPOSITORIES" ] &&
+            [ "${#kept[@]}" -eq 0 ]; then
             echo "::error::none of the named issues' repositories exist" \
-              "as public repositories in $ORG: $ISSUE_REPOSITORIES"
+              "as public repositories in $ORG:" \
+              "$ISSUE_REPOSITORIES $PULL_REPOSITORIES"
             exit 1
           fi
           joined=''
@@ -319,6 +346,7 @@ jobs:
           REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
           ISSUE_REPOSITORIES: "${{ steps.named.outputs.repositories }}"
           ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
+          PULL_COUNT: "${{ steps.pulls.outputs.count }}"
           # The raw lists, only to tell an absent list from one that
           # parsed to nothing.
           ISSUES_RAW: "${{ inputs.issues }}"
@@ -347,9 +375,11 @@ jobs:
           # Only an empty list means "scan". The concurrency group tests
           # the raw issues input, while selection sees the split one, so
           # a list of separators alone would take a per-run lock and
-          # then scan; it fails here, before selection and the mint.
-          # Issues and repositories exclude each other.
-          if [ -n "$ISSUES_RAW" ] && [ "$ISSUE_COUNT" = 0 ]; then
+          # then scan; it fails here, before selection and the mint. An
+          # issues list may name pull requests, which count beside the
+          # issues here. Issues and repositories exclude each other.
+          if [ -n "$ISSUES_RAW" ] && [ "$ISSUE_COUNT" = 0 ] &&
+            [ "${PULL_COUNT:-0}" = 0 ]; then
             echo '::error::issues was given but names no issue'
             exit 1
           fi
@@ -357,8 +387,10 @@ jobs:
             echo '::error::repositories was given but names no repository'
             exit 1
           fi
-          if [ "$ISSUE_COUNT" != 0 ] && [ "$REPOSITORY_COUNT" != 0 ]; then
+          if { [ "$ISSUE_COUNT" != 0 ] || [ "$PULL_COUNT" != 0 ]; } &&
+            [ "$REPOSITORY_COUNT" != 0 ]; then
             echo '::error::issues and repositories cannot both be given'
+            echo '::error::(named pull requests count as issues here)'
             exit 1
           fi
           repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
@@ -503,6 +535,8 @@ jobs:
           DRY_RUN: "${{ inputs.dry_run }}"
           REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
           ISSUES: "${{ steps.issues.outputs.csv }}"
+          PULL_REQUESTS: "${{ steps.pulls.outputs.csv }}"
+          REVISE: "${{ inputs.revise }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
@@ -521,11 +555,15 @@ jobs:
           if [ "$INCLUDE_ASSIGNED" = true ]; then
             extra+=(--include-assigned)
           fi
+          if [ "$REVISE" != true ]; then
+            extra+=(--no-revise)
+          fi
           python3 monkey-assets/scripts/select_issues.py \
             --org "$ORG" --output-dir artefacts \
             --mode "$MODE" --model "$MODEL" \
             --repositories "$REPOSITORIES" \
             --issues "$ISSUES" \
+            --pull-requests "$PULL_REQUESTS" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \

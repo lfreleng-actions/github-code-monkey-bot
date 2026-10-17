@@ -25,6 +25,7 @@ select = import_module("select_issues")
 explicit_targets = import_module("explicit_issues")
 inputs = import_module("selection_inputs")
 revision_select = import_module("revision_select")
+choose_module = import_module("selection_choose")
 categories = import_module("issue_categories")
 
 ALL = frozenset(categories.ALL_CATEGORIES)
@@ -224,6 +225,9 @@ class ExplicitIssuesTest(NoSubprocessCase):
         patch.object(reads, "fetch_guidance", return_value=(b"g\n", SHA_B)).start()
         patch.object(
             reads, "bot_identity", return_value={"login": "b[bot]", "email": "e"}
+        ).start()
+        patch.object(
+            revision_select, "pull_request_for_branch", return_value=None
         ).start()
         self.addCleanup(patch.stopall)
 
@@ -462,7 +466,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
             ]
         )
 
-    @unittest.expectedFailure
     def test_named_pull_requests_become_revision_entries(self) -> None:
         """Each named pull request is built explicitly; a miss is a named skip."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
@@ -479,7 +482,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
 
-    @unittest.expectedFailure
     def test_pull_requests_and_repositories_exclude_each_other(self) -> None:
         """A targeted run and a scan cannot mix."""
         with self.assertRaises(reads.SelectionError):
@@ -487,7 +489,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 self.args("--pull-requests", "org/alpha#41", "--repositories", "alpha")
             )
 
-    @unittest.expectedFailure
     def test_named_issue_with_a_bot_pull_request_is_revised(self) -> None:
         """An issue whose earlier attempt is open becomes a round, not a skip."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
@@ -526,7 +527,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["issues"], [])
         self.assertEqual(selection["skipped"]["attempted"], 1)
 
-    @unittest.expectedFailure
     def test_scan_puts_revisions_first_under_the_cap(self) -> None:
         """Revisions come before new issues and share the cap and the repository rule."""
         patch.object(
@@ -889,14 +889,16 @@ class ChooseTest(NoSubprocessCase):
 
     def test_matrix_limit_bounds_even_unbounded_runs(self) -> None:
         """Zero and oversized caps both stop at the Actions matrix limit."""
-        ranked = [candidate(f"r{i}", i) for i in range(1, select.MATRIX_LIMIT + 4)]
-        for requested in (0, select.MATRIX_LIMIT + 50):
+        ranked = [
+            candidate(f"r{i}", i) for i in range(1, choose_module.MATRIX_LIMIT + 4)
+        ]
+        for requested in (0, choose_module.MATRIX_LIMIT + 50):
             with self.subTest(max_pull_requests=requested):
                 skipped = fresh_skipped()
                 chosen = self.choose(
                     ranked, max_pull_requests=requested, skipped=skipped
                 )
-                self.assertEqual(len(chosen), select.MATRIX_LIMIT)
+                self.assertEqual(len(chosen), choose_module.MATRIX_LIMIT)
                 self.assertEqual(skipped["cap"], 3)
 
     def test_selection_byte_budget(self) -> None:
@@ -906,7 +908,9 @@ class ChooseTest(NoSubprocessCase):
         small = candidate("small", 2)
         ranked = [big, small, candidate("third", 3)]
         skipped = fresh_skipped()
-        with patch.object(select, "MAX_SELECTION_BYTES", 1600):
+        # The budget sits between the first entry alone and the first
+        # two together.
+        with patch.object(choose_module, "MAX_SELECTION_BYTES", 1800):
             chosen = self.choose(ranked, max_pull_requests=0, skipped=skipped)
         # The first entry fits alone; the second would push past the budget
         # and the third is refused without further reads.
@@ -1077,7 +1081,6 @@ class WriteOutputsTest(unittest.TestCase):
             "comments_dropped": 0,
         }
 
-    @unittest.expectedFailure
     def test_files_written(self) -> None:
         """Every output file exists with the documented content."""
         selection = sample_selection([self.chosen_issue()])
@@ -1117,7 +1120,7 @@ class WriteOutputsTest(unittest.TestCase):
             summary = (out / "selection-summary.md").read_text(encoding="utf-8")
         self.assertIn("## Issue selection", summary)
         self.assertIn(
-            "| [alpha#3](https://github.com/org/alpha/issues/3) | High | Bug "
+            "| [alpha#3](https://github.com/org/alpha/issues/3) | issue | High | Bug "
             "| Fix a \\| thing |",
             summary,
         )
@@ -1172,6 +1175,7 @@ class MainTest(NoSubprocessCase):
         patch.object(reads, "prior_attempt", return_value=None).start()
         patch.object(reads, "has_open_linked_pr", return_value=False).start()
         patch.object(reads, "branch_head", return_value=SHA_B).start()
+        patch.object(revision_select, "scan", return_value=[]).start()
         patch.object(
             reads, "filtered_comments", return_value=([{"body": "hi"}], 2, False)
         ).start()

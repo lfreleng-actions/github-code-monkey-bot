@@ -206,3 +206,82 @@ def scan(
                 skipped["revision"] += 1
                 skipped_issues.append({"issue": reference, "reason": str(exc)})
     return entries
+
+
+class Rounds:
+    """The revision entries a run works, built on demand with one set of inputs."""
+
+    def __init__(
+        self,
+        org: str,
+        *,
+        bot: dict[str, Any],
+        fork_orgs: dict[str, Any],
+        enabled: bool,
+        explicit: bool,
+        skips: tuple[dict[str, int], list[dict[str, str]]],
+    ) -> None:
+        """Remember what every build needs; ``skips`` are the counters and the named list."""
+        self.org = org
+        self.bot = bot
+        self.fork_orgs = fork_orgs
+        self.enabled = enabled
+        self.explicit = explicit
+        self.skipped, self.skipped_issues = skips
+
+    def named(self, pulls: list[tuple[str, int]]) -> list[dict[str, Any]]:
+        """Rounds on the pull requests the operator named; a miss is a named skip."""
+        entries: list[dict[str, Any]] = []
+        for repo_name, number in pulls:
+            try:
+                entries.append(
+                    build_entry(
+                        self.org,
+                        repo_name,
+                        number,
+                        bot=self.bot,
+                        fork_orgs=self.fork_orgs,
+                        explicit=True,
+                    )
+                )
+            except Skip as exc:
+                self.skipped["revision"] += 1
+                self.skipped_issues.append(
+                    {"issue": f"{self.org}/{repo_name}#{number}", "reason": str(exc)}
+                )
+        return entries
+
+    def scan(self) -> list[dict[str, Any]]:
+        """Rounds on the owner's bot pull requests with work, when enabled."""
+        if not self.enabled:
+            return []
+        return scan(
+            self.org,
+            bot=self.bot,
+            fork_orgs=self.fork_orgs,
+            skipped=self.skipped,
+            skipped_issues=self.skipped_issues,
+        )
+
+    def for_issue(
+        self, candidate: dict[str, Any], fork_org: str, branch: str
+    ) -> dict[str, Any] | None:
+        """A round on the issue's open pull request, or None to skip it as before."""
+        if not self.enabled:
+            return None
+        number = pull_request_for_branch(
+            str(candidate["repository"]), fork_org, branch, str(self.bot["login"])
+        )
+        if number is None:
+            return None
+        try:
+            return build_entry(
+                self.org,
+                str(candidate["repo_name"]),
+                number,
+                bot=self.bot,
+                fork_orgs=self.fork_orgs,
+                explicit=self.explicit,
+            )
+        except Skip:
+            return None
