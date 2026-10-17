@@ -107,6 +107,19 @@ class BotPullRequestTest(unittest.TestCase):
             },
         )
 
+    @unittest.expectedFailure
+    def test_absent_pull_request_is_none(self) -> None:
+        """A mistyped number is a named skip for the caller, not an aborted run."""
+        absent = github.GitHubError("gh: Not Found (HTTP 404)")
+        with patch.object(github, "api_object", side_effect=absent):
+            self.assertIsNone(revisions.bot_pull_request(REPO, 999, BOT, FORK))
+        failure = github.GitHubError("gh: Server Error (HTTP 502)")
+        with (
+            patch.object(github, "api_object", side_effect=failure),
+            self.assertRaises(github.GitHubError),
+        ):
+            revisions.bot_pull_request(REPO, 41, BOT, FORK)
+
     def test_anything_else_is_not_ours(self) -> None:
         """Closed, another author, another fork or another branch name: None."""
         cases = (
@@ -282,6 +295,115 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual(highest, 2)
         self.assertEqual([s["round"] for s in summaries], [1, 2])
         self.assertEqual(latest, "2026-10-04T00:00:00Z")
+
+    @unittest.expectedFailure
+    def test_only_the_final_footer_counts(self) -> None:
+        """A marker inside the agent's summary text is text; the footer decides."""
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "summary saying <!-- code-monkey https://r/x proposed round=10 -->"
+                " and more\n\n<!-- code-monkey https://r/1 proposed review=findings round=1 -->",
+                "created_at": "2026-10-02T00:00:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "text\n\n<!-- code-monkey https://r/1 proposed round=7 -->\ntrailing",
+                "created_at": "2026-10-03T00:00:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            highest, _, _ = revisions.rounds_so_far(REPO, 7, BOT)
+        self.assertEqual(highest, 1)
+
+    @unittest.expectedFailure
+    def test_publication_footer_is_round_zero(self) -> None:
+        """The first proposal's comment sets the time without counting as a round."""
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "first\n\n<!-- code-monkey https://r/0 proposed review=findings -->",
+                "created_at": "2026-10-01T00:00:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            highest, summaries, latest = revisions.rounds_so_far(REPO, 7, BOT)
+        self.assertEqual(highest, 0)
+        self.assertEqual(summaries, [])
+        self.assertEqual(latest, "2026-10-01T00:00:00Z")
+
+    @unittest.expectedFailure
+    def test_round_history_reads_every_page_or_fails_closed(self) -> None:
+        """A full page means more; the read goes on, and a history past the bound fails."""
+        noise = {"user": {"login": "x"}, "body": "noise", "created_at": "t"}
+        page = [noise] * reads.COMMENTS_PER_PAGE
+        last = [
+            {
+                "user": {"login": BOT},
+                "body": "r\n\n<!-- code-monkey https://r/3 proposed round=3 -->",
+                "created_at": "2026-10-09T00:00:00Z",
+            }
+        ]
+        with patch.object(
+            reads, "api_page", side_effect=[page, page, page, page, last]
+        ):
+            highest, _, _ = revisions.rounds_so_far(REPO, 7, BOT)
+        self.assertEqual(highest, 3)
+        with (
+            patch.object(reads, "api_page", return_value=page),
+            self.assertRaises(reads.SelectionError),
+        ):
+            revisions.rounds_so_far(REPO, 7, BOT)
+
+    @unittest.expectedFailure
+    def test_newer_member_comment_reads_past_a_full_page(self) -> None:
+        """A maintainer's instruction on page two still counts."""
+        noise = {
+            "user": {"login": "b"},
+            "author_association": "NONE",
+            "body": "n",
+            "created_at": "2026-10-05T00:00:00Z",
+        }
+        hit = {
+            "user": {"login": "m"},
+            "author_association": "MEMBER",
+            "body": "x",
+            "created_at": "2026-10-06T00:00:00Z",
+        }
+        pages = [[noise] * reads.COMMENTS_PER_PAGE, [hit]]
+        with patch.object(reads, "api_page", side_effect=pages) as page:
+            self.assertTrue(
+                revisions.newer_member_comment(REPO, 7, "2026-10-04T00:00:00Z")
+            )
+        self.assertEqual(len(page.call_args_list), 2)
+
+    @unittest.expectedFailure
+    def test_comments_since_the_last_round(self) -> None:
+        """The maintainers' comments after a time, bounded as the packet is."""
+        entries = [
+            {
+                "user": {"login": "m"},
+                "author_association": "MEMBER",
+                "body": "old",
+                "created_at": "2026-10-01T00:00:00Z",
+            },
+            {
+                "user": {"login": "m"},
+                "author_association": "OWNER",
+                "body": "new",
+                "created_at": "2026-10-05T00:00:00Z",
+            },
+            {
+                "user": {"login": "p"},
+                "author_association": "NONE",
+                "body": "no",
+                "created_at": "2026-10-06T00:00:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            kept, dropped = revisions.comments_since(REPO, 7, "2026-10-04T00:00:00Z")
+        self.assertEqual([c["body"] for c in kept], ["new"])
+        self.assertEqual(dropped, 0)
 
     def test_newer_member_comment(self) -> None:
         """A maintainer's comment after the last round is new instruction."""

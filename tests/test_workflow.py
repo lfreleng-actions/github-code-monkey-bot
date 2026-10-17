@@ -741,6 +741,7 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
         self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
 
+    @unittest.expectedFailure
     def test_prompt_follows_the_task(self) -> None:
         """The revise prompt exists and the assemble step picks it by task."""
         self.assertTrue(REVISE_PROMPT.is_file())
@@ -748,8 +749,12 @@ class RevisionContracts(ReusableWorkflowCase):
         env = cast(dict[str, Any], assemble["env"])
         self.assert_expression(env["TASK"], "matrix.task")
         script = flatten(assemble["run"])
-        self.assertIn('monkey-assets/prompt/"$TASK".md', script)
-        self.assertNotIn("prompt/author.md", script)
+        # Each task maps to its own prompt file; a task with no mapping
+        # fails the step rather than reading a wrong file.
+        self.assertIn("issue) prompt=monkey-assets/prompt/author.md", script)
+        self.assertIn("revise) prompt=monkey-assets/prompt/revise.md", script)
+        self.assertIn("*) echo", script)
+        self.assertNotIn('"$TASK".md', script)
         self.assertEqual(
             skip_instructions(REVISE_PROMPT.read_text(encoding="utf-8")), []
         )

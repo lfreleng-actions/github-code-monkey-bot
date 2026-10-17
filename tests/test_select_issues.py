@@ -527,6 +527,48 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["issues"], [])
         self.assertEqual(selection["skipped"]["attempted"], 1)
 
+    @unittest.expectedFailure
+    def test_named_pull_request_and_its_issue_admit_one_entry(self) -> None:
+        """The same round named twice runs once."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        patch.object(
+            repository_reads, "repository_meta", return_value=repo_meta("alpha")
+        ).start()
+        patch.object(
+            reads,
+            "issue_details",
+            return_value={
+                "state": "open",
+                "title": "T",
+                "body": "",
+                "labels": [],
+                "type": "Bug",
+                "assignees": [],
+                "priority": None,
+                "url": "u",
+                "created_at": "t",
+                "author_association": "MEMBER",
+            },
+        ).start()
+        patch.object(reads, "prior_attempt", return_value="pull_request").start()
+        patch.object(
+            revision_select, "pull_request_for_branch", return_value=41
+        ).start()
+        selection, _ = select.build_selection(
+            self.args("--pull-requests", "org/alpha#41", "--issues", "org/alpha#7")
+        )
+        self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
+        self.assertEqual(selection["skipped"]["duplicate"], 1)
+
+    @unittest.expectedFailure
+    def test_scan_revisions_follow_the_repository_scope(self) -> None:
+        """The scan passes the run's repository policy to the revision scan."""
+        with patch.object(revision_select, "scan", return_value=[]) as scan:
+            select.build_selection(self.args("--repositories", "alpha"))
+        allowed = scan.call_args.kwargs["allowed"]
+        self.assertTrue(allowed("alpha"))
+        self.assertFalse(allowed("beta"))
+
     def test_scan_puts_revisions_first_under_the_cap(self) -> None:
         """Revisions come before new issues and share the cap and the repository rule."""
         patch.object(

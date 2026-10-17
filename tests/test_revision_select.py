@@ -198,6 +198,52 @@ class BuildEntryTest(RevisionCase):
         with self.assertRaisesRegex(select.Skip, "not public"):
             self.build(explicit=True)
 
+    @unittest.expectedFailure
+    def test_repository_and_issue_safety_still_apply(self) -> None:
+        """An archived repository, a closed issue or the opt-out stop a round."""
+        self.meta["archived"] = True
+        with self.assertRaisesRegex(select.Skip, "archived"):
+            self.build(explicit=True)
+        self.meta["archived"] = False
+        details = {
+            "state": "closed",
+            "title": "T",
+            "body": "B",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "MEMBER",
+        }
+        with patch.object(reads, "issue_details", return_value=details):
+            with self.assertRaisesRegex(select.Skip, "closed"):
+                self.build(explicit=True)
+            details["state"] = "open"
+            details["labels"] = ["no-agent"]
+            with self.assertRaisesRegex(select.Skip, "no-agent"):
+                self.build(explicit=True)
+
+    @unittest.expectedFailure
+    def test_packet_carries_the_comments_since_the_last_round(self) -> None:
+        """The instruction that caused the round reaches the agent, whatever the cap."""
+        self.rounds = (1, [{"round": 1, "body": "r1"}], "2026-10-04T00:00:00Z")
+        self.newer = True
+        new_comment = {
+            "author": "m",
+            "association": "MEMBER",
+            "created_at": "2026-10-05T00:00:00Z",
+            "body": "please rebase",
+        }
+        with patch.object(
+            revisions, "comments_since", return_value=([new_comment], 0)
+        ) as since:
+            entry = self.build(explicit=False)
+        self.assertEqual(entry["new_comments"], [new_comment])
+        self.assertEqual(entry["new_pr_comments"], [new_comment])
+        self.assertEqual(since.call_args.args[2], "2026-10-04T00:00:00Z")
+
     def test_next_round_number_and_summaries(self) -> None:
         """Round numbering continues from the bot's markers."""
         self.rounds = (2, [{"round": 1, "body": "r1"}, {"round": 2, "body": "r2"}], "t")
@@ -253,6 +299,36 @@ class ScanTest(RevisionCase):
         self.assertEqual([e["pull_request"]["number"] for e in entries], [40, 41])
         self.assertEqual(skipped["revision"], 1)
         self.assertEqual(named[0]["issue"], "org/beta#9")
+
+    @unittest.expectedFailure
+    def test_scan_honours_the_repository_policy(self) -> None:
+        """Hits outside the run's repositories, or excluded, are passed over unread."""
+        hits = [
+            {"repository": "org/alpha", "number": 41, "created_at": "t1"},
+            {"repository": "org/beta", "number": 9, "created_at": "t2"},
+        ]
+        self.threads = [thread()]
+        reads_made: list[int] = []
+
+        def per_pull(_repo: str, number: int, *_a: Any) -> dict[str, Any] | None:
+            reads_made.append(number)
+            return pull(number=number)
+
+        def alpha_alone(name: str) -> bool:
+            return name == "alpha"
+
+        patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
+        with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
+            entries = select.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped={"revision": 0},
+                skipped_issues=[],
+                allowed=alpha_alone,
+            )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(reads_made, [41])
 
 
 class PullRequestForBranchTest(unittest.TestCase):
