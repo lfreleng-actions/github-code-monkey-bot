@@ -56,11 +56,29 @@ class Check:
     premium_requests: float | None = None
     bot_login: str = ""
     agent_seconds: int | None = None
+    warnings: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # A revision round (DESIGN.md section 20): the pull request being
+    # revised, the other base a rebase may land on, and the trusted
+    # thread ids a reply may name. Blank or empty for an issue.
+    task: str = "issue"
+    rebase_sha: str = ""
+    rebased: bool = False
+    head_sha: str = ""
+    pull_number: int = 0
+    pull_request_url: str = ""
+    round: int = 0
+    threads: list[dict[str, Any]] = field(
+        default_factory=lambda: cast("list[dict[str, Any]]", [])
+    )
+    responses: list[dict[str, Any]] = field(
+        default_factory=lambda: cast("list[dict[str, Any]]", [])
+    )
+    round_summary: str = ""
 
     @classmethod
     def from_entry(cls, key: str, entry: dict[str, Any]) -> Check:
         """Start a check from a trusted selection entry."""
-        return cls(
+        check = cls(
             key=key,
             repository=str(entry["repository"]),
             issue=int(entry["number"]),
@@ -69,7 +87,20 @@ class Check:
             default_branch=str(entry["default_branch"]),
             fork_org=str(entry["fork_org"]),
             fork_repository=str(entry["fork_repository"]),
+            task=str(entry.get("task") or "issue"),
         )
+        if check.task == "revise":
+            pull = cast("dict[str, Any]", entry["pull_request"])
+            check.rebase_sha = str(entry["rebase_sha"])
+            check.head_sha = str(pull["head_sha"])
+            check.pull_number = int(pull["number"])
+            check.pull_request_url = str(pull["url"])
+            check.round = int(entry["round"])
+            check.threads = [
+                {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
+                for t in cast("list[dict[str, Any]]", entry.get("threads") or [])
+            ]
+        return check
 
     def to_json(self) -> dict[str, Any]:
         """Serialise for check.json."""
@@ -97,6 +128,16 @@ class Check:
             "commands": self.commands,
             "premium_requests": self.premium_requests,
             "agent_seconds": self.agent_seconds,
+            "warnings": self.warnings,
+            "task": self.task,
+            "rebase_sha": self.rebase_sha,
+            "rebased": self.rebased,
+            "head_sha": self.head_sha,
+            "pull_number": self.pull_number,
+            "pull_request_url": self.pull_request_url,
+            "round": self.round,
+            "responses": self.responses,
+            "round_summary": self.round_summary,
         }
 
 

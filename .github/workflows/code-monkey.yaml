@@ -998,12 +998,16 @@ jobs:
           SELECTION_SHA: "${{ needs.select.outputs.selection_sha256 }}"
           GUIDANCE_SHA: "${{ needs.select.outputs.guidance_sha256 }}"
           KEY: "${{ matrix.key }}"
+          TASK: "${{ matrix.task }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
         run: |
           [[ "$ASSETS_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EVIDENCE_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SELECTION_SHA" =~ ^[0-9a-f]{64}$ ]]
           [[ "$GUIDANCE_SHA" =~ ^[0-9a-f]{64}$ ]]
           [[ "$KEY" =~ ^[A-Za-z0-9_.-]+$ ]]
+          [[ "$TASK" =~ ^(issue|revise)$ ]]
+          [[ "$HEAD_SHA" =~ ^([0-9a-f]{40})?$ ]]
 
       - name: 'Checkout trusted publisher'
         # yamllint disable-line rule:line-length
@@ -1254,6 +1258,25 @@ jobs:
           GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
         run: |
           python3 monkey-assets/scripts/publish.py open \
+            --result artefacts/result.json --check artefacts/check.json \
+            --output artefacts/result.json
+
+      # A revision's pull request already exists; open above did
+      # nothing. Answer each review thread with the agent's reply,
+      # resolve the ones it marked fixed, and replace the description,
+      # all writes to the target's pull requests and nothing else
+      # (docs/DESIGN.md section 20).
+      - name: 'Respond to review threads'
+        id: respond
+        if: >-
+          !cancelled() && matrix.task == 'revise' &&
+          steps.push.outcome == 'success' &&
+          !inputs.dry_run && inputs.mode == 'pull-requests' &&
+          inputs.github_app_client_id != ''
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py respond \
             --result artefacts/result.json --check artefacts/check.json \
             --output artefacts/result.json
 

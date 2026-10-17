@@ -315,7 +315,6 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
-    @unittest.expectedFailure
     def test_revision_round_comment(self) -> None:
         """A round names itself, the pull request and the summary, then the verdict."""
         result = result_json(
@@ -633,13 +632,12 @@ class RunPushTest(NoNetworkCase):
 class RunPushRevisionTest(NoNetworkCase):
     """A revision replays onto a temporary branch, then moves the bot branch."""
 
-    @unittest.expectedFailure
     def test_revision_moves_the_branch_and_records_the_pull_request(self) -> None:
         """Sync, temporary branch, replay, compare-and-swap, cleanup; the PR is known."""
         path = self.write_check(revision_check())
         with (
-            patch.object(publish, "ensure_fork") as fork,
-            patch.object(publish, "sync_fork") as sync,
+            patch.object(refs, "ensure_fork") as fork,
+            patch.object(refs, "sync_fork") as sync,
             patch.object(
                 publish.revision_publish, "move_branch", return_value=[NEW_HEAD]
             ) as move,
@@ -657,13 +655,12 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertEqual(result["round"], 2)
         self.assertFalse(publish.needs_pull_request(result))
 
-    @unittest.expectedFailure
     def test_moved_head_is_a_rejection_not_a_failure(self) -> None:
         """A head that changed since selection is refused, nothing forced."""
         path = self.write_check(revision_check())
         with (
-            patch.object(publish, "ensure_fork"),
-            patch.object(publish, "sync_fork"),
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
             patch.object(
                 publish.revision_publish,
                 "move_branch",
@@ -679,7 +676,6 @@ class RunPushRevisionTest(NoNetworkCase):
 class RunRespondTest(NoNetworkCase):
     """``publish.py respond`` answers the threads and updates the description."""
 
-    @unittest.expectedFailure
     def test_replies_resolves_and_updates(self) -> None:
         """Each response posts and resolves as marked; the body and title follow."""
         check = self.write_check(revision_check())
@@ -727,7 +723,6 @@ class RunRespondTest(NoNetworkCase):
             stored["responded"], {"replied": 2, "resolved": 1, "failed": 0}
         )
 
-    @unittest.expectedFailure
     def test_a_failed_reply_is_a_warning_and_the_rest_proceed(self) -> None:
         """One refused write does not stop the others or fail the step."""
         check = self.write_check(revision_check())
@@ -1315,7 +1310,6 @@ class RunCommentTest(NoNetworkCase):
             )
         write.assert_called_once()
 
-    @unittest.expectedFailure
     def test_marker_carries_the_round(self) -> None:
         """A revision's marker names its round, so the next selection counts it."""
         path = self.write_result(

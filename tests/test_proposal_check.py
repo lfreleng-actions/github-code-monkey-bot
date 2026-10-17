@@ -194,9 +194,9 @@ class Fixture:
 
     def revision_manifest(self, **overrides: Any) -> None:
         """A proposed revision manifest."""
-        self.manifest(
-            round_summary="Fixed the typo the reviewer found.",
-            responses=[
+        fields: dict[str, Any] = {
+            "round_summary": "Fixed the typo the reviewer found.",
+            "responses": [
                 {
                     "thread_id": "PRRT_1",
                     "comment_id": 100,
@@ -204,8 +204,9 @@ class Fixture:
                     "resolve": True,
                 }
             ],
-            **overrides,
-        )
+        }
+        fields.update(overrides)
+        self.manifest(**fields)
 
     def manifest(self, **overrides: Any) -> None:
         """Write a proposed manifest, applying overrides."""
@@ -1128,7 +1129,6 @@ class RevisionCheckTest(GitCase):
                 run_url=RUN_URL,
             )
 
-    @unittest.expectedFailure
     def test_chain_on_the_original_base(self) -> None:
         """An amended chain on the pull request's own base is accepted."""
         self.fixture.commit(
@@ -1156,7 +1156,6 @@ class RevisionCheckTest(GitCase):
         self.assertTrue(check.pr_body.startswith(f"Closes #{ISSUE}\n"))
         self.assertIn("Round 2", check.pr_body)
 
-    @unittest.expectedFailure
     def test_chain_rebased_onto_the_default_branch_head(self) -> None:
         """A chain on the recorded rebase commit is accepted and marked rebased."""
         run_git(self.fixture.agent, "fetch", "-q", str(self.fixture.upstream), "main")
@@ -1176,7 +1175,6 @@ class RevisionCheckTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertTrue(any("base_sha" in r for r in check.reasons))
 
-    @unittest.expectedFailure
     def test_responses_must_name_the_packets_threads(self) -> None:
         """A reply to a thread the selection never carried is a rejection."""
         self.fixture.bundle()
@@ -1205,7 +1203,6 @@ class RevisionCheckTest(GitCase):
         )
         self.assertEqual(self.run_revision().verdict, "rejected")
 
-    @unittest.expectedFailure
     def test_round_summary_required_and_bounded(self) -> None:
         """The summary is the issue comment: required, and cut to the reason cap."""
         self.fixture.bundle()
@@ -1216,7 +1213,6 @@ class RevisionCheckTest(GitCase):
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertLessEqual(len(check.round_summary), 2000)
 
-    @unittest.expectedFailure
     def test_unanswered_thread_is_a_warning_not_a_rejection(self) -> None:
         """A thread the agent left alone stays open for a human; the check says so."""
         self.fixture.bundle()

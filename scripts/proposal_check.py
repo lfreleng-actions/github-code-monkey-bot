@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import bot_github as github
 import proposal_policy as policy
+import revision_check as revision
 from fork_orgs import ALLOWED_RE
 from git_bounded import git
 from proposal_model import Check, Context, load_json, read_usage
@@ -69,6 +70,7 @@ def selection_entry(selection: dict[str, Any], key: str) -> dict[str, Any]:
                 raise PublishError(f"{fork_org!r} is not a bot fork organisation")
             if not str(data["fork_repository"]).startswith(f"{fork_org}/"):
                 raise PublishError("selection fork_repository is outside fork_org")
+            revision.check_entry(data)
             return data
     raise PublishError(f"selection has no entry for {key!r}")
 
@@ -105,19 +107,22 @@ def read_manifest(path: Path, check: Check) -> dict[str, Any]:
         raise Rejection(f"manifest outcome {outcome!r} is not recognised")
     # Identity first, for every outcome: an abstention or failure from
     # the wrong artifact would otherwise land on this issue's record.
+    # A revision may sit on either recorded base (revision_check).
     expected = {
         "repository": check.repository,
         "issue": check.issue,
-        "base_sha": check.base_sha,
         "branch": check.branch,
     }
     mismatches = [
         name for name, value in expected.items() if manifest.get(name) != value
     ]
+    if manifest.get("base_sha") not in revision.accepted_bases(check):
+        mismatches.append("base_sha")
     if mismatches:
         raise Rejection(
             "manifest disagrees with the trusted selection on " + ", ".join(mismatches)
         )
+    revision.choose_base(manifest, check)
     if outcome != "proposed":
         reason = manifest.get("reason")
         check.verdict = str(outcome)
@@ -307,6 +312,7 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
     bundle = (context.proposal_dir / "changes.bundle").resolve()
     if not bundle.is_file():
         raise Rejection("proposal lacks changes.bundle")
+    revision.read_revision(manifest, check)
     clone = prepare_clone(context.workdir, check.repository, check.base_sha)
     commits = import_bundle(clone, bundle, check.branch, check.base_sha)
     limit = policy.parse_title_limit(gitlint_text(clone, check.base_sha))
@@ -357,7 +363,7 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
     # unclosed construct in the agent's text can hide either, and the
     # merge closes the issue.
     check.pr_body = (
-        f"Closes #{check.issue}\n\n{provenance}\n---\n\n"
+        f"Closes #{check.issue}\n\n{provenance}\n{revision.round_note(check)}---\n\n"
         + policy.defuse_mentions(body)
         + "\n"
     )
@@ -395,4 +401,5 @@ def run_check(
         check.verdict = "rejected"
         check.reasons.append(str(exc))
         check.commits = []
+        check.responses = []
     return check
