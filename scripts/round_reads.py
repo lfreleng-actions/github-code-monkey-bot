@@ -27,6 +27,9 @@ FOOTER = re.compile(
 # Pages of issue comments the round history may span before the
 # read fails closed rather than trust a partial count.
 MAX_HISTORY_PAGES = 30
+# Footers whose round handled the maintainers' requests up to its
+# read time: a published proposal, or a handoff that answered them.
+HANDLED_VERDICTS = frozenset({"proposed", "handoff"})
 
 
 @dataclass(frozen=True)
@@ -76,12 +79,15 @@ def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
             if found is None:
                 continue
             created = entry.get("created_at")
-            if isinstance(created, str) and (latest is None or created > latest[0]):
-                latest = (
-                    created,
-                    found.group("since") or created,
-                    found.group("verdict"),
-                )
+            verdict = found.group("verdict")
+            # An attempt that published nothing handled no request: it
+            # counts toward the cap below, but moves no watermark.
+            if (
+                verdict in HANDLED_VERDICTS
+                and isinstance(created, str)
+                and (latest is None or created > latest[0])
+            ):
+                latest = (created, found.group("since") or created, verdict)
             if found.group("round") is None:
                 continue
             number = int(found.group("round"))
@@ -158,9 +164,12 @@ def comments_since(
     kept: list[dict[str, Any]] = []
     total = 0
     for comment in reversed(found):
-        size = len(str(comment["body"]).encode("utf-8"))
-        if len(kept) >= reads.MAX_COMMENTS or total + size > reads.MAX_COMMENT_BYTES:
+        if len(kept) >= reads.MAX_COMMENTS:
             break
+        size = len(str(comment["body"]).encode("utf-8"))
+        if total + size > reads.MAX_COMMENT_BYTES:
+            # One oversized comment hides nothing smaller behind it.
+            continue
         total += size
         kept.append(comment)
     kept.reverse()
