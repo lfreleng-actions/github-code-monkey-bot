@@ -87,12 +87,28 @@ def review_sentence(result: dict[str, Any]) -> str:
 
 
 MAX_ROUNDS = 10
+CAP_NOTICE = (
+    f" This was the round cap of {MAX_ROUNDS}: the workflow selects this"
+    " pull request no further, and a human must take over."
+)
 
 
 def round_of(result: dict[str, Any]) -> int:
     """The revision round a result records, or 0 for a first proposal."""
     value = result.get("round")
     return value if type(value) is int and value > 0 else 0
+
+
+def capped(result: dict[str, Any]) -> bool:
+    """Whether the round leaves the pull request at the cap with work undone.
+
+    The selector skips a pull request at the cap whatever its state,
+    so every tenth-round outcome but a clean proposal needs a human;
+    a clean one is finished.
+    """
+    if round_of(result) < MAX_ROUNDS:
+        return False
+    return result.get("verdict") != "proposed" or review_verdict(result) != "clean"
 
 
 def _proposed_comment(
@@ -108,24 +124,25 @@ def _proposed_comment(
         opening = f"🐒 Round {round_number}: an AI agent revised {noun} {url}" + (
             f". {summary}" if summary else ""
         )
-        text = opening + review_sentence(result)
-        if round_number >= MAX_ROUNDS and review_verdict(result) == "findings":
-            text += (
-                f" This was the round cap of {MAX_ROUNDS}; the workflow selects this"
-                " pull request no further, and a human must take over."
-            )
-        return text
+        return opening + review_sentence(result)
     opening = f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
     return opening + review_sentence(result)
 
 
 def _handoff_comment(result: dict[str, Any], reasons: str, _run_url: str) -> str:
     url = result.get("pull_request_url") or ""
-    return (
+    summary = policy.comment_safe(str(result.get("round_summary") or ""))
+    text = (
         f"🐒 Round {round_of(result)}: an AI agent handed pull request {url} "
         f"back to a maintainer. It disputes every remaining finding and changed "
-        f"nothing: {reasons} Its replies are on the threads, which stay open; "
-        "the workflow revises this pull request again once a maintainer comments."
+        f"nothing: {reasons}" + (f" {summary}" if summary else "")
+    )
+    text += " Its replies are on the threads, which stay open"
+    if capped(result):
+        return text + "."
+    return (
+        text
+        + "; the workflow revises this pull request again once a maintainer comments."
     )
 
 
@@ -179,7 +196,10 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     )
     if len(reasons) > policy.MAX_COMMENT_REASON:
         reasons = reasons[: policy.MAX_COMMENT_REASON - 1] + "…"
-    return template(result, reasons, run_url)
+    text = template(result, reasons, run_url)
+    if text is not None and capped(result):
+        text += CAP_NOTICE
+    return text
 
 
 def run_comment(args: argparse.Namespace) -> None:

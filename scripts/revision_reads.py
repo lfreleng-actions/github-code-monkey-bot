@@ -26,6 +26,9 @@ BRANCH_RE = re.compile(r"^code-monkey/issue-(?P<number>[1-9][0-9]*)$")
 MAX_THREADS = 50
 MAX_THREAD_BYTES = 128 * 1024
 MAX_THREAD_BODY = 8 * 1024
+# Replies carried per thread: the newest from Copilot or a maintainer,
+# so the agent reads the discussion a finding grew, not the opener alone.
+MAX_THREAD_REPLIES = 10
 MAX_REVIEW_BODY = verdicts.MAX_BODY_BYTES
 MAX_ROUNDS = 10
 # Review threads whose opening comment comes from Copilot or a
@@ -33,26 +36,30 @@ MAX_ROUNDS = 10
 # names the reviewer without the [bot] suffix REST gives it.
 THREAD_AUTHORS = reads.COMMENT_ASSOCIATIONS
 COPILOT_LOGIN = review.REVIEWER_LOGIN.removesuffix("[bot]")
-THREADS_QUERY = """
-query($owner: String!, $name: String!, $number: Int!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 50, after: $after) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
+THREADS_QUERY = f"""
+query($owner: String!, $name: String!, $number: Int!, $after: String) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $number) {{
+      reviewThreads(first: 50, after: $after) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{
           id
           isResolved
           isOutdated
           path
           line
-          comments(first: 1) {
-            nodes { databaseId body authorAssociation author { login } }
-          }
-        }
-      }
-    }
-  }
-}
+          comments(first: 1) {{
+            nodes {{ databaseId body authorAssociation author {{ login }} }}
+          }}
+          replies: comments(last: {MAX_THREAD_REPLIES}) {{
+            totalCount
+            nodes {{ databaseId body authorAssociation author {{ login }} }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
 """
 
 
@@ -192,7 +199,7 @@ def unresolved_threads(
             thread = thread_entry(node)
             if thread is None:
                 continue
-            size = len(str(thread["body"]).encode("utf-8"))
+            size = thread_size(thread)
             if len(kept) >= MAX_THREADS or total + size > MAX_THREAD_BYTES:
                 dropped += 1
                 continue
@@ -224,6 +231,14 @@ def thread_connection(data: dict[str, Any]) -> dict[str, Any]:
     return cast("dict[str, Any]", threads)
 
 
+def thread_size(thread: dict[str, Any]) -> int:
+    """The bytes a thread costs the packet: its opener and every reply."""
+    bodies = [str(thread["body"])] + [
+        str(reply["body"]) for reply in cast("list[dict[str, Any]]", thread["replies"])
+    ]
+    return sum(len(body.encode("utf-8")) for body in bodies)
+
+
 def thread_entry(node: Any) -> dict[str, Any] | None:
     """One unresolved thread in packet form, or None when it does not count."""
     if not isinstance(node, dict):
@@ -231,16 +246,44 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
     data = cast("dict[str, Any]", node)
     if data.get("isResolved") is not False:
         return None
-    comments = data.get("comments")
+    comment = first_comment(data.get("comments"))
+    if comment is None:
+        return None
+    login = comment_author(comment)
+    if login is None:
+        return None
+    thread_id = data.get("id")
+    comment_id = comment.get("databaseId")
+    if not isinstance(thread_id, str) or type(comment_id) is not int:
+        return None
+    line = data.get("line")
+    replies, more = thread_replies(data.get("replies"), comment_id)
+    return {
+        "thread_id": thread_id,
+        "comment_id": comment_id,
+        "path": str(data.get("path") or ""),
+        "line": line if type(line) is int else None,
+        "outdated": data.get("isOutdated") is True,
+        "author": login,
+        "body": comment_text(comment),
+        "replies": replies,
+        "replies_dropped": more,
+    }
+
+
+def first_comment(comments: Any) -> dict[str, Any] | None:
+    """The opening comment out of a comments connection, or None."""
     nodes = (
         cast("dict[str, Any]", comments).get("nodes")
         if isinstance(comments, dict)
         else None
     )
     first = cast("list[Any]", nodes)[0] if isinstance(nodes, list) and nodes else None
-    if not isinstance(first, dict):
-        return None
-    comment = cast("dict[str, Any]", first)
+    return cast("dict[str, Any]", first) if isinstance(first, dict) else None
+
+
+def comment_author(comment: dict[str, Any]) -> str | None:
+    """The login of a comment that counts, Copilot's or a maintainer's, else None."""
     author = comment.get("author")
     login = (
         cast("dict[str, Any]", author).get("login")
@@ -254,23 +297,44 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
         and comment.get("authorAssociation") not in THREAD_AUTHORS
     ):
         return None
-    thread_id = data.get("id")
-    comment_id = comment.get("databaseId")
+    return login
+
+
+def comment_text(comment: dict[str, Any]) -> str:
+    """A comment's body as bounded packet text."""
     body = comment.get("body")
-    if not isinstance(thread_id, str) or type(comment_id) is not int:
-        return None
-    line = data.get("line")
-    return {
-        "thread_id": thread_id,
-        "comment_id": comment_id,
-        "path": str(data.get("path") or ""),
-        "line": line if type(line) is int else None,
-        "outdated": data.get("isOutdated") is True,
-        "author": login,
-        "body": reads.truncate_utf8(
-            body if isinstance(body, str) else "", MAX_THREAD_BODY
-        ),
-    }
+    return reads.truncate_utf8(body if isinstance(body, str) else "", MAX_THREAD_BODY)
+
+
+def thread_replies(
+    connection: Any, opener_id: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """The thread's newest replies that count, and whether older ones were cut.
+
+    GitHub answers the ``last: N`` of the thread's comments, the opener
+    among them on a short thread; the opener is dropped here, a reply
+    from anyone but Copilot or a maintainer is not carried, and the
+    bound holds whatever the reply holds.
+    """
+    if not isinstance(connection, dict):
+        return [], False
+    data = cast("dict[str, Any]", connection)
+    nodes = data.get("nodes")
+    entries = cast("list[Any]", nodes) if isinstance(nodes, list) else []
+    replies: list[dict[str, Any]] = []
+    for item in entries[-MAX_THREAD_REPLIES:]:
+        if not isinstance(item, dict):
+            continue
+        comment = cast("dict[str, Any]", item)
+        if comment.get("databaseId") == opener_id:
+            continue
+        login = comment_author(comment)
+        if login is None:
+            continue
+        replies.append({"author": login, "body": comment_text(comment)})
+    total = data.get("totalCount")
+    more = type(total) is int and total > MAX_THREAD_REPLIES + 1
+    return replies, more
 
 
 def latest_review(repository: str, number: int, head_sha: str) -> dict[str, Any] | None:

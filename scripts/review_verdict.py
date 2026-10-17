@@ -156,56 +156,68 @@ def tag_left_open(line: str) -> bool:
     return False
 
 
+def mask_spans(line: str) -> tuple[str, bool]:
+    """The line with each closed code span blanked, and whether one is left open.
+
+    Inline code is prose: whatever a closed span holds is text to the
+    reader, so the HTML and comment checks run on the line without
+    it. A span left open may run on to later lines; it is reported
+    and the rest of the line is checked as written.
+    """
+    parts: list[str] = []
+    left_open = False
+    i = 0
+    while True:
+        ticks = BACKTICKS.search(line, i)
+        if ticks is None:
+            parts.append(line[i:])
+            return "".join(parts), left_open
+        run = ticks.group()
+        close = line.find(run, ticks.end())
+        while close >= 0 and (
+            (close + len(run) < len(line) and line[close + len(run)] == "`")
+            or line[close - 1] == "`"
+        ):
+            close = line.find(run, close + 1)
+        parts.append(line[i : ticks.start()])
+        if close < 0:
+            left_open = True
+            parts.append(run)
+            i = ticks.end()
+        else:
+            end = close + len(run)
+            parts.append(" " * (end - ticks.start()))
+            i = end
+
+
 def scan_line(line: str) -> set[str]:
     """What on one line the classifier will not read past.
 
-    Inline code is prose, so a comment opener inside a closed span is
-    fine. A span left open on its line may run on to later lines and
-    show or hide anything, and a comment opener outside code may hide
-    anything to its close: either fails the body closed, as do an
-    escaped backtick and any HTML tag the real bodies never carry.
-    Parsing these instead is a losing game, since each needs another
-    rule, and Copilot writes none of them.
+    Inline code is prose, so a comment opener or a tag inside a closed
+    span is fine. A span left open on its line may run on to later
+    lines and show or hide anything, and a comment opener outside code
+    may hide anything to its close: either fails the body closed, as
+    do an escaped backtick and any HTML tag the real bodies never
+    carry. Parsing these instead is a losing game, since each needs
+    another rule, and Copilot writes none of them.
     """
     problems: set[str] = set()
-    if ESCAPED_BACKTICK in line:
+    masked, left_open = mask_spans(line)
+    if left_open or ESCAPED_BACKTICK in line:
         problems.add(UNREADABLE_SPAN)
-    for tag in HTML_TAG.findall(line):
+    for tag in HTML_TAG.findall(masked):
         if tag.lower() not in KNOWN_TAGS:
             problems.add(UNREADABLE_HTML)
-    if tag_left_open(line):
+    if tag_left_open(masked):
         problems.add(UNREADABLE_HTML)
-    i = 0
-    while i < len(line):
-        ticks = BACKTICKS.search(line, i)
-        comment = line.find(COMMENT_OPEN, i)
-        declaration = DECLARATION.search(line, i)
-        if declaration and (comment < 0 or declaration.start() < comment):
-            # A declaration, processing instruction or CDATA block
-            # hides what follows as a comment does; outside a code
-            # span, that is HTML the classifier does not read.
-            comment = declaration.start()
-        if ticks is None and comment < 0:
-            break
-        if ticks is not None and (comment < 0 or ticks.start() < comment):
-            run = ticks.group()
-            close = line.find(run, ticks.end())
-            while close >= 0 and (
-                (close + len(run) < len(line) and line[close + len(run)] == "`")
-                or line[close - 1] == "`"
-            ):
-                close = line.find(run, close + 1)
-            if close < 0:
-                problems.add(UNREADABLE_SPAN)
-                i = ticks.end()
-            else:
-                i = close + len(run)
-            continue
-        if line.startswith(COMMENT_OPEN, comment):
+    for opener in DECLARATION.finditer(masked):
+        # A declaration, processing instruction or CDATA block hides
+        # what follows as a comment does; outside a code span, that is
+        # HTML the classifier does not read.
+        if masked.startswith(COMMENT_OPEN, opener.start()):
             problems.add(UNREADABLE_COMMENT)
         else:
             problems.add(UNREADABLE_HTML)
-        i = comment + 2
     return problems
 
 

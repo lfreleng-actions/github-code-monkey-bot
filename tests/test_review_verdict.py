@@ -429,7 +429,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(verdict.suppressed, 2)
         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_inline_code_holds_no_html(self) -> None:
         """A tag inside a closed code span is prose; the same tag outside is HTML."""
         for prose in (

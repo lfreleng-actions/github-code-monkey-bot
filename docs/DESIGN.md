@@ -1377,8 +1377,9 @@ dropped; both are empty on a scan. `explicit_pull_requests` and
 `url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
 `collected_at` (when the selection read the comments; every entry
 carries it), `round_reasons`, `rounds`, `threads` (`thread_id`,
-`comment_id`,
-`path`, `line`, `outdated`, `author`, `body`), `threads_dropped`,
+`comment_id`, `path`, `line`, `outdated`, `author`, `body`, `replies`
+as `{author, body}` for the newest later comments from Copilot or a
+maintainer, and `replies_dropped`), `threads_dropped`,
 `review` (the §8 step 11 record of the head, with the body),
 `pr_comments`, `new_comments` and `new_pr_comments`; an issue entry
 has `task: "issue"` and `checkout_sha` equal to `base_sha`. Beside it
@@ -1693,7 +1694,10 @@ its own issue runs once.
 The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
 `rebase_sha`, the default branch's head. It carries the pull request,
-the unresolved threads with the ids a reply and a resolve need, the
+the unresolved threads with the ids a reply and a resolve need and
+the newest replies from Copilot or a maintainer on each, since a
+maintainer's answer on a thread is an instruction as much as a
+comment on the pull request is, the
 head's review verdict, the maintainers' comments on the pull request,
 the maintainers' comments on the issue and the pull request since the
 last round, newest first within the bounds and one oversized comment
@@ -1734,7 +1738,8 @@ agent changed nothing because it disputes every remaining finding or
 needs a human's decision: the check reads its replies the same way,
 none may resolve a thread, the publisher replays no chain, posts the
 replies, leaves the threads open, comments the handoff on the issue
-and skips the review gate, since the head did not move. The
+with the agent's reason and round summary, and skips the review
+gate, since the head did not move. The
 next scan leaves the pull request alone until a maintainer comments.
 
 The push syncs the fork, replays the chain onto a temporary branch
@@ -1757,8 +1762,11 @@ ones, keeping the publisher's header. One refused write is a warning
 and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,
 the pull request, the summary and the verdict, with the round in its
-marker, which is how the next selection counts rounds. At the cap
-with findings it says a human must take over.
+marker, which is how the next selection counts rounds. At the cap,
+every outcome but a clean proposal says a human must take over and
+promises no further round, since the selector skips the pull
+request from then on, a handoff's "once a maintainer comments"
+included.
 
 ### 20.4 What this changes about trust
 

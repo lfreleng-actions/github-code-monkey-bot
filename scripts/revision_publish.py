@@ -135,6 +135,11 @@ def run_push(
     publisher's own: it records the failure and raises.
     """
     warnings = cast("list[str]", result["warnings"])
+    # The check's own warnings, an unanswered thread above all, reach
+    # the result whatever this run does with the branch; the move
+    # may add a cleanup warning of its own after them.
+    carried = list(cast("list[str]", check.get("warnings") or []))
+    warnings.extend(carried)
     if result["verdict"] == "handoff":
         result["pull_request_url"] = str(check["pull_request_url"])
         return result
@@ -155,22 +160,27 @@ def run_push(
     except Rejection as exc:
         result["verdict"] = "rejected"
         cast("list[str]", result["reasons"]).append(str(exc))
-        warnings.extend(cast("list[str]", check.get("warnings") or []))
+        warnings.extend(added_warnings(check, len(carried)))
         return result
     except (PublishError, github.GitHubError) as exc:
         # fail() writes the result before raising: the cleanup warning
         # must be on it by then.
-        warnings.extend(cast("list[str]", check.get("warnings") or []))
+        warnings.extend(added_warnings(check, len(carried)))
         fail(args, result, f"{exc}; the pull request branch is unchanged", exc)
     else:
         # A scratch branch the cleanup could not remove is reported
         # whatever the swap's outcome; the rejection path adds it too.
-        warnings.extend(cast("list[str]", check.get("warnings") or []))
+        warnings.extend(added_warnings(check, len(carried)))
     result["branch_url"] = (
         f"https://github.com/{check['fork_repository']}/tree/{check['branch']}"
     )
     result["pull_request_url"] = str(check["pull_request_url"])
     return result
+
+
+def added_warnings(check: dict[str, Any], seen: int) -> list[str]:
+    """The warnings the move added to the check beyond the ``seen`` it began with."""
+    return list(cast("list[str]", check.get("warnings") or []))[seen:]
 
 
 def run_respond(args: argparse.Namespace) -> None:
