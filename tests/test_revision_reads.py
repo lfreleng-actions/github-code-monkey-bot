@@ -295,6 +295,38 @@ class ThreadsTest(unittest.TestCase):
             revisions.THREADS_QUERY,
         )
 
+    @unittest.expectedFailure
+    def test_threads_carry_who_and_when(self) -> None:
+        """The opener and each reply say whether a maintainer wrote it, and when."""
+        opener = {
+            "databaseId": 100,
+            "body": "Fix this.",
+            "authorAssociation": "NONE",
+            "createdAt": "2026-10-02T00:00:00Z",
+            "author": {"login": revisions.COPILOT_LOGIN},
+        }
+        answer = {
+            "databaseId": 102,
+            "body": "No, do it.",
+            "authorAssociation": "OWNER",
+            "createdAt": "2026-10-04T01:00:00Z",
+            "author": {"login": "maintainer"},
+        }
+        undated = {**answer, "databaseId": 103, "createdAt": 5}
+        node = thread(
+            comments={"nodes": [opener]},
+            replies={"totalCount": 3, "nodes": [opener, answer, undated]},
+        )
+        with patch.object(github, "graphql", return_value=thread_page([node])):
+            kept, _ = revisions.unresolved_threads(REPO, 41)
+        self.assertIs(kept[0]["maintainer"], False)
+        self.assertEqual(kept[0]["created_at"], "2026-10-02T00:00:00Z")
+        self.assertEqual(
+            [(r["maintainer"], r["created_at"]) for r in kept[0]["replies"]],
+            [(True, "2026-10-04T01:00:00Z"), (True, None)],
+        )
+        self.assertIn("createdAt", revisions.THREADS_QUERY)
+
     def test_replies_are_bounded_and_count_toward_the_thread_budget(self) -> None:
         """Over the per-thread cap, the newest replies are kept; bytes count whole."""
         opener = {
