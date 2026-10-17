@@ -31,6 +31,7 @@ REUSABLE = WORKFLOWS / "code-monkey.yaml"
 CRON = WORKFLOWS / "code-monkey-cron.yaml"
 TESTING = WORKFLOWS / "testing.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
+REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
 
 PLACEHOLDER_NAME = "Code Monkey"
 PLACEHOLDER_EMAIL = "code-monkey@example.invalid"
@@ -439,13 +440,14 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
+    @unittest.expectedFailure
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
         checkout = self.step("author", "Checkout target repository")
         self.assertTrue(is_action(checkout, CHECKOUT))
         with_ = cast(dict[str, Any], checkout["with"])
         self.assert_expression(with_["repository"], "matrix.repository")
-        self.assert_expression(with_["ref"], "matrix.base_sha")
+        self.assert_expression(with_["ref"], "matrix.checkout_sha")
         self.assertEqual(with_["path"], "workspace")
         self.assertIs(with_["persist-credentials"], False)
 
@@ -682,6 +684,117 @@ class PromptReviewContracts(ReusableWorkflowCase):
         """The prompt never tells the agent to skip §11 or the review cycle."""
         prompt = PROMPT.read_text(encoding="utf-8")
         self.assertEqual(skip_instructions(prompt), [])
+
+
+class RevisionContracts(ReusableWorkflowCase):
+    """A revision round reuses the pipeline; what differs is pinned here.
+
+    The author job checks out the default branch head, fetches the
+    bot branch from the public fork without a credential and refuses
+    any head but the recorded one; the publisher moves the branch
+    with a compare-and-swap and answers the review threads with the
+    pull request token (DESIGN.md section 20).
+    """
+
+    @unittest.expectedFailure
+    def test_revise_input_defaults_on_and_the_caller_forwards_it(self) -> None:
+        """Revisions are on unless a caller says otherwise."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertIs(inputs["revise"]["default"], True)
+        self.assertEqual(inputs["pull_requests"]["default"], "")
+        cron = cast(
+            dict[str | bool, Any], yaml.safe_load(CRON.read_text(encoding="utf-8"))
+        )
+        form = cast(
+            dict[str, dict[str, Any]], cron[TRIGGERS]["workflow_dispatch"]["inputs"]
+        )
+        self.assertIs(form["revise"]["default"], True)
+        self.assertEqual(form["pull_requests"]["default"], "")
+        with_ = cast(dict[str, Any], cron["jobs"]["code-monkey"]["with"])
+        self.assert_expression(with_["pull_requests"], "inputs.pull_requests || ''")
+        self.assert_expression(
+            with_["revise"], "github.event_name != 'workflow_dispatch' || inputs.revise"
+        )
+
+    @unittest.expectedFailure
+    def test_author_fetches_the_bot_branch_without_a_credential(self) -> None:
+        """The fork is public; the fetch names it and checks the head it recorded."""
+        fetch = self.step("author", "Fetch pull request branch")
+        self.assert_expression(fetch["if"], "matrix.task == 'revise'")
+        env = cast(dict[str, Any], fetch["env"])
+        self.assert_expression(env["FORK_REPOSITORY"], "matrix.fork_repository")
+        self.assert_expression(env["BRANCH"], "matrix.branch")
+        self.assert_expression(env["HEAD_SHA"], "matrix.head_sha")
+        script = flatten(fetch["run"])
+        self.assertIn('"https://github.com/$FORK_REPOSITORY.git"', script)
+        self.assertIn(
+            '[ "$(git -C workspace rev-parse FETCH_HEAD)" = "$HEAD_SHA" ]', script
+        )
+        self.assertNotIn("token", script.lower())
+        self.assertLess(
+            self.position("author", "Checkout target repository"),
+            self.position("author", "Fetch pull request branch"),
+        )
+        self.assertLess(
+            self.position("author", "Fetch pull request branch"),
+            self.position("author", "packet"),
+        )
+        guard = flatten(self.step("author", "Require pinned assets")["run"])
+        self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
+        self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
+
+    @unittest.expectedFailure
+    def test_prompt_follows_the_task(self) -> None:
+        """The revise prompt exists and the assemble step picks it by task."""
+        self.assertTrue(REVISE_PROMPT.is_file())
+        assemble = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], assemble["env"])
+        self.assert_expression(env["TASK"], "matrix.task")
+        script = flatten(assemble["run"])
+        self.assertIn('monkey-assets/prompt/"$TASK".md', script)
+        self.assertNotIn("prompt/author.md", script)
+        self.assertEqual(
+            skip_instructions(REVISE_PROMPT.read_text(encoding="utf-8")), []
+        )
+
+    @unittest.expectedFailure
+    def test_bundle_base_comes_from_the_manifest_within_the_recorded_pair(self) -> None:
+        """A revision bundles from the base the agent chose, if it is one of the two."""
+        bundle = self.step("author", "Bundle proposed commits")
+        env = cast(dict[str, Any], bundle["env"])
+        self.assert_expression(env["REBASE_SHA"], "matrix.rebase_sha")
+        script = flatten(bundle["run"])
+        self.assertIn("manifest base_sha is neither recorded base", script)
+        self.assertIn('"$BASE_SHA" | "$REBASE_SHA")', script)
+
+    @unittest.expectedFailure
+    def test_publisher_answers_threads_with_the_pull_request_token(self) -> None:
+        """Replies and resolves are writes to the target: the pull request token alone."""
+        respond = self.step("publish", "respond")
+        condition = unwrap(str(respond["if"]))
+        self.assertIn("matrix.task == 'revise'", condition)
+        self.assertIn("steps.push.outcome == 'success'", condition)
+        self.assertIn("inputs.mode == 'pull-requests'", condition)
+        self.assert_expression(
+            respond["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py respond", flatten(respond["run"]))
+        order = [
+            self.position("publish", name)
+            for name in ("push", "pr-token", "respond", "review-request")
+        ]
+        self.assertEqual(order, sorted(order))
+        mint = self.step("publish", "pr-token")
+        self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
+
+    @unittest.expectedFailure
+    def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
+        """head_sha and task are checked before any step reads them."""
+        guard = flatten(self.step("publish", "Require trusted provenance")["run"])
+        self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
+        self.assertIn('[[ "$HEAD_SHA" =~ ^([0-9a-f]{40})?$ ]]', guard)
 
 
 class ReviewGateContracts(ReusableWorkflowCase):
@@ -1321,8 +1434,10 @@ class ListInputContracts(ReusableWorkflowCase):
         "repositories": ("repositories", "repository"),
         "exclude_repos": ("exclusions", "repository"),
         "issues": ("issues", "issue"),
+        "pull_requests": ("pulls", "pull-request"),
     }
 
+    @unittest.expectedFailure
     def test_each_list_is_split_as_objects_of_the_org(self) -> None:
         """Names or references of the trusted owner, offline, with no token."""
         self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
@@ -1337,6 +1452,7 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertEqual(with_["token"], "")
                 self.assertNotIn("verify", with_)
 
+    @unittest.expectedFailure
     def test_lists_are_split_before_the_input_check_and_the_mint(self) -> None:
         """A bad name fails the run before the App key is used."""
         check = self.position("select", "budget")
@@ -1346,6 +1462,7 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
+    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
         """Issues scope the token to the repositories that exist; with a scan they fail."""
         budget = self.step("select", "budget")
@@ -1361,6 +1478,11 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertIn("::error::issues and repositories cannot both be given", script)
         select = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(select["ISSUES"], "steps.issues.outputs.csv")
+        self.assert_expression(select["PULL_REQUESTS"], "steps.pulls.outputs.csv")
+        self.assert_expression(select["REVISE"], "inputs.revise")
+        run = flatten(self.step("select", "Select issues")["run"])
+        self.assertIn('--pull-requests "$PULL_REQUESTS"', run)
+        self.assertIn("--no-revise", run)
         self.assertIn(
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
@@ -1436,6 +1558,7 @@ class ListInputContracts(ReusableWorkflowCase):
                     self.assertIn(f"::error::{error}", proc.stdout)
                     self.assertFalse(output.exists())
 
+    @unittest.expectedFailure
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 
@@ -1451,6 +1574,9 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assert_expression(env["ORG"], "inputs.org")
         self.assert_expression(
             env["ISSUE_REPOSITORIES"], "steps.issues.outputs.repositories"
+        )
+        self.assert_expression(
+            env["PULL_REPOSITORIES"], "steps.pulls.outputs.repositories"
         )
         self.assert_expression(
             env["REPOSITORIES"], "steps.repositories.outputs.repositories"
