@@ -107,7 +107,6 @@ class BotPullRequestTest(unittest.TestCase):
             },
         )
 
-    @unittest.expectedFailure
     def test_absent_pull_request_is_none(self) -> None:
         """A mistyped number is a named skip for the caller, not an aborted run."""
         absent = github.GitHubError("gh: Not Found (HTTP 404)")
@@ -296,7 +295,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual([s["round"] for s in summaries], [1, 2])
         self.assertEqual(latest, "2026-10-04T00:00:00Z")
 
-    @unittest.expectedFailure
     def test_only_the_final_footer_counts(self) -> None:
         """A marker inside the agent's summary text is text; the footer decides."""
         entries = [
@@ -316,7 +314,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
             highest, _, _ = revisions.rounds_so_far(REPO, 7, BOT)
         self.assertEqual(highest, 1)
 
-    @unittest.expectedFailure
     def test_publication_footer_is_round_zero(self) -> None:
         """The first proposal's comment sets the time without counting as a round."""
         entries = [
@@ -332,7 +329,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual(summaries, [])
         self.assertEqual(latest, "2026-10-01T00:00:00Z")
 
-    @unittest.expectedFailure
     def test_round_history_reads_every_page_or_fails_closed(self) -> None:
         """A full page means more; the read goes on, and a history past the bound fails."""
         noise = {"user": {"login": "x"}, "body": "noise", "created_at": "t"}
@@ -355,7 +351,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
         ):
             revisions.rounds_so_far(REPO, 7, BOT)
 
-    @unittest.expectedFailure
     def test_newer_member_comment_reads_past_a_full_page(self) -> None:
         """A maintainer's instruction on page two still counts."""
         noise = {
@@ -377,7 +372,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
             )
         self.assertEqual(len(page.call_args_list), 2)
 
-    @unittest.expectedFailure
     def test_comments_since_the_last_round(self) -> None:
         """The maintainers' comments after a time, bounded as the packet is."""
         entries = [

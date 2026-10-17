@@ -14,9 +14,11 @@ head, for a rebase (DESIGN.md section 20).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 import bot_github as github
+import explicit_issues
 import fork_orgs as forks
 import issue_reads as reads
 import repository_reads as repositories
@@ -75,8 +77,9 @@ def build_entry(
     tests and the round cap do.
     """
     meta = repositories.repository_meta(org, repo_name)
-    if meta is None or not meta["public"] or not meta.get("default_branch"):
-        raise Skip("repository is not found, not public or empty")
+    obstacle = explicit_issues.repository_obstacle(meta)
+    if obstacle is not None or meta is None:
+        raise Skip(f"repository is {obstacle}")
     repository = f"{org}/{meta['name']}"
     try:
         fork_org = forks.resolve(fork_orgs, org)
@@ -106,17 +109,7 @@ def build_entry(
             raise Skip("nothing outstanding")
     else:
         reasons = ["named by the operator"]
-    try:
-        details = reads.issue_details(repository, issue)
-    except github.GitHubError as exc:
-        if not github.is_absent(exc):
-            raise
-        raise Skip(f"issue #{issue} is gone") from exc
-    comments, dropped, truncated = reads.filtered_comments(repository, issue)
-    pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
-    base_sha = revisions.merge_base(
-        repository, str(pull["base_ref"]), fork_org, str(pull["branch"])
-    )
+    details = issue_packet(repository, issue)
     rebase_sha = reads.branch_head(repository, str(meta["default_branch"]))
     return {
         "key": f"{meta['name']}-{issue}",
@@ -125,17 +118,16 @@ def build_entry(
         "repo_name": meta["name"],
         "number": issue,
         "default_branch": meta["default_branch"],
-        **{k: v for k, v in details.items() if k not in ("state", "assignees")},
-        "base_sha": base_sha,
+        **details,
+        "base_sha": revisions.merge_base(
+            repository, str(pull["base_ref"]), fork_org, str(pull["branch"])
+        ),
         "rebase_sha": rebase_sha,
         "checkout_sha": rebase_sha,
         "branch": pull["branch"],
         "fork_org": fork_org,
         "fork_repository": fork_repository,
         "resume": False,
-        "comments": comments,
-        "comments_dropped": dropped,
-        "comments_truncated": truncated,
         "pull_request": {
             "number": pull["number"],
             "url": pull["url"],
@@ -150,8 +142,45 @@ def build_entry(
         "threads": threads,
         "threads_dropped": threads_dropped,
         "review": verdict,
+        **conversation(repository, issue, pull_number, since),
+    }
+
+
+def issue_packet(repository: str, issue: int) -> dict[str, Any]:
+    """The issue's details for the entry, after its own safety tests."""
+    try:
+        details = reads.issue_details(repository, issue)
+    except github.GitHubError as exc:
+        if not github.is_absent(exc):
+            raise
+        raise Skip(f"issue #{issue} is gone") from exc
+    if details["state"] != "open":
+        raise Skip(f"issue #{issue} is closed")
+    if "no-agent" in details["labels"]:
+        raise Skip(f"issue #{issue} carries the no-agent label")
+    return {k: v for k, v in details.items() if k not in ("state", "assignees")}
+
+
+def conversation(
+    repository: str, issue: int, pull_number: int, since: str | None
+) -> dict[str, Any]:
+    """The maintainers' comments, on the issue and the pull request, old and new."""
+    comments, dropped, truncated = reads.filtered_comments(repository, issue)
+    pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
+    new_comments, new_dropped = revisions.comments_since(repository, issue, since)
+    new_pr_comments, new_pr_dropped = revisions.comments_since(
+        repository, pull_number, since
+    )
+    return {
+        "comments": comments,
+        "comments_dropped": dropped,
+        "comments_truncated": truncated,
         "pr_comments": pr_comments,
         "pr_comments_dropped": pr_dropped,
+        "new_comments": new_comments,
+        "new_comments_dropped": new_dropped,
+        "new_pr_comments": new_pr_comments,
+        "new_pr_comments_dropped": new_pr_dropped,
     }
 
 
@@ -182,13 +211,21 @@ def scan(
     fork_orgs: dict[str, Any],
     skipped: dict[str, int],
     skipped_issues: list[dict[str, str]],
+    allowed: Callable[[str], bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Every bot pull request in the owner with work outstanding, oldest first."""
+    """Every bot pull request in the owner with work outstanding, oldest first.
+
+    ``allowed`` is the run's repository policy, by lower-cased name:
+    the named repositories, or everything but the exclusions. A hit
+    outside it is passed over before any read.
+    """
     slug = str(bot["login"]).removesuffix("[bot]")
     found = revisions.search_bot_pull_requests(org, slug)
     entries: list[dict[str, Any]] = []
     for hit in sorted(found, key=lambda h: (str(h["created_at"]), int(h["number"]))):
         repo_name = str(hit["repository"]).partition("/")[2]
+        if allowed is not None and not allowed(repo_name.lower()):
+            continue
         reference = f"{hit['repository']}#{hit['number']}"
         try:
             entries.append(
@@ -220,6 +257,7 @@ class Rounds:
         enabled: bool,
         explicit: bool,
         skips: tuple[dict[str, int], list[dict[str, str]]],
+        allowed: Callable[[str], bool] | None = None,
     ) -> None:
         """Remember what every build needs; ``skips`` are the counters and the named list."""
         self.org = org
@@ -228,6 +266,7 @@ class Rounds:
         self.enabled = enabled
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
+        self.allowed = allowed
 
     def named(self, pulls: list[tuple[str, int]]) -> list[dict[str, Any]]:
         """Rounds on the pull requests the operator named; a miss is a named skip."""
@@ -261,6 +300,7 @@ class Rounds:
             fork_orgs=self.fork_orgs,
             skipped=self.skipped,
             skipped_issues=self.skipped_issues,
+            allowed=self.allowed,
         )
 
     def for_issue(

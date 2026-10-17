@@ -32,7 +32,14 @@ MAX_ROUNDS = 10
 # names the reviewer without the [bot] suffix REST gives it.
 THREAD_AUTHORS = reads.COMMENT_ASSOCIATIONS
 COPILOT_LOGIN = review.REVIEWER_LOGIN.removesuffix("[bot]")
-ROUND_MARKER = re.compile(r"<!-- code-monkey \S+ \S+(?: review=\S+)? round=(\d+) -->")
+# The publisher's footer: the last line of its comment, nothing after
+# it. A marker in the agent's summary text sits mid-body and is text.
+FOOTER = re.compile(
+    r"(?:^|\n)<!-- code-monkey \S+ \S+(?: review=\S+)?(?: round=(\d+))? -->\s*\Z"
+)
+# Pages of issue comments the round history may span before the
+# read fails closed rather than trust a partial count.
+MAX_HISTORY_PAGES = 30
 
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -65,7 +72,13 @@ def bot_pull_request(
     Open, opened by the bot, head in the designated fork on a bot
     branch; anything else is not this workflow's to revise.
     """
-    data = github.api_object(f"repos/{repository}/pulls/{number}")
+    try:
+        data = github.api_object(f"repos/{repository}/pulls/{number}")
+    except github.GitHubError as exc:
+        # A mistyped number is the operator's; the caller names the skip.
+        if github.is_absent(exc):
+            return None
+        raise
     user = data.get("user")
     head = data.get("head")
     base = data.get("base")
@@ -293,15 +306,18 @@ def rounds_so_far(
 ) -> tuple[int, list[dict[str, Any]], str | None]:
     """The rounds the bot has recorded on the issue, their summaries, and the last time.
 
-    The bot's own comments carry the round marker; anyone else's do
-    not count. Returns the highest round, the summaries as data for
-    the next session, and the creation time of the latest round
-    comment, after which a maintainer's comment is new instruction.
+    The bot's own comments carry the footer; anyone else's do not
+    count, and a marker in the body text is text. The first
+    publication's footer carries no round: it sets the time a
+    maintainer's comment must follow to be new, and counts as round
+    zero. Returns the highest round, the summaries as data for the
+    next session, and that time. The whole history is read; one too
+    long to read fails closed rather than yield a partial count.
     """
     highest = 0
     summaries: list[dict[str, Any]] = []
     latest: str | None = None
-    for page in range(1, reads.MAX_COMMENT_PAGES + 1):
+    for page in range(1, MAX_HISTORY_PAGES + 1):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
             f"?per_page={reads.COMMENTS_PER_PAGE}&page={page}"
@@ -316,14 +332,16 @@ def rounds_so_far(
             body = entry.get("body")
             if login != bot_login or not isinstance(body, str):
                 continue
-            found = ROUND_MARKER.search(body)
+            found = FOOTER.search(body)
             if found is None:
                 continue
-            number = int(found.group(1))
-            highest = max(highest, number)
             created = entry.get("created_at")
             if isinstance(created, str) and (latest is None or created > latest):
                 latest = created
+            if found.group(1) is None:
+                continue
+            number = int(found.group(1))
+            highest = max(highest, number)
             summaries.append(
                 {
                     "round": number,
@@ -332,25 +350,61 @@ def rounds_so_far(
                 }
             )
         if len(entries) < reads.COMMENTS_PER_PAGE:
-            break
-    return highest, summaries[-MAX_ROUNDS:], latest
+            return highest, summaries[-MAX_ROUNDS:], latest
+    raise reads.SelectionError(
+        f"{repository}#{issue} holds more comments than the round history reads"
+    )
+
+
+def member_comments_since(
+    repository: str, number: int, since: str | None
+) -> list[dict[str, Any]]:
+    """Every maintainer comment after ``since``, across every page."""
+    found: list[dict[str, Any]] = []
+    for page in range(1, MAX_HISTORY_PAGES + 1):
+        query = f"?per_page={reads.COMMENTS_PER_PAGE}&page={page}"
+        if since:
+            query += f"&since={since}"
+        entries = reads.api_page(f"repos/{repository}/issues/{number}/comments{query}")
+        for entry in entries:
+            comment = reads.member_comment(entry)
+            if comment is None:
+                continue
+            created = comment.get("created_at")
+            if since is None or (isinstance(created, str) and created > since):
+                found.append(comment)
+        if len(entries) < reads.COMMENTS_PER_PAGE:
+            return found
+    raise reads.SelectionError(
+        f"{repository}#{number} holds more comments than the round history reads"
+    )
 
 
 def newer_member_comment(repository: str, number: int, since: str | None) -> bool:
     """Whether a maintainer commented on the issue or pull request after ``since``.
 
-    ``since`` is the bot's latest round comment; None means any
-    maintainer comment counts. The API's own ``since`` filter bounds
-    the read, and one page suffices to answer yes or no.
+    ``since`` is the bot's latest footer, round zero included; None
+    means any maintainer comment counts.
     """
-    query = f"?per_page={reads.COMMENTS_PER_PAGE}" + (
-        f"&since={since}" if since else ""
-    )
-    for entry in reads.api_page(f"repos/{repository}/issues/{number}/comments{query}"):
-        comment = reads.member_comment(entry)
-        if comment is None:
-            continue
-        created = comment.get("created_at")
-        if since is None or (isinstance(created, str) and created > since):
-            return True
-    return False
+    return bool(member_comments_since(repository, number, since))
+
+
+def comments_since(
+    repository: str, number: int, since: str | None
+) -> tuple[list[dict[str, Any]], int]:
+    """The maintainers' comments since the last round, for the packet, bounded.
+
+    The comment that caused the round must reach the agent whatever
+    the issue's older comments number; the newest are kept.
+    """
+    found = member_comments_since(repository, number, since)
+    kept: list[dict[str, Any]] = []
+    total = 0
+    for comment in reversed(found):
+        size = len(str(comment["body"]).encode("utf-8"))
+        if len(kept) >= reads.MAX_COMMENTS or total + size > reads.MAX_COMMENT_BYTES:
+            break
+        total += size
+        kept.append(comment)
+    kept.reverse()
+    return kept, len(found) - len(kept)

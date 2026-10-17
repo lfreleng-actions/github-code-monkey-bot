@@ -822,7 +822,8 @@ For each selected issue:
     earliest heading as the
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,
-    and taking an unreadable count as a finding.
+    and taking an unreadable count as a finding; a `>` inside a quoted
+    attribute closes no tag.
     The wait checks its deadline before every read and keeps a
     reserve for the reads a hit needs
     (the listing, the threads page by page, and a second read of the
@@ -1402,9 +1403,10 @@ dropped; both are empty on a scan. `explicit_pull_requests` and
 `url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
 `round_reasons`, `rounds`, `threads` (`thread_id`, `comment_id`,
 `path`, `line`, `outdated`, `author`, `body`), `threads_dropped`,
-`review` (the §8 step 11 record of the head, with the body) and
-`pr_comments`; an issue entry has `task: "issue"` and `checkout_sha`
-equal to `base_sha`. Beside it the select job writes `matrix.json`
+`review` (the §8 step 11 record of the head, with the body),
+`pr_comments`, `new_comments` and `new_pr_comments`; an issue entry
+has `task: "issue"` and `checkout_sha` equal to `base_sha`. Beside it
+the select job writes `matrix.json`
 (`{"include": [{key, repository, repo_name, number, base_sha,
 branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
 head_sha, pull_number}]}`), `agents.md` (the guidance bytes whose
@@ -1691,18 +1693,30 @@ Three ways in, all through the select job and its read token:
 
 Whatever the way in, the candidate must be the bot's own: open,
 opened by the App, head in the designated fork (§4.3) on a
-`code-monkey/issue-<n>` branch. The round number continues from the
-bot's own round markers on the issue; at the cap the selector skips
-the pull request with that reason, and the publisher of the tenth
-round has already said a human must take over.
+`code-monkey/issue-<n>` branch; its repository must pass the §6
+safety tests, and its issue must be open and carry no `no-agent`
+label, so closing the issue or opting it out stops the rounds. A
+scan honours the run's repository policy, the named repositories or
+everything but the exclusions, before it reads a hit. The round
+number continues from the bot's own footers on the issue: the last
+line of each of its comments, the first publication's included as
+round zero, read across the whole comment history or failing closed
+when that history outgrows the read. A marker in a comment's body
+text is text. At the cap the selector skips the pull request with
+that reason, and the publisher of the tenth round has already said a
+human must take over. One key admits one entry, so a pull request
+named beside its own issue runs once.
 
 The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
 `rebase_sha`, the default branch's head. It carries the pull request,
 the unresolved threads with the ids a reply and a resolve need, the
 head's review verdict, the maintainers' comments on the pull request,
-the earlier round summaries and the issue packet as before, all as
-data, bounded as the issue comments are. The read mint scopes to the
+the maintainers' comments on the issue and the pull request since the
+last round, so the instruction that caused the round reaches the
+agent whatever the count of older comments, the earlier round
+summaries and the issue packet as before, all as data, bounded as
+the issue comments are. The read mint scopes to the
 named repositories as for issues.
 
 ### 20.2 The author job

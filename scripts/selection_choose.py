@@ -42,6 +42,7 @@ class Budget:
         )
         self.one_per_repository = one_per_repository
         self.seen: set[str] = set()
+        self.keys: set[str] = set()
         self.chosen: list[dict[str, Any]] = []
         self.used_bytes = 0
 
@@ -53,6 +54,10 @@ class Budget:
         """Whether the cap or the size budget is spent."""
         return len(self.chosen) >= self.cap or self.used_bytes >= MAX_SELECTION_BYTES
 
+    def duplicate(self, key: str) -> bool:
+        """Whether an entry with this key is already chosen."""
+        return key in self.keys
+
     def admit(self, entry: dict[str, Any]) -> bool:
         """Take the entry unless it would break the size budget."""
         size = len(json.dumps(entry, indent=2).encode("utf-8"))
@@ -60,6 +65,7 @@ class Budget:
             return False
         self.used_bytes += size
         self.seen.add(str(entry["repository"]))
+        self.keys.add(str(entry["key"]))
         self.chosen.append(entry)
         return True
 
@@ -94,12 +100,17 @@ def choose(
 
     budget = Budget(max_pull_requests, one_per_repository=one_per_repository)
     for entry in revisions or []:
-        if budget.repeated(str(entry["repository"])):
+        if budget.duplicate(str(entry["key"])):
+            skip(entry, "duplicate", "already chosen under another name")
+        elif budget.repeated(str(entry["repository"])):
             skipped["one_per_repo"] += 1
         elif budget.full() or not budget.admit(entry):
             skip(entry, "cap", "over the pull request cap")
     for candidate in ranked:
         repo = str(candidate["repository"])
+        if budget.duplicate(f"{candidate['repo_name']}-{candidate['number']}"):
+            skip(candidate, "duplicate", "already chosen under another name")
+            continue
         if budget.repeated(repo):
             skipped["one_per_repo"] += 1
             continue
