@@ -87,6 +87,40 @@ def check_json(**overrides: Any) -> dict[str, Any]:
     return data
 
 
+HEAD = "e" * 40
+NEW_HEAD = "d" * 40
+
+
+def revision_check(**overrides: Any) -> dict[str, Any]:
+    """A check.json for a revision round, proposed."""
+    data = check_json(
+        task="revise",
+        rebase_sha="b" * 40,
+        rebased=False,
+        head_sha=HEAD,
+        pull_number=41,
+        pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+        round=2,
+        round_summary="Fixed both findings.",
+        responses=[
+            {
+                "thread_id": "PRRT_1",
+                "comment_id": 100,
+                "reply": "Fixed.",
+                "resolve": True,
+            },
+            {
+                "thread_id": "PRRT_2",
+                "comment_id": 101,
+                "reply": "Disputed.",
+                "resolve": False,
+            },
+        ],
+    )
+    data.update(overrides)
+    return data
+
+
 def result_json(**overrides: Any) -> dict[str, Any]:
     """A result.json document."""
     data: dict[str, Any] = {
@@ -270,6 +304,31 @@ class CommentBodyTest(unittest.TestCase):
         )
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
+
+    @unittest.expectedFailure
+    def test_revision_round_comment(self) -> None:
+        """A round names itself, the pull request and the summary, then the verdict."""
+        result = result_json(
+            round=2,
+            round_summary="Fixed both findings.",
+            review=review_record("clean", assessment="approval"),
+        )
+        text = comments.comment_body(result, "") or ""
+        self.assertTrue(
+            text.startswith("\U0001f412 Round 2: an AI agent revised pull request")
+        )
+        self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
+        self.assertIn("Fixed both findings.", text)
+        self.assertIn("Copilot review of it is clean", text)
+        # At the cap with findings, a human takes over.
+        capped = result_json(
+            round=10,
+            round_summary="s",
+            review=review_record("findings", assessment="changes"),
+        )
+        text = comments.comment_body(capped, "") or ""
+        self.assertIn("round cap of 10", text)
+        self.assertIn("a human must take over", text)
 
     def test_unrecognised_review_record_reads_as_pending(self) -> None:
         """A record the publisher does not know is never read as clean."""
@@ -558,6 +617,147 @@ class RunPushTest(NoNetworkCase):
         path = self.write_check(check_json(verdict="maybe"))
         with self.assertRaises(policy.PublishError):
             publish.run_push(self.push_args(path))
+
+
+class RunPushRevisionTest(NoNetworkCase):
+    """A revision replays onto a temporary branch, then moves the bot branch."""
+
+    @unittest.expectedFailure
+    def test_revision_moves_the_branch_and_records_the_pull_request(self) -> None:
+        """Sync, temporary branch, replay, compare-and-swap, cleanup; the PR is known."""
+        path = self.write_check(revision_check())
+        with (
+            patch.object(publish, "ensure_fork") as fork,
+            patch.object(publish, "sync_fork") as sync,
+            patch.object(
+                publish.revision_publish, "move_branch", return_value=[NEW_HEAD]
+            ) as move,
+        ):
+            result = publish.run_push(self.push_args(path))
+        fork.assert_called_once()
+        sync.assert_called_once()
+        move.assert_called_once()
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(result["commits"], [NEW_HEAD])
+        self.assertEqual(
+            result["pull_request_url"], f"https://github.com/{REPOSITORY}/pull/41"
+        )
+        self.assertEqual(result["branch_url"], FORK_BRANCH_URL)
+        self.assertEqual(result["round"], 2)
+        self.assertFalse(publish.needs_pull_request(result))
+
+    @unittest.expectedFailure
+    def test_moved_head_is_a_rejection_not_a_failure(self) -> None:
+        """A head that changed since selection is refused, nothing forced."""
+        path = self.write_check(revision_check())
+        with (
+            patch.object(publish, "ensure_fork"),
+            patch.object(publish, "sync_fork"),
+            patch.object(
+                publish.revision_publish,
+                "move_branch",
+                side_effect=policy.Rejection("head moved from e to f"),
+            ),
+        ):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn("head moved from e to f", result["reasons"])
+        self.assertIsNone(result["pull_request_url"])
+
+
+class RunRespondTest(NoNetworkCase):
+    """``publish.py respond`` answers the threads and updates the description."""
+
+    @unittest.expectedFailure
+    def test_replies_resolves_and_updates(self) -> None:
+        """Each response posts and resolves as marked; the body and title follow."""
+        check = self.write_check(revision_check())
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(publish.revision_publish, "reply", return_value=None) as reply,
+            patch.object(
+                publish.revision_publish, "resolve", return_value=None
+            ) as resolve,
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ) as update,
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        self.assertEqual(reply.call_count, 2)
+        self.assertEqual(
+            [c.args[1:3] for c in reply.call_args_list], [(41, 100), (41, 101)]
+        )
+        resolve.assert_called_once_with(REPOSITORY, "PRRT_1")
+        update.assert_called_once()
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stored["responded"], {"replied": 2, "resolved": 1, "failed": 0}
+        )
+
+    @unittest.expectedFailure
+    def test_a_failed_reply_is_a_warning_and_the_rest_proceed(self) -> None:
+        """One refused write does not stop the others or fail the step."""
+        check = self.write_check(revision_check())
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(
+                publish.revision_publish,
+                "reply",
+                side_effect=[github.GitHubError("boom (HTTP 500)"), None],
+            ),
+            patch.object(publish.revision_publish, "resolve", return_value=None),
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(stored["responded"]["failed"], 1)
+        self.assertTrue(any("PRRT_1" in w for w in stored["warnings"]))
 
 
 class RunOpenTest(NoNetworkCase):
@@ -1103,6 +1303,31 @@ class RunCommentTest(NoNetworkCase):
                 argparse.Namespace(result=path, run_url="https://run", since="t")
             )
         write.assert_called_once()
+
+    @unittest.expectedFailure
+    def test_marker_carries_the_round(self) -> None:
+        """A revision's marker names its round, so the next selection counts it."""
+        path = self.write_result(
+            result_json(
+                bot_login=BOT, round=3, round_summary="s", review=review_record("clean")
+            )
+        )
+        with (
+            patch.object(reads, "api_page", return_value=[]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/1"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=clean round=3 -->"
+            )
+        )
 
     def test_marker_carries_the_review_verdict(self) -> None:
         """A rerun whose review verdict changed is a new outcome, not a repeat."""
