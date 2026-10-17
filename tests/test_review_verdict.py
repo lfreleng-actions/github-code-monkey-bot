@@ -298,7 +298,6 @@ class UntrustedTextTest(unittest.TestCase):
         ):
             self.assertEqual(verdicts.classify(BODIES[name], threads).verdict, expected)
 
-    @unittest.expectedFailure
     def test_tag_left_open_on_its_line_fails_closed(self) -> None:
         """Real bodies close every tag on its line; an attribute spanning lines hides text."""
         for extra in (
@@ -314,7 +313,6 @@ class UntrustedTextTest(unittest.TestCase):
                         verdict.reasons,
                     )
 
-    @unittest.expectedFailure
     def test_heading_or_fence_inside_an_html_block_fails_closed(self) -> None:
         """Inside a <details> block, up to the blank line, lines are HTML, not Markdown."""
         for extra in (
