@@ -756,7 +756,6 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(result["commits"], [])
         self.assertFalse(publish.needs_pull_request(result))
 
-    @unittest.expectedFailure
     def test_a_handoff_for_a_moved_head_is_refused(self) -> None:
         """A push during the session makes the handoff stale: rejected, not posted."""
         path = self.write_check(revision_check(verdict="handoff", commits=[]))

@@ -1785,7 +1785,11 @@ needs a human's decision: the check reads its replies the same way,
 none may resolve a thread, the publisher replays no chain, posts the
 replies, leaves the threads open, comments the handoff on the issue
 with the agent's reason and round summary, and skips the review
-gate, since the head did not move. The next scan leaves the pull
+gate, since the head did not move. The handoff has no swap to refuse
+a moved head, so the publisher reads the pull request's head first:
+one that moved during the session is a rejection, since the replies
+answer code the agent did not see, and one it cannot read is a
+failure, never a handoff taken on trust. The next scan leaves the pull
 request alone until a maintainer comments, on the issue, the pull
 request or one of the disputed threads.
 

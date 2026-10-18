@@ -23,6 +23,7 @@ from typing import Any, NoReturn, cast
 
 import bot_github as github
 import branch_refs as refs
+import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
 from proposal_policy import PublishError, Rejection
@@ -196,7 +197,10 @@ def run_push(
     carried = list(cast("list[str]", check.get("warnings") or []))
     warnings.extend(carried)
     if result["verdict"] == "handoff":
-        result["pull_request_url"] = str(check["pull_request_url"])
+        if not args.dry_run and args.mode != "select":
+            handoff_head_check(args, check, result, fail=fail)
+        if result["verdict"] == "handoff":
+            result["pull_request_url"] = str(check["pull_request_url"])
         return result
     if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
         return result
@@ -241,6 +245,35 @@ def run_push(
 def added_warnings(check: dict[str, Any], seen: int) -> list[str]:
     """The warnings the move added to the check beyond the ``seen`` it began with."""
     return list(cast("list[str]", check.get("warnings") or []))[seen:]
+
+
+def handoff_head_check(
+    args: argparse.Namespace,
+    check: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    fail: Callable[[argparse.Namespace, dict[str, Any], str, Exception], NoReturn],
+) -> None:
+    """Refuse a handoff whose pull request head moved during the session.
+
+    A proposal's swap refuses a moved head by itself; a handoff moves
+    nothing, so the guard is this read. Replies written against code
+    a maintainer has since replaced answer the wrong head, and the
+    handoff's footer would pause the rounds on a head the agent never
+    weighed. A head that cannot be read is a failure, not a handoff
+    taken on trust.
+    """
+    expected = str(check["head_sha"])
+    try:
+        head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
+    except github.GitHubError as exc:
+        fail(args, result, f"could not read the pull request head: {exc}", exc)
+    if head != expected:
+        result["verdict"] = "rejected"
+        cast("list[str]", result["reasons"]).append(
+            f"head moved from {expected[:7]} to {head[:7]} since selection; the "
+            "handoff answers code the agent did not see"
+        )
 
 
 def run_respond(args: argparse.Namespace) -> None:
