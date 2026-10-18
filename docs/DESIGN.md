@@ -1732,9 +1732,10 @@ The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
 `rebase_sha`, the default branch's head. It carries the pull request,
 the unresolved threads with the ids a reply and a resolve need and
-the newest replies from Copilot or a maintainer on each, since a
-maintainer's answer on a thread is an instruction as much as a
-comment on the pull request is, the
+the newest replies from Copilot or a maintainer on each, read from
+the whole thread page by page so a crowd of passers-by hides no
+maintainer's answer, since that answer is an instruction as much as
+a comment on the pull request is, the
 head's review verdict, the maintainers' comments on the pull request,
 the maintainers' comments on the issue and the pull request since the
 last round, newest first within the bounds and one oversized comment
@@ -1800,7 +1801,10 @@ ones, keeping the publisher's header. One refused write is a warning
 and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,
 the pull request, the summary and the verdict, with the round in its
-marker, which is how the next selection counts rounds. At the cap,
+marker, which is how the next selection counts rounds. The summary
+and the reasons are agent text: flattened to one line, mentions
+defused and HTML escaped, so they can neither hide the verdict and
+the marker after them nor collapse them into a block. At the cap,
 every outcome but a clean proposal says a human must take over and
 promises no further round, since the selector skips the pull
 request from then on, a handoff's "once a maintainer comments"

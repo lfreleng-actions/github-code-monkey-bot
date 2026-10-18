@@ -26,11 +26,17 @@ MAX_THREAD_BODY = 8 * 1024
 # Replies carried per thread: the newest from Copilot or a maintainer,
 # so the agent reads the discussion a finding grew, not the opener alone.
 MAX_THREAD_REPLIES = 10
+# A thread's comments are read whole, a page of 100 at a time, so a
+# maintainer's answer behind a crowd of passers-by is not missed; a
+# thread past this many pages fails closed rather than guess.
+COMMENTS_PER_PAGE = 100
+MAX_THREAD_PAGES = 10
 # Review threads whose opening comment comes from Copilot or a
 # maintainer count as work; a passer-by's thread does not. GraphQL
 # names the reviewer without the [bot] suffix REST gives it.
 THREAD_AUTHORS = reads.COMMENT_ASSOCIATIONS
 COPILOT_LOGIN = review.REVIEWER_LOGIN.removesuffix("[bot]")
+COMMENT_FIELDS = "databaseId body authorAssociation createdAt author { login }"
 THREADS_QUERY = f"""
 query($owner: String!, $name: String!, $number: Int!, $after: String) {{
   repository(owner: $owner, name: $name) {{
@@ -43,18 +49,23 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {{
           isOutdated
           path
           line
-          comments(first: 1) {{
-            nodes {{
-              databaseId body authorAssociation createdAt author {{ login }}
-            }}
-          }}
-          replies: comments(last: {MAX_THREAD_REPLIES}) {{
-            totalCount
-            nodes {{
-              databaseId body authorAssociation createdAt author {{ login }}
-            }}
+          comments(first: {COMMENTS_PER_PAGE}) {{
+            pageInfo {{ hasNextPage endCursor }}
+            nodes {{ {COMMENT_FIELDS} }}
           }}
         }}
+      }}
+    }}
+  }}
+}}
+"""
+THREAD_COMMENTS_QUERY = f"""
+query($id: ID!, $after: String) {{
+  node(id: $id) {{
+    ... on PullRequestReviewThread {{
+      comments(first: {COMMENTS_PER_PAGE}, after: $after) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{ {COMMENT_FIELDS} }}
       }}
     }}
   }}
@@ -145,7 +156,10 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
     if not isinstance(thread_id, str) or type(comment_id) is not int:
         return None
     line = data.get("line")
-    replies, more = thread_replies(data.get("replies"), comment_id)
+    replies, more = thread_replies(
+        thread_comments(thread_id, cast("dict[str, Any]", data["comments"])),
+        comment_id,
+    )
     return {
         "thread_id": thread_id,
         "comment_id": comment_id,
@@ -156,6 +170,35 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
         "replies": replies,
         "replies_dropped": more,
     }
+
+
+def thread_comments(thread_id: str, first_page: dict[str, Any]) -> list[Any]:
+    """Every comment on the thread, the first page's and the pages after it."""
+    comments = list(cast("list[Any]", first_page.get("nodes") or []))
+    page = first_page
+    for _ in range(MAX_THREAD_PAGES):
+        info = page.get("pageInfo")
+        if not isinstance(info, dict) or not cast("dict[str, Any]", info).get(
+            "hasNextPage"
+        ):
+            return comments
+        after = str(cast("dict[str, Any]", info).get("endCursor"))
+        data = github.graphql(
+            THREAD_COMMENTS_QUERY, {"id": thread_id, "after": after}, read=True
+        )
+        node = data.get("node")
+        connection = (
+            cast("dict[str, Any]", node).get("comments")
+            if isinstance(node, dict)
+            else None
+        )
+        if not isinstance(connection, dict):
+            raise github.GitHubError("thread comment query returned no data")
+        page = cast("dict[str, Any]", connection)
+        comments.extend(cast("list[Any]", page.get("nodes") or []))
+    raise reads.SelectionError(
+        f"thread {thread_id} holds more comments than the packet reads"
+    )
 
 
 def first_comment(comments: Any) -> dict[str, Any] | None:
@@ -212,22 +255,17 @@ def comment_fields(comment: dict[str, Any], login: str) -> dict[str, Any]:
 
 
 def thread_replies(
-    connection: Any, opener_id: int
+    comments: list[Any], opener_id: int
 ) -> tuple[list[dict[str, Any]], bool]:
     """The thread's newest replies that count, and whether older ones were cut.
 
-    GitHub answers the ``last: N`` of the thread's comments, the opener
-    among them on a short thread; the opener is dropped here, a reply
-    from anyone but Copilot or a maintainer is not carried, and the
-    bound holds whatever the reply holds.
+    The opener is dropped, a reply from anyone but Copilot or a
+    maintainer is not carried, and of the rest the newest
+    ``MAX_THREAD_REPLIES`` go to the packet, each bounded whatever it
+    holds.
     """
-    if not isinstance(connection, dict):
-        return [], False
-    data = cast("dict[str, Any]", connection)
-    nodes = data.get("nodes")
-    entries = cast("list[Any]", nodes) if isinstance(nodes, list) else []
-    replies: list[dict[str, Any]] = []
-    for item in entries[-MAX_THREAD_REPLIES:]:
+    eligible: list[dict[str, Any]] = []
+    for item in comments:
         if not isinstance(item, dict):
             continue
         comment = cast("dict[str, Any]", item)
@@ -236,7 +274,5 @@ def thread_replies(
         login = comment_author(comment)
         if login is None:
             continue
-        replies.append(comment_fields(comment, login))
-    total = data.get("totalCount")
-    more = type(total) is int and total > MAX_THREAD_REPLIES + 1
-    return replies, more
+        eligible.append(comment_fields(comment, login))
+    return eligible[-MAX_THREAD_REPLIES:], len(eligible) > MAX_THREAD_REPLIES

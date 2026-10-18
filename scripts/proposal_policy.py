@@ -11,6 +11,7 @@ policy in one place, and the tests can exercise it without a clone.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -204,11 +205,15 @@ def check_body(body: list[str]) -> None:
 def comment_safe(text: str) -> str:
     """Flatten untrusted text for a one-line issue comment.
 
-    Newlines would let agent output add rendered blocks, and an
-    @-mention would notify whoever it names; a zero-width space after
-    each @ keeps the text readable without the ping.
+    Newlines would let agent output add rendered blocks, raw HTML
+    would let it wrap the verdict after it in a collapsed element or
+    a comment, and an @-mention would notify whoever it names. The
+    markup is escaped, which GitHub renders as the characters typed,
+    and a zero-width space after each @ keeps the text readable
+    without the ping.
     """
-    return " ".join(text.split()).replace("@", "@\u200b")
+    flat = " ".join(text.split()).replace("@", "@\u200b")
+    return html.escape(flat, quote=False)
 
 
 MENTION_RE = re.compile(r"(?<![\w@/.-])@(?=[A-Za-z0-9][A-Za-z0-9-]*(?:/[\w.-]+)?)")

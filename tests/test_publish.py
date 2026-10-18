@@ -369,7 +369,6 @@ class CommentBodyTest(unittest.TestCase):
                 text = comments.comment_body(result, "https://x/run") or ""
                 self.assertNotIn("round cap", text)
 
-    @unittest.expectedFailure
     def test_agent_text_holds_no_html(self) -> None:
         """Raw HTML in a summary or reason is text; it wraps no notice after it."""
         summary = "<details><summary>Details</summary>Fixed <b>one</b>."

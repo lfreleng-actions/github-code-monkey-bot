@@ -129,7 +129,6 @@ class ThreadsTest(unittest.TestCase):
             kept, _ = threads_of.unresolved_threads(REPO, 41)
         self.assertEqual(len(kept[0]["body"].encode()), threads_of.MAX_THREAD_BODY)
 
-    @unittest.expectedFailure
     def test_replies_reach_the_packet(self) -> None:
         """Later comments from Copilot or a maintainer follow the opener, bounded."""
         opener = {
@@ -181,7 +180,6 @@ class ThreadsTest(unittest.TestCase):
         self.assertIn("comments(first: 100)", threads_of.THREADS_QUERY)
         self.assertNotIn("replies:", threads_of.THREADS_QUERY)
 
-    @unittest.expectedFailure
     def test_threads_carry_who_and_when(self) -> None:
         """The opener and each reply say whether a maintainer wrote it, and when."""
         opener = {
@@ -210,7 +208,6 @@ class ThreadsTest(unittest.TestCase):
         )
         self.assertIn("createdAt", threads_of.THREADS_QUERY)
 
-    @unittest.expectedFailure
     def test_replies_are_bounded_and_count_toward_the_thread_budget(self) -> None:
         """Over the per-thread cap, the newest replies are kept; bytes count whole."""
         opener = {
@@ -263,7 +260,6 @@ class ThreadsTest(unittest.TestCase):
         self.assertLess(len(kept), count)
         self.assertEqual(len(kept) + dropped, count)
 
-    @unittest.expectedFailure
     def test_a_long_thread_is_read_whole(self) -> None:
         """A maintainer's answer behind a page of passers-by still reaches the packet."""
         opener = {
@@ -317,7 +313,6 @@ class ThreadsTest(unittest.TestCase):
         self.assertEqual(second.args[1], {"id": "PRRT_1", "after": "c1"})
         self.assertIs(second.kwargs.get("read"), True)
 
-    @unittest.expectedFailure
     def test_a_thread_too_long_to_read_fails_closed(self) -> None:
         """Past the page bound the read raises rather than guess at the replies."""
         page: dict[str, Any] = {
