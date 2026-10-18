@@ -22,6 +22,11 @@ MAX_RESPONSES = 100
 REPLY_PREFIX = "🐒 Reply from the AI agent that authored this pull request: "
 
 
+def reply_marker(round_number: int) -> str:
+    """The last line of a round's replies: what a rerun looks for before posting."""
+    return f"<!-- code-monkey reply round={round_number} -->"
+
+
 def check_entry(data: dict[str, Any]) -> None:
     """The revision fields of a trusted selection entry must have their shapes."""
     if data.get("task") != "revise":
@@ -112,7 +117,7 @@ def read_responses(manifest: dict[str, Any], check: Check) -> None:
             {
                 "thread_id": thread_id,
                 "comment_id": comment_id,
-                "reply": REPLY_PREFIX + text,
+                "reply": f"{REPLY_PREFIX}{text}\n\n{reply_marker(check.round)}",
                 "resolve": resolve,
             }
         )

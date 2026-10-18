@@ -250,23 +250,32 @@ def thread_comments(thread_id: str, first_page: dict[str, Any]) -> list[Any]:
             "hasNextPage"
         ):
             return comments
-        after = str(cast("dict[str, Any]", info).get("endCursor"))
-        data = github.graphql(
-            THREAD_COMMENTS_QUERY, {"id": thread_id, "after": after}, read=True
+        page = comments_page(
+            thread_id, str(cast("dict[str, Any]", info).get("endCursor"))
         )
-        node = data.get("node")
-        connection = (
-            cast("dict[str, Any]", node).get("comments")
-            if isinstance(node, dict)
-            else None
-        )
-        if not isinstance(connection, dict):
-            raise github.GitHubError("thread comment query returned no data")
-        page = cast("dict[str, Any]", connection)
         comments.extend(cast("list[Any]", page.get("nodes") or []))
     raise reads.SelectionError(
         f"thread {thread_id} holds more comments than the packet reads"
     )
+
+
+def comments_page(thread_id: str, after: str | None) -> dict[str, Any]:
+    """One page of a thread's comments, by the thread's node id."""
+    data = github.graphql(
+        THREAD_COMMENTS_QUERY, {"id": thread_id, "after": after}, read=True
+    )
+    node = data.get("node")
+    connection = (
+        cast("dict[str, Any]", node).get("comments") if isinstance(node, dict) else None
+    )
+    if not isinstance(connection, dict):
+        raise github.GitHubError("thread comment query returned no data")
+    return cast("dict[str, Any]", connection)
+
+
+def read_thread(thread_id: str) -> list[Any]:
+    """Every comment on a thread the caller knows by id alone."""
+    return thread_comments(thread_id, comments_page(thread_id, None))
 
 
 def first_comment(comments: Any) -> dict[str, Any] | None:

@@ -837,6 +837,9 @@ class HandoffTest(NoNetworkCase):
             else patch.object(review, "pull_head", return_value=head)
         )
         with (
+            patch.object(
+                publish.revision_publish.threads_of, "read_thread", return_value=[]
+            ),
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(publish.revision_publish, "resolve"),
             lookup as read,
@@ -917,6 +920,9 @@ class HandoffTest(NoNetworkCase):
             encoding="utf-8",
         )
         with (
+            patch.object(
+                publish.revision_publish.threads_of, "read_thread", return_value=[]
+            ),
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(publish.revision_publish, "resolve") as resolve,
             patch.object(publish.revision_publish, "update_pull_request") as update,
@@ -1090,6 +1096,9 @@ class RunRespondTest(NoNetworkCase):
             encoding="utf-8",
         )
         with (
+            patch.object(
+                publish.revision_publish.threads_of, "read_thread", return_value=[]
+            ),
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(
                 publish.revision_publish, "resolve", return_value=None
@@ -1118,10 +1127,10 @@ class RunRespondTest(NoNetworkCase):
         update.assert_called_once()
         stored = json.loads(result.read_text(encoding="utf-8"))
         self.assertEqual(
-            stored["responded"], {"replied": 2, "resolved": 1, "failed": 0}
+            stored["responded"],
+            {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
 
-    @unittest.expectedFailure
     def test_rerun_posts_no_reply_twice(self) -> None:
         """A retry finds the round's reply already on a thread and posts it no more.
 
@@ -1147,14 +1156,14 @@ class RunRespondTest(NoNetworkCase):
         threads = {
             "PRRT_1": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
-                {"author": {"login": "lf-code-monkey"}, "body": f"Fixed.\n\n{marker}"},
+                {"author": {"login": "code-monkey"}, "body": f"Fixed.\n\n{marker}"},
             ],
             # An older round's reply, and a human quoting the marker
             # mid-body, are not this round's reply.
             "PRRT_2": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
                 {
-                    "author": {"login": "lf-code-monkey"},
+                    "author": {"login": "code-monkey"},
                     "body": "Earlier.\n\n<!-- code-monkey reply round=1 -->",
                 },
                 {"author": {"login": "maintainer"}, "body": f"{marker} is the marker"},
@@ -1210,6 +1219,9 @@ class RunRespondTest(NoNetworkCase):
             encoding="utf-8",
         )
         with (
+            patch.object(
+                publish.revision_publish.threads_of, "read_thread", return_value=[]
+            ),
             patch.object(
                 publish.revision_publish,
                 "reply",

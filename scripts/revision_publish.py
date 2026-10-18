@@ -26,7 +26,9 @@ import branch_refs as refs
 import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
+import thread_reads as threads_of
 from proposal_policy import PublishError, Rejection
+from revision_check import reply_marker
 
 UPDATE_REFS = """
 mutation($input: UpdateRefsInput!) {
@@ -305,6 +307,51 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     return False
 
 
+def answered(thread_id: str, bot_login: str, marker: str) -> bool:
+    """Whether the bot's reply for this round is already on the thread.
+
+    A rerun after the replies went up and a later step failed must
+    not post them again. The round marker is the reply's last line;
+    a bot-authored comment ending with it is this round's reply, while
+    an older round's, or anyone quoting the marker mid-body, is not.
+    """
+    login = bot_login.removesuffix("[bot]")
+    for item in threads_of.read_thread(thread_id):
+        if not isinstance(item, dict):
+            continue
+        comment = cast("dict[str, Any]", item)
+        author = comment.get("author")
+        body = comment.get("body")
+        if (
+            isinstance(author, dict)
+            and cast("dict[str, Any]", author).get("login") == login
+            and isinstance(body, str)
+            and body.rstrip().endswith(marker)
+        ):
+            return True
+    return False
+
+
+def answer_thread(
+    repository: str, number: int, response: dict[str, Any], counts: dict[str, int]
+) -> None:
+    """Post one reply unless this round's is already there, then resolve if asked.
+
+    The resolve runs whether or not the reply was posted now: one lost
+    after the reply is its own retry, and resolving a resolved thread
+    changes nothing.
+    """
+    marker = str(response["marker"])
+    if answered(str(response["thread_id"]), str(response["bot_login"]), marker):
+        counts["already"] += 1
+    else:
+        reply(repository, number, int(response["comment_id"]), str(response["reply"]))
+        counts["replied"] += 1
+    if response.get("resolve") is True:
+        resolve(repository, str(response["thread_id"]))
+        counts["resolved"] += 1
+
+
 def run_respond(args: argparse.Namespace) -> None:
     """``publish.py respond``: answer the threads and update the description.
 
@@ -315,7 +362,7 @@ def run_respond(args: argparse.Namespace) -> None:
     check = model.load_json(args.check, "check")
     if result.get("key") != check.get("key"):
         raise PublishError("result.json and check.json describe different proposals")
-    counts = {"replied": 0, "resolved": 0, "failed": 0}
+    counts = {"replied": 0, "already": 0, "resolved": 0, "failed": 0}
     warnings = cast("list[str]", result.setdefault("warnings", []))
     verdict = result.get("verdict")
     # A proposal answers once its chain is on the branch; a handoff
@@ -328,19 +375,16 @@ def run_respond(args: argparse.Namespace) -> None:
     if answering:
         repository = str(check["repository"])
         number = int(check["pull_number"])
+        marker = reply_marker(int(check.get("round") or 0))
         for response in cast("list[dict[str, Any]]", check.get("responses") or []):
             thread = str(response["thread_id"])
             try:
-                reply(
+                answer_thread(
                     repository,
                     number,
-                    int(response["comment_id"]),
-                    str(response["reply"]),
+                    dict(response, marker=marker, bot_login=str(check["bot_login"])),
+                    counts,
                 )
-                counts["replied"] += 1
-                if response.get("resolve") is True:
-                    resolve(repository, thread)
-                    counts["resolved"] += 1
             except github.GitHubError as exc:
                 counts["failed"] += 1
                 warnings.append(f"thread {thread}: {github.safe_message(exc)}")
