@@ -111,8 +111,10 @@ class MoveBranchTest(unittest.TestCase):
             revision.move_branch(Path("clone"), data)
         self.assertEqual(data["warnings"], ["branch x stays"])
 
-    def swap_lost(self, head: Any) -> tuple[dict[str, Any], list[str] | None]:
-        """A swap whose reply was lost; the fork branch then reads as ``head``."""
+    def swap_lost(
+        self, head: Any, error: str = "timed out"
+    ) -> tuple[dict[str, Any], list[str] | None]:
+        """A swap answered with ``error``; the fork branch then reads as ``head``."""
         data = check()
         lookup = (
             patch.object(reads, "branch_head", side_effect=head)
@@ -123,15 +125,13 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(refs, "create_branch"),
             patch.object(refs, "replay_commits", return_value=[NEW]),
             patch.object(github, "api_object", return_value={"node_id": "R_1"}),
-            patch.object(
-                github, "graphql", side_effect=github.GitHubError("timed out")
-            ),
+            patch.object(github, "graphql", side_effect=github.GitHubError(error)),
             lookup as read,
             patch.object(refs, "delete_branch", return_value=None),
         ):
             try:
                 commits = revision.move_branch(Path("clone"), data)
-            except policy.PublishError as exc:
+            except (policy.PublishError, policy.Rejection) as exc:
                 data["error"] = exc
                 commits = None
         read.assert_called_once_with(FORK, "code-monkey/issue-7")
@@ -154,6 +154,28 @@ class MoveBranchTest(unittest.TestCase):
                 self.assertIsNone(commits)
                 self.assertIsInstance(data["error"], revision.SwapUnknown)
                 self.assertIn("unknown", str(data["error"]))
+
+    @unittest.expectedFailure
+    def test_only_the_mismatch_message_is_a_moved_head(self) -> None:
+        """ "unexpected EOF" is a lost reply, not a compare-and-swap refusal."""
+        # The swap applied before the connection dropped: the move stands.
+        data, commits = self.swap_lost(NEW, "unexpected EOF")
+        self.assertEqual(commits, [NEW])
+        self.assertTrue(any("reply" in w for w in data["warnings"]))
+        # The real refusal, with the branch elsewhere, is the rejection.
+        mismatch = (
+            'GraphQL errors: [{"message": "Expected branch to point to beforeOid"}]'
+        )
+        data, commits = self.swap_lost("b" * 40, mismatch)
+        self.assertIsInstance(data["error"], policy.Rejection)
+        self.assertIn("head moved", str(data["error"]))
+        # The refusal with the branch unreadable is still the refusal:
+        # the message itself says the swap did not apply.
+        data, commits = self.swap_lost(github.GitHubError("unreachable"), mismatch)
+        self.assertIsInstance(data["error"], policy.Rejection)
+        # A refusal while the branch holds the new tip is a lost reply.
+        data, commits = self.swap_lost(NEW, mismatch)
+        self.assertEqual(commits, [NEW])
 
 
 class AnswerTest(unittest.TestCase):

@@ -408,3 +408,48 @@ class ThreadsTest(unittest.TestCase):
             self.assertTrue(
                 threads_of.unresolved_threads(REPO, 41, None).maintainer_since
             )
+
+    @unittest.expectedFailure
+    def test_a_maintainers_word_survives_a_run_of_later_replies(self) -> None:
+        """Ten of Copilot's replies after a maintainer's neither hide nor drop it."""
+        since = "2026-10-03T00:00:00Z"
+        opener = {
+            "databaseId": 100,
+            "body": "Fix this.",
+            "authorAssociation": "NONE",
+            "createdAt": "2026-10-01T00:00:00Z",
+            "author": {"login": threads_of.COPILOT_LOGIN},
+        }
+        decision = {
+            "databaseId": 101,
+            "body": "No, do it.",
+            "authorAssociation": "MEMBER",
+            "createdAt": "2026-10-04T00:00:00Z",
+            "author": {"login": "maintainer"},
+        }
+        later = [
+            {
+                "databaseId": 200 + i,
+                "body": f"still {i}",
+                "authorAssociation": "NONE",
+                "createdAt": f"2026-10-05T00:00:{i:02d}Z",
+                "author": {"login": threads_of.COPILOT_LOGIN},
+            }
+            for i in range(threads_of.MAX_THREAD_REPLIES)
+        ]
+        node = thread(comments={"nodes": [opener, decision, *later]})
+        with patch.object(github, "graphql", return_value=thread_page([node])):
+            packet = threads_of.unresolved_threads(REPO, 41, since)
+        self.assertTrue(packet.maintainer_since)
+        kept = packet.threads[0]
+        self.assertTrue(kept["replies_dropped"])
+        self.assertEqual(len(kept["replies"]), threads_of.MAX_THREAD_REPLIES)
+        # The maintainer's reply is kept in place of the oldest of
+        # Copilot's, and the order stays the thread's.
+        self.assertEqual(kept["replies"][0]["author"], "maintainer")
+        self.assertEqual(kept["replies"][1]["body"], "still 1")
+        self.assertEqual(kept["replies"][-1]["body"], "still 9")
+        # Before the decision, the watermark hears nothing.
+        with patch.object(github, "graphql", return_value=thread_page([node])):
+            packet = threads_of.unresolved_threads(REPO, 41, "2026-10-04T01:00:00Z")
+        self.assertFalse(packet.maintainer_since)
