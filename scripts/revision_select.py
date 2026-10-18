@@ -24,6 +24,7 @@ import issue_reads as reads
 import repository_reads as repositories
 import revision_reads as revisions
 import round_reads as rounds_of
+import thread_reads
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 
@@ -121,7 +122,7 @@ def build_entry(
         raise Skip(
             f"round cap of {revisions.MAX_ROUNDS} reached; a human must take over"
         )
-    threads, threads_dropped = revisions.unresolved_threads(repository, pull_number)
+    threads, threads_dropped = thread_reads.unresolved_threads(repository, pull_number)
     verdict = revisions.latest_review(repository, pull_number, str(pull["head_sha"]))
     if not explicit:
         reasons = outstanding(

@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import issue_reads as reads
-from revision_reads import MAX_ROUNDS, MAX_THREAD_BODY
+from revision_reads import MAX_ROUNDS
+from thread_reads import MAX_THREAD_BODY
 
 # The publisher's footer: the last line of its comment, nothing after
 # it. A marker in the agent's summary text sits mid-body and is text.

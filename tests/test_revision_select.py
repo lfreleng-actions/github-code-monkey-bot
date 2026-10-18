@@ -17,6 +17,7 @@ reads = import_module("issue_reads")
 repository_reads = import_module("repository_reads")
 revisions = import_module("revision_reads")
 round_reads = import_module("round_reads")
+thread_reads = import_module("thread_reads")
 select = import_module("revision_select")
 github = import_module("bot_github")
 
@@ -99,7 +100,7 @@ class RevisionCase(unittest.TestCase):
         ).start()
         patch.object(revisions, "bot_pull_request", side_effect=self.pull_of).start()
         patch.object(
-            revisions, "unresolved_threads", side_effect=self.threads_of
+            thread_reads, "unresolved_threads", side_effect=self.threads_of
         ).start()
         patch.object(revisions, "latest_review", side_effect=self.review_of).start()
         patch.object(round_reads, "round_history", side_effect=self.rounds_of).start()

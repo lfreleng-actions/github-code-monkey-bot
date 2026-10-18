@@ -1217,6 +1217,7 @@ scripts/review_sections.py               its suppressed and unchanged-code count
 scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
 scripts/revision_reads.py                a bot pull request's state (§20)
+scripts/thread_reads.py                  its review threads and their replies
 scripts/round_reads.py                   the issue's rounds and new comments
 scripts/revision_select.py               revision candidates and entries
 scripts/revision_check.py                a revision's offline checks
