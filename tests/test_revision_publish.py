@@ -79,6 +79,7 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(refs, "replay_commits", return_value=[NEW]),
             patch.object(github, "api_object", return_value={"node_id": "R_1"}),
             patch.object(github, "graphql", side_effect=failure),
+            patch.object(reads, "branch_head", return_value="b" * 40),
             patch.object(refs, "delete_branch", return_value=None) as delete,
             self.assertRaisesRegex(policy.Rejection, "head moved"),
         ):
@@ -155,7 +156,6 @@ class MoveBranchTest(unittest.TestCase):
                 self.assertIsInstance(data["error"], revision.SwapUnknown)
                 self.assertIn("unknown", str(data["error"]))
 
-    @unittest.expectedFailure
     def test_only_the_mismatch_message_is_a_moved_head(self) -> None:
         """ "unexpected EOF" is a lost reply, not a compare-and-swap refusal."""
         # The swap applied before the connection dropped: the move stands.

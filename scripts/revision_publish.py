@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -36,6 +37,10 @@ mutation($id: ID!) {
   resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
 }
 """
+# The one updateRefs error that says the swap did not apply: the
+# branch no longer held beforeOid. Nothing looser, since "unexpected
+# EOF" is a transport error that may follow an applied swap.
+MISMATCH = re.compile(r"beforeOid|\bexpected\b[^.]*\bto point to\b", re.I)
 
 
 class SwapUnknown(PublishError):
@@ -87,11 +92,6 @@ def move_branch(clone: Path, check: dict[str, Any]) -> list[str]:
         try:
             github.graphql(UPDATE_REFS, {"input": payload})
         except github.GitHubError as exc:
-            message = str(exc)
-            if "beforeOid" in message or "expected" in message.lower():
-                raise Rejection(
-                    f"head moved from {expected[:7]} since selection; nothing forced"
-                ) from exc
             reconcile_swap(fork, branch, expected, commits[-1], check, exc)
         return commits
     finally:
@@ -111,16 +111,22 @@ def reconcile_swap(
 ) -> None:
     """Read the branch after a swap whose reply was an error, and decide.
 
-    GitHub may apply ``updateRefs`` and then time out on the reply.
-    The branch at the new tip means the move stands and publication
-    goes on, with a warning; at the recorded head it means the move
-    did not happen and the branch is unchanged. Any other head, or no
-    answer, is an outcome this run cannot name, and it says so rather
-    than claim the branch unchanged.
+    GitHub may apply ``updateRefs`` and then lose the reply, so the
+    branch, not the error text, says what happened. The branch at the
+    new tip means the move stands and publication goes on, with a
+    warning; at the recorded head it means the move did not happen
+    and the branch is unchanged. Elsewhere, the compare-and-swap
+    refusal means someone moved the branch, a rejection; any other
+    error there, or no answer at all, is an outcome this run cannot
+    name, and it says so rather than claim the branch unchanged.
     """
+    refused = MISMATCH.search(str(exc)) is not None
+    moved = Rejection(f"head moved from {expected[:7]} since selection; nothing forced")
     try:
         head = reads.branch_head(fork, branch)
     except github.GitHubError as lookup:
+        if refused:
+            raise moved from exc
         raise SwapUnknown(
             f"updateRefs failed ({exc}) and the branch could not be read "
             f"({lookup}): outcome unknown"
@@ -133,6 +139,8 @@ def reconcile_swap(
         return
     if head == expected:
         raise PublishError(f"updateRefs failed: {exc}") from exc
+    if refused:
+        raise moved from exc
     raise SwapUnknown(
         f"updateRefs failed ({exc}) and the branch reads as {head[:7]}, neither "
         "head: outcome unknown"

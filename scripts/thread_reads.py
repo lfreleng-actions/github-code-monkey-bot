@@ -143,18 +143,17 @@ def bounded(threads: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
 def maintainer_spoke(thread: dict[str, Any], since: str | None) -> bool:
     """Whether a maintainer opened or answered the thread after ``since``.
 
-    None for ``since`` means any maintainer's word counts, and a
-    comment GitHub dates oddly counts as after the watermark, as the
-    issue comments do.
+    The thread records the latest maintainer word over its whole
+    history, trimmed replies included. None for ``since`` means any
+    maintainer's word counts, and a comment GitHub dates oddly counts
+    as after the watermark, as the issue comments do.
     """
-    replies = cast("list[dict[str, Any]]", thread.get("replies") or [])
-    for comment in (thread, *replies):
-        if comment.get("maintainer") is not True:
-            continue
-        created = comment.get("created_at")
-        if since is None or not isinstance(created, str) or created > since:
-            return True
-    return False
+    if thread.get("maintainer_undated") is True:
+        return True
+    latest = thread.get("maintainer_latest")
+    if not isinstance(latest, str):
+        return False
+    return since is None or latest > since
 
 
 def thread_connection(data: dict[str, Any]) -> dict[str, Any]:
@@ -201,19 +200,43 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
     if not isinstance(thread_id, str) or type(comment_id) is not int:
         return None
     line = data.get("line")
-    replies, more = thread_replies(
+    opener = comment_fields(comment, login)
+    eligible = eligible_replies(
         thread_comments(thread_id, cast("dict[str, Any]", data["comments"])),
         comment_id,
     )
+    replies = trimmed_replies(eligible)
     return {
         "thread_id": thread_id,
         "comment_id": comment_id,
         "path": str(data.get("path") or ""),
         "line": line if type(line) is int else None,
         "outdated": data.get("isOutdated") is True,
-        **comment_fields(comment, login),
+        **opener,
         "replies": replies,
-        "replies_dropped": more,
+        "replies_dropped": len(replies) < len(eligible),
+        **maintainer_marks([opener, *eligible]),
+    }
+
+
+def maintainer_marks(comments: list[dict[str, Any]]) -> dict[str, Any]:
+    """When a maintainer last spoke on the thread, read before any trimming.
+
+    ``maintainer_latest`` is the newest dated maintainer comment and
+    ``maintainer_undated`` says one carried no date; the selection
+    reads these, not the bounded replies, to hear a maintainer.
+    """
+    dated = [
+        str(c["created_at"])
+        for c in comments
+        if c.get("maintainer") is True and isinstance(c.get("created_at"), str)
+    ]
+    undated = any(
+        c.get("maintainer") is True and c.get("created_at") is None for c in comments
+    )
+    return {
+        "maintainer_latest": max(dated) if dated else None,
+        "maintainer_undated": undated,
     }
 
 
@@ -299,15 +322,11 @@ def comment_fields(comment: dict[str, Any], login: str) -> dict[str, Any]:
     }
 
 
-def thread_replies(
-    comments: list[Any], opener_id: int
-) -> tuple[list[dict[str, Any]], bool]:
-    """The thread's newest replies that count, and whether older ones were cut.
+def eligible_replies(comments: list[Any], opener_id: int) -> list[dict[str, Any]]:
+    """Every reply on the thread that counts, in thread order, each bounded.
 
-    The opener is dropped, a reply from anyone but Copilot or a
-    maintainer is not carried, and of the rest the newest
-    ``MAX_THREAD_REPLIES`` go to the packet, each bounded whatever it
-    holds.
+    The opener is dropped, and a reply from anyone but Copilot or a
+    maintainer is not carried.
     """
     eligible: list[dict[str, Any]] = []
     for item in comments:
@@ -320,4 +339,21 @@ def thread_replies(
         if login is None:
             continue
         eligible.append(comment_fields(comment, login))
-    return eligible[-MAX_THREAD_REPLIES:], len(eligible) > MAX_THREAD_REPLIES
+    return eligible
+
+
+def trimmed_replies(eligible: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``MAX_THREAD_REPLIES`` replies the packet carries, in thread order.
+
+    A maintainer's word outranks a reviewer's: the newest maintainer
+    replies fill the bound first, the newest of Copilot's the rest,
+    so a run of review replies pushes no instruction out.
+    """
+    if len(eligible) <= MAX_THREAD_REPLIES:
+        return eligible
+    ranked = sorted(
+        range(len(eligible)),
+        key=lambda i: (eligible[i].get("maintainer") is not True, -i),
+    )
+    chosen = sorted(ranked[:MAX_THREAD_REPLIES])
+    return [eligible[i] for i in chosen]

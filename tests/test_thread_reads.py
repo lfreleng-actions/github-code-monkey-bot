@@ -409,7 +409,6 @@ class ThreadsTest(unittest.TestCase):
                 threads_of.unresolved_threads(REPO, 41, None).maintainer_since
             )
 
-    @unittest.expectedFailure
     def test_a_maintainers_word_survives_a_run_of_later_replies(self) -> None:
         """Ten of Copilot's replies after a maintainer's neither hide nor drop it."""
         since = "2026-10-03T00:00:00Z"
