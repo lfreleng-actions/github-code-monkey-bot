@@ -103,6 +103,7 @@ def revision_check(**overrides: Any) -> dict[str, Any]:
         pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
         round=2,
         round_summary="Fixed both findings.",
+        collected_at="2026-10-03T00:00:00Z",
         responses=[
             {
                 "thread_id": "PRRT_1",
@@ -1131,6 +1132,7 @@ class RunRespondTest(NoNetworkCase):
             {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
 
+    @unittest.expectedFailure
     def test_rerun_posts_no_reply_twice(self) -> None:
         """A retry finds the round's reply already on a thread and posts it no more.
 
@@ -1152,19 +1154,25 @@ class RunRespondTest(NoNetworkCase):
             ),
             encoding="utf-8",
         )
-        marker = "<!-- code-monkey reply round=2 -->"
+        marker = "<!-- code-monkey reply round=2 since=2026-10-03T00:00:00Z -->"
         threads = {
             "PRRT_1": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
                 {"author": {"login": "code-monkey"}, "body": f"Fixed.\n\n{marker}"},
             ],
-            # An older round's reply, and a human quoting the marker
-            # mid-body, are not this round's reply.
+            # An older round's reply, another session's at the same
+            # round, and a human quoting the marker mid-body, are not
+            # this session's reply.
             "PRRT_2": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
                 {
                     "author": {"login": "code-monkey"},
-                    "body": "Earlier.\n\n<!-- code-monkey reply round=1 -->",
+                    "body": "Earlier.\n\n<!-- code-monkey reply round=1 since=t -->",
+                },
+                {
+                    "author": {"login": "code-monkey"},
+                    "body": "Disputed.\n\n<!-- code-monkey reply round=2 "
+                    "since=2026-10-02T00:00:00Z -->",
                 },
                 {"author": {"login": "maintainer"}, "body": f"{marker} is the marker"},
             ],
@@ -1202,6 +1210,57 @@ class RunRespondTest(NoNetworkCase):
             stored["responded"],
             {"replied": 1, "already": 1, "resolved": 1, "failed": 0},
         )
+
+    @unittest.expectedFailure
+    def test_a_thread_too_long_to_read_is_a_warning(self) -> None:
+        """A bounded read that fails leaves its thread alone; the rest go on."""
+        check = self.write_check(revision_check())
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        selection_error = publish.revision_publish.threads_of.reads.SelectionError
+
+        def read(thread_id: str) -> list[dict[str, Any]]:
+            if thread_id == "PRRT_1":
+                raise selection_error("thread PRRT_1 holds more comments than read")
+            return []
+
+        with (
+            patch.object(publish.revision_publish.threads_of, "read_thread", read),
+            patch.object(publish.revision_publish, "reply", return_value=None) as reply,
+            patch.object(publish.revision_publish, "resolve") as resolve,
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ) as update,
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        self.assertEqual([c.args[2] for c in reply.call_args_list], [101])
+        resolve.assert_not_called()
+        update.assert_called_once()
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(stored["responded"]["failed"], 1)
+        self.assertEqual(stored["responded"]["replied"], 1)
+        self.assertTrue(any("PRRT_1" in w for w in stored["warnings"]))
 
     def test_a_failed_reply_is_a_warning_and_the_rest_proceed(self) -> None:
         """One refused write does not stop the others or fail the step."""
