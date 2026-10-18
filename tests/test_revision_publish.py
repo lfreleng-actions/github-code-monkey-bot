@@ -178,6 +178,87 @@ class MoveBranchTest(unittest.TestCase):
         self.assertEqual(commits, [NEW])
 
 
+class ScratchBranchTest(unittest.TestCase):
+    """The scratch branch's creation is reconciled when its reply is lost."""
+
+    def move(
+        self, create: Any, head: Any, chain: list[str] | None = None
+    ) -> tuple[dict[str, Any], list[str] | None, Any]:
+        """Run the move with ``create`` as the create's outcome, the branch at ``head``."""
+        data = check(bot_login="code-monkey[bot]")
+        made = patch.object(refs, "create_branch", side_effect=create)
+        lookup = (
+            patch.object(reads, "branch_head", side_effect=head)
+            if isinstance(head, Exception)
+            else patch.object(reads, "branch_head", return_value=head)
+        )
+        with (
+            made,
+            lookup,
+            patch.object(refs, "branch_matches", return_value=chain) as matches,
+            patch.object(refs, "replay_commits", return_value=[NEW]) as replay,
+            patch.object(github, "api_object", return_value={"node_id": "R_1"}),
+            patch.object(github, "graphql", return_value={}),
+            patch.object(refs, "delete_branch", return_value=None) as delete,
+        ):
+            try:
+                commits = revision.move_branch(Path("clone"), data)
+            except policy.PublishError as exc:
+                data["error"] = exc
+                commits = None
+        data["_replayed"] = replay.called
+        data["_deleted"] = delete.called
+        data["_matched"] = matches.called
+        return data, commits, data.get("error")
+
+    @unittest.expectedFailure
+    def test_a_created_scratch_branch_with_a_lost_reply_is_resumed(self) -> None:
+        """The branch at the base is this attempt's: the replay goes on, with a note."""
+        for create in (
+            github.GitHubError("timed out"),
+            policy.Rejection("branch code-monkey/issue-7-r3 already exists"),
+        ):
+            with self.subTest(create=str(create)):
+                data, commits, error = self.move(create, BASE)
+                self.assertIsNone(error)
+                self.assertEqual(commits, [NEW])
+                self.assertTrue(data["_replayed"])
+                self.assertTrue(data["_deleted"])
+                self.assertTrue(any("resumed" in w for w in data["warnings"]))
+
+    @unittest.expectedFailure
+    def test_a_scratch_branch_already_replayed_is_adopted(self) -> None:
+        """A branch carrying the round's verified chain needs no second replay."""
+        rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")
+        data, commits, error = self.move(rejection, NEW, chain=[NEW])
+        self.assertIsNone(error)
+        self.assertEqual(commits, [NEW])
+        self.assertFalse(data["_replayed"])
+        self.assertTrue(data["_deleted"])
+
+    @unittest.expectedFailure
+    def test_a_scratch_branch_of_unknown_content_is_kept(self) -> None:
+        """Commits this run did not make are nobody's to delete; the ref is reported."""
+        rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")
+        data, commits, error = self.move(rejection, "b" * 40, chain=None)
+        self.assertIsInstance(error, policy.PublishError)
+        self.assertIsNone(commits)
+        self.assertFalse(data["_replayed"])
+        self.assertFalse(data["_deleted"])
+        self.assertTrue(any("code-monkey/issue-7-r3" in w for w in data["warnings"]))
+
+    @unittest.expectedFailure
+    def test_a_create_that_left_no_branch_is_a_plain_failure(self) -> None:
+        """No branch after the error means nothing was made; nothing is kept."""
+        absent = github.GitHubError("Not Found (HTTP 404)", status=404)
+        data, commits, error = self.move(github.GitHubError("timed out"), absent)
+        self.assertIsInstance(error, policy.PublishError)
+        self.assertNotIsInstance(error, policy.Rejection)
+        self.assertIsNone(commits)
+        self.assertFalse(data["_deleted"])
+        self.assertEqual(data.get("warnings", []), [])
+
+
 class AnswerTest(unittest.TestCase):
     """Replies, resolves and the description edit address the right endpoints."""
 
