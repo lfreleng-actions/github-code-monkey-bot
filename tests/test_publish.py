@@ -1121,6 +1121,79 @@ class RunRespondTest(NoNetworkCase):
             stored["responded"], {"replied": 2, "resolved": 1, "failed": 0}
         )
 
+    @unittest.expectedFailure
+    def test_rerun_posts_no_reply_twice(self) -> None:
+        """A retry finds the round's reply already on a thread and posts it no more.
+
+        The reply's last line is a round marker; a bot-authored comment
+        ending with it means the earlier attempt posted. The resolve
+        still runs, since a resolve lost after the reply is its own
+        retry, and resolving a resolved thread changes nothing.
+        """
+        check = self.write_check(revision_check())
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        marker = "<!-- code-monkey reply round=2 -->"
+        threads = {
+            "PRRT_1": [
+                {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
+                {"author": {"login": "lf-code-monkey"}, "body": f"Fixed.\n\n{marker}"},
+            ],
+            # An older round's reply, and a human quoting the marker
+            # mid-body, are not this round's reply.
+            "PRRT_2": [
+                {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
+                {
+                    "author": {"login": "lf-code-monkey"},
+                    "body": "Earlier.\n\n<!-- code-monkey reply round=1 -->",
+                },
+                {"author": {"login": "maintainer"}, "body": f"{marker} is the marker"},
+            ],
+        }
+
+        def read(thread_id: str) -> list[dict[str, Any]]:
+            return threads[thread_id]
+
+        with (
+            patch.object(publish.revision_publish.threads_of, "read_thread", read),
+            patch.object(publish.revision_publish, "reply", return_value=None) as reply,
+            patch.object(
+                publish.revision_publish, "resolve", return_value=None
+            ) as resolve,
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        self.assertEqual([c.args[2] for c in reply.call_args_list], [101])
+        resolve.assert_called_once_with(REPOSITORY, "PRRT_1")
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(
+            stored["responded"],
+            {"replied": 1, "already": 1, "resolved": 1, "failed": 0},
+        )
+
     def test_a_failed_reply_is_a_warning_and_the_rest_proceed(self) -> None:
         """One refused write does not stop the others or fail the step."""
         check = self.write_check(revision_check())

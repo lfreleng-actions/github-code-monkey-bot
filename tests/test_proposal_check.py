@@ -1157,6 +1157,20 @@ class RevisionCheckTest(GitCase):
         self.assertTrue(check.pr_body.startswith(f"Closes #{ISSUE}\n"))
         self.assertIn("Round 2", check.pr_body)
 
+    @unittest.expectedFailure
+    def test_each_reply_ends_with_the_round_marker(self) -> None:
+        """The marker is what a rerun looks for before it posts a reply again."""
+        self.fixture.commit(
+            "Fix(readme): Correct typo", {"README.md": "# Repo\n\nfixed\n"}
+        )
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        (response,) = self.run_revision().responses
+        self.assertTrue(
+            response["reply"].endswith("\n\n<!-- code-monkey reply round=2 -->"),
+            response["reply"],
+        )
+
     def test_chain_rebased_onto_the_default_branch_head(self) -> None:
         """A chain on the recorded rebase commit is accepted and marked rebased."""
         run_git(self.fixture.agent, "fetch", "-q", str(self.fixture.upstream), "main")
