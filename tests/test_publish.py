@@ -369,6 +369,38 @@ class CommentBodyTest(unittest.TestCase):
                 text = comments.comment_body(result, "https://x/run") or ""
                 self.assertNotIn("round cap", text)
 
+    @unittest.expectedFailure
+    def test_agent_text_holds_no_html(self) -> None:
+        """Raw HTML in a summary or reason is text; it wraps no notice after it."""
+        summary = "<details><summary>Details</summary>Fixed <b>one</b>."
+        for result in (
+            result_json(
+                round=10,
+                round_summary=summary,
+                review=review_record("findings", assessment="changes"),
+            ),
+            result_json(verdict="handoff", round=10, round_summary=summary),
+            result_json(verdict="abstain", reasons=["<!-- hidden"]),
+            result_json(verdict="author-failed", reasons=[summary]),
+        ):
+            with self.subTest(verdict=result["verdict"]):
+                text = comments.comment_body(result, "https://x/run") or ""
+                self.assertNotIn("<", text)
+                self.assertIn("&lt;", text)
+        text = (
+            comments.comment_body(
+                result_json(
+                    round=10,
+                    round_summary=summary,
+                    review=review_record("findings", assessment="changes"),
+                ),
+                "",
+            )
+            or ""
+        )
+        self.assertIn("round cap of 10", text)
+        self.assertIn("Fixed &lt;b&gt;one&lt;/b&gt;.", text)
+
     def test_unrecognised_review_record_reads_as_pending(self) -> None:
         """A record the publisher does not know is never read as clean."""
         for record in (
