@@ -17,6 +17,7 @@ github = import_module("bot_github")
 reads = import_module("issue_reads")
 refs = import_module("branch_refs")
 revision = import_module("revision_publish")
+swap = import_module("branch_swap")
 policy = import_module("proposal_policy")
 
 BASE = "a" * 40
@@ -52,7 +53,7 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(github, "graphql", return_value={}) as gql,
             patch.object(refs, "delete_branch", return_value=None) as delete,
         ):
-            commits = revision.move_branch(Path("clone"), check())
+            commits = swap.move_branch(Path("clone"), check())
         self.assertEqual(commits, [NEW])
         create.assert_called_once_with(FORK, "code-monkey/issue-7-r3", BASE)
         self.assertEqual(replay.call_args.args[1]["branch"], "code-monkey/issue-7-r3")
@@ -83,7 +84,7 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(refs, "delete_branch", return_value=None) as delete,
             self.assertRaisesRegex(policy.Rejection, "head moved"),
         ):
-            revision.move_branch(Path("clone"), check())
+            swap.move_branch(Path("clone"), check())
         delete.assert_called_once()
 
     def test_other_failures_are_operational_and_clean_up(self) -> None:
@@ -96,7 +97,7 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(refs, "delete_branch", return_value=None) as delete,
             self.assertRaises(policy.PublishError),
         ):
-            revision.move_branch(Path("clone"), check())
+            swap.move_branch(Path("clone"), check())
         delete.assert_called_once()
 
     def test_leftover_scratch_branch_is_a_warning(self) -> None:
@@ -109,7 +110,7 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(github, "graphql", return_value={}),
             patch.object(refs, "delete_branch", return_value="branch x stays"),
         ):
-            revision.move_branch(Path("clone"), data)
+            swap.move_branch(Path("clone"), data)
         self.assertEqual(data["warnings"], ["branch x stays"])
 
     def swap_lost(
@@ -131,7 +132,7 @@ class MoveBranchTest(unittest.TestCase):
             patch.object(refs, "delete_branch", return_value=None),
         ):
             try:
-                commits = revision.move_branch(Path("clone"), data)
+                commits = swap.move_branch(Path("clone"), data)
             except (policy.PublishError, policy.Rejection) as exc:
                 data["error"] = exc
                 commits = None
@@ -147,13 +148,13 @@ class MoveBranchTest(unittest.TestCase):
         # Not applied: the branch is unchanged and the failure says so.
         data, commits = self.swap_lost(HEAD)
         self.assertIsNone(commits)
-        self.assertNotIsInstance(data["error"], revision.SwapUnknown)
+        self.assertNotIsInstance(data["error"], swap.SwapUnknown)
         # Another head, or no answer: the outcome is unknown and said to be.
         for state in ("b" * 40, github.GitHubError("unreachable")):
             with self.subTest(state=str(state)[:12]):
                 data, commits = self.swap_lost(state)
                 self.assertIsNone(commits)
-                self.assertIsInstance(data["error"], revision.SwapUnknown)
+                self.assertIsInstance(data["error"], swap.SwapUnknown)
                 self.assertIn("unknown", str(data["error"]))
 
     def test_only_the_mismatch_message_is_a_moved_head(self) -> None:
@@ -202,7 +203,7 @@ class ScratchBranchTest(unittest.TestCase):
             patch.object(refs, "delete_branch", return_value=None) as delete,
         ):
             try:
-                commits = revision.move_branch(Path("clone"), data)
+                commits = swap.move_branch(Path("clone"), data)
             except policy.PublishError as exc:
                 data["error"] = exc
                 commits = None
@@ -211,7 +212,6 @@ class ScratchBranchTest(unittest.TestCase):
         data["_matched"] = matches.called
         return data, commits, data.get("error")
 
-    @unittest.expectedFailure
     def test_a_created_scratch_branch_with_a_lost_reply_is_resumed(self) -> None:
         """The branch at the base is this attempt's: the replay goes on, with a note."""
         for create in (
@@ -226,7 +226,6 @@ class ScratchBranchTest(unittest.TestCase):
                 self.assertTrue(data["_deleted"])
                 self.assertTrue(any("resumed" in w for w in data["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_scratch_branch_already_replayed_is_adopted(self) -> None:
         """A branch carrying the round's verified chain needs no second replay."""
         rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")
@@ -236,7 +235,6 @@ class ScratchBranchTest(unittest.TestCase):
         self.assertFalse(data["_replayed"])
         self.assertTrue(data["_deleted"])
 
-    @unittest.expectedFailure
     def test_a_scratch_branch_of_unknown_content_is_kept(self) -> None:
         """Commits this run did not make are nobody's to delete; the ref is reported."""
         rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")
@@ -247,7 +245,6 @@ class ScratchBranchTest(unittest.TestCase):
         self.assertFalse(data["_deleted"])
         self.assertTrue(any("code-monkey/issue-7-r3" in w for w in data["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_create_that_left_no_branch_is_a_plain_failure(self) -> None:
         """No branch after the error means nothing was made; nothing is kept."""
         absent = github.GitHubError("Not Found (HTTP 404)", status=404)

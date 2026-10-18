@@ -1221,7 +1221,8 @@ scripts/thread_reads.py                  its review threads and their replies
 scripts/round_reads.py                   the issue's rounds and new comments
 scripts/revision_select.py               revision candidates and entries
 scripts/revision_check.py                a revision's offline checks
-scripts/revision_publish.py              branch move, replies, resolves
+scripts/branch_swap.py                   the compare-and-swap branch move
+scripts/revision_publish.py              the push, replies and resolves
 scripts/selection_choose.py              the cap, budget and one-per-repo rule
 prompt/revise.md                         the revision task (§20.2)
 tests/                                   unittest suite, offline
@@ -1818,7 +1819,13 @@ failure says the branch holds its old head; elsewhere, the
 compare-and-swap refusal, and that message alone, is the rejection,
 while any other error there, or no answer, is an outcome the result
 names unknown and never calls unchanged, so a human reads the fork
-before the next round. The
+before the next round. The publisher reads the temporary branch's
+own creation the same way when its reply is an error or the branch
+already exists: a branch at the base belongs to this attempt and the
+replay goes on; one carrying the round's verified chain holds an
+earlier attempt's finished replay, adopted; one holding anything else
+belongs to nobody the publisher may delete for, so the result names
+it and the move fails. The
 temporary branch goes
 whatever happens, and one the cleanup could not remove is a warning
 in the result whatever the swap's outcome. A `branches` run moves
