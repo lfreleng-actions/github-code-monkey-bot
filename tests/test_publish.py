@@ -717,6 +717,49 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertEqual(result["round"], 2)
         self.assertFalse(publish.needs_pull_request(result))
 
+    @unittest.expectedFailure
+    def test_retry_adopts_the_round_already_on_the_branch(self) -> None:
+        """A rerun after the swap succeeded finds its own chain and moves nothing.
+
+        The swap's beforeOid names the pre-round head, so replaying
+        again would refuse the bot's own earlier publication; the
+        branch that already holds the verified chain is adopted, as
+        the new-issue path adopts its branch, and the round goes on
+        to its replies and the review gate.
+        """
+        path = self.write_check(revision_check())
+        chain = ["c" * 40, NEW_HEAD]
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=chain) as matches,
+            patch.object(publish.revision_publish, "move_branch") as move,
+        ):
+            result = publish.run_push(self.push_args(path))
+        move.assert_not_called()
+        self.assertEqual(
+            matches.call_args.args,
+            (FORK, "code-monkey/issue-7", BASE, revision_check()["commits"], BOT),
+        )
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(result["commits"], chain)
+        self.assertEqual(
+            result["pull_request_url"], f"https://github.com/{REPOSITORY}/pull/41"
+        )
+        self.assertTrue(any("earlier attempt" in w for w in result["warnings"]))
+        # A branch holding anything else goes to the swap, which decides.
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(
+                publish.revision_publish, "move_branch", return_value=[NEW_HEAD]
+            ) as move,
+        ):
+            result = publish.run_push(self.push_args(path))
+        move.assert_called_once()
+        self.assertEqual(result["commits"], [NEW_HEAD])
+
     def test_moved_head_is_a_rejection_not_a_failure(self) -> None:
         """A head that changed since selection is refused, nothing forced."""
         path = self.write_check(revision_check())
