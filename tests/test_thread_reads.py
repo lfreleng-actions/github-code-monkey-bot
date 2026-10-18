@@ -56,6 +56,11 @@ def thread_page(nodes: list[dict[str, Any]], *, more: bool = False) -> dict[str,
     }
 
 
+def unpack(packet: Any) -> tuple[list[dict[str, Any]], int]:
+    """The packet's threads and dropped count, for the older assertions."""
+    return packet.threads, packet.dropped
+
+
 class ThreadsTest(unittest.TestCase):
     """Unresolved threads from Copilot or a maintainer, bounded."""
 
@@ -99,18 +104,19 @@ class ThreadsTest(unittest.TestCase):
             thread_page([thread(id="PRRT_5", comments={"nodes": []})]),
         ]
         with patch.object(github, "graphql", side_effect=pages):
-            kept, dropped = threads_of.unresolved_threads(REPO, 41)
-        self.assertEqual([t["thread_id"] for t in kept], ["PRRT_1", "PRRT_4"])
-        self.assertEqual(kept[0]["comment_id"], 100)
-        self.assertEqual(kept[1]["author"], "maintainer")
-        self.assertIsNone(kept[1]["line"])
+            kept, dropped = unpack(threads_of.unresolved_threads(REPO, 41))
+        # With no watermark the maintainer's thread goes first.
+        self.assertEqual([t["thread_id"] for t in kept], ["PRRT_4", "PRRT_1"])
+        self.assertEqual(kept[1]["comment_id"], 100)
+        self.assertEqual(kept[0]["author"], "maintainer")
+        self.assertIsNone(kept[0]["line"])
         self.assertEqual(dropped, 0)
 
     def test_bounds(self) -> None:
         """Over the count or byte budget, threads are dropped and counted."""
         nodes = [thread(id=f"PRRT_{i}") for i in range(threads_of.MAX_THREADS + 3)]
         with patch.object(github, "graphql", return_value=thread_page(nodes)):
-            kept, dropped = threads_of.unresolved_threads(REPO, 41)
+            kept, dropped = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertEqual(len(kept), threads_of.MAX_THREADS)
         self.assertEqual(dropped, 3)
         big = thread(
@@ -126,7 +132,7 @@ class ThreadsTest(unittest.TestCase):
             }
         )
         with patch.object(github, "graphql", return_value=thread_page([big])):
-            kept, _ = threads_of.unresolved_threads(REPO, 41)
+            kept, _ = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertEqual(len(kept[0]["body"].encode()), threads_of.MAX_THREAD_BODY)
 
     def test_replies_reach_the_packet(self) -> None:
@@ -166,7 +172,7 @@ class ThreadsTest(unittest.TestCase):
         ]
         node = thread(comments={"nodes": [opener, *replies]})
         with patch.object(github, "graphql", return_value=thread_page([node])):
-            kept, _ = threads_of.unresolved_threads(REPO, 41)
+            kept, _ = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertEqual(kept[0]["comment_id"], 100)
         self.assertEqual(kept[0]["body"], "Fix this.")
         self.assertEqual(
@@ -199,7 +205,7 @@ class ThreadsTest(unittest.TestCase):
         undated = {**answer, "databaseId": 103, "createdAt": 5}
         node = thread(comments={"nodes": [opener, answer, undated]})
         with patch.object(github, "graphql", return_value=thread_page([node])):
-            kept, _ = threads_of.unresolved_threads(REPO, 41)
+            kept, _ = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertIs(kept[0]["maintainer"], False)
         self.assertEqual(kept[0]["created_at"], "2026-10-02T00:00:00Z")
         self.assertEqual(
@@ -227,7 +233,7 @@ class ThreadsTest(unittest.TestCase):
         ]
         node = thread(comments={"nodes": [opener, *many]})
         with patch.object(github, "graphql", return_value=thread_page([node])):
-            kept, _ = threads_of.unresolved_threads(REPO, 41)
+            kept, _ = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertEqual(len(kept[0]["replies"]), threads_of.MAX_THREAD_REPLIES)
         self.assertEqual(kept[0]["replies"][-1]["body"], f"reply {len(many) - 1}")
         self.assertTrue(kept[0]["replies_dropped"])
@@ -256,7 +262,7 @@ class ThreadsTest(unittest.TestCase):
             for i in range(count)
         ]
         with patch.object(github, "graphql", return_value=thread_page(nodes)):
-            kept, dropped = threads_of.unresolved_threads(REPO, 41)
+            kept, dropped = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertLess(len(kept), count)
         self.assertEqual(len(kept) + dropped, count)
 
@@ -302,7 +308,7 @@ class ThreadsTest(unittest.TestCase):
         with patch.object(
             github, "graphql", side_effect=[thread_page([first]), later]
         ) as gql:
-            kept, _ = threads_of.unresolved_threads(REPO, 41)
+            kept, _ = unpack(threads_of.unresolved_threads(REPO, 41))
         self.assertEqual(
             [(r["author"], r["created_at"]) for r in kept[0]["replies"]],
             [("maintainer", "2026-10-04T01:00:00Z")],
@@ -343,7 +349,6 @@ class ThreadsTest(unittest.TestCase):
         ):
             threads_of.unresolved_threads(REPO, 41)
 
-    @unittest.expectedFailure
     def test_a_maintainers_word_is_heard_before_the_budget_cuts(self) -> None:
         """A reply on a thread the budget would drop still counts, and goes first."""
         since = "2026-10-03T00:00:00Z"

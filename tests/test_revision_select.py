@@ -62,16 +62,6 @@ def thread() -> dict[str, Any]:
     }
 
 
-def reply(created_at: str, *, maintainer: bool = True) -> dict[str, Any]:
-    """One later comment on a thread, a maintainer's unless said otherwise."""
-    return {
-        "author": "maintainer" if maintainer else "copilot-pull-request-reviewer",
-        "maintainer": maintainer,
-        "created_at": created_at,
-        "body": "No, do it." if maintainer else "Still open.",
-    }
-
-
 class RevisionCase(unittest.TestCase):
     """Every read patched with a healthy default."""
 
@@ -87,6 +77,9 @@ class RevisionCase(unittest.TestCase):
         }
         self.pull: dict[str, Any] | None = pull()
         self.threads: list[dict[str, Any]] = []
+        self.dropped = 0
+        self.thread_word = False
+        self.threads_since: list[str | None] = []
         self.review: dict[str, Any] | None = {"verdict": "clean"}
         self.rounds: tuple[int, list[dict[str, Any]], str | None, str | None] = (
             0,
@@ -137,9 +130,10 @@ class RevisionCase(unittest.TestCase):
         """The fixture pull request."""
         return self.pull
 
-    def threads_of(self, *_args: Any) -> tuple[list[dict[str, Any]], int]:
-        """The fixture threads."""
-        return self.threads, 0
+    def threads_of(self, *args: Any) -> Any:
+        """The fixture threads as a packet, noting the watermark asked for."""
+        self.threads_since.append(args[2] if len(args) > 2 else None)
+        return thread_reads.ThreadPacket(self.threads, self.dropped, self.thread_word)
 
     def review_of(self, *_args: Any) -> dict[str, Any] | None:
         """The fixture verdict."""
@@ -197,60 +191,25 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual(self.build(explicit=True)["round"], 3)
 
     def test_maintainer_reply_on_a_thread_resumes_after_a_handoff(self) -> None:
-        """A maintainer's word on the disputed thread itself is as good as a comment."""
+        """A maintainer's word on any unresolved thread, kept or dropped, resumes."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
-        disputed = thread()
-        # Copilot's own reply, or a maintainer's from before the
-        # handoff, resumes nothing.
-        disputed["replies"] = [
-            reply("2026-10-04T00:00:00Z", maintainer=False),
-            reply("2026-10-02T12:00:00Z"),
-        ]
-        self.threads = [disputed]
+        self.threads = [thread()]
         with self.assertRaisesRegex(select.Skip, "handed"):
             self.build(explicit=False)
-        disputed["replies"].append(reply("2026-10-04T01:00:00Z"))
+        # The thread reads heard a maintainer since the watermark, on a
+        # thread the bounded packet may or may not carry.
+        self.thread_word = True
+        self.dropped = 1
         entry = self.build(explicit=False)
         self.assertEqual(entry["round"], 3)
-        self.assertTrue(
-            any(
-                "review thread" in r and "maintainer" in r
-                for r in entry["round_reasons"]
-            )
-        )
-        # A thread a maintainer opened after the handoff counts the same.
-        opened = thread()
-        opened.update(
-            thread_id="PRRT_9",
-            author="maintainer",
-            maintainer=True,
-            created_at="2026-10-05T00:00:00Z",
-        )
-        self.threads = [thread(), opened]
-        self.assertEqual(self.build(explicit=False)["round"], 3)
-
-    def test_nothing_outstanding_is_skipped_on_a_scan(self) -> None:
-        """A clean head with no threads and no new comment needs no round."""
-        with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
-            self.build(explicit=False)
-
-    def test_explicit_ignores_the_outstanding_test(self) -> None:
-        """An operator's choice is reason enough."""
-        entry = self.build(explicit=True)
-        self.assertEqual(entry["round_reasons"], ["named by the operator"])
-
-    def test_each_outstanding_reason(self) -> None:
-        """Findings on the head, and a newer maintainer comment, each count."""
-        self.review = {"verdict": "findings"}
         self.assertIn(
-            "Copilot's review of the head has findings",
-            self.build(explicit=False)["round_reasons"],
+            "a maintainer commented on a review thread since the last round",
+            entry["round_reasons"],
         )
-        self.review = None
-        self.newer = True
-        reasons = self.build(explicit=False)["round_reasons"]
-        self.assertEqual(len(reasons), 2)
-        self.assertTrue(all("maintainer commented" in r for r in reasons))
+        self.assertIn("2 unresolved review thread(s)", entry["round_reasons"])
+        self.assertEqual(entry["threads_dropped"], 1)
+        # The reads were asked with the watermark, so they could tell.
+        self.assertEqual(self.threads_since[-1], "2026-10-03T00:00:00Z")
 
     def test_round_cap_and_safety(self) -> None:
         """The cap, a foreign pull request and an unusable repository all skip."""

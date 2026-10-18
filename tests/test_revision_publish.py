@@ -137,7 +137,6 @@ class MoveBranchTest(unittest.TestCase):
         read.assert_called_once_with(FORK, "code-monkey/issue-7")
         return data, commits
 
-    @unittest.expectedFailure
     def test_a_lost_swap_reply_is_reconciled_from_the_branch(self) -> None:
         """The fork branch, not the error, says whether the swap applied."""
         # Applied: the move stands, with a warning that the reply was lost.

@@ -1735,7 +1735,10 @@ the unresolved threads with the ids a reply and a resolve need and
 the newest replies from Copilot or a maintainer on each, read from
 the whole thread page by page so a crowd of passers-by hides no
 maintainer's answer, since that answer is an instruction as much as
-a comment on the pull request is, the
+a comment on the pull request is. The reads take in every thread
+that counts before the packet's bounds apply, so they hear a
+maintainer's word after the watermark whichever thread holds it, and
+the threads holding one go first into the bounded packet. The entry carries the
 head's review verdict, the maintainers' comments on the pull request,
 the maintainers' comments on the issue and the pull request since the
 last round, newest first within the bounds and one oversized comment
@@ -1787,7 +1790,14 @@ which signs every commit, then moves `code-monkey/issue-<n>` to the new
 head with `updateRefs`, `beforeOid` set to the recorded head and
 `force: true`: GitHub refuses the move when the branch no longer
 holds that head, and the publisher records a rejection rather than
-force over work the run did not see. The temporary branch goes
+force over work the run did not see. When the swap answers with an
+error the publisher reads the branch itself, since GitHub may apply
+the move and then lose the reply: at the new tip the move stands,
+with a warning; at the recorded head the move did not happen and the
+failure says the branch holds its old head; any other head, or no
+answer, is an outcome the result names unknown and never calls
+unchanged, so a human reads the fork before the next round. The
+temporary branch goes
 whatever happens, and one the cleanup could not remove is a warning
 in the result whatever the swap's outcome. A `branches` run moves
 nothing: a revision publishes in `pull-requests` mode alone, where

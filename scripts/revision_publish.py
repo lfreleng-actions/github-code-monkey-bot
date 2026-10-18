@@ -22,6 +22,7 @@ from typing import Any, NoReturn, cast
 
 import bot_github as github
 import branch_refs as refs
+import issue_reads as reads
 import proposal_model as model
 from proposal_policy import PublishError, Rejection
 
@@ -35,6 +36,14 @@ mutation($id: ID!) {
   resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
 }
 """
+
+
+class SwapUnknown(PublishError):
+    """The swap's reply was lost and the branch does not say what happened.
+
+    The caller must not report the branch unchanged: a human reads the
+    fork before the next round.
+    """
 
 
 def temporary_branch(check: dict[str, Any]) -> str:
@@ -83,13 +92,51 @@ def move_branch(clone: Path, check: dict[str, Any]) -> list[str]:
                 raise Rejection(
                     f"head moved from {expected[:7]} since selection; nothing forced"
                 ) from exc
-            raise PublishError(f"updateRefs failed: {exc}") from exc
+            reconcile_swap(fork, branch, expected, commits[-1], check, exc)
         return commits
     finally:
         leftover = refs.delete_branch(fork, scratch)
         if leftover:
             # The swap outcome stands; the scratch branch costs a look.
             cast("list[Any]", check.setdefault("warnings", [])).append(leftover)
+
+
+def reconcile_swap(
+    fork: str,
+    branch: str,
+    expected: str,
+    tip: str,
+    check: dict[str, Any],
+    exc: github.GitHubError,
+) -> None:
+    """Read the branch after a swap whose reply was an error, and decide.
+
+    GitHub may apply ``updateRefs`` and then time out on the reply.
+    The branch at the new tip means the move stands and publication
+    goes on, with a warning; at the recorded head it means the move
+    did not happen and the branch is unchanged. Any other head, or no
+    answer, is an outcome this run cannot name, and it says so rather
+    than claim the branch unchanged.
+    """
+    try:
+        head = reads.branch_head(fork, branch)
+    except github.GitHubError as lookup:
+        raise SwapUnknown(
+            f"updateRefs failed ({exc}) and the branch could not be read "
+            f"({lookup}): outcome unknown"
+        ) from exc
+    if head == tip:
+        cast("list[Any]", check.setdefault("warnings", [])).append(
+            f"updateRefs answered with an error ({exc}) but the branch holds the "
+            "new head; the reply was lost and the move stands"
+        )
+        return
+    if head == expected:
+        raise PublishError(f"updateRefs failed: {exc}") from exc
+    raise SwapUnknown(
+        f"updateRefs failed ({exc}) and the branch reads as {head[:7]}, neither "
+        "head: outcome unknown"
+    ) from exc
 
 
 def reply(repository: str, pull_number: int, comment_id: int, body: str) -> None:
@@ -166,7 +213,12 @@ def run_push(
         # fail() writes the result before raising: the cleanup warning
         # must be on it by then.
         warnings.extend(added_warnings(check, len(carried)))
-        fail(args, result, f"{exc}; the pull request branch is unchanged", exc)
+        state = (
+            ""
+            if isinstance(exc, SwapUnknown)
+            else "; the pull request branch is unchanged"
+        )
+        fail(args, result, f"{exc}{state}", exc)
     else:
         # A scratch branch the cleanup could not remove is reported
         # whatever the swap's outcome; the rejection path adds it too.

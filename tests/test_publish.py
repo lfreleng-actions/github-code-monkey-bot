@@ -895,7 +895,6 @@ class HandoffTest(NoNetworkCase):
         self.assertIn("branch x stays", written["warnings"])
         self.assertTrue(any("unchanged" in r for r in written["reasons"]))
 
-    @unittest.expectedFailure
     def test_an_unknown_swap_outcome_is_not_called_unchanged(self) -> None:
         """When the branch may have moved, the failure says so rather than deny it."""
         path = self.write_check(revision_check())

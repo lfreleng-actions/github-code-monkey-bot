@@ -38,7 +38,7 @@ class Skip(Exception):
 def outstanding(
     pull: dict[str, Any],
     verdict: dict[str, Any] | None,
-    threads: list[dict[str, Any]],
+    packet: thread_reads.ThreadPacket,
     *,
     repository: str,
     issue: int,
@@ -51,38 +51,23 @@ def outstanding(
     when a maintainer commented on the issue or the pull request
     after the bot's last round. A maintainer's word on a review thread
     after that round, an opener or a reply, counts as a comment, since
-    the issue and pull request comments do not carry it. A head with
-    no review yet is left for the gate to await, and a clean head with
-    nothing else is done.
+    the issue and pull request comments do not carry it; the thread
+    reads heard it over every thread, the packet's bounds aside. A
+    head with no review yet is left for the gate to await, and a clean
+    head with nothing else is done.
     """
     reasons: list[str] = []
-    if threads:
-        reasons.append(f"{len(threads)} unresolved review thread(s)")
+    total = len(packet.threads) + packet.dropped
+    if total:
+        reasons.append(f"{total} unresolved review thread(s)")
     if verdict is not None and verdict.get("verdict") == "findings":
         reasons.append("Copilot's review of the head has findings")
     for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
         if rounds_of.newer_member_comment(repository, number, since):
             reasons.append(f"a maintainer commented on the {what} since the last round")
-    if maintainer_spoke_on_a_thread(threads, since):
+    if packet.maintainer_since:
         reasons.append("a maintainer commented on a review thread since the last round")
     return reasons
-
-
-def maintainer_spoke_on_a_thread(
-    threads: list[dict[str, Any]], since: str | None
-) -> bool:
-    """Whether a maintainer opened or answered an unresolved thread after ``since``."""
-    for thread in threads:
-        replies = cast("list[dict[str, Any]]", thread.get("replies") or [])
-        for comment in (thread, *replies):
-            created = comment.get("created_at")
-            if (
-                comment.get("maintainer") is True
-                and isinstance(created, str)
-                and (since is None or created > since)
-            ):
-                return True
-    return False
 
 
 def build_entry(
@@ -122,11 +107,11 @@ def build_entry(
         raise Skip(
             f"round cap of {revisions.MAX_ROUNDS} reached; a human must take over"
         )
-    threads, threads_dropped = thread_reads.unresolved_threads(repository, pull_number)
+    packet = thread_reads.unresolved_threads(repository, pull_number, since)
     verdict = revisions.latest_review(repository, pull_number, str(pull["head_sha"]))
     if not explicit:
         reasons = outstanding(
-            pull, verdict, threads, repository=repository, issue=issue, since=since
+            pull, verdict, packet, repository=repository, issue=issue, since=since
         )
         if not reasons:
             raise Skip("nothing outstanding")
@@ -168,8 +153,8 @@ def build_entry(
         "round": highest + 1,
         "round_reasons": reasons,
         "rounds": rounds,
-        "threads": threads,
-        "threads_dropped": threads_dropped,
+        "threads": packet.threads,
+        "threads_dropped": packet.dropped,
         "review": verdict,
         **conversation(repository, issue, pull_number, since),
     }

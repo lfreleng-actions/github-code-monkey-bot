@@ -12,6 +12,7 @@ word on the thread itself (DESIGN.md section 20).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, cast
 
 import bot_github as github
@@ -73,19 +74,33 @@ query($id: ID!, $after: String) {{
 """
 
 
+@dataclass(frozen=True)
+class ThreadPacket:
+    """The unresolved threads the packet carries, and what the whole set said."""
+
+    threads: list[dict[str, Any]]
+    # Threads that count but the bounds left out.
+    dropped: int
+    # Whether a maintainer opened or answered any thread that counts,
+    # kept or dropped, after the watermark the caller gave.
+    maintainer_since: bool
+
+
 def unresolved_threads(
-    repository: str, number: int
-) -> tuple[list[dict[str, Any]], int]:
-    """The unresolved review threads worth answering, bounded, and the count dropped.
+    repository: str, number: int, since: str | None = None
+) -> ThreadPacket:
+    """The unresolved review threads worth answering, bounded, read whole first.
 
     A thread counts when its opening comment comes from Copilot or a
     maintainer. Each carries the ids the publisher needs to reply and
-    resolve, and the body as data for the agent.
+    resolve, and the body as data for the agent. Every thread that
+    counts is read before the bounds apply, so a maintainer's word
+    after ``since`` is heard whichever thread holds it, and the
+    threads holding one go first into the packet: the instruction
+    that brings a round reaches the agent.
     """
     owner, _, name = repository.partition("/")
-    kept: list[dict[str, Any]] = []
-    dropped = 0
-    total = 0
+    found: list[dict[str, Any]] = []
     after: str | None = None
     while True:
         data = github.graphql(
@@ -96,20 +111,50 @@ def unresolved_threads(
         threads = thread_connection(data)
         for node in cast("list[Any]", threads.get("nodes") or []):
             thread = thread_entry(node)
-            if thread is None:
-                continue
-            size = thread_size(thread)
-            if len(kept) >= MAX_THREADS or total + size > MAX_THREAD_BYTES:
-                dropped += 1
-                continue
-            total += size
-            kept.append(thread)
+            if thread is not None:
+                found.append(thread)
         page = threads.get("pageInfo")
         if not isinstance(page, dict) or not cast("dict[str, Any]", page).get(
             "hasNextPage"
         ):
-            return kept, dropped
+            break
         after = str(cast("dict[str, Any]", page).get("endCursor"))
+    spoken = [t for t in found if maintainer_spoke(t, since)]
+    quiet = [t for t in found if not maintainer_spoke(t, since)]
+    kept, dropped = bounded(spoken + quiet)
+    return ThreadPacket(kept, dropped, bool(spoken))
+
+
+def bounded(threads: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """The first threads that fit the count and byte bounds, and the count left out."""
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    total = 0
+    for thread in threads:
+        size = thread_size(thread)
+        if len(kept) >= MAX_THREADS or total + size > MAX_THREAD_BYTES:
+            dropped += 1
+            continue
+        total += size
+        kept.append(thread)
+    return kept, dropped
+
+
+def maintainer_spoke(thread: dict[str, Any], since: str | None) -> bool:
+    """Whether a maintainer opened or answered the thread after ``since``.
+
+    None for ``since`` means any maintainer's word counts, and a
+    comment GitHub dates oddly counts as after the watermark, as the
+    issue comments do.
+    """
+    replies = cast("list[dict[str, Any]]", thread.get("replies") or [])
+    for comment in (thread, *replies):
+        if comment.get("maintainer") is not True:
+            continue
+        created = comment.get("created_at")
+        if since is None or not isinstance(created, str) or created > since:
+            return True
+    return False
 
 
 def thread_connection(data: dict[str, Any]) -> dict[str, Any]:
