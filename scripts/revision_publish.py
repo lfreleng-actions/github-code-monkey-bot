@@ -197,10 +197,9 @@ def run_push(
     carried = list(cast("list[str]", check.get("warnings") or []))
     warnings.extend(carried)
     if result["verdict"] == "handoff":
-        if not args.dry_run and args.mode != "select":
-            handoff_head_check(args, check, result, fail=fail)
-        if result["verdict"] == "handoff":
-            result["pull_request_url"] = str(check["pull_request_url"])
+        # The step holds no token for a handoff, so the head check
+        # waits for respond, which has the pull request token.
+        result["pull_request_url"] = str(check["pull_request_url"])
         return result
     if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
         return result
@@ -247,33 +246,35 @@ def added_warnings(check: dict[str, Any], seen: int) -> list[str]:
     return list(cast("list[str]", check.get("warnings") or []))[seen:]
 
 
-def handoff_head_check(
-    args: argparse.Namespace,
-    check: dict[str, Any],
-    result: dict[str, Any],
-    *,
-    fail: Callable[[argparse.Namespace, dict[str, Any], str, Exception], NoReturn],
-) -> None:
-    """Refuse a handoff whose pull request head moved during the session.
+def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
+    """Whether the handoff may answer: the pull request head is the recorded one.
 
     A proposal's swap refuses a moved head by itself; a handoff moves
-    nothing, so the guard is this read. Replies written against code
-    a maintainer has since replaced answer the wrong head, and the
-    handoff's footer would pause the rounds on a head the agent never
-    weighed. A head that cannot be read is a failure, not a handoff
-    taken on trust.
+    nothing, so the guard is this read, with the pull request token.
+    Replies written against code a maintainer has since replaced
+    answer the wrong head, and the handoff's footer would pause the
+    rounds on a head the agent never weighed: a moved head is a
+    rejection. A head that cannot be read is a failure, not a
+    handoff taken on trust; the result records it before the raise.
     """
     expected = str(check["head_sha"])
     try:
         head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
     except github.GitHubError as exc:
-        fail(args, result, f"could not read the pull request head: {exc}", exc)
-    if head != expected:
-        result["verdict"] = "rejected"
+        result["verdict"] = "publish-failed"
         cast("list[str]", result["reasons"]).append(
-            f"head moved from {expected[:7]} to {head[:7]} since selection; the "
-            "handoff answers code the agent did not see"
+            f"could not read the pull request head: {github.safe_message(exc)}"
         )
+        return False
+    if head == expected:
+        return True
+    result["verdict"] = "rejected"
+    result["pull_request_url"] = None
+    cast("list[str]", result["reasons"]).append(
+        f"head moved from {expected[:7]} to {head[:7]} since selection; the "
+        "handoff answers code the agent did not see"
+    )
+    return False
 
 
 def run_respond(args: argparse.Namespace) -> None:
@@ -294,6 +295,8 @@ def run_respond(args: argparse.Namespace) -> None:
     answering = check.get("task") == "revise" and (
         (verdict == "proposed" and result.get("commits")) or verdict == "handoff"
     )
+    if answering and verdict == "handoff" and not handoff_head(check, result):
+        answering = False
     if answering:
         repository = str(check["repository"])
         number = int(check["pull_number"])
@@ -326,3 +329,5 @@ def run_respond(args: argparse.Namespace) -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"respond: {counts}")
+    if result.get("verdict") == "publish-failed":
+        raise PublishError(str(cast("list[str]", result["reasons"])[-1]))

@@ -744,11 +744,13 @@ class HandoffTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork") as fork,
             patch.object(publish.revision_publish, "move_branch") as move,
-            patch.object(review, "pull_head", return_value=HEAD),
+            patch.object(review, "pull_head") as head,
         ):
             result = publish.run_push(self.push_args(path))
         fork.assert_not_called()
         move.assert_not_called()
+        # No token in the push step for a handoff: no read either.
+        head.assert_not_called()
         self.assertEqual(result["verdict"], "handoff")
         self.assertEqual(
             result["pull_request_url"], f"https://github.com/{REPOSITORY}/pull/41"
@@ -808,8 +810,9 @@ class HandoffTest(NoNetworkCase):
                         str(result),
                     ]
                 )
-            except policy.PublishError as exc:
-                error: Exception | None = exc
+            except SystemExit as exc:
+                # main() turns a PublishError into the step's failure.
+                error: BaseException | None = exc
             else:
                 error = None
         read.assert_called_once_with(REPOSITORY, 41)
@@ -818,7 +821,6 @@ class HandoffTest(NoNetworkCase):
         stored["_error"] = error
         return stored
 
-    @unittest.expectedFailure
     def test_a_handoff_for_a_moved_head_is_refused(self) -> None:
         """A push during the session makes the handoff stale: rejected, not posted.
 
@@ -839,7 +841,7 @@ class HandoffTest(NoNetworkCase):
         stored = self.respond_handoff(github.GitHubError("unreachable"))
         self.assertEqual(stored["verdict"], "publish-failed")
         self.assertEqual(stored["_replied"], 0)
-        self.assertIsInstance(stored["_error"], policy.PublishError)
+        self.assertIsInstance(stored["_error"], SystemExit)
 
     def test_respond_posts_replies_for_a_handoff(self) -> None:
         """Replies reach the threads, nothing is resolved, the body is left alone."""
@@ -874,6 +876,7 @@ class HandoffTest(NoNetworkCase):
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(publish.revision_publish, "resolve") as resolve,
             patch.object(publish.revision_publish, "update_pull_request") as update,
+            patch.object(review, "pull_head", return_value=HEAD),
             redirect_stdout(io.StringIO()),
         ):
             publish.main(
@@ -942,7 +945,6 @@ class HandoffTest(NoNetworkCase):
                 self.subTest(verdict=check["verdict"], mode=mode, dry_run=dry_run),
                 patch.object(refs, "ensure_fork"),
                 patch.object(publish.revision_publish, "move_branch"),
-                patch.object(review, "pull_head", return_value=HEAD),
             ):
                 path = self.write_check(check)
                 result = publish.run_push(
