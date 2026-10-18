@@ -789,6 +789,25 @@ class RevisionContracts(ReusableWorkflowCase):
         mint = self.step("publish", "pr-token")
         self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
 
+    def test_a_handoff_reaches_push_without_a_token(self) -> None:
+        """Both fork mints need a proposal, so a handoff's push step holds no token.
+
+        Any GitHub read a handoff needs, the head check above all,
+        therefore belongs in ``respond``, which holds the pull request
+        token; the push step must stay offline for a handoff.
+        """
+        for identity in ("fork-token", "fork-create-token"):
+            condition = unwrap(str(self.step("publish", identity)["if"]))
+            self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        push = self.step("publish", "push")
+        self.assertEqual(
+            unwrap(str(push["env"]["GH_TOKEN"])),
+            "steps.fork-token.outputs.token || steps.fork-create-token.outputs.token",
+        )
+        self.assertNotIn("github.token", str(push["env"]["GH_TOKEN"]))
+        respond = self.step("publish", "respond")
+        self.assertNotIn("steps.check.outputs.verdict", str(respond["if"]))
+
     def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
         """head_sha and task are checked before any step reads them."""
         guard = flatten(self.step("publish", "Require trusted provenance")["run"])

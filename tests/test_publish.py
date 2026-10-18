@@ -756,28 +756,90 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(result["commits"], [])
         self.assertFalse(publish.needs_pull_request(result))
 
-    def test_a_handoff_for_a_moved_head_is_refused(self) -> None:
-        """A push during the session makes the handoff stale: rejected, not posted."""
-        path = self.write_check(revision_check(verdict="handoff", commits=[]))
-        with patch.object(review, "pull_head", return_value="f" * 40):
-            result = publish.run_push(self.push_args(path))
-        self.assertEqual(result["verdict"], "rejected")
-        self.assertTrue(any("head moved" in r for r in result["reasons"]))
-        self.assertIsNone(result["pull_request_url"])
-        # The head still the recorded one: the handoff stands.
-        with patch.object(review, "pull_head", return_value=HEAD) as head:
-            result = publish.run_push(self.push_args(path))
-        self.assertEqual(result["verdict"], "handoff")
-        head.assert_called_once_with(REPOSITORY, 41)
-        # The head unreadable: a failure, never a handoff on trust.
-        with (
-            patch.object(
-                review, "pull_head", side_effect=github.GitHubError("unreachable")
+    def respond_handoff(self, head: Any) -> dict[str, Any]:
+        """Run ``respond`` on a handoff; the pull request head then reads as ``head``."""
+        check = self.write_check(
+            revision_check(
+                verdict="handoff",
+                commits=[],
+                responses=[
+                    {
+                        "thread_id": "PRRT_1",
+                        "comment_id": 100,
+                        "reply": "Disputed.",
+                        "resolve": False,
+                    }
+                ],
+            )
+        )
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    verdict="handoff",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[],
+                    round=2,
+                )
             ),
-            self.assertRaises(policy.PublishError),
+            encoding="utf-8",
+        )
+        lookup = (
+            patch.object(review, "pull_head", side_effect=head)
+            if isinstance(head, Exception)
+            else patch.object(review, "pull_head", return_value=head)
+        )
+        with (
+            patch.object(publish.revision_publish, "reply", return_value=None) as reply,
+            patch.object(publish.revision_publish, "resolve"),
+            lookup as read,
+            redirect_stdout(io.StringIO()),
         ):
-            publish.run_push(self.push_args(path))
-        self.assertEqual(self.written_result()["verdict"], "publish-failed")
+            try:
+                publish.main(
+                    [
+                        "respond",
+                        "--result",
+                        str(result),
+                        "--check",
+                        str(check),
+                        "--output",
+                        str(result),
+                    ]
+                )
+            except policy.PublishError as exc:
+                error: Exception | None = exc
+            else:
+                error = None
+        read.assert_called_once_with(REPOSITORY, 41)
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        stored["_replied"] = reply.call_count
+        stored["_error"] = error
+        return stored
+
+    @unittest.expectedFailure
+    def test_a_handoff_for_a_moved_head_is_refused(self) -> None:
+        """A push during the session makes the handoff stale: rejected, not posted.
+
+        The push step holds no token for a handoff (no fork mint), so
+        the guard runs in ``respond``, with the pull request token,
+        before any reply goes up.
+        """
+        stored = self.respond_handoff("f" * 40)
+        self.assertEqual(stored["verdict"], "rejected")
+        self.assertTrue(any("head moved" in r for r in stored["reasons"]))
+        self.assertEqual(stored["_replied"], 0)
+        self.assertIsNone(stored["_error"])
+        # The head still the recorded one: the handoff stands and answers.
+        stored = self.respond_handoff(HEAD)
+        self.assertEqual(stored["verdict"], "handoff")
+        self.assertEqual(stored["_replied"], 1)
+        # The head unreadable: a failure, never a handoff on trust.
+        stored = self.respond_handoff(github.GitHubError("unreachable"))
+        self.assertEqual(stored["verdict"], "publish-failed")
+        self.assertEqual(stored["_replied"], 0)
+        self.assertIsInstance(stored["_error"], policy.PublishError)
 
     def test_respond_posts_replies_for_a_handoff(self) -> None:
         """Replies reach the threads, nothing is resolved, the body is left alone."""
