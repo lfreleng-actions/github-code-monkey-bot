@@ -226,6 +226,26 @@ class ScratchBranchTest(unittest.TestCase):
                 self.assertTrue(data["_deleted"])
                 self.assertTrue(any("resumed" in w for w in data["warnings"]))
 
+    @unittest.expectedFailure
+    def test_a_lost_create_reply_through_the_real_wrapper_is_resumed(self) -> None:
+        """create_branch wraps the API error; the wrapped form is read back too."""
+        data = check(bot_login="code-monkey[bot]")
+        with (
+            patch.object(
+                github, "api_write", side_effect=github.GitHubError("timed out")
+            ),
+            patch.object(reads, "branch_head", return_value=BASE),
+            patch.object(refs, "replay_commits", return_value=[NEW]) as replay,
+            patch.object(github, "api_object", return_value={"node_id": "R_1"}),
+            patch.object(github, "graphql", return_value={}),
+            patch.object(refs, "delete_branch", return_value=None) as delete,
+        ):
+            commits = swap.move_branch(Path("clone"), data)
+        self.assertEqual(commits, [NEW])
+        replay.assert_called_once()
+        delete.assert_called_once()
+        self.assertTrue(any("resumed" in w for w in data["warnings"]))
+
     def test_a_scratch_branch_already_replayed_is_adopted(self) -> None:
         """A branch carrying the round's verified chain needs no second replay."""
         rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")
