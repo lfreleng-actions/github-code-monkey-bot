@@ -1132,7 +1132,6 @@ class RunRespondTest(NoNetworkCase):
             {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
 
-    @unittest.expectedFailure
     def test_rerun_posts_no_reply_twice(self) -> None:
         """A retry finds the round's reply already on a thread and posts it no more.
 
@@ -1211,7 +1210,6 @@ class RunRespondTest(NoNetworkCase):
             {"replied": 1, "already": 1, "resolved": 1, "failed": 0},
         )
 
-    @unittest.expectedFailure
     def test_a_thread_too_long_to_read_is_a_warning(self) -> None:
         """A bounded read that fails leaves its thread alone; the rest go on."""
         check = self.write_check(revision_check())

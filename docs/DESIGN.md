@@ -1824,13 +1824,17 @@ the replies and the review gate follow. The fork mint is the
 existing one; no new permission.
 
 With the pull request token, `respond` posts each reply on its thread
-prefixed with the AI disclosure and ending in a round marker,
+prefixed with the AI disclosure and ending in a marker that names
+the round and the session, through the selection's read time,
 resolves the threads the agent
 marked fixed, and replaces the title and body with the composed
 ones, keeping the publisher's header. One refused write is a warning
-and the rest proceed. A rerun reads each thread first and posts no
+and the rest proceed, as is a thread grown too long for the bounded
+read. A rerun reads each thread first and posts no
 reply whose marker a bot comment there already ends with, so a
-failure after the replies notifies no reviewer twice; the resolve
+failure after the replies notifies no reviewer twice, while a later
+session at the same round number, one whose predecessor left no
+footer, posts its own; the resolve
 still runs, since one lost after the reply is its own retry.
 and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,

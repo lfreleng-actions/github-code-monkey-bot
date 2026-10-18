@@ -375,7 +375,9 @@ def run_respond(args: argparse.Namespace) -> None:
     if answering:
         repository = str(check["repository"])
         number = int(check["pull_number"])
-        marker = reply_marker(int(check.get("round") or 0))
+        marker = reply_marker(
+            int(check.get("round") or 0), str(check.get("collected_at") or "")
+        )
         for response in cast("list[dict[str, Any]]", check.get("responses") or []):
             thread = str(response["thread_id"])
             try:
@@ -385,7 +387,9 @@ def run_respond(args: argparse.Namespace) -> None:
                     dict(response, marker=marker, bot_login=str(check["bot_login"])),
                     counts,
                 )
-            except github.GitHubError as exc:
+            except (github.GitHubError, reads.SelectionError) as exc:
+                # A refused write, or a thread too long for the bounded
+                # read: this thread is left alone and the rest go on.
                 counts["failed"] += 1
                 warnings.append(f"thread {thread}: {github.safe_message(exc)}")
         if verdict == "proposed":
