@@ -219,6 +219,9 @@ def pull_request_for_branch(
 
 
 Builder = Callable[[], dict[str, Any] | None]
+# A round to build, with the repository it belongs to named up front,
+# so the one-per-repository rule applies before the packet is read.
+Round = tuple[str, Builder]
 
 
 def scan(
@@ -229,18 +232,20 @@ def scan(
     skipped: dict[str, int],
     skipped_issues: list[dict[str, str]],
     allowed: Callable[[str], bool] | None = None,
-) -> list[Builder]:
+) -> list[Round]:
     """A builder per bot pull request in the owner, oldest first, read on demand.
 
     The search is one read; building an entry is many. Each builder
     reads its pull request when called and returns the entry, or None
     after recording the skip, so the caller's budget decides what is
-    read at all. ``allowed`` is the run's repository policy, by
-    lower-cased name; a hit outside it gets no builder.
+    read at all; the repository beside it lets the budget refuse a
+    second round of one repository unread. ``allowed`` is the run's
+    repository policy, by lower-cased name; a hit outside it gets no
+    builder.
     """
     slug = str(bot["login"]).removesuffix("[bot]")
     found = revisions.search_bot_pull_requests(org, slug)
-    builders: list[Builder] = []
+    builders: list[Round] = []
     for hit in sorted(found, key=lambda h: (str(h["created_at"]), int(h["number"]))):
         repo_name = str(hit["repository"]).partition("/")[2]
         if allowed is not None and not allowed(repo_name.lower()):
@@ -261,7 +266,7 @@ def scan(
                     skipped_issues.append({"issue": reference, "reason": str(exc)})
                 return None
 
-        builders.append(build)
+        builders.append((str(hit["repository"]), build))
     return builders
 
 
@@ -288,9 +293,9 @@ class Rounds:
         self.skipped, self.skipped_issues = skips
         self.allowed = allowed
 
-    def named(self, pulls: list[tuple[str, int]]) -> list[Builder]:
+    def named(self, pulls: list[tuple[str, int]]) -> list[Round]:
         """A builder per pull request the operator named; a miss is a named skip."""
-        builders: list[Builder] = []
+        builders: list[Round] = []
         for repo_name, number in pulls:
 
             def build(
@@ -315,10 +320,10 @@ class Rounds:
                     )
                     return None
 
-            builders.append(build)
+            builders.append((f"{self.org}/{repo_name}", build))
         return builders
 
-    def scan(self) -> list[Builder]:
+    def scan(self) -> list[Round]:
         """Builders for the owner's bot pull requests, when enabled."""
         if not self.enabled:
             return []

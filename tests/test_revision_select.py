@@ -332,7 +332,7 @@ class ScanTest(RevisionCase):
             )
         # Nothing is read until a builder is called: the budget decides first.
         self.assertEqual(calls, [])
-        entries = [entry for build in builders if (entry := build()) is not None]
+        entries = [entry for _, build in builders if (entry := build()) is not None]
         self.assertEqual(calls, [40, 41, 9])
         self.assertEqual([e["pull_request"]["number"] for e in entries], [40, 41])
         self.assertEqual(skipped["revision"], 1)
@@ -364,7 +364,7 @@ class ScanTest(RevisionCase):
                 skipped_issues=[],
                 allowed=alpha_alone,
             )
-        entries = [entry for build in builders if (entry := build()) is not None]
+        entries = [entry for _, build in builders if (entry := build()) is not None]
         self.assertEqual(len(entries), 1)
         self.assertEqual(reads_made, [41])
 

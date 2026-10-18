@@ -1704,8 +1704,11 @@ Three ways in, all through the select job and its read token:
   no round; and after a handoff (§20.3) the disputed threads bring no
   round on their own, a maintainer's comment does. Revisions come
   before new issues, oldest first, under the same cap and the same
-  one-per-repository rule, and a pull request past the cap costs no
-  reads: the selection builds a candidate when the budget has room.
+  one-per-repository rule, and a pull request past the cap, or a
+  second one of a repository already chosen, costs no
+  reads: the selection builds a candidate when the budget has room
+  for it, so a failed read of a round it could not admit aborts
+  nothing.
   Revisions select in `pull-requests` mode alone, named ones included,
   since a `branches` run publishes none.
 

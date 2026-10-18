@@ -594,8 +594,8 @@ class RevisionIntegrationTest(NoSubprocessCase):
             revision_select,
             "scan",
             return_value=[
-                builder(self.revision("alpha", 41, 7)),
-                builder(self.revision("beta", 9, 2)),
+                ("org/alpha", builder(self.revision("alpha", 41, 7))),
+                ("org/beta", builder(self.revision("beta", 9, 2))),
             ],
         ).start()
         selection, _ = select.build_selection(self.args("--max-pull-requests", "1"))
@@ -609,7 +609,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
             select.build_selection(self.args_mode("branches"))
         scan.assert_not_called()
 
-    @unittest.expectedFailure
     def test_scan_reads_no_second_pull_request_of_a_chosen_repository(self) -> None:
         """A repository with a round chosen has its later rounds passed over unread.
 
