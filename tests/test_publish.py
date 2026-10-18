@@ -700,6 +700,7 @@ class RunPushRevisionTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork") as fork,
             patch.object(refs, "sync_fork") as sync,
+            patch.object(refs, "branch_matches", return_value=None),
             patch.object(
                 publish.revision_publish, "move_branch", return_value=[NEW_HEAD]
             ) as move,
@@ -717,7 +718,6 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertEqual(result["round"], 2)
         self.assertFalse(publish.needs_pull_request(result))
 
-    @unittest.expectedFailure
     def test_retry_adopts_the_round_already_on_the_branch(self) -> None:
         """A rerun after the swap succeeded finds its own chain and moves nothing.
 
@@ -766,6 +766,7 @@ class RunPushRevisionTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork"),
             patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
             patch.object(
                 publish.revision_publish,
                 "move_branch",
@@ -1019,6 +1020,7 @@ class HandoffTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork"),
             patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
             patch.object(publish.revision_publish, "move_branch", side_effect=move),
             self.assertRaises(policy.PublishError),
         ):
@@ -1034,6 +1036,7 @@ class HandoffTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork"),
             patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
             patch.object(
                 publish.revision_publish,
                 "move_branch",
@@ -1060,6 +1063,7 @@ class HandoffTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork"),
             patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
             patch.object(publish.revision_publish, "move_branch", side_effect=move),
         ):
             result = publish.run_push(self.push_args(path))

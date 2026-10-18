@@ -1801,7 +1801,13 @@ which signs every commit, then moves `code-monkey/issue-<n>` to the new
 head with `updateRefs`, `beforeOid` set to the recorded head and
 `force: true`: GitHub refuses the move when the branch no longer
 holds that head, and the publisher records a rejection rather than
-force over work the run did not see. When the swap answers with an
+force over work the run did not see. Before it replays, the publisher
+asks of the branch the proof the new-issue path asks of an existing
+one, the verified chain on the round's base, and adopts the branch
+that passes: a rerun after a swap that succeeded and a later step
+that failed would otherwise replay against a `beforeOid` the swap
+itself retired and refuse the run's own publication. When the swap
+answers with an
 error the publisher reads the branch itself, since GitHub may apply
 the move and then lose the reply: at the new tip the move stands,
 with a warning; at the recorded head the move did not happen and the

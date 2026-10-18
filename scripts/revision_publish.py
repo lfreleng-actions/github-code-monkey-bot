@@ -214,7 +214,16 @@ def run_push(
     try:
         refs.ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
         refs.sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
-        result["commits"] = move_branch(args.workdir / "clone", check)
+        published = already_moved(check)
+        if published is not None:
+            # A rerun after the swap succeeded and a later step failed:
+            # the swap's beforeOid names the pre-round head, so a
+            # replay would refuse the run's own work. The verified
+            # chain on the branch is the publication; nothing moves.
+            result["commits"] = published
+            warnings.append("an earlier attempt already moved the branch to this round")
+        else:
+            result["commits"] = move_branch(args.workdir / "clone", check)
     except Rejection as exc:
         result["verdict"] = "rejected"
         cast("list[str]", result["reasons"]).append(str(exc))
@@ -244,6 +253,25 @@ def run_push(
 def added_warnings(check: dict[str, Any], seen: int) -> list[str]:
     """The warnings the move added to the check beyond the ``seen`` it began with."""
     return list(cast("list[str]", check.get("warnings") or []))[seen:]
+
+
+def already_moved(check: dict[str, Any]) -> list[str] | None:
+    """The round's chain when the bot branch already holds it, else None.
+
+    The same proof the new-issue path asks of an existing branch: on
+    the round's base, as many commits as the proposal, each the bot's,
+    Verified and bearing the checked message. Before the swap the
+    branch holds the earlier round on its own base and fails the
+    proof; any other head fails it too and goes to the swap, which
+    refuses what moved.
+    """
+    return refs.branch_matches(
+        str(check["fork_repository"]),
+        str(check["branch"]),
+        str(check["base_sha"]),
+        cast("list[dict[str, Any]]", check["commits"]),
+        str(check["bot_login"]),
+    )
 
 
 def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
