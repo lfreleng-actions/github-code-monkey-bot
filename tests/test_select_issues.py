@@ -609,6 +609,36 @@ class RevisionIntegrationTest(NoSubprocessCase):
             select.build_selection(self.args_mode("branches"))
         scan.assert_not_called()
 
+    @unittest.expectedFailure
+    def test_scan_reads_no_second_pull_request_of_a_chosen_repository(self) -> None:
+        """A repository with a round chosen has its later rounds passed over unread.
+
+        Each scan builder carries its repository, so the one-per-
+        repository rule applies before the packet is read: the read
+        is many calls, and a failure in one would otherwise abort the
+        whole selection for a round that could not be admitted.
+        """
+
+        def built(entry: dict[str, Any]) -> Any:
+            return entry
+
+        def never() -> dict[str, Any]:
+            raise AssertionError("a round the budget refuses must not be read")
+
+        first = self.revision("alpha", 41, 7)
+        patch.object(
+            revision_select,
+            "scan",
+            return_value=[
+                ("org/alpha", lambda: built(first)),
+                ("org/alpha", never),
+                ("org/beta", lambda: built(self.revision("beta", 9, 2))),
+            ],
+        ).start()
+        selection, _ = select.build_selection(self.args("--max-pull-requests", "5"))
+        self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7", "beta-2"])
+        self.assertEqual(selection["skipped"]["one_per_repo"], 1)
+
 
 class ParseMaxPullRequestsTest(unittest.TestCase):
     """``parse_max_pull_requests`` accepts non-negative integers only."""
