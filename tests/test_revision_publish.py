@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
+reads = import_module("issue_reads")
 refs = import_module("branch_refs")
 revision = import_module("revision_publish")
 policy = import_module("proposal_policy")
@@ -109,6 +110,51 @@ class MoveBranchTest(unittest.TestCase):
         ):
             revision.move_branch(Path("clone"), data)
         self.assertEqual(data["warnings"], ["branch x stays"])
+
+    def swap_lost(self, head: Any) -> tuple[dict[str, Any], list[str] | None]:
+        """A swap whose reply was lost; the fork branch then reads as ``head``."""
+        data = check()
+        lookup = (
+            patch.object(reads, "branch_head", side_effect=head)
+            if isinstance(head, Exception)
+            else patch.object(reads, "branch_head", return_value=head)
+        )
+        with (
+            patch.object(refs, "create_branch"),
+            patch.object(refs, "replay_commits", return_value=[NEW]),
+            patch.object(github, "api_object", return_value={"node_id": "R_1"}),
+            patch.object(
+                github, "graphql", side_effect=github.GitHubError("timed out")
+            ),
+            lookup as read,
+            patch.object(refs, "delete_branch", return_value=None),
+        ):
+            try:
+                commits = revision.move_branch(Path("clone"), data)
+            except policy.PublishError as exc:
+                data["error"] = exc
+                commits = None
+        read.assert_called_once_with(FORK, "code-monkey/issue-7")
+        return data, commits
+
+    @unittest.expectedFailure
+    def test_a_lost_swap_reply_is_reconciled_from_the_branch(self) -> None:
+        """The fork branch, not the error, says whether the swap applied."""
+        # Applied: the move stands, with a warning that the reply was lost.
+        data, commits = self.swap_lost(NEW)
+        self.assertEqual(commits, [NEW])
+        self.assertTrue(any("reply" in w for w in data["warnings"]))
+        # Not applied: the branch is unchanged and the failure says so.
+        data, commits = self.swap_lost(HEAD)
+        self.assertIsNone(commits)
+        self.assertNotIsInstance(data["error"], revision.SwapUnknown)
+        # Another head, or no answer: the outcome is unknown and said to be.
+        for state in ("b" * 40, github.GitHubError("unreachable")):
+            with self.subTest(state=str(state)[:12]):
+                data, commits = self.swap_lost(state)
+                self.assertIsNone(commits)
+                self.assertIsInstance(data["error"], revision.SwapUnknown)
+                self.assertIn("unknown", str(data["error"]))
 
 
 class AnswerTest(unittest.TestCase):

@@ -893,6 +893,29 @@ class HandoffTest(NoNetworkCase):
         written = self.written_result()
         self.assertEqual(written["verdict"], "publish-failed")
         self.assertIn("branch x stays", written["warnings"])
+        self.assertTrue(any("unchanged" in r for r in written["reasons"]))
+
+    @unittest.expectedFailure
+    def test_an_unknown_swap_outcome_is_not_called_unchanged(self) -> None:
+        """When the branch may have moved, the failure says so rather than deny it."""
+        path = self.write_check(revision_check())
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(
+                publish.revision_publish,
+                "move_branch",
+                side_effect=publish.revision_publish.SwapUnknown(
+                    "updateRefs outcome unknown: the branch reads as b"
+                ),
+            ),
+            self.assertRaises(policy.PublishError),
+        ):
+            publish.run_push(self.push_args(path))
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertTrue(any("unknown" in r for r in written["reasons"]))
+        self.assertFalse(any("unchanged" in r for r in written["reasons"]))
 
     def test_cleanup_warning_survives_a_failed_swap(self) -> None:
         """A scratch branch left after a failed move is reported, not lost."""

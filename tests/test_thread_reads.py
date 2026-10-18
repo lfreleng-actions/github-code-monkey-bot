@@ -342,3 +342,64 @@ class ThreadsTest(unittest.TestCase):
             self.assertRaises(threads_of.reads.SelectionError),
         ):
             threads_of.unresolved_threads(REPO, 41)
+
+    @unittest.expectedFailure
+    def test_a_maintainers_word_is_heard_before_the_budget_cuts(self) -> None:
+        """A reply on a thread the budget would drop still counts, and goes first."""
+        since = "2026-10-03T00:00:00Z"
+        quiet = [thread(id=f"PRRT_{i}") for i in range(threads_of.MAX_THREADS + 2)]
+        answered = thread(
+            id="PRRT_last",
+            comments={
+                "nodes": [
+                    {
+                        "databaseId": 900,
+                        "body": "Fix this.",
+                        "authorAssociation": "NONE",
+                        "createdAt": "2026-10-01T00:00:00Z",
+                        "author": {"login": threads_of.COPILOT_LOGIN},
+                    },
+                    {
+                        "databaseId": 901,
+                        "body": "No, do it.",
+                        "authorAssociation": "MEMBER",
+                        "createdAt": "2026-10-04T00:00:00Z",
+                        "author": {"login": "maintainer"},
+                    },
+                ]
+            },
+        )
+        with patch.object(
+            github, "graphql", return_value=thread_page([*quiet, answered])
+        ):
+            packet = threads_of.unresolved_threads(REPO, 41, since)
+        self.assertTrue(packet.maintainer_since)
+        self.assertEqual(packet.threads[0]["thread_id"], "PRRT_last")
+        self.assertEqual(len(packet.threads), threads_of.MAX_THREADS)
+        self.assertEqual(packet.dropped, 3)
+        # An older reply, or Copilot's own, is no word since the round.
+        older = thread(
+            comments={
+                "nodes": [
+                    answered["comments"]["nodes"][0],
+                    {
+                        **answered["comments"]["nodes"][1],
+                        "createdAt": "2026-10-02T00:00:00Z",
+                    },
+                    {
+                        **answered["comments"]["nodes"][1],
+                        "databaseId": 902,
+                        "authorAssociation": "NONE",
+                        "author": {"login": threads_of.COPILOT_LOGIN},
+                    },
+                ]
+            }
+        )
+        with patch.object(github, "graphql", return_value=thread_page([older])):
+            packet = threads_of.unresolved_threads(REPO, 41, since)
+        self.assertFalse(packet.maintainer_since)
+        # With no watermark, any maintainer word counts; an undated one too.
+        with patch.object(github, "graphql", return_value=thread_page([older])):
+            self.assertTrue(
+                threads_of.unresolved_threads(REPO, 41, None).maintainer_since
+            )
