@@ -26,6 +26,7 @@ bounded = import_module("git_bounded")
 policy = import_module("proposal_policy")
 publish = import_module("publish")
 refs = import_module("branch_refs")
+review = import_module("copilot_review")
 comments = import_module("issue_comment")
 reporting = import_module("proposal_report")
 
@@ -743,6 +744,7 @@ class HandoffTest(NoNetworkCase):
         with (
             patch.object(refs, "ensure_fork") as fork,
             patch.object(publish.revision_publish, "move_branch") as move,
+            patch.object(review, "pull_head", return_value=HEAD),
         ):
             result = publish.run_push(self.push_args(path))
         fork.assert_not_called()
@@ -753,6 +755,30 @@ class HandoffTest(NoNetworkCase):
         )
         self.assertEqual(result["commits"], [])
         self.assertFalse(publish.needs_pull_request(result))
+
+    @unittest.expectedFailure
+    def test_a_handoff_for_a_moved_head_is_refused(self) -> None:
+        """A push during the session makes the handoff stale: rejected, not posted."""
+        path = self.write_check(revision_check(verdict="handoff", commits=[]))
+        with patch.object(review, "pull_head", return_value="f" * 40):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertTrue(any("head moved" in r for r in result["reasons"]))
+        self.assertIsNone(result["pull_request_url"])
+        # The head still the recorded one: the handoff stands.
+        with patch.object(review, "pull_head", return_value=HEAD) as head:
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "handoff")
+        head.assert_called_once_with(REPOSITORY, 41)
+        # The head unreadable: a failure, never a handoff on trust.
+        with (
+            patch.object(
+                review, "pull_head", side_effect=github.GitHubError("unreachable")
+            ),
+            self.assertRaises(policy.PublishError),
+        ):
+            publish.run_push(self.push_args(path))
+        self.assertEqual(self.written_result()["verdict"], "publish-failed")
 
     def test_respond_posts_replies_for_a_handoff(self) -> None:
         """Replies reach the threads, nothing is resolved, the body is left alone."""
@@ -855,6 +881,7 @@ class HandoffTest(NoNetworkCase):
                 self.subTest(verdict=check["verdict"], mode=mode, dry_run=dry_run),
                 patch.object(refs, "ensure_fork"),
                 patch.object(publish.revision_publish, "move_branch"),
+                patch.object(review, "pull_head", return_value=HEAD),
             ):
                 path = self.write_check(check)
                 result = publish.run_push(
