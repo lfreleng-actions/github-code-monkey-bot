@@ -110,7 +110,10 @@ def prepare_scratch(fork: str, scratch: str, check: dict[str, Any]) -> list[str]
     try:
         refs.create_branch(fork, scratch, base)
         return None
-    except (Rejection, github.GitHubError) as exc:
+    except (Rejection, PublishError, github.GitHubError) as exc:
+        # create_branch wraps a failed call in PublishError and an
+        # existing branch in Rejection; either may follow a create that
+        # applied, so the branch, not the error, says what happened.
         cause: Exception = exc
     try:
         head = reads.branch_head(fork, scratch)

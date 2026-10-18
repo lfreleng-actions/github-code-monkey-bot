@@ -226,7 +226,6 @@ class ScratchBranchTest(unittest.TestCase):
                 self.assertTrue(data["_deleted"])
                 self.assertTrue(any("resumed" in w for w in data["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_lost_create_reply_through_the_real_wrapper_is_resumed(self) -> None:
         """create_branch wraps the API error; the wrapped form is read back too."""
         data = check(bot_login="code-monkey[bot]")
