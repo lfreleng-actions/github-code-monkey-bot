@@ -927,7 +927,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_dressed_closing_tags_fail_closed(self) -> None:
         """A closing summary or strong tag with whitespace is as unread as an opener."""
         for extra in (
@@ -942,7 +941,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_suppressed_heading_at_every_level(self) -> None:
         """Any heading level names the section, and any heading ends it."""
         for level in (1, 5, 6):

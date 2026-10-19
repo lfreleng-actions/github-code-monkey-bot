@@ -47,7 +47,7 @@ BLOCK_TAG = re.compile(r"^ {0,3}</?(" + "|".join(sorted(KNOWN_TAGS)) + r")\b", r
 # write; a variant with whitespace or attributes would slip past that
 # pattern, so it fails the body closed instead.
 BARE_TAGS = frozenset({"summary", "strong"})
-DRESSED_TAG = re.compile(r"<(" + "|".join(sorted(BARE_TAGS)) + r")(?![>])", re.I)
+DRESSED_TAG = re.compile(r"</?(" + "|".join(sorted(BARE_TAGS)) + r")(?![>])", re.I)
 # A block-level tag opening a list item or a blockquote starts an HTML
 # block inside the container, where a heading is text; the guard above
 # reads the line start alone, so the body fails closed. The real

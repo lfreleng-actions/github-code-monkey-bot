@@ -66,12 +66,12 @@ MAX_COUNT_DIGITS = 9
 # Suppressed findings sit under a heading or a <summary>; each entry
 # opens with the bold path and line.
 SUPPRESSED_HEAD = re.compile(
-    r"(?:^ {0,3}#{2,4}\s+|<summary>\s*(?:<strong>\s*)?)[*_]{0,3}"
+    r"(?:^ {0,3}#{1,6}\s+|<summary>\s*(?:<strong>\s*)?)[*_]{0,3}"
     r"Suppressed\s+comments\s*(?:[*_]{0,3}|</strong>)\s*\\?\((\d+)\\?\)",
     re.M | re.I,
 )
 SUPPRESSED_ENTRY = re.compile(r"^\s*\*\*[^*\n]+:\d+\*\*", re.M)
-SUPPRESSED_END = re.compile(r"^ {0,3}#{1,4}\s|</details>", re.M)
+SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}\s|</details>", re.M)
 
 
 @dataclass(frozen=True)
