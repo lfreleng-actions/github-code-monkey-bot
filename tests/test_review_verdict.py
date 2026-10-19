@@ -1331,7 +1331,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
-    @unittest.expectedFailure
     def test_a_bare_hash_line_inside_an_html_block_fails_closed(self) -> None:
         """Hashes alone are a heading to Markdown and text inside raw HTML."""
         for hashes in ("###", "#", "######\t"):

@@ -115,7 +115,9 @@ INDENTED_TAG = re.compile(r"^(?=(?: {4}|[ \t]*\t))[ \t]*</?[A-Za-z]")
 # may carry anything; the real bodies close every tag on its line. A
 # > inside a quoted value closes nothing, so quotes are tracked.
 TAG_START = re.compile(r"<[A-Za-z/]")
-MARKDOWN_SHAPE = re.compile(r"^ {0,3}(?:#{1,6}[ \t]|`{3,}|~{3,})")
+# A heading ends at its hashes or a space or tab after them, as the
+# section-end pattern reads it.
+MARKDOWN_SHAPE = re.compile(r"^ {0,3}(?:#{1,6}(?:[ \t]|$)|`{3,}|~{3,})")
 # A backslash makes the backtick after it literal; an escaped one is
 # no span delimiter, and the classifier does not parse escapes.
 ESCAPED_BACKTICK = "\\`"
