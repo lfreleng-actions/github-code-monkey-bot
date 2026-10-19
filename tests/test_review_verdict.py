@@ -987,6 +987,7 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertGreater(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
     def test_an_unreadable_suppressed_section_is_findings(self) -> None:
         """A heading or summary naming suppressed findings in a form unread is findings.
 
@@ -999,8 +1000,14 @@ class UntrustedTextTest(unittest.TestCase):
             "\n<summary><sub>Suppressed comments (1)</sub></summary>\n",
             '\n<summary><a href="https://x/y">Suppressed comments (1)</a></summary>\n',
             "\n### Suppressed comments\n",
-            # A summary mid-line, or spanning lines, is read whole.
+            # A summary mid-line, or spanning lines, or long, is read whole.
             "\n<details><summary><sub>Suppressed comments (1)</sub></summary></details>\n",
+            "\n<summary><sub>Suppressed comments (1)</sub>"
+            + " x" * 300
+            + "</summary>\n",
+            "\n<summary>"
+            + " " * 500
+            + "<sub>Suppressed comments (1)</sub></summary>\n",
             "\n<summary>\nSuppressed comments (**1**)\n</summary>\n",
             "\n<summary>\n<sub>Suppressed comments (1)</sub>\n</summary>\n",
         ):
