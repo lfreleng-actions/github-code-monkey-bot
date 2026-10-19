@@ -1074,6 +1074,16 @@ class UntrustedTextTest(unittest.TestCase):
             ["assessment: changes recommended"],
         )
 
+    def test_a_long_hyphen_run_classifies_in_bounded_time(self) -> None:
+        """A run of hyphens that is no underline must not stall the classifier."""
+        import time
+
+        text = BODIES["v2-green-clean"] + "\ntext\n" + "-" * 5000 + "x\n"
+        started = time.monotonic()
+        verdict = verdicts.classify(text, 0)
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(verdict.verdict, "clean")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (

@@ -97,7 +97,9 @@ SUPPRESSED_MENTIONS = (
 # A setext underline makes the line above a heading; the classifier
 # reads ATX headings alone, so one fails the body closed. A rule after
 # a blank line, as the real bodies write it, is no underline.
-SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-+(?:[ \t]*-+)*)[ \t]*$")
+# One linear run each way: nested repetitions over the same character
+# would backtrack exponentially on a long run that is no underline.
+SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-[ \t-]*)$")
 LETTERS = re.compile(r"[^a-z]")
 ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
 SUPPRESSED_LABEL = "suppressedcomments"
