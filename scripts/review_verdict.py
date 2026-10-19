@@ -168,7 +168,12 @@ def visible(text: str) -> tuple[str, list[str]]:
     fence: tuple[str, int] | None = None
     in_html = False
     previous = ""
+    in_summary = False
     for line in text.split("\n"):
+        if in_summary and "`" in line:
+            # A summary open across lines is one summary: a span in it
+            # could hide part of its label, as on one line.
+            problems.add(UNREADABLE_MARKDOWN)
         # Under a container prefix the underline reads the same, so
         # both lines are read with their prefix removed.
         bare = CONTAINER_PREFIX.sub("", line, count=1)
@@ -196,10 +201,12 @@ def visible(text: str) -> tuple[str, list[str]]:
             in_html = line.strip(" \t") != ""
             if in_html:
                 lines.append(read_html_line(line, problems))
+                in_summary = summary_open(lines[-1], in_summary)
                 continue
         if BLOCK_TAG.match(line):
             in_html = True
             lines.append(read_html_line(line, problems))
+            in_summary = summary_open(lines[-1], in_summary)
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
@@ -214,7 +221,14 @@ def visible(text: str) -> tuple[str, list[str]]:
         if MARKER_LINE.match(line):
             continue
         lines.append(read_into(line, problems))
+        in_summary = summary_open(lines[-1], in_summary)
     return "\n".join(lines), sorted(problems)
+
+
+def summary_open(masked: str, before: bool) -> bool:
+    """Whether a <summary> stands open after this line, given its state before."""
+    lower = masked.lower()
+    return (int(before) + lower.count("<summary>") - lower.count("</summary>")) > 0
 
 
 def read_html_line(line: str, problems: set[str]) -> str:

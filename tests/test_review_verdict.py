@@ -1149,7 +1149,6 @@ class UntrustedTextTest(unittest.TestCase):
             "review body holds HTML the classifier does not read", verdict.reasons
         )
 
-    @unittest.expectedFailure
     def test_code_in_a_heading_or_summary_fails_closed(self) -> None:
         """A span inside a rendered heading could hide part of its label."""
         reason = "review body holds Markdown the classifier does not read"
