@@ -1376,6 +1376,11 @@ class UntrustedTextTest(unittest.TestCase):
             "**scripts/review_text.py:12**",
             "__scripts/review_text.py:12__",
             "<strong>scripts/review_text.py:12</strong>",
+            # A pair of underscores inside the path, and punctuation after.
+            "__scripts/foo__bar.py:12__",
+            "__a/__init__.py:1__",
+            "__scripts/review_text.py:12__: note",
+            "__a/__init__.py:1__, and more",
         ):
             text = (
                 BODIES["v2-green-clean"]
