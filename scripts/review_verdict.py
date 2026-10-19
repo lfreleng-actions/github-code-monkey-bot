@@ -93,7 +93,11 @@ CONTAINER = r"^ {0,3}(?:[-+*]|\d{1,9}[.)]|>)[ \t]*"
 CONTAINER_BLOCK = re.compile(
     CONTAINER + r"</?(" + "|".join(sorted(BLOCK_TAGS)) + r")\b", re.I
 )
-CONTAINER_LONE_TAG = re.compile(CONTAINER + r"</?[A-Za-z][^<>]*>[ \t]*$")
+# The tag's attributes may quote a >, so the pattern reads quoted
+# values whole before it looks for the close.
+CONTAINER_LONE_TAG = re.compile(
+    CONTAINER + r"""</?[A-Za-z](?:"[^"]*"|'[^']*'|[^<>"'])*>[ \t]*$"""
+)
 # A character reference could spell a label, a tag or a delimiter the
 # classifier reads literally; the real bodies write none.
 CHARACTER_REFERENCE = re.compile(
@@ -122,7 +126,7 @@ MAX_COUNT_DIGITS = 9
 # opens with the bold path and line.
 SUPPRESSED_HEAD = re.compile(
     r"(?:^ {0,3}#{2,4}\s+|<summary>\s*(?:<strong>\s*)?)[*_]{0,3}"
-    r"Suppressed\s+comments\s*\\?\((\d+)\\?\)",
+    r"Suppressed\s+comments(?:[*_]{0,3}|</strong>)\s*\\?\((\d+)\\?\)",
     re.M | re.I,
 )
 SUPPRESSED_ENTRY = re.compile(r"^\s*\*\*[^*\n]+:\d+\*\*", re.M)

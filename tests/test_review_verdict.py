@@ -695,7 +695,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(counted.suppressed, 0)
         self.assertEqual(counted.verdict, "clean")
 
-    @unittest.expectedFailure
     def test_a_lone_tag_with_a_quoted_bracket_still_fails_closed(self) -> None:
         """A > inside a quoted attribute does not make the lone tag inline."""
         for extra in (
@@ -711,7 +710,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_suppressed_label_emphasised_alone_counts(self) -> None:
         """Emphasis or strong around the label alone, count outside, still counts."""
         for extra in (
