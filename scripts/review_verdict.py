@@ -100,8 +100,9 @@ CONTAINER_LONE_TAG = re.compile(
 )
 # A character reference could spell a label, a tag or a delimiter the
 # classifier reads literally; the real bodies write none.
+# A numeric reference renders with or without its semicolon.
 CHARACTER_REFERENCE = re.compile(
-    r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});"
+    r"&(?:#[0-9]{1,7};?|#[xX][0-9a-fA-F]{1,6};?|[A-Za-z][A-Za-z0-9]{1,31};)"
 )
 # A tag the line does not close holds a multi-line attribute, which
 # may carry anything; the real bodies close every tag on its line. A
@@ -118,11 +119,15 @@ ESCAPED_BACKTICK = "\\`"
 STRAY_FENCE = re.compile(r"`{3,}|~{3,}")
 # A link reference definition's title may run over the lines after
 # it, taking a heading with it; the real bodies define none.
-LINK_REFERENCE = re.compile(r"^ {0,3}\[(?:\\.|[^\]\\])*\]:")
+# At the line start, opening a list item or a quote, or indented
+# under one: each is a definition to Markdown.
+LINK_REFERENCE = re.compile(
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)]|>)[ \t]+)?\[(?:\\.|[^\]\\])*\]:"
+)
 # A fence run indented past where a fence may open or close: under a
 # list item it closes a fence the parser, which tracks no container
 # indentation, would otherwise never end.
-INDENTED_FENCE = re.compile(r"^ {4,}(?:`{3,}|~{3,})[ \t]*$")
+INDENTED_FENCE = re.compile(r"^(?: {4,}|[ \t]*\t[ \t]*)(?:`{3,}|~{3,})[ \t]*$")
 # Digits beyond this are no count GitHub would write.
 MAX_COUNT_DIGITS = 9
 
@@ -294,7 +299,7 @@ def visible(text: str) -> tuple[str, list[str]]:
         if fence is not None:
             if fence_closes(line, *fence):
                 fence = None
-            elif INDENTED_FENCE.match(line) and line.lstrip(" ").startswith(
+            elif INDENTED_FENCE.match(line) and line.lstrip(" \t").startswith(
                 fence[0] * fence[1]
             ):
                 # A closer the parser cannot see as one: inside a list
@@ -319,6 +324,11 @@ def visible(text: str) -> tuple[str, list[str]]:
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
+            if line[0] != opened.group(0).lstrip(" ")[0]:
+                # Indented, the fence may belong to a list the parser
+                # does not track and end with it; the real bodies open
+                # every fence at column zero.
+                problems.add(UNREADABLE_MARKDOWN)
             run = opened.group(1) or opened.group(2)
             fence = (run[0], len(run))
             continue

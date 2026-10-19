@@ -769,7 +769,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_semicolonless_numeric_references_fail_closed(self) -> None:
         """A numeric reference renders without its semicolon; it fails closed too."""
         reason = "review body holds Markdown the classifier does not read"
@@ -783,7 +782,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
-    @unittest.expectedFailure
     def test_reference_definition_in_a_container_fails_closed(self) -> None:
         """A definition opening a list item or quote, or indented, is one too."""
         reason = "review body holds Markdown the classifier does not read"
@@ -798,7 +796,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
-    @unittest.expectedFailure
     def test_an_indented_fence_fails_closed(self) -> None:
         """A fence opened off column zero may end with its list; the parser cannot tell."""
         reason = "review body holds Markdown the classifier does not read"
