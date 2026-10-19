@@ -973,7 +973,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_strong_tags_split_a_word_or_wrap_the_count(self) -> None:
         """Strong tags are stripped before the count is read, wherever they fall."""
         for extra in (

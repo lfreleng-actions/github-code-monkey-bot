@@ -64,10 +64,12 @@ FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
 MAX_COUNT_DIGITS = 9
 
 # Suppressed findings sit under a heading or a <summary>; each entry
-# opens with the bold path and line. Whitespace, emphasis and the
-# strong tags the real bodies use may sit anywhere around and between
-# the label's words without changing what a reader sees.
-LABEL_NOISE = r"(?:\s|</?strong>|[*_])"
+# opens with the bold path and line. The strong tags the real bodies
+# use change nothing a reader sees and may fall anywhere, so they are
+# stripped before the count is read; whitespace and emphasis may sit
+# around and between the label's words.
+STRONG_TAGS = re.compile(r"</?strong>", re.I)
+LABEL_NOISE = r"(?:\s|[*_])"
 SUPPRESSED_HEAD = re.compile(
     r"(?:^ {0,3}#{1,6}[ \t]+|<summary>)"
     + LABEL_NOISE
@@ -217,6 +219,7 @@ def suppressed_count(text: str) -> tuple[int, bool]:
     """
     total = 0
     unreadable = False
+    text = STRONG_TAGS.sub("", text)
     for head in SUPPRESSED_HEAD.finditer(text):
         digits = head.group(1)
         rest = text[head.end() :]
