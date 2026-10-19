@@ -1310,6 +1310,28 @@ class UntrustedTextTest(unittest.TestCase):
             with self.subTest(separator=repr(separator)):
                 self.assertEqual(verdicts.classify(text, 0).suppressed, 0)
 
+    @unittest.expectedFailure
+    def test_a_closer_mid_line_ends_no_section(self) -> None:
+        """A details closer ends the section on its own line alone; elsewhere it is unread."""
+        for middle in (
+            'See [context](https://example.test "</details>").\n',
+            "Context </details> text.\n",
+        ):
+            text = (
+                BODIES["v2-green-clean"]
+                + "\n### Suppressed comments (0)\n\n"
+                + middle
+                + "\n**scripts/x.py:12**\n"
+            )
+            with self.subTest(middle=middle[:12]):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn("suppressed count unreadable", verdict.reasons)
+        # The real section closes on its own line and counts as before.
+        self.assertEqual(
+            verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
+        )
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
