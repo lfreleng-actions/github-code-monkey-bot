@@ -257,7 +257,10 @@ def read_line(line: str) -> tuple[str, set[str]]:
         problems.add(UNREADABLE_HTML)
     if OPEN_BRACKET.match(masked) or CONTAINER_HEADING.match(masked):
         problems.add(UNREADABLE_MARKDOWN)
-    if "`" in line and HEADING_OR_SUMMARY.search(masked):
+    if ("`" in line or "[" in masked) and HEADING_OR_SUMMARY.search(masked):
+        # A span could hide part of the label; a link's destination
+        # would thread letters into it. The real bodies write neither
+        # in a heading or summary.
         problems.add(UNREADABLE_MARKDOWN)
     for tag in ANY_TAG.finditer(masked):
         if not TAG_SHAPE.fullmatch(tag.group(0)):

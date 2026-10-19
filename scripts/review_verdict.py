@@ -201,12 +201,12 @@ def visible(text: str) -> tuple[str, list[str]]:
             in_html = line.strip(" \t") != ""
             if in_html:
                 lines.append(read_html_line(line, problems))
-                in_summary = summary_open(lines[-1], in_summary)
+                in_summary = summary_open(lines[-1], in_summary, problems)
                 continue
         if BLOCK_TAG.match(line):
             in_html = True
             lines.append(read_html_line(line, problems))
-            in_summary = summary_open(lines[-1], in_summary)
+            in_summary = summary_open(lines[-1], in_summary, problems)
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
@@ -221,14 +221,27 @@ def visible(text: str) -> tuple[str, list[str]]:
         if MARKER_LINE.match(line):
             continue
         lines.append(read_into(line, problems))
-        in_summary = summary_open(lines[-1], in_summary)
+        in_summary = summary_open(lines[-1], in_summary, problems)
     return "\n".join(lines), sorted(problems)
 
 
-def summary_open(masked: str, before: bool) -> bool:
-    """Whether a <summary> stands open after this line, given its state before."""
+def summary_open(masked: str, before: bool, problems: set[str]) -> bool:
+    """Whether a <summary> stands open after this line, given its state before.
+
+    A summary opened while one is open is nested, which the real
+    bodies never write and the label scan would misread; it fails the
+    body closed.
+    """
     lower = masked.lower()
-    return (int(before) + lower.count("<summary>") - lower.count("</summary>")) > 0
+    depth = int(before)
+    for opener in re.finditer(r"</?summary>", lower):
+        if opener.group().startswith("</"):
+            depth = max(depth - 1, 0)
+        elif depth:
+            problems.add(UNREADABLE_HTML)
+        else:
+            depth = 1
+    return depth > 0
 
 
 def read_html_line(line: str, problems: set[str]) -> str:

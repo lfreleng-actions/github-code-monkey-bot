@@ -1170,7 +1170,6 @@ class UntrustedTextTest(unittest.TestCase):
         text = BODIES["v2-green-clean"] + "\nNot `### Suppressed comments (1)` here.\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_a_nested_summary_fails_closed(self) -> None:
         """A summary inside a summary is nothing the real bodies write."""
         for extra in (
@@ -1186,7 +1185,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_a_link_in_a_heading_or_summary_fails_closed(self) -> None:
         """A link's destination would thread letters into the label."""
         reason = "review body holds Markdown the classifier does not read"
