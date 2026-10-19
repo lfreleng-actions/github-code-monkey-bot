@@ -48,11 +48,33 @@ def report_row(item: dict[str, Any]) -> str:
     # reasons alike descend from agent output.
     text = "; ".join(notes) or str(item.get("pr_title") or "")
     issue = cell(f"{item.get('repository')}#{item.get('issue')}")
-    copilot = comments.review_verdict(item) or "—"
+    copilot = review_cell(item)
     return (
         f"| {issue} | {cell(verdict)} | {cell(output)} | {copilot} "
         f"| {'—' if requests is None else f'{requests:g}'} | {cell(text)} |"
     )
+
+
+def review_cell(item: dict[str, Any]) -> str:
+    """The review column: the verdict, and for findings the counts (issue #29).
+
+    A count of the wrong shape stays out of the table; the verdict
+    alone is shown then.
+    """
+    verdict = comments.review_verdict(item)
+    if verdict is None:
+        return "—"
+    if verdict != "findings":
+        return verdict
+    record = cast("dict[str, Any]", item["review"])
+    parts: list[str] = []
+    threads = record.get("unresolved_threads")
+    if type(threads) is int and threads > 0:
+        parts.append(f"{threads} thread{'s' if threads != 1 else ''}")
+    suppressed = record.get("suppressed")
+    if type(suppressed) is int and suppressed > 0:
+        parts.append(f"{suppressed} suppressed")
+    return f"findings ({', '.join(parts)})" if parts else "findings"
 
 
 def attempt_of(item: dict[str, Any]) -> int:

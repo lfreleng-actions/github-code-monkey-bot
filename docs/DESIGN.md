@@ -1495,7 +1495,9 @@ says whether GitHub accepted the request, `verdict` is `clean`,
 `changes` or `null`, and `commit_id` is the head the review judged.
 The comment and the report read a record with any field missing or
 added, or any other verdict, as `pending`. The report job merges
-every `result.json` into one table.
+every `result.json` into one table whose review column names the
+verdict and, for findings, the thread and suppressed counts, a count
+of the wrong shape left out.
 
 **Open gap.** The publisher writes this file, but the report cannot
 yet prove it did: the author job can reach the Actions runtime

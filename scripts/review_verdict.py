@@ -117,9 +117,9 @@ SUPPRESSED_LABEL = "suppressedcomments"
 # whatever the heading says.
 SUPPRESSED_ENTRY = re.compile(
     r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*"
-    # A path may hold underscores; the underscore form ends at the
-    # pair before the line's end alone.
-    r"(?:\*\*[^*\n]+:\d+\*\*|__(?:(?!__)[^\n])+:\d+__)",
+    # A path may hold underscores, a pair included; the underscore
+    # form ends at the pair that follows the line number.
+    r"(?:\*\*[^*\n]+:\d+\*\*|__[^\n]+?:\d+__(?=\s|$))",
     re.M,
 )
 SUPPRESSED_END = re.compile(
@@ -320,8 +320,9 @@ def suppressed_count(text: str) -> tuple[int, bool]:
         end = SUPPRESSED_END.search(text, head.end())
         block = text[head.end() : end.start() if end else len(text)]
         # A closer right after the summary, on its line, closes an
-        # empty section and is no text of it.
-        block = INLINE_CLOSER.sub("", block, count=1)
+        # empty section: nothing after it is the section's.
+        if INLINE_CLOSER.match(block):
+            block = ""
         listed = len(SUPPRESSED_ENTRY.findall(block))
         if "<details" in block.lower() or "</details" in block.lower():
             # A details block inside the section closes before the

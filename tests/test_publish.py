@@ -1519,7 +1519,6 @@ class RunReportTest(NoNetworkCase):
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
 
-    @unittest.expectedFailure
     def test_review_column_and_totals(self) -> None:
         """Each row states the Copilot verdict; the summary counts them."""
         results = self.root / "results"
@@ -1550,7 +1549,6 @@ class RunReportTest(NoNetworkCase):
             {"clean": 1, "findings": 1, "pending": 0, "none": 1},
         )
 
-    @unittest.expectedFailure
     def test_review_column_carries_the_counts(self) -> None:
         """A findings review names its thread and suppressed counts (issue #29)."""
         for record, cell in (

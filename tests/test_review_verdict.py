@@ -1271,7 +1271,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
-    @unittest.expectedFailure
     def test_an_inline_closed_section_is_empty(self) -> None:
         """A section closed on its own line holds nothing; later paths are not its."""
         text = (
