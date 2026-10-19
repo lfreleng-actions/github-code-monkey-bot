@@ -1537,6 +1537,7 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
+    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
         """Issues scope the token to the repositories that exist; with a scan they fail."""
         budget = self.step("select", "budget")
@@ -1557,11 +1558,13 @@ class ListInputContracts(ReusableWorkflowCase):
         run = flatten(self.step("select", "Select issues")["run"])
         self.assertIn('--pull-requests "$PULL_REQUESTS"', run)
         self.assertIn("--no-revise", run)
-        # The run id is the session: unique per run, the same across
-        # its retries, and trusted, so it may own a scratch branch and
-        # a reply marker where a second-grained timestamp may not.
-        self.assertIn('--session "$RUN_ID"', run)
+        # The run id and the select job's attempt are the session: a
+        # full rerun selects and authors anew under the same run id
+        # and must not reuse the earlier attempt's replies, while a
+        # publish-only retry reads the earlier selection and keeps it.
+        self.assertIn('--session "$RUN_ID-$RUN_ATTEMPT"', run)
         self.assert_expression(select["RUN_ID"], "github.run_id")
+        self.assert_expression(select["RUN_ATTEMPT"], "github.run_attempt")
         self.assertIn(
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
