@@ -1130,6 +1130,83 @@ class RunCommentTest(NoNetworkCase):
             body.endswith("<!-- code-monkey https://run proposed review=findings -->")
         )
 
+    @unittest.expectedFailure
+    def test_marker_carries_the_review_counts(self) -> None:
+        """Counts that changed under the same verdict are a new outcome to report."""
+        path = self.write_result(
+            result_json(
+                bot_login=BOT,
+                review=review_record(
+                    "findings", assessment="changes", unresolved_threads=0, suppressed=1
+                ),
+            )
+        )
+        earlier = {
+            "id": 1,
+            "user": {"login": BOT},
+            "body": "<!-- code-monkey https://run proposed review=findings/2/1/changes -->",
+            "html_url": "https://x/c/1",
+        }
+        with (
+            patch.object(reads, "api_page", return_value=[earlier]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/2"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_called_once()
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=findings/0/1/changes -->"
+            ),
+            body,
+        )
+        # The same counts again: nothing posts.
+        with (
+            patch.object(reads, "api_page", return_value=[{**earlier, "body": body}]),
+            patch.object(github, "api_write") as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_an_exhausted_comment_search_posts_rather_than_trusts(self) -> None:
+        """Past the pages the search reads, an older match proves nothing."""
+        path = self.write_result(
+            result_json(bot_login=BOT, review=review_record("pending"))
+        )
+        match = {
+            "id": 1,
+            "user": {"login": BOT},
+            "body": "<!-- code-monkey https://run proposed review=pending -->",
+            "html_url": "https://x/c/1",
+        }
+        filler = [
+            {"id": 2 + i, "user": {"login": "x"}, "body": "..."} for i in range(99)
+        ]
+        full = [match, *filler]
+        with (
+            patch.object(reads, "api_page", return_value=full) as page,
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/9"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        # Every page the search allows was full, so the latest outcome may
+        # sit beyond them: the comment posts.
+        self.assertEqual(page.call_count, comments.MAX_COMMENT_PAGES)
+        write.assert_called_once()
+
     def test_only_the_latest_outcome_of_the_run_suppresses_a_repeat(self) -> None:
         """pending, clean, pending: the third posts, since the latest says clean."""
         path = self.write_result(
