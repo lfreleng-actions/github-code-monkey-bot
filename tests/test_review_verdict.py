@@ -1032,6 +1032,50 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertNotIn("suppressed count unreadable", verdict.reasons)
 
+    @unittest.expectedFailure
+    def test_a_summary_inside_a_heading_line_is_still_read(self) -> None:
+        """A heading's text does not hide the summary it carries."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n### Review notes <details><summary><sub>Suppressed comments (1)</sub>"
+            "</summary></details>\n\n**x.py:1**\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertIn("suppressed count unreadable", verdict.reasons)
+        # A readable one in the same place counts.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n### Notes <summary>Suppressed comments (2)</summary>\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).suppressed, 2)
+
+    @unittest.expectedFailure
+    def test_setext_headings_fail_closed(self) -> None:
+        """An underline makes the line above a heading the parser does not read."""
+        reason = "review body holds Markdown the classifier does not read"
+        for extra in (
+            "\nSuppressed comments (1)\n===\n\n**x.py:1**\n",
+            "\nSuppressed comments (1)\n---\n\n**x.py:1**\n",
+            "\n\U0001f7e2 Approval recommended\n=\n",
+            "\n  text\n  - - -\n",
+        ):
+            with self.subTest(extra=extra.strip()[:24]):
+                verdict = verdicts.classify(BODIES["v2-overview-yellow"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+        # A rule after a blank line, and a table's separator row, are
+        # the real bodies' and stay prose.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\nA paragraph.\n\n---\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
+        self.assertEqual(
+            verdicts.classify(BODIES["v2-yellow-first-current"], 0).reasons[:1],
+            ["assessment: changes recommended"],
+        )
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
