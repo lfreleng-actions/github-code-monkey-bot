@@ -1208,6 +1208,37 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-blue-with-findings"], 0).reasons, []
         )
 
+    @unittest.expectedFailure
+    def test_list_prefixed_entries_count_past_a_stated_zero(self) -> None:
+        """The stated count is a floor; entries under it count whatever it says."""
+        for entries in (
+            "- **scripts/x.py:12** one\n- **scripts/y.py:3** two\n",
+            "1. **scripts/x.py:12** one\n",
+            "> **scripts/x.py:12** one\n",
+        ):
+            with self.subTest(entries=entries[:6]):
+                text = (
+                    BODIES["v2-green-clean"]
+                    + "\n### Suppressed comments (0)\n\n"
+                    + entries
+                )
+                verdict = verdicts.classify(text, 0)
+                self.assertGreater(verdict.suppressed, 0)
+                self.assertEqual(verdict.verdict, "findings")
+
+    @unittest.expectedFailure
+    def test_a_fence_inside_an_open_summary_fails_closed(self) -> None:
+        """A fence opened inside a summary would drop its label as code."""
+        reason = "review body holds Markdown the classifier does not read"
+        for extra in (
+            "\n<details>\n<summary>\n\n~~~\nSuppressed comments (1)\n~~~\n\n</summary>\n</details>\n",
+            "\n<summary>\n```\nx\n```\n</summary>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:30]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
