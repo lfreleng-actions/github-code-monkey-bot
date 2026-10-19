@@ -1253,6 +1253,25 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).suppressed, 0)
 
+    @unittest.expectedFailure
+    def test_a_details_block_inside_the_section_fails_closed(self) -> None:
+        """An inner details closer is not the section's end; the count is unread."""
+        inner = "<details>\n<summary>Context</summary>\n\nContext text.\n</details>\n"
+        for extra in (
+            "\n### Suppressed comments (0)\n\n" + inner + "\n**scripts/x.py:12**\n",
+            "\n<details>\n<summary>Suppressed comments (0)</summary>\n\n"
+            + inner
+            + "\n**scripts/x.py:12**\n</details>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:24]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn("suppressed count unreadable", verdict.reasons)
+        # The real section, one details block with its entries, still counts.
+        self.assertEqual(
+            verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
+        )
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
