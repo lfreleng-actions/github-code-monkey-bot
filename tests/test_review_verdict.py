@@ -1253,7 +1253,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).suppressed, 0)
 
-    @unittest.expectedFailure
     def test_a_details_block_inside_the_section_fails_closed(self) -> None:
         """An inner details closer is not the section's end; the count is unread."""
         inner = "<details>\n<summary>Context</summary>\n\nContext text.\n</details>\n"

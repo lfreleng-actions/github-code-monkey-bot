@@ -306,6 +306,11 @@ def suppressed_count(text: str) -> tuple[int, bool]:
         end = SUPPRESSED_END.search(text, head.end())
         block = text[head.end() : end.start() if end else len(text)]
         listed = len(SUPPRESSED_ENTRY.findall(block))
+        if "<details" in block.lower():
+            # A details block inside the section closes before the
+            # section does, so the entries after it go unread; the
+            # real bodies nest none there.
+            unreadable = True
         if len(digits) > MAX_COUNT_DIGITS:
             unreadable = True
             total += listed
