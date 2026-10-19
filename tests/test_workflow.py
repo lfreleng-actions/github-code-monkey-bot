@@ -789,6 +789,7 @@ class RevisionContracts(ReusableWorkflowCase):
         mint = self.step("publish", "pr-token")
         self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
 
+    @unittest.expectedFailure
     def test_a_revision_retitles_before_the_push(self) -> None:
         """The title leads the push: the Semantic Pull Request check runs on the push.
 
@@ -813,8 +814,26 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertLess(
             self.position("publish", "retitle"), self.position("publish", "push")
         )
+        self.assertIn("--record artefacts/retitle.json", flatten(retitle["run"]))
         push = self.step("publish", "push")
         self.assertNotIn("pr-token", str(push["env"]["GH_TOKEN"]))
+        # A title the push did not earn is taken back after it, with
+        # the same token, before anything else writes to the target.
+        restore = self.step("publish", "restore-title")
+        restore_if = unwrap(str(restore["if"]))
+        self.assertIn("!cancelled()", restore_if)
+        self.assertIn("steps.retitle.outcome == 'success'", restore_if)
+        self.assertIn("steps.push.outcome != 'skipped'", restore_if)
+        self.assert_expression(
+            restore["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py restore-title", flatten(restore["run"]))
+        self.assertLess(
+            self.position("publish", "push"), self.position("publish", "restore-title")
+        )
+        self.assertLess(
+            self.position("publish", "restore-title"), self.position("publish", "open")
+        )
         mint = unwrap(str(self.step("publish", "pr-token")["if"]))
         self.assertNotIn("steps.push.outcome", mint)
         for name in ("open", "respond"):

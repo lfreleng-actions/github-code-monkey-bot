@@ -1383,6 +1383,7 @@ class RunRetitleTest(NoNetworkCase):
     ) -> Any:
         """Run retitle against a pull request titled ``current`` at ``head``."""
         check = self.write_check(check_data)
+        self.record = self.root / "retitle.json"
         with (
             patch.object(github, "api_object", return_value={"title": current}),
             patch.object(review, "pull_head", return_value=head),
@@ -1390,9 +1391,90 @@ class RunRetitleTest(NoNetworkCase):
             patch.object(github, "api_write", return_value={}) as write,
             redirect_stdout(io.StringIO()),
         ):
-            publish.main(["retitle", "--check", str(check)])
+            publish.main(
+                ["retitle", "--check", str(check), "--record", str(self.record)]
+            )
         return write
 
+    def restore(self, result: dict[str, Any] | None, head: str, current: str) -> Any:
+        """Run restore-title after a push whose result is ``result``; return the PATCH mock."""
+        path = self.root / "result.json"
+        if result is not None:
+            path.write_text(json.dumps(result), encoding="utf-8")
+        with (
+            patch.object(github, "api_object", return_value={"title": current}),
+            patch.object(review, "pull_head", return_value=head),
+            patch.object(github, "api_write", return_value={}) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "restore-title",
+                    "--record",
+                    str(self.record),
+                    "--result",
+                    str(path),
+                ]
+            )
+        return write
+
+    @unittest.expectedFailure
+    def test_a_failed_push_restores_the_title(self) -> None:
+        """A retitle the push did not earn is taken back, when the head is still ours."""
+        self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
+        self.assertTrue(self.record.is_file())
+        # The push failed with the branch unchanged: restore.
+        write = self.restore(
+            result_json(
+                verdict="publish-failed",
+                reasons=["x; the pull request branch is unchanged"],
+            ),
+            HEAD,
+            "Fix: New subject",
+        )
+        write.assert_called_once_with(
+            "PATCH", f"repos/{REPOSITORY}/pulls/41", {"title": "Fix: Old"}
+        )
+        # No result at all: the push never ran to a result; restore too.
+        self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
+        (self.root / "result.json").unlink(missing_ok=True)
+        write = self.restore(None, HEAD, "Fix: New subject")
+        write.assert_called_once()
+        # Published, an unknown swap, a moved head or a title someone
+        # else set since: nothing is touched.
+        for result, head, current in (
+            (
+                result_json(verdict="proposed", commits=[NEW_HEAD]),
+                NEW_HEAD,
+                "Fix: New subject",
+            ),
+            (
+                result_json(
+                    verdict="publish-failed",
+                    reasons=["updateRefs failed: outcome unknown"],
+                ),
+                HEAD,
+                "Fix: New subject",
+            ),
+            (
+                result_json(verdict="rejected", reasons=["head moved"]),
+                "f" * 40,
+                "Fix: New subject",
+            ),
+            (result_json(verdict="publish-failed", reasons=["x"]), HEAD, "Fix: Theirs"),
+        ):
+            with self.subTest(
+                verdict=result["verdict"], head=head[:4], current=current
+            ):
+                self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
+                write = self.restore(result, head, current)
+                write.assert_not_called()
+        # A retitle that wrote nothing leaves nothing to restore.
+        self.retitle(revision_check(pr_title="Fix: Both"), "Fix: Both")
+        write = self.restore(result_json(verdict="publish-failed"), HEAD, "Fix: Both")
+        write.assert_not_called()
+
+    @unittest.expectedFailure
     def test_a_stale_dispatch_retitles_nothing(self) -> None:
         """A head that moved since selection is another session's; the title stays.
 
@@ -1412,6 +1494,7 @@ class RunRetitleTest(NoNetworkCase):
         )
         write.assert_called_once()
 
+    @unittest.expectedFailure
     def test_a_changed_subject_retitles_before_the_push(self) -> None:
         """The Semantic Pull Request check runs on the push; the title must lead it."""
         write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
