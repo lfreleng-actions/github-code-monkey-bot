@@ -92,7 +92,16 @@ NAMED_REFERENCE = re.compile(
 TAG_SHAPE = re.compile(
     r"""<(?:/?[A-Za-z][A-Za-z0-9-]*)(?:\s+[A-Za-z-]+(?:="[^"<>`&']*")?)*\s*/?>"""
 )
-ANY_TAG = re.compile(r"<[A-Za-z/][^<>]*>")
+# Every tag on the line, quoted values read whole so a bracket inside
+# one neither ends the tag early nor hides it from the shape check.
+ANY_TAG = re.compile(r"""<[A-Za-z/](?:"[^"]*"|'[^']*'|[^<>"'])*>""")
+# A code span inside a rendered heading or summary could hide part of
+# its label from the count; the real bodies write none there. Read on
+# the blanked line, so a heading or summary quoted whole inside a span
+# is an example and not a heading at all.
+HEADING_OR_SUMMARY = re.compile(
+    r"^(?:[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*)#{1,6}[ \t]|<summary>", re.I
+)
 # A backtick inside a quoted attribute value would pair with a later
 # backtick as a code span and mask what lies between; read on the
 # line as written, before any masking.
@@ -247,6 +256,8 @@ def read_line(line: str) -> tuple[str, set[str]]:
     ):
         problems.add(UNREADABLE_HTML)
     if OPEN_BRACKET.match(masked) or CONTAINER_HEADING.match(masked):
+        problems.add(UNREADABLE_MARKDOWN)
+    if "`" in line and HEADING_OR_SUMMARY.search(masked):
         problems.add(UNREADABLE_MARKDOWN)
     for tag in ANY_TAG.finditer(masked):
         if not TAG_SHAPE.fullmatch(tag.group(0)):
