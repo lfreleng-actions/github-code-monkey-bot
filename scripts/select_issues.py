@@ -285,10 +285,12 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
         reviser=rounds.for_issue,
     )
-    # The session names the run: unique per run and the same across
-    # its retries, so a scratch branch or a reply marked with it is
-    # this run's alone where two runs may share a read time.
-    session = re.sub(r"[^0-9A-Za-z]", "", args.session) or uuid.uuid4().hex
+    # The session names this selection: the run and its attempt, so
+    # a full rerun that selects anew takes a new one and a publish-only
+    # retry, reading this selection, keeps it. A scratch branch or a
+    # reply marked with it is this selection's alone where two runs
+    # may share a read time.
+    session = re.sub(r"[^0-9A-Za-z-]", "", args.session) or uuid.uuid4().hex
     for entry in chosen:
         entry["collected_at"] = collected_at
         entry["session"] = session

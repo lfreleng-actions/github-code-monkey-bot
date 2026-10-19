@@ -541,9 +541,12 @@ jobs:
           DRY_RUN: "${{ inputs.dry_run }}"
           REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
           ISSUES: "${{ steps.issues.outputs.csv }}"
-          # The session: unique per run, the same across its retries,
-          # and trusted, so it may own a scratch branch and a reply.
+          # The session: the run and this select job's attempt. New on
+          # a full rerun, which selects and authors anew; kept across a
+          # publish-only retry, which reads this selection; and trusted,
+          # so it may own a scratch branch and a reply.
           RUN_ID: "${{ github.run_id }}"
+          RUN_ATTEMPT: "${{ github.run_attempt }}"
           PULL_REQUESTS: "${{ steps.pulls.outputs.csv }}"
           REVISE: "${{ inputs.revise }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
@@ -573,7 +576,7 @@ jobs:
             --repositories "$REPOSITORIES" \
             --issues "$ISSUES" \
             --pull-requests "$PULL_REQUESTS" \
-            --session "$RUN_ID" \
+            --session "$RUN_ID-$RUN_ATTEMPT" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \

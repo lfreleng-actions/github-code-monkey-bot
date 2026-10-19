@@ -50,7 +50,7 @@ def temporary_branch(check: dict[str, Any]) -> str:
     branch. A retry of the same run names the same branch and may
     resume it.
     """
-    session = re.sub(r"[^0-9A-Za-z]", "", str(check.get("session") or ""))
+    session = re.sub(r"[^0-9A-Za-z-]", "", str(check.get("session") or ""))
     suffix = f"-{session}" if session else ""
     return f"{check['branch']}-r{int(check['round'])}{suffix}"
 

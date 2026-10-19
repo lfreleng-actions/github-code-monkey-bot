@@ -1419,8 +1419,9 @@ dropped; both are empty on a scan. `explicit_pull_requests` and
 "revise"`, `rebase_sha`, `checkout_sha`, `pull_request` (`number`,
 `url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
 `collected_at` (when the selection read the comments; every entry
-carries it), `session` (the run id, unique per run and the same
-across its retries; every entry carries it, and the scratch branch
+carries it), `session` (the run id and the select job's attempt:
+new on a full rerun, which authors anew, kept across a retry of the
+publish job alone; every entry carries it, and the scratch branch
 and the reply marker are its), `round_reasons`, `rounds`, `threads` (`thread_id`,
 `comment_id`, `path`, `line`, `outdated`, `author`, `maintainer`,
 `created_at`, `body`, `replies` as `{author, maintainer, created_at,
@@ -1833,9 +1834,9 @@ nothing, since the branch may hold the new chain. The push syncs
 the fork, replays
 the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>-<session>`, the session being the
-run id, so two named dispatches revising one pull request at one
-round, within one second even, neither resume nor delete each
-other's branch)
+run id and select attempt, so two named dispatches revising one pull
+request at one round, within one second even, neither resume nor
+delete each other's branch, and a full rerun owns a branch of its own)
 through `createCommitOnBranch`,
 which signs every commit, then moves `code-monkey/issue-<n>` to the new
 head with `updateRefs`, `beforeOid` set to the recorded head and
@@ -1876,7 +1877,7 @@ the one this round published, or one it cannot read, leaves every
 write below undone with a warning and the publication standing. It
 then posts each reply on its thread
 prefixed with the AI disclosure and ending in a marker that names
-the round and the session, the run id,
+the round and the session,
 resolves the threads the agent
 marked fixed, and replaces the title and body with the composed
 ones, keeping the publisher's header. One refused write is a warning

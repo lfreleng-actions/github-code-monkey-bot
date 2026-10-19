@@ -28,8 +28,8 @@ def reply_marker(round_number: int, session: str) -> str:
     The round alone would not do: a session whose issue comment never
     went up leaves no footer, so the next session takes the same round
     number and must not mistake the earlier replies for its own. The
-    session is the run id: unique per run where two runs may share a
-    read time, and the same across the run's retries.
+    session is the run id with the select job's attempt: new on a full
+    rerun, which authors anew, and kept across a publish-only retry.
     """
     return f"<!-- code-monkey reply round={round_number} session={session} -->"
 

@@ -579,7 +579,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertTrue(allowed("alpha"))
         self.assertFalse(allowed("beta"))
 
-    @unittest.expectedFailure
     def test_entries_carry_the_session(self) -> None:
         """Every entry names the run's session, given or made, beside its read time."""
 
