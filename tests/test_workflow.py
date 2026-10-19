@@ -864,6 +864,28 @@ class RevisionContracts(ReusableWorkflowCase):
         respond = self.step("publish", "respond")
         self.assertNotIn("steps.check.outputs.verdict", str(respond["if"]))
 
+    def test_publish_serialises_per_pull_request(self) -> None:
+        """One publish at a time per pull request, across named and scanned runs.
+
+        The workflow-level groups keep runs apart by their target
+        lists; two lists that overlap on one pull request, or a scan
+        and a named run, still reach it together. The retitle, push,
+        restore and respond writes of a revision must not interleave
+        with another run's, so the publish job locks on the pull
+        request it revises, and a new issue's publish on its issue.
+        A dry run writes nothing and locks within its own run.
+        """
+        publish = self.jobs["publish"]
+        concurrency = cast(dict[str, Any], publish["concurrency"])
+        group = unwrap(str(concurrency["group"]))
+        self.assertIn("inputs.dry_run", group)
+        self.assertIn("github.run_id", group)
+        self.assertIn("matrix.repository", group)
+        self.assertIn("matrix.task", group)
+        self.assertIn("matrix.pull_number", group)
+        self.assertIn("matrix.number", group)
+        self.assertIs(concurrency["cancel-in-progress"], False)
+
     def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
         """head_sha and task are checked before any step reads them."""
         guard = flatten(self.step("publish", "Require trusted provenance")["run"])

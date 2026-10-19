@@ -989,6 +989,27 @@ jobs:
       !cancelled() && needs.select.result == 'success' &&
       needs.select.outputs.run_agent == 'true'
     runs-on: 'ubuntu-latest'
+    # One publish at a time per pull request, across named and scanned
+    # runs: the workflow-level groups keep runs apart by their target
+    # lists, and two lists that overlap on one pull request, or a scan
+    # and a named run, still reach it together. A revision's retitle,
+    # push, restore and respond must not interleave with another
+    # run's, so a revision locks on the pull request it revises and a
+    # new issue's publish on its issue, which also owns the branch. A
+    # dry run writes nothing and locks within its own run. A group
+    # keeps one pending job, so a third run on one pull request waits
+    # for neither; its selection is redone next time.
+    concurrency:
+      group: >-
+        ${{ inputs.dry_run
+        && format('code-monkey-publish-dry-run-{0}-{1}',
+        github.run_id, matrix.key)
+        || matrix.task == 'revise'
+        && format('code-monkey-publish-{0}-pull-{1}',
+        matrix.repository, matrix.pull_number)
+        || format('code-monkey-publish-{0}-issue-{1}',
+        matrix.repository, matrix.number) }}
+      cancel-in-progress: false
     # Twenty minutes for the publish itself, plus the Copilot review
     # wait and the read reserve copilot_review.py keeps for it.
     timeout-minutes: 60

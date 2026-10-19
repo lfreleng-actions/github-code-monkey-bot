@@ -1145,6 +1145,15 @@ today. Move it when a second consumer appears.
   its targets, so the legs of one caller run queue on their own lock
   and never cancel or wait on an unrelated run.
   All three groups set `cancel-in-progress: false`.
+- The publish job locks once more, on the pull request it revises
+  (`code-monkey-publish-<repository>-pull-<n>`) or the issue it
+  publishes (`…-issue-<n>`), across named and scanned runs: two
+  target lists that overlap on one pull request, or a scan and a
+  named run, reach it together, and a revision's retitle, push,
+  restore and respond must not interleave with another run's (§20.3).
+  A dry run writes nothing and locks within its own run. A group
+  keeps one pending job, so a third run on one pull request waits for
+  neither; the next scan selects it again.
 - `testing.yaml` keys pull request runs on the ref, so a newer push
   cancels a stale run, and gives each manual dispatch a group of its
   own.
