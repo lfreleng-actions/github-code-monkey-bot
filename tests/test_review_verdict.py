@@ -1237,6 +1237,23 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
+    @unittest.expectedFailure
+    def test_closing_hashes_end_no_section(self) -> None:
+        """A heading's closing hashes are the heading's, not a new one's."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n### Suppressed comments (0) ###\n\n**x.py:1**\n**y.py:2**\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 2)
+        self.assertEqual(verdict.verdict, "findings")
+        # A real heading on the next line still ends it.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n### Suppressed comments (0) ###\n### Other\n\n**x.py:1**\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).suppressed, 0)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
