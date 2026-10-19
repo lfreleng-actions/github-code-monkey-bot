@@ -802,13 +802,18 @@ For each selected issue:
     classifier reads 64 KiB at most and treats a longer body as
     findings, since the part it cannot read may hold suppressed
     findings; drops fenced code and Copilot's one HTML comment, its
-    format marker, and fails closed on any other HTML comment outside
+    format marker, and reads inline code as prose, so a tag, a comment
+    opener, a heading or a label quoted in a closed code span names
+    no assessment and counts no finding; fails closed on any HTML
+    comment outside
     inline code, a code span left open on its line, an escaped
     backtick, an HTML tag the real bodies never carry, a tag left
     open on its line, or a heading or fence inside a `<details>`
     block before its blank line, since
     parsing what such text hides is a losing game and none of it can
-    then supply an assessment or hide a finding; takes the
+    then supply an assessment or hide a finding. The tag set tracks a
+    format Copilot moves under us, so the fixtures hold a body of each
+    format seen and a test holds every one to a reading; takes the
     earliest heading as the
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,

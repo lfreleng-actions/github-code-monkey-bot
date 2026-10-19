@@ -136,7 +136,11 @@ def remove_refusal_notice(repository: str, number: int) -> str | None:
         if not current.startswith(REFUSAL_NOTICE_MARKER):
             return None
         end = current.find("\n\n")
-        rest = current[end + 2 :] if end >= 0 else ""
+        if end < 0:
+            # A maintainer's edit took the blank line that bounds the
+            # notice; cutting would empty the description, so it stays.
+            return "the review notice was left in place: its boundary is gone"
+        rest = current[end + 2 :]
         github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"body": rest})
     except github.GitHubError as exc:
         return f"could not remove the review notice: {github.safe_message(exc)}"

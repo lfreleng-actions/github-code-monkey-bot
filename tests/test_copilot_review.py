@@ -388,7 +388,6 @@ class HandlersTest(unittest.TestCase):
             review.run_request(argparse.Namespace(result=self.path, output=self.path))
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_notice_without_its_blank_line_is_left_alone(self) -> None:
         """A maintainer's edit that removed the boundary costs no description.
 

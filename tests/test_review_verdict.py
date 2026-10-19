@@ -51,7 +51,6 @@ class RealBodiesTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-blue-clean"], 0).assessment, "closer-look"
         )
 
-    @unittest.expectedFailure
     def test_every_real_body_is_readable(self) -> None:
         """No real body, the current format included, trips a fail-closed rule.
 
@@ -362,7 +361,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-yellow-open-findings"], 1).verdict, "findings"
         )
 
-    @unittest.expectedFailure
     def test_inline_code_holds_no_html(self) -> None:
         """A tag inside a closed code span is prose; the same tag outside is HTML.
 
@@ -379,6 +377,15 @@ class UntrustedTextTest(unittest.TestCase):
                 verdict = verdicts.classify(BODIES["v2-green-clean"] + prose, 0)
                 self.assertEqual(verdict.verdict, "clean")
                 self.assertEqual(verdict.reasons, [])
+        # A quoted example is prose to the count and the assessment too.
+        for quoted in (
+            "\nWrite `<summary>Suppressed comments (1)</summary>` for the block.\n",
+            "\nNot ``### \U0001f7e1 Changes recommended`` here.\n",
+        ):
+            with self.subTest(quoted=quoted.strip()[:20]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + quoted, 0)
+                self.assertEqual(verdict.suppressed, 0)
+                self.assertEqual(verdict.verdict, "clean")
         for html in (
             "\nPrefer a <list> here.\n",
             "\nA `<list>` and a <list>.\n",

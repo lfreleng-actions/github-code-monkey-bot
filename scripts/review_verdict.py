@@ -59,10 +59,14 @@ MARKER_LINE = re.compile(r"^[ \t]*<!-- ccr-overview-v\d+ -->[ \t]*$")
 UNREADABLE_COMMENT = "review body holds an HTML comment the classifier does not read"
 UNREADABLE_SPAN = "review body holds a code span the classifier does not read"
 UNREADABLE_HTML = "review body holds HTML the classifier does not read"
-# The tags the real review bodies use (tests/review_fixtures.py). Any
-# other raw HTML fails closed: a block could hold an example heading
-# or a fence line, and the classifier does not parse HTML.
-KNOWN_TAGS = frozenset({"details", "img", "picture", "source", "strong", "summary"})
+# The tags the real review bodies use (tests/review_fixtures.py): the
+# format is Copilot's and moves under us, so the fixtures hold a body
+# of each format seen and a test reads every one. Any other raw HTML
+# fails closed: a block could hold an example heading or a fence
+# line, and the classifier does not parse HTML.
+KNOWN_TAGS = frozenset(
+    {"a", "details", "img", "picture", "source", "strong", "sub", "summary"}
+)
 HTML_TAG = re.compile(r"</?([A-Za-z][A-Za-z0-9-]*)")
 # A tag that opens an HTML block in Markdown: lines after it, to the
 # next blank line, are HTML and no heading or fence. The real bodies
@@ -133,48 +137,72 @@ def fence_closes(line: str, char: str, length: int) -> bool:
     return run >= length and stripped[run:].strip(" \t") == ""
 
 
-def scan_line(line: str) -> set[str]:
-    """What on one line the classifier will not read past.
+def mask_spans(line: str) -> tuple[str, bool]:
+    """The line with each closed code span blanked, and whether one is left open.
 
-    Inline code is prose, so a comment opener inside a closed span is
-    fine. A span left open on its line may run on to later lines and
-    show or hide anything, and a comment opener outside code may hide
-    anything to its close: either fails the body closed, as do an
-    escaped backtick and any HTML tag the real bodies never carry.
-    Parsing these instead is a losing game, since each needs another
-    rule, and Copilot writes none of them.
+    Inline code is prose: whatever a closed span holds is text to the
+    reader, so the HTML and comment checks run on the line without
+    it. A span left open may run on to later lines; it is reported
+    and the rest of the line is checked as written.
+    """
+    parts: list[str] = []
+    left_open = False
+    i = 0
+    while True:
+        ticks = BACKTICKS.search(line, i)
+        if ticks is None:
+            parts.append(line[i:])
+            return "".join(parts), left_open
+        run = ticks.group()
+        close = line.find(run, ticks.end())
+        while close >= 0 and (
+            (close + len(run) < len(line) and line[close + len(run)] == "`")
+            or line[close - 1] == "`"
+        ):
+            close = line.find(run, close + 1)
+        parts.append(line[i : ticks.start()])
+        if close < 0:
+            left_open = True
+            parts.append(run)
+            i = ticks.end()
+        else:
+            end = close + len(run)
+            parts.append(" " * (end - ticks.start()))
+            i = end
+
+
+def read_line(line: str) -> tuple[str, set[str]]:
+    """The line as the classifier reads it, and what on it it will not read past.
+
+    Inline code is prose, so a comment opener or a tag inside a closed
+    span is fine, and the line comes back with its closed spans
+    blanked: a quoted heading or label inside one names no assessment
+    and counts no finding. A span left open on its line may run on to
+    later lines and show or hide anything, and a comment opener
+    outside code may hide anything to its close: either fails the
+    body closed, as do an escaped backtick and any HTML tag the real
+    bodies never carry. Parsing these instead is a losing game, since
+    each needs another rule, and Copilot writes none of them.
     """
     problems: set[str] = set()
-    if ESCAPED_BACKTICK in line:
+    masked, left_open = mask_spans(line)
+    if left_open or ESCAPED_BACKTICK in line:
         problems.add(UNREADABLE_SPAN)
-    for tag in HTML_TAG.findall(line):
+    for tag in HTML_TAG.findall(masked):
         if tag.lower() not in KNOWN_TAGS:
             problems.add(UNREADABLE_HTML)
-    if OPEN_ANGLE.search(line):
+    if OPEN_ANGLE.search(masked):
         problems.add(UNREADABLE_HTML)
-    i = 0
-    while i < len(line):
-        ticks = BACKTICKS.search(line, i)
-        comment = line.find(COMMENT_OPEN, i)
-        if ticks is None and comment < 0:
-            break
-        if ticks is not None and (comment < 0 or ticks.start() < comment):
-            run = ticks.group()
-            close = line.find(run, ticks.end())
-            while close >= 0 and (
-                (close + len(run) < len(line) and line[close + len(run)] == "`")
-                or line[close - 1] == "`"
-            ):
-                close = line.find(run, close + 1)
-            if close < 0:
-                problems.add(UNREADABLE_SPAN)
-                i = ticks.end()
-            else:
-                i = close + len(run)
-            continue
+    if COMMENT_OPEN in masked:
         problems.add(UNREADABLE_COMMENT)
-        i = comment + len(COMMENT_OPEN)
-    return problems
+    return masked, problems
+
+
+def read_into(line: str, problems: set[str]) -> str:
+    """Read one line, adding its problems to ``problems``; return the readable text."""
+    masked, found = read_line(line)
+    problems |= found
+    return masked
 
 
 def visible(text: str) -> tuple[str, list[str]]:
@@ -200,13 +228,11 @@ def visible(text: str) -> tuple[str, list[str]]:
                 problems.add(UNREADABLE_HTML)
             in_html = line.strip() != ""
             if in_html:
-                problems |= scan_line(line)
-                lines.append(line)
+                lines.append(read_into(line, problems))
                 continue
         if BLOCK_TAG.match(line):
             in_html = True
-            problems |= scan_line(line)
-            lines.append(line)
+            lines.append(read_into(line, problems))
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
@@ -215,8 +241,7 @@ def visible(text: str) -> tuple[str, list[str]]:
             continue
         if MARKER_LINE.match(line):
             continue
-        problems |= scan_line(line)
-        lines.append(line)
+        lines.append(read_into(line, problems))
     return "\n".join(lines), sorted(problems)
 
 
