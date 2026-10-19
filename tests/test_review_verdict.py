@@ -1137,6 +1137,37 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
+    @unittest.expectedFailure
+    def test_a_bracket_in_a_quoted_attribute_fails_closed(self) -> None:
+        """A tag whose attribute quotes a bracket is read whole and refused."""
+        text = (
+            BODIES["v2-green-clean"] + '\n<details title="<summary>prefix">\n'
+            "<summary><sub>Suppressed comments (1)</sub></summary>\n\n**x.py:1**\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertIn(
+            "review body holds HTML the classifier does not read", verdict.reasons
+        )
+
+    @unittest.expectedFailure
+    def test_code_in_a_heading_or_summary_fails_closed(self) -> None:
+        """A span inside a rendered heading could hide part of its label."""
+        reason = "review body holds Markdown the classifier does not read"
+        for extra in (
+            "\n### Suppressed `comments` (1)\n\n**x.py:1**\n",
+            "\n### `Suppressed` comments (1)\n\n**x.py:1**\n",
+            "\n<summary>Suppressed `comments` (1)</summary>\n",
+            "\n> ## `x` \U0001f7e2 Approval recommended\n",
+        ):
+            with self.subTest(extra=extra.strip()[:30]):
+                verdict = verdicts.classify(BODIES["v2-overview-yellow"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+        # A heading quoted whole inside a span, mid-prose, is an example.
+        text = BODIES["v2-green-clean"] + "\nNot `### Suppressed comments (1)` here.\n"
+        self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
