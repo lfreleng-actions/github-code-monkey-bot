@@ -64,10 +64,18 @@ FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
 MAX_COUNT_DIGITS = 9
 
 # Suppressed findings sit under a heading or a <summary>; each entry
-# opens with the bold path and line.
+# opens with the bold path and line. Whitespace, emphasis and the
+# strong tags the real bodies use may sit anywhere around and between
+# the label's words without changing what a reader sees.
+LABEL_NOISE = r"(?:\s|</?strong>|[*_])"
 SUPPRESSED_HEAD = re.compile(
-    r"(?:^ {0,3}#{1,6}\s+|<summary>\s*(?:<strong>\s*)?)[*_]{0,3}"
-    r"Suppressed\s+comments\s*(?:[*_]{0,3}|</strong>)\s*\\?\((\d+)\\?\)",
+    r"(?:^ {0,3}#{1,6}[ \t]+|<summary>)"
+    + LABEL_NOISE
+    + r"*Suppressed"
+    + LABEL_NOISE
+    + r"+comments"
+    + LABEL_NOISE
+    + r"*\\?\((\d+)\\?\)",
     re.M | re.I,
 )
 SUPPRESSED_ENTRY = re.compile(r"^\s*\*\*[^*\n]+:\d+\*\*", re.M)

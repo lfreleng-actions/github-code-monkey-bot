@@ -958,7 +958,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).suppressed, 1)
 
-    @unittest.expectedFailure
     def test_strong_tags_anywhere_in_the_suppressed_label_count(self) -> None:
         """Strong tags, emphasis and whitespace may sit anywhere in the label."""
         for extra in (
