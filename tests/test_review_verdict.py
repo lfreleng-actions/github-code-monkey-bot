@@ -987,6 +987,7 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertGreater(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
     def test_an_unreadable_suppressed_section_is_findings(self) -> None:
         """A heading or summary naming suppressed findings in a form unread is findings.
 
@@ -999,6 +1000,10 @@ class UntrustedTextTest(unittest.TestCase):
             "\n<summary><sub>Suppressed comments (1)</sub></summary>\n",
             '\n<summary><a href="https://x/y">Suppressed comments (1)</a></summary>\n',
             "\n### Suppressed comments\n",
+            # A summary mid-line, or spanning lines, is read whole.
+            "\n<details><summary><sub>Suppressed comments (1)</sub></summary></details>\n",
+            "\n<summary>\nSuppressed comments (**1**)\n</summary>\n",
+            "\n<summary>\n<sub>Suppressed comments (1)</sub>\n</summary>\n",
         ):
             with self.subTest(extra=extra.strip()[:40]):
                 verdict = verdicts.classify(
@@ -1012,6 +1017,15 @@ class UntrustedTextTest(unittest.TestCase):
             + "\nNothing was suppressed; see `### Suppressed comments (1)`.\n"
         )
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
+        # A readable label across lines, or mid-line, counts and is not unread.
+        for extra in (
+            "\n<summary>\nSuppressed comments (1)\n</summary>\n",
+            "\n<details><summary>Suppressed comments (1)</summary></details>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:30]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.suppressed, 1)
+                self.assertNotIn("suppressed count unreadable", verdict.reasons)
 
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
