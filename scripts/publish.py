@@ -346,7 +346,15 @@ def build_parser() -> argparse.ArgumentParser:
         "retitle", help="set a revision's title before its push (target token)"
     )
     retitle.add_argument("--check", type=Path, required=True)
+    retitle.add_argument("--record", type=Path, required=True)
     retitle.set_defaults(handler=revision_publish.run_retitle)
+
+    restore = commands.add_parser(
+        "restore-title", help="take back a title the push did not earn (target token)"
+    )
+    restore.add_argument("--record", type=Path, required=True)
+    restore.add_argument("--result", type=Path, required=True)
+    restore.set_defaults(handler=revision_publish.run_restore_title)
 
     respond = commands.add_parser(
         "respond", help="answer the review threads of a revision (target token)"

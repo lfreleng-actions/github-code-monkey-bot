@@ -1256,7 +1256,7 @@ jobs:
           GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
         run: |
           python3 monkey-assets/scripts/publish.py retitle \
-            --check artefacts/check.json
+            --check artefacts/check.json --record artefacts/retitle.json
 
       - name: 'Push branch to fork'
         id: push
@@ -1277,6 +1277,21 @@ jobs:
             --run-attempt "$RUN_ATTEMPT" \
             --author-session "$AUTHOR_SESSION" \
             --mode "$MODE" --output artefacts/result.json "${extra[@]}"
+
+      # A title set for a push that then failed with the branch
+      # unchanged would break the title-and-subject match; the step
+      # gives the old title back when the head and title are still this
+      # attempt's, and never after a publication or an unknown swap.
+      - name: 'Restore the title after a failed push'
+        id: restore-title
+        if: >-
+          !cancelled() && steps.retitle.outcome == 'success' &&
+          steps.push.outcome != 'skipped'
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py restore-title \
+            --record artefacts/retitle.json --result artefacts/result.json
 
       - name: 'Open pull request'
         id: open

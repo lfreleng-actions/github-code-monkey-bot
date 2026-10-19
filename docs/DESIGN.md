@@ -1818,7 +1818,11 @@ compares the title with the subject, so the title must lead
 (organisation `AGENTS.md` §10.1). It writes when the pull request
 still heads at the selected commit, or at this run's own published
 chain on a retry; a head another session moved keeps its title, as
-the swap will refuse that session's branch update. The push syncs
+the swap will refuse that session's branch update. A push that then
+fails with the branch unchanged gives the old title back, with the
+same token, while the head and title are still this attempt's; a
+publication keeps the new title and an unknown swap outcome restores
+nothing, since the branch may hold the new chain. The push syncs
 the fork, replays
 the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>-<session>`, the session being the

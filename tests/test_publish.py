@@ -1418,7 +1418,6 @@ class RunRetitleTest(NoNetworkCase):
             )
         return write
 
-    @unittest.expectedFailure
     def test_a_failed_push_restores_the_title(self) -> None:
         """A retitle the push did not earn is taken back, when the head is still ours."""
         self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
@@ -1474,7 +1473,6 @@ class RunRetitleTest(NoNetworkCase):
         write = self.restore(result_json(verdict="publish-failed"), HEAD, "Fix: Both")
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_stale_dispatch_retitles_nothing(self) -> None:
         """A head that moved since selection is another session's; the title stays.
 
@@ -1494,7 +1492,6 @@ class RunRetitleTest(NoNetworkCase):
         )
         write.assert_called_once()
 
-    @unittest.expectedFailure
     def test_a_changed_subject_retitles_before_the_push(self) -> None:
         """The Semantic Pull Request check runs on the push; the title must lead it."""
         write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
