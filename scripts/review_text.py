@@ -119,6 +119,11 @@ LINK_REFERENCE = re.compile(
 # list item it closes a fence the parser, which tracks no container
 # indentation, would otherwise never end.
 INDENTED_FENCE = re.compile(r"^(?: {4,}|[ \t]*\t[ \t]*)(?:`{3,}|~{3,})[ \t]*$")
+# A line opening a bracket it never closes may begin a reference label
+# that spans lines; the definition is then LINK_REFERENCE's to miss.
+OPEN_BRACKET = re.compile(
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)]|>)[ \t]+)?\[(?:\\.|[^\]\\])*$"
+)
 
 
 def tag_left_open(line: str) -> bool:
@@ -199,8 +204,15 @@ def read_line(line: str) -> tuple[str, set[str]]:
         problems.add(UNREADABLE_MARKDOWN)
     if CHARACTER_REFERENCE.search(masked) or NAMED_REFERENCE.search(masked):
         problems.add(UNREADABLE_MARKDOWN)
-    if ATTRIBUTE_BACKTICK.search(line) or INDENTED_TAG.match(line):
+    if INDENTED_TAG.match(line) or any(
+        # The tag's own < survives the masking when it lies outside a
+        # closed span; inside one the whole tag is a quoted example.
+        masked[found.start()] == "<"
+        for found in ATTRIBUTE_BACKTICK.finditer(line)
+    ):
         problems.add(UNREADABLE_HTML)
+    if OPEN_BRACKET.match(masked):
+        problems.add(UNREADABLE_MARKDOWN)
     for tag in ANY_TAG.finditer(masked):
         if not TAG_SHAPE.fullmatch(tag.group(0)):
             problems.add(UNREADABLE_HTML)

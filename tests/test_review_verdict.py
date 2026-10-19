@@ -869,7 +869,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
-    @unittest.expectedFailure
     def test_attribute_backtick_inside_a_code_span_is_prose(self) -> None:
         """A tag quoted whole inside a span, backtick and all, is an example."""
         text = (
@@ -887,7 +886,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).verdict, "findings")
 
-    @unittest.expectedFailure
     def test_a_bracket_left_open_on_its_line_fails_closed(self) -> None:
         """A reference label may span lines; a line opening one unclosed fails closed."""
         reason = "review body holds Markdown the classifier does not read"
