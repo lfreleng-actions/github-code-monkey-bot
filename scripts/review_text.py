@@ -91,7 +91,9 @@ ANY_TAG = re.compile(r"<[A-Za-z/][^<>]*>")
 # A backtick inside a quoted attribute value would pair with a later
 # backtick as a code span and mask what lies between; read on the
 # line as written, before any masking.
-ATTRIBUTE_BACKTICK = re.compile(r"""<[A-Za-z][^<>`"']*(?:"[^">]*`|'[^'>]*`)""")
+ATTRIBUTE_BACKTICK = re.compile(
+    r"""<[A-Za-z](?:[^<>`"']|"[^"`>]*"|'[^'`>]*')*(?:"[^">]*`|'[^'>]*`)"""
+)
 # A tag indented past where a block may open: under a list item it
 # opens a block the guard, which reads column zero alone, cannot place.
 INDENTED_TAG = re.compile(r"^(?: {4,}|[ \t]*\t)[ \t]*</?[A-Za-z]")

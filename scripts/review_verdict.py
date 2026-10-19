@@ -67,7 +67,7 @@ MAX_COUNT_DIGITS = 9
 # opens with the bold path and line.
 SUPPRESSED_HEAD = re.compile(
     r"(?:^ {0,3}#{2,4}\s+|<summary>\s*(?:<strong>\s*)?)[*_]{0,3}"
-    r"Suppressed\s+comments(?:[*_]{0,3}|</strong>)\s*\\?\((\d+)\\?\)",
+    r"Suppressed\s+comments\s*(?:[*_]{0,3}|</strong>)\s*\\?\((\d+)\\?\)",
     re.M | re.I,
 )
 SUPPRESSED_ENTRY = re.compile(r"^\s*\*\*[^*\n]+:\d+\*\*", re.M)

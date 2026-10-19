@@ -901,7 +901,6 @@ class UntrustedTextTest(unittest.TestCase):
         text = BODIES["v2-green-clean"] + "\n- [x] done, see [the docs](u) and [a].\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_backtick_in_a_later_attribute_fails_closed(self) -> None:
         """The attribute check reads past clean values to the one with a backtick."""
         tag = (
@@ -917,7 +916,6 @@ class UntrustedTextTest(unittest.TestCase):
         quoted = BODIES["v2-green-clean"] + '\nWrite ``<a href="x" title="`">`` here.\n'
         self.assertEqual(verdicts.classify(quoted, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_whitespace_before_the_strong_close_counts(self) -> None:
         """Space or a newline before </strong> leaves the count readable."""
         for extra in (
