@@ -1124,10 +1124,14 @@ today. Move it when a second consumer appears.
   writes nothing and takes `code-monkey-dry-run-<run_id>` instead:
   it neither waits behind the schedule nor cancels a pending live
   run. A live dispatch that names `issues` or `pull_requests` takes
-  `code-monkey-named-<run_id>` for the same reason: overlapping named
-  dispatches would otherwise evict each other without trace. Its
+  `code-monkey-named-<issues>-<pull_requests>`, its target list:
+  dispatches naming different targets run apart rather than evict
+  each other without trace, and two naming the same targets are
+  duplicates that queue on one lock, so neither can retitle, push or
+  roll back a title under the other (§20.3). Its
   scope is the named targets alone (§6 "Explicit issues", §20.1),
-  `max_pull_requests` bounds it, and the §6 open-pull-request check,
+  `max_pull_requests` bounds it, and lists that overlap without
+  matching still run apart: there the §6 open-pull-request check,
   the publisher's branch-exists refusal and the revision's
   compare-and-swap limit an overlap on one
   target to a wasted author session, never a duplicate pull request
@@ -1135,11 +1139,11 @@ today. Move it when a second consumer appears.
   A scan keeps the shared group even when `repositories` narrows it.
 - The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
-  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, and a
-  live run naming `issues` or `pull_requests` on
-  `code-monkey-named-<run_id>-<owner>`,
-  both keyed on the caller run, so the legs of one caller run queue
-  on that run's own lock and never cancel or wait on another run.
+  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, keyed on
+  the caller run, and a live run naming `issues` or `pull_requests`
+  on `code-monkey-named-<owner>-<issues>-<pull_requests>`, keyed on
+  its targets, so the legs of one caller run queue on their own lock
+  and never cancel or wait on an unrelated run.
   All three groups set `cancel-in-progress: false`.
 - `testing.yaml` keys pull request runs on the ref, so a newer push
   cancels a stale run, and gives each manual dispatch a group of its

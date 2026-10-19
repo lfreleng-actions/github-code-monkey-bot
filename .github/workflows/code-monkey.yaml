@@ -147,16 +147,21 @@ permissions: {}
 # pending run and a newcomer cancels it, so dry runs, which write
 # nothing, lock within their own caller run and never cancel or wait
 # on a live run or another caller run's dry run. Live runs that name
-# `issues` or `pull_requests` lock within their own caller run the
-# same way: their scope is those targets alone, and the per-issue
-# pull request check, the branch-exists refusal and the revision's
-# compare-and-swap stop a duplicate.
+# `issues` or `pull_requests` lock on their target list: two runs
+# naming the same targets are duplicates and queue on one lock, so
+# neither can retitle, push or roll back a title under the other,
+# while runs naming different targets run apart. Lists that overlap
+# without matching still run apart; there the per-issue pull request
+# check, the branch-exists refusal and the revision's compare-and-swap
+# stop a duplicate, and the description update after a push restores
+# the title.
 concurrency:
   group: >-
     ${{ inputs.dry_run
     && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)
     || (inputs.issues != '' || inputs.pull_requests != '')
-    && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)
+    && format('code-monkey-named-{0}-{1}-{2}',
+    inputs.org, inputs.issues, inputs.pull_requests)
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
 
