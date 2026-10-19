@@ -987,7 +987,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertGreater(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_an_unreadable_suppressed_section_is_findings(self) -> None:
         """A heading or summary naming suppressed findings in a form unread is findings.
 

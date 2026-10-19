@@ -80,6 +80,17 @@ SUPPRESSED_HEAD = re.compile(
     + r"*\\?\((\d+)\\?\)",
     re.M | re.I,
 )
+# A heading or summary line that names suppressed findings in any
+# form, letters alone considered: one SUPPRESSED_HEAD cannot read is
+# a count unreadable, a finding in itself, since the label's
+# formatting has no end of variants and a clean verdict must not
+# rest on missing one.
+SUPPRESSED_MENTION = re.compile(
+    r"^ {0,3}(?:#{1,6}[ \t]|<summary>)(?P<line>.*)$", re.M | re.I
+)
+LETTERS = re.compile(r"[^a-z]")
+ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
+SUPPRESSED_LABEL = "suppressedcomments"
 SUPPRESSED_ENTRY = re.compile(r"^\s*\*\*[^*\n]+:\d+\*\*", re.M)
 SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}\s|</details>", re.M)
 
@@ -220,6 +231,11 @@ def suppressed_count(text: str) -> tuple[int, bool]:
     total = 0
     unreadable = False
     text = STRONG_TAGS.sub("", text)
+    readable = {head.start() for head in SUPPRESSED_HEAD.finditer(text)}
+    for mention in SUPPRESSED_MENTION.finditer(text):
+        letters = LETTERS.sub("", ANY_TAG_TEXT.sub("", mention.group("line")).lower())
+        if letters.startswith(SUPPRESSED_LABEL) and mention.start() not in readable:
+            unreadable = True
     for head in SUPPRESSED_HEAD.finditer(text):
         digits = head.group(1)
         rest = text[head.end() :]
