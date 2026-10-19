@@ -1331,6 +1331,24 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
+    @unittest.expectedFailure
+    def test_a_bare_hash_line_inside_an_html_block_fails_closed(self) -> None:
+        """Hashes alone are a heading to Markdown and text inside raw HTML."""
+        for hashes in ("###", "#", "######\t"):
+            text = (
+                BODIES["v2-green-clean"]
+                + "\n<details>\n<summary>Suppressed comments (0)</summary>\n"
+                + hashes
+                + "\n\n**x.py:1**\n</details>\n"
+            )
+            with self.subTest(hashes=hashes):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(
+                    "review body holds HTML the classifier does not read",
+                    verdict.reasons,
+                )
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
