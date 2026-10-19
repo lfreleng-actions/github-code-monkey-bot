@@ -1084,6 +1084,38 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertEqual(verdict.verdict, "clean")
 
+    @unittest.expectedFailure
+    def test_long_lines_classify_in_bounded_time(self) -> None:
+        """Every scan is linear: a long adversarial line costs milliseconds."""
+        import time
+
+        for name, line in (
+            ("openers", "<a" * 8000 + ">"),
+            ("spaces", " " * 60000),
+            ("spaces then tag", " " * 60000 + "<b>"),
+            ("spaces then fence", "```\n" + " " * 60000 + "```"),
+            ("tabs", "\t" * 30000 + "x"),
+        ):
+            with self.subTest(name=name):
+                started = time.monotonic()
+                verdicts.classify(BODIES["v2-green-clean"] + "\n" + line + "\n", 0)
+                self.assertLess(time.monotonic() - started, 0.5)
+
+    @unittest.expectedFailure
+    def test_a_heading_inside_a_container_fails_closed(self) -> None:
+        """A heading opening a quote or list item renders; the parser reads neither."""
+        reason = "review body holds Markdown the classifier does not read"
+        for extra in (
+            "\n> ### Suppressed comments (1)\n>\n> **x.py:1**\n",
+            "\n- ### Suppressed comments (1)\n\n  **x.py:1**\n",
+            "\n- a\n\n    ### Suppressed comments (1)\n\n    **x.py:1**\n",
+            "\n> ### \U0001f7e2 Approval recommended\n",
+        ):
+            with self.subTest(extra=extra.strip()[:20]):
+                verdict = verdicts.classify(BODIES["v2-overview-yellow"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
