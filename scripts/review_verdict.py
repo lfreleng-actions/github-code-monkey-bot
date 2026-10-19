@@ -101,11 +101,13 @@ SUPPRESSED_MENTIONS = (
 # a blank line, as the real bodies write it, is no underline.
 # One linear run each way: nested repetitions over the same character
 # would backtrack exponentially on a long run that is no underline.
-SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-[ \t-]*)$")
+SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+[ \t]*|-[ \t-]*)$")
 LETTERS = re.compile(r"[^a-z]")
 ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
 SUPPRESSED_LABEL = "suppressedcomments"
-SUPPRESSED_ENTRY = re.compile(r"^\s*\*\*[^*\n]+:\d+\*\*", re.M)
+# Indentation of spaces and tabs alone: a class crossing newlines
+# would rescan every blank line after the section once per line.
+SUPPRESSED_ENTRY = re.compile(r"^[ \t]*\*\*[^*\n]+:\d+\*\*", re.M)
 SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}\s|</details>", re.M)
 
 

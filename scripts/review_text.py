@@ -57,9 +57,10 @@ DRESSED_TAG = re.compile(r"</?(" + "|".join(sorted(BARE_TAGS)) + r")(?![>])", re
 # so that fails closed too. The badges carry their text on the line.
 BLOCK_TAGS = frozenset({"details", "summary", "source"})
 # One or more container prefixes, a list marker with its space or a
-# quote marker with or without one, nested in any order and read in
-# one linear pass; the real bodies nest none.
-CONTAINER = r"^ {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+"
+# quote marker with or without one, nested in any order under any
+# indentation, since a list continuation indents what it holds, and
+# read in one linear pass; the real bodies nest none.
+CONTAINER = r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+"
 CONTAINER_BLOCK = re.compile(
     CONTAINER + r"</?(" + "|".join(sorted(BLOCK_TAGS)) + r")\b", re.I
 )
@@ -130,7 +131,7 @@ INDENTED_FENCE = re.compile(r"^(?=(?: {4}|[ \t]*\t))[ \t]*(?:`{3,}|~{3,})[ \t]*$
 # renders as a heading; the classifier reads headings at the line
 # start alone, so these fail the body closed.
 CONTAINER_HEADING = re.compile(
-    r"^(?: {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+|(?=(?: {4}|[ \t]*\t))[ \t]*)"
+    r"^(?:[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+|(?=(?: {4}|[ \t]*\t))[ \t]*)"
     r"#{1,6}[ \t]"
 )
 # A line opening a bracket it never closes may begin a reference label
