@@ -1271,6 +1271,24 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
+    @unittest.expectedFailure
+    def test_an_inline_closed_section_is_empty(self) -> None:
+        """A section closed on its own line holds nothing; later paths are not its."""
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n<details><summary>Suppressed comments (0)</summary></details>\n\n"
+            "**scripts/x.py:12** is a path in prose.\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.suppressed, 0)
+        self.assertEqual(verdict.verdict, "clean")
+        # A stated count in such a section still counts.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n<details><summary>Suppressed comments (2)</summary></details>\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).suppressed, 2)
+
     def test_escaped_angle_brackets_fail_closed(self) -> None:
         """An escaped bracket is text Markdown shows; the classifier reads a tag."""
         reason = "review body holds Markdown the classifier does not read"

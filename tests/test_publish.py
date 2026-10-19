@@ -1519,6 +1519,7 @@ class RunReportTest(NoNetworkCase):
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
 
+    @unittest.expectedFailure
     def test_review_column_and_totals(self) -> None:
         """Each row states the Copilot verdict; the summary counts them."""
         results = self.root / "results"
@@ -1541,13 +1542,37 @@ class RunReportTest(NoNetworkCase):
         text = md.read_text(encoding="utf-8")
         self.assertIn("| Copilot review |", text)
         self.assertIn("| clean |", text)
-        self.assertIn("| findings |", text)
+        self.assertIn("| findings (1 thread) |", text)
         self.assertIn("Copilot reviews: clean 1, findings 1, pending 0, none 1.", text)
         report = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(
             report["review_totals"],
             {"clean": 1, "findings": 1, "pending": 0, "none": 1},
         )
+
+    @unittest.expectedFailure
+    def test_review_column_carries_the_counts(self) -> None:
+        """A findings review names its thread and suppressed counts (issue #29)."""
+        for record, cell in (
+            (
+                review_record(
+                    "findings", assessment="changes", unresolved_threads=2, suppressed=1
+                ),
+                "findings (2 threads, 1 suppressed)",
+            ),
+            (review_record("findings", suppressed=3), "findings (3 suppressed)"),
+            (review_record("findings", assessment="changes"), "findings"),
+            (review_record("clean", assessment="approval"), "clean"),
+            (review_record("pending"), "pending"),
+            # Counts of the wrong shape stay out of the table.
+            (
+                review_record("findings", unresolved_threads="2", suppressed=None),
+                "findings",
+            ),
+        ):
+            with self.subTest(cell=cell):
+                row = reporting.report_row(result_json(review=record))
+                self.assertIn(f"| {cell} |", row)
 
     def test_dry_run_row(self) -> None:
         """A dry-run proposed result shows ``dry run`` instead of a URL."""
