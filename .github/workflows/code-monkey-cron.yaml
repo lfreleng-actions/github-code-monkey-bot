@@ -86,15 +86,19 @@ on:
 
 permissions: {}
 
-# Serialise scheduled runs and live dispatches of this caller. A group
+# Serialise scheduled runs and scan dispatches of this caller. A group
 # keeps one pending run and a newcomer cancels it, so this is not a
 # FIFO queue. A dry dispatch writes nothing and takes a group of its
 # own: it neither waits behind the schedule nor cancels a pending
-# live run.
+# live run. A live dispatch that names `issues` also takes a group of
+# its own: its scope is those issues alone, and the per-issue pull
+# request check and branch-exists refusal stop a duplicate.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
     && format('code-monkey-dry-run-{0}', github.run_id)
+    || github.event_name == 'workflow_dispatch' && inputs.issues != ''
+    && format('code-monkey-named-{0}', github.run_id)
     || 'code-monkey' }}
   cancel-in-progress: false
 

@@ -1017,18 +1017,27 @@ today. Move it when a second consumer appears.
   offset is the first cut and §16 lists the dispatch as a later
   option.
 - Caller concurrency group `code-monkey`, `cancel-in-progress:
-  false`, for scheduled runs and live dispatches: one run at a time,
-  and a dispatch during the scheduled run queues behind it. A group
-  keeps a single pending run and a newcomer cancels it, so this is
-  not a FIFO queue. A dry `workflow_dispatch` writes nothing and
-  takes `code-monkey-dry-run-<run_id>` instead: it neither waits
-  behind the schedule nor cancels a pending live run.
-- The reusable workflow locks a live run on
+  false`, for scheduled runs and live dispatches without `issues`:
+  one run at a time, and a dispatch during the scheduled run queues
+  behind it. A group keeps a single pending run and a newcomer
+  cancels it, so this is not a FIFO queue. A dry `workflow_dispatch`
+  writes nothing and takes `code-monkey-dry-run-<run_id>` instead:
+  it neither waits behind the schedule nor cancels a pending live
+  run. A live dispatch that names `issues` takes
+  `code-monkey-named-<run_id>` for the same reason: overlapping named
+  dispatches would otherwise evict each other without trace. Its
+  scope is the named issues alone (§6 "Explicit issues"),
+  `max_pull_requests` bounds it, and the §6 open-pull-request check
+  and the publisher's branch-exists refusal limit an overlap on one
+  issue to a wasted author session, never a duplicate pull request.
+  A scan keeps the shared group even when `repositories` narrows it.
+- The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
-  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, keyed on
-  the caller run, so the two plumbing legs of one test run queue on
-  that run's own lock and never cancel or wait on a live run or
-  another pull request's tests. Both groups set `cancel-in-progress: false`.
+  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, and a
+  live run naming `issues` on `code-monkey-named-<run_id>-<owner>`,
+  both keyed on the caller run, so the legs of one caller run queue
+  on that run's own lock and never cancel or wait on another run.
+  All three groups set `cancel-in-progress: false`.
 - `testing.yaml` keys pull request runs on the ref, so a newer push
   cancels a stale run, and gives each manual dispatch a group of its
   own.
@@ -1069,7 +1078,7 @@ conflicts while producer artifacts survive.
 | Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Diff needs a mode change or symlink | Publish refused | Agent leaves the step out and banners the follow-up (§5, §7.3) |
-| Two runs overlap | Duplicate branches | Caller concurrency group; branch-exists refusal |
+| Two runs overlap | Duplicate branches | Caller concurrency group for scans; named-issue dispatches lock per run and rely on the §6 open-pull-request check and branch-exists refusal |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
