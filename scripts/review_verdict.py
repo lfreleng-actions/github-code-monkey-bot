@@ -117,7 +117,12 @@ SUPPRESSED_ENTRY = re.compile(
 # A heading ends the section; a space, a tab or the line's end alone
 # follows its hashes, as Markdown has it, so hashes before other
 # whitespace are prose and end nothing.
-SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)|</details>", re.M)
+# A details closer ends it on a line of its own, as the real bodies
+# write it; one mid-line is text or a title and ends nothing.
+SUPPRESSED_END = re.compile(
+    r"^ {0,3}#{1,6}(?:[ \t]|$)|^ {0,3}</details>[ \t]*$", re.M | re.I
+)
+INLINE_CLOSER = re.compile(r"\A(?:[ \t]*</summary>)?[ \t]*</details>", re.I)
 
 
 @dataclass(frozen=True)
@@ -308,11 +313,14 @@ def suppressed_count(text: str) -> tuple[int, bool]:
         # hashes end no section.
         end = SUPPRESSED_END.search(text, head.end())
         block = text[head.end() : end.start() if end else len(text)]
+        # A closer right after the summary, on its line, closes an
+        # empty section and is no text of it.
+        block = INLINE_CLOSER.sub("", block, count=1)
         listed = len(SUPPRESSED_ENTRY.findall(block))
-        if "<details" in block.lower():
+        if "<details" in block.lower() or "</details" in block.lower():
             # A details block inside the section closes before the
-            # section does, so the entries after it go unread; the
-            # real bodies nest none there.
+            # section does, and a closer mid-line is text the parser
+            # cannot place; the real bodies write neither there.
             unreadable = True
         if len(digits) > MAX_COUNT_DIGITS:
             unreadable = True

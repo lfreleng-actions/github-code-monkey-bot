@@ -1310,7 +1310,6 @@ class UntrustedTextTest(unittest.TestCase):
             with self.subTest(separator=repr(separator)):
                 self.assertEqual(verdicts.classify(text, 0).suppressed, 0)
 
-    @unittest.expectedFailure
     def test_a_closer_mid_line_ends_no_section(self) -> None:
         """A details closer ends the section on its own line alone; elsewhere it is unread."""
         for middle in (
