@@ -171,6 +171,7 @@ class Fixture:
             "rebase_sha": rebase_sha,
             "checkout_sha": rebase_sha,
             "collected_at": "2026-09-18T00:00:00Z",
+            "session": "39115306869",
             "round": 2,
             "pull_request": {
                 "number": 41,
@@ -1157,6 +1158,7 @@ class RevisionCheckTest(GitCase):
         self.assertTrue(check.pr_body.startswith(f"Closes #{ISSUE}\n"))
         self.assertIn("Round 2", check.pr_body)
 
+    @unittest.expectedFailure
     def test_each_reply_ends_with_the_round_marker(self) -> None:
         """The marker is what a rerun looks for before it posts a reply again."""
         self.fixture.commit(
@@ -1165,11 +1167,11 @@ class RevisionCheckTest(GitCase):
         self.fixture.bundle()
         self.fixture.revision_manifest()
         (response,) = self.run_revision().responses
-        # The round and the selection's read time together name the
-        # session: a later session at the same round is another reply.
+        # The round and the session, the run id, name the reply: a later
+        # session at the same round is another reply.
         self.assertTrue(
             response["reply"].endswith(
-                "\n\n<!-- code-monkey reply round=2 since=2026-09-18T00:00:00Z -->"
+                "\n\n<!-- code-monkey reply round=2 session=39115306869 -->"
             ),
             response["reply"],
         )

@@ -579,6 +579,24 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertTrue(allowed("alpha"))
         self.assertFalse(allowed("beta"))
 
+    @unittest.expectedFailure
+    def test_entries_carry_the_session(self) -> None:
+        """Every entry names the run's session, given or made, beside its read time."""
+
+        def built(entry: dict[str, Any]) -> Any:
+            return entry
+
+        first = self.revision("alpha", 41, 7)
+        patch.object(
+            revision_select, "scan", return_value=[("org/alpha", lambda: built(first))]
+        ).start()
+        selection, _ = select.build_selection(self.args("--session", "39115306869"))
+        self.assertEqual([e["session"] for e in selection["issues"]], ["39115306869"])
+        selection, _ = select.build_selection(self.args())
+        session = selection["issues"][0]["session"]
+        self.assertRegex(session, r"^[0-9A-Za-z]+$")
+        self.assertNotEqual(session, selection["issues"][0]["collected_at"])
+
     def test_scan_puts_revisions_first_under_the_cap(self) -> None:
         """Revisions come before new issues and share the cap; past it nothing is read."""
         built: list[str] = []
