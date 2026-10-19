@@ -1208,7 +1208,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-blue-with-findings"], 0).reasons, []
         )
 
-    @unittest.expectedFailure
     def test_list_prefixed_entries_count_past_a_stated_zero(self) -> None:
         """The stated count is a floor; entries under it count whatever it says."""
         for entries in (
@@ -1226,7 +1225,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertGreater(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_a_fence_inside_an_open_summary_fails_closed(self) -> None:
         """A fence opened inside a summary would drop its label as code."""
         reason = "review body holds Markdown the classifier does not read"

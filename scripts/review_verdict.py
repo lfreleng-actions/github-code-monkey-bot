@@ -109,7 +109,11 @@ ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
 SUPPRESSED_LABEL = "suppressedcomments"
 # Indentation of spaces and tabs alone: a class crossing newlines
 # would rescan every blank line after the section once per line.
-SUPPRESSED_ENTRY = re.compile(r"^[ \t]*\*\*[^*\n]+:\d+\*\*", re.M)
+# An entry may sit under a list marker or a quote; the stated count is
+# a floor, so each entry counts whatever the heading says.
+SUPPRESSED_ENTRY = re.compile(
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*\*\*[^*\n]+:\d+\*\*", re.M
+)
 SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}\s|</details>", re.M)
 
 
@@ -211,6 +215,10 @@ def visible(text: str) -> tuple[str, list[str]]:
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
+            if in_summary:
+                # A fence inside a summary would drop its label as
+                # code; the real bodies fence nothing there.
+                problems.add(UNREADABLE_MARKDOWN)
             if line[0] != opened.group(0).lstrip(" ")[0]:
                 # Indented, the fence may belong to a list the parser
                 # does not track and end with it; the real bodies open
