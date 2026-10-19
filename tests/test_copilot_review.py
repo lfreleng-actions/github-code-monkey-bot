@@ -388,6 +388,29 @@ class HandlersTest(unittest.TestCase):
             review.run_request(argparse.Namespace(result=self.path, output=self.path))
         write.assert_not_called()
 
+    @unittest.expectedFailure
+    def test_a_notice_without_its_blank_line_is_left_alone(self) -> None:
+        """A maintainer's edit that removed the boundary costs no description.
+
+        The removal cuts at the first blank line after the marker;
+        with none, cutting would empty the body, so nothing is written
+        and the result says why.
+        """
+        self.write()
+        edited = (
+            review.REFUSAL_NOTICE_MARKER + "\n> **INFO** The workflow x.\nCloses #7"
+        )
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "api_object", return_value={"body": edited}),
+            patch.object(github, "api_write") as write,
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        write.assert_not_called()
+        self.assertTrue(
+            any("notice" in w and "left" in w for w in self.stored()["warnings"])
+        )
+
     def test_refusal_notice_is_idempotent_and_best_effort(self) -> None:
         """A body already carrying the notice is left alone; a failed edit is a warning."""
         self.write()

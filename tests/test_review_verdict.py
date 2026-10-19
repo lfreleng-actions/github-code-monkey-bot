@@ -51,6 +51,32 @@ class RealBodiesTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-blue-clean"], 0).assessment, "closer-look"
         )
 
+    @unittest.expectedFailure
+    def test_every_real_body_is_readable(self) -> None:
+        """No real body, the current format included, trips a fail-closed rule.
+
+        The format is Copilot's and moves under us: the effort footer
+        moved into <sub> and a first review carries an <a> promotion.
+        A body the classifier cannot read reports findings, so each
+        format drift turned every clean review into findings until
+        this guard; it holds every fixture to a reading.
+        """
+        for name, body in BODIES.items():
+            with self.subTest(name=name):
+                verdict = verdicts.classify(body, 0)
+                self.assertFalse(
+                    [r for r in verdict.reasons if "classifier does not read" in r],
+                    verdict.reasons,
+                )
+        current = verdicts.classify(BODIES["v2-blue-clean-current"], 0)
+        self.assertEqual(current.verdict, "clean")
+        self.assertEqual(current.assessment, "closer-look")
+        first = verdicts.classify(BODIES["v2-yellow-first-current"], 0)
+        self.assertEqual(first.assessment, "changes")
+        self.assertEqual(
+            verdicts.classify(BODIES["v2-yellow-open-current"], 2).verdict, "findings"
+        )
+
     def test_threads_make_any_assessment_findings(self) -> None:
         """A blue review with a thread, and every yellow review, are findings."""
         for name, threads in (
@@ -270,7 +296,7 @@ class UntrustedTextTest(unittest.TestCase):
         )
 
     def test_html_but_copilots_own_fails_closed(self) -> None:
-        """Copilot's bodies use six tags; any other raw HTML is unreadable.
+        """Copilot's bodies use a known set of tags; any other raw HTML is unreadable.
 
         A raw HTML block can hold a heading that is an example, or a
         fence line that is prose; the classifier does not parse HTML,
@@ -335,6 +361,32 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(
             verdicts.classify(BODIES["v2-yellow-open-findings"], 1).verdict, "findings"
         )
+
+    @unittest.expectedFailure
+    def test_inline_code_holds_no_html(self) -> None:
+        """A tag inside a closed code span is prose; the same tag outside is HTML.
+
+        A review of a typed-language change says `List<String>` or
+        `<div>` as a matter of course; reading those as HTML would make
+        findings of every such clean review.
+        """
+        for prose in (
+            "\nPrefer `List<String>` over a raw `<div>` here.\n",
+            "\nThe opener `<details` lacks its close.\n",
+            '\nWrite ``<foo attr="a>b">`` as the tag.\n',
+        ):
+            with self.subTest(prose=prose.strip()):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + prose, 0)
+                self.assertEqual(verdict.verdict, "clean")
+                self.assertEqual(verdict.reasons, [])
+        for html in (
+            "\nPrefer a <list> here.\n",
+            "\nA `<list>` and a <list>.\n",
+            "\nAn open `<list> runs on.\n",
+        ):
+            with self.subTest(html=html.strip()):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + html, 0)
+                self.assertEqual(verdict.verdict, "findings")
 
     def test_escaped_backticks_fail_closed(self) -> None:
         """An escaped backtick is not a span delimiter; the body is unreadable."""
