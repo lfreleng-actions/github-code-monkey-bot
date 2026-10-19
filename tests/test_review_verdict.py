@@ -901,6 +901,34 @@ class UntrustedTextTest(unittest.TestCase):
         text = BODIES["v2-green-clean"] + "\n- [x] done, see [the docs](u) and [a].\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
+    @unittest.expectedFailure
+    def test_backtick_in_a_later_attribute_fails_closed(self) -> None:
+        """The attribute check reads past clean values to the one with a backtick."""
+        tag = (
+            'See <a href="x" title="`"><details><summary>Suppressed comments (1)'
+            '</summary></details>`">'
+        )
+        verdict = verdicts.classify(BODIES["v2-green-clean"] + "\n" + tag + "\n", 0)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertIn(
+            "review body holds HTML the classifier does not read", verdict.reasons
+        )
+        # The same tag quoted whole inside a span is an example.
+        quoted = BODIES["v2-green-clean"] + '\nWrite ``<a href="x" title="`">`` here.\n'
+        self.assertEqual(verdicts.classify(quoted, 0).verdict, "clean")
+
+    @unittest.expectedFailure
+    def test_whitespace_before_the_strong_close_counts(self) -> None:
+        """Space or a newline before </strong> leaves the count readable."""
+        for extra in (
+            "\n<summary><strong>Suppressed comments </strong> (1)</summary>\n",
+            "\n<summary><strong>Suppressed comments\n</strong> (1)</summary>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:40]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.suppressed, 1)
+                self.assertEqual(verdict.verdict, "findings")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
