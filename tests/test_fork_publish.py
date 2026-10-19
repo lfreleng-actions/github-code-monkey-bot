@@ -199,18 +199,83 @@ class SyncForkTest(NoNetworkCase):
             refs.sync_fork(FORK, "main", BASE)
 
     def test_other_sync_failures_are_operational(self) -> None:
-        """Any status other than 409 from merge-upstream fails the sync."""
+        """A status that is no race from merge-upstream fails the sync at once."""
         with (
             patch.object(
                 github,
                 "api_write",
                 side_effect=github.GitHubError("gh: Forbidden (HTTP 403)"),
-            ),
+            ) as write,
             patch.object(github, "api_object") as read,
+            patch.object(refs.time, "sleep") as sleep,
             self.assertRaisesRegex(policy.PublishError, "could not sync fork"),
         ):
             refs.sync_fork(FORK, "main", BASE)
         read.assert_not_called()
+        write.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_a_racing_sync_is_retried_then_passed_over(self) -> None:
+        """Two publishes syncing one fork race; 422 is retried, and the base decides.
+
+        One job's merge-upstream wins and the other's answers 422 with
+        the fork synced all the same (issue #38). The call is retried
+        with a backoff, and when it still fails the base lookup says
+        whether the branch can be created, as it does after a 409.
+        """
+        racing = github.GitHubError(
+            "gh: There was a problem updating the branch (HTTP 422)"
+        )
+        # 422 then success: no error, one retry.
+        with (
+            patch.object(github, "api_write", side_effect=[racing, {}]) as write,
+            patch.object(github, "api_object", return_value={"sha": BASE}),
+            patch.object(refs.time, "sleep") as sleep,
+        ):
+            refs.sync_fork(FORK, "main", BASE)
+        self.assertEqual(write.call_count, 2)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2])
+        # 422 throughout, base present: every attempt made, backoff kept,
+        # and the sync passes on the base alone.
+        with (
+            patch.object(github, "api_write", side_effect=racing) as write,
+            patch.object(github, "api_object", return_value={"sha": BASE}),
+            patch.object(refs.time, "sleep") as sleep,
+        ):
+            refs.sync_fork(FORK, "main", BASE)
+        self.assertEqual(write.call_count, refs.SYNC_ATTEMPTS)
+        self.assertEqual(
+            [c.args[0] for c in sleep.call_args_list], list(refs.SYNC_BACKOFF_SECONDS)
+        )
+        # 422 throughout, base absent: the failure names both causes.
+        with (
+            patch.object(github, "api_write", side_effect=racing),
+            patch.object(
+                github,
+                "api_object",
+                side_effect=github.GitHubError("gh: nope (HTTP 422)"),
+            ),
+            patch.object(refs.time, "sleep"),
+            self.assertRaisesRegex(
+                policy.PublishError, r"is not in fork.*problem updating the branch"
+            ),
+        ):
+            refs.sync_fork(FORK, "main", BASE)
+
+    def test_a_diverged_fork_is_not_retried(self) -> None:
+        """409 means divergence, not a race: no retry, the base lookup decides."""
+        with (
+            patch.object(
+                github,
+                "api_write",
+                side_effect=github.GitHubError("gh: Conflict (HTTP 409)"),
+            ) as write,
+            patch.object(github, "api_object", return_value={"sha": BASE}),
+            patch.object(refs.time, "sleep") as sleep,
+        ):
+            refs.sync_fork(FORK, "main", BASE)
+        write.assert_called_once()
+        sleep.assert_not_called()
 
     def test_missing_base_is_operational(self) -> None:
         """A base the fork does not hold (422 or 404) cannot anchor the branch."""

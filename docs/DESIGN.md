@@ -213,7 +213,12 @@ Publishing then works as follows, with the §5 signing unchanged:
    last one, and GitHub refuses any that touch `.github/workflows/`
    unless the token holds Workflows: write; Dependabot pin bumps
    make that most weeks. Every fork token carries Workflows: write,
-   whatever the proposal edits.
+   whatever the proposal edits. Two publishes in one run may sync the
+   same fork at once, and the one that loses the race answers 422
+   with the fork synced all the same; the publisher retries it with
+   a short backoff and then lets the base-commit lookup decide, as it
+   does after a 409 for a diverged fork, while any other status fails
+   at once.
 3. It creates `code-monkey/issue-<n>` in the fork at the base
    commit and replays the commits there through
    `createCommitOnBranch`, with a token minted on the fork
