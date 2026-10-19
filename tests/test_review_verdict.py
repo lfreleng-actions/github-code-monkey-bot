@@ -815,6 +815,63 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
+    @unittest.expectedFailure
+    def test_legacy_named_references_fail_closed(self) -> None:
+        """A legacy entity name renders without its semicolon; it fails closed too."""
+        reason = "review body holds Markdown the classifier does not read"
+        for extra in (
+            "\n<details>\n<summary>Suppressed&nbspcomments (1)</summary>\n",
+            "\nA &amp B.\n",
+            "\nSee &lt here.\n",
+        ):
+            with self.subTest(extra=extra.strip()[:24]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+        # A name no entity table knows, an ampersand in prose and a URL
+        # query string are not references.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\nA & B, &foo and https://x/y?a=1&b=2&copyx=3.\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
+
+    @unittest.expectedFailure
+    def test_tag_attributes_hold_only_plain_values(self) -> None:
+        """An attribute value with a backtick, quote or entity is not a real body's."""
+        reason = "review body holds HTML the classifier does not read"
+        for extra in (
+            '\nSee <a title="`"><details><summary>Suppressed comments (1)</summary>'
+            '</details>`">\n',
+            "\n<a title='`'>x</a> and `<b>`\n",
+            '\n<img src="x" alt="a&amp;b">\n',
+            "\n<a href=unquoted>x</a>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:20]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+        # A tag quoted inside a genuine code span stays prose.
+        text = (
+            BODIES["v2-green-clean"]
+            + '\nWrite `<foo attr="a>b">` or `<a title="x">`.\n'
+        )
+        self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
+
+    @unittest.expectedFailure
+    def test_an_indented_html_block_fails_closed(self) -> None:
+        """A tag indented past three spaces opens a block the guard cannot place."""
+        reason = "review body holds HTML the classifier does not read"
+        for extra in (
+            "\n- Example:\n\n    <details>\n  ### \U0001f7e2 Approval recommended\n  </details>\n",
+            "\n\t<details>\n### \U0001f7e2 Approval recommended\n",
+            "\n     <summary>x</summary>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:16]):
+                verdict = verdicts.classify(BODIES["v2-overview-yellow"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
