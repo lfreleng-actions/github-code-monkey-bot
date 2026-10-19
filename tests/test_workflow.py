@@ -1294,6 +1294,77 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
+    def test_a_list_given_but_naming_nothing_is_refused(self) -> None:
+        """Separators alone fail the input check instead of scanning.
+
+        The concurrency group tests the raw issues input and selection
+        the split one, so a list that parses to nothing would take a
+        per-run lock and then scan. The check reads both, before the
+        selection and the mint.
+        """
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(env["ISSUES_RAW"], "inputs.issues")
+        self.assert_expression(env["REPOSITORIES_RAW"], "inputs.repositories")
+        script = squash(str(budget["run"]))
+        self.assertIn("::error::issues was given but names no issue", script)
+        self.assertIn("::error::repositories was given but names no repository", script)
+        check = self.position("select", "budget")
+        self.assertLess(check, self.position("select", "app-token"))
+        self.assertLess(check, self.position("select", "Select issues"))
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_only_an_empty_list_means_a_scan(self) -> None:
+        """An empty list scans; one that parsed to nothing fails."""
+        budget = self.step("select", "budget")
+        env = {
+            "PATH": os.environ["PATH"],
+            "MODE": "pull-requests",
+            "MAX_PRS": "1",
+            "MAX_RUNTIME": "60",
+            "MAX_AGENTS": "1",
+            "MODEL": "auto",
+            "REPOSITORIES": "",
+            "ISSUE_REPOSITORIES": "",
+            "ORG": "o",
+            "GUIDANCE_REPOSITORY": "o/.github",
+        }
+        cases = (
+            ("", "0", "", "0", None),
+            (" , ", "0", "", "0", "issues was given but names no issue"),
+            (",", "0", "", "0", "issues was given but names no issue"),
+            (" ", "0", "", "0", "issues was given but names no issue"),
+            ("", "0", " , ", "0", "repositories was given but names no repository"),
+            ("repo#1", "1", "", "0", None),
+            ("", "0", "repo", "1", None),
+        )
+        for issues, issue_count, repos, repo_count, error in cases:
+            with (
+                self.subTest(issues=issues, repositories=repos),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        **env,
+                        "ISSUES_RAW": issues,
+                        "ISSUE_COUNT": issue_count,
+                        "REPOSITORIES_RAW": repos,
+                        "REPOSITORY_COUNT": repo_count,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if error is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn(f"::error::{error}", proc.stdout)
+                    self.assertFalse(output.exists())
+
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 
@@ -1346,11 +1417,17 @@ class ListInputContracts(ReusableWorkflowCase):
         )
 
     def test_selection_reads_the_split_lists(self) -> None:
-        """The raw inputs reach the splitters and nothing else."""
+        """The raw inputs reach the splitters and nothing else.
+
+        The input check alone also sees the raw issues and repositories,
+        under names of their own, to tell an absent list from one that
+        parsed to nothing.
+        """
         env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
         self.assert_expression(env["EXCLUDE_REPOS"], "steps.exclusions.outputs.csv")
         splitters = {id(s) for s in self.actions("select", SPLITTER)}
+        budget = self.step("select", "budget")
         for job in self.jobs:
             if "steps" not in self.jobs[job]:
                 continue
@@ -1358,7 +1435,17 @@ class ListInputContracts(ReusableWorkflowCase):
                 if id(step) in splitters:
                     continue
                 with self.subTest(job=job, step=step.get("name")):
-                    text = json.dumps(step)
+                    checked = step
+                    if step is budget:
+                        checked = {
+                            **step,
+                            "env": {
+                                k: v
+                                for k, v in step["env"].items()
+                                if k not in ("ISSUES_RAW", "REPOSITORIES_RAW")
+                            },
+                        }
+                    text = json.dumps(checked)
                     for name in self.LISTS:
                         self.assertNotRegex(text, rf"inputs\.{name}\b")
 
