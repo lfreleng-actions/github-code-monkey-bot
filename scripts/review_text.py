@@ -56,7 +56,10 @@ DRESSED_TAG = re.compile(r"</?(" + "|".join(sorted(BARE_TAGS)) + r")(?![>])", re
 # included, opens a block of the kind Markdown reads from a lone tag,
 # so that fails closed too. The badges carry their text on the line.
 BLOCK_TAGS = frozenset({"details", "summary", "source"})
-CONTAINER = r"^ {0,3}(?:[-+*]|\d{1,9}[.)]|>)[ \t]*"
+# One or more container prefixes, a list marker with its space or a
+# quote marker with or without one, nested in any order and read in
+# one linear pass; the real bodies nest none.
+CONTAINER = r"^ {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+"
 CONTAINER_BLOCK = re.compile(
     CONTAINER + r"</?(" + "|".join(sorted(BLOCK_TAGS)) + r")\b", re.I
 )
@@ -115,7 +118,7 @@ STRAY_FENCE = re.compile(r"`{3,}|~{3,}")
 # At the line start, opening a list item or a quote, or indented
 # under one: each is a definition to Markdown.
 LINK_REFERENCE = re.compile(
-    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)]|>)[ \t]+)?\[(?:\\.|[^\]\\])*\]:"
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*\[(?:\\.|[^\]\\])*\]:"
 )
 # A fence run indented past where a fence may open or close: under a
 # list item it closes a fence the parser, which tracks no container
@@ -127,12 +130,13 @@ INDENTED_FENCE = re.compile(r"^(?=(?: {4}|[ \t]*\t))[ \t]*(?:`{3,}|~{3,})[ \t]*$
 # renders as a heading; the classifier reads headings at the line
 # start alone, so these fail the body closed.
 CONTAINER_HEADING = re.compile(
-    r"^(?: {0,3}(?:[-+*]|\d{1,9}[.)]|>)[ \t]+|(?=(?: {4}|[ \t]*\t))[ \t]*)#{1,6}[ \t]"
+    r"^(?: {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+|(?=(?: {4}|[ \t]*\t))[ \t]*)"
+    r"#{1,6}[ \t]"
 )
 # A line opening a bracket it never closes may begin a reference label
 # that spans lines; the definition is then LINK_REFERENCE's to miss.
 OPEN_BRACKET = re.compile(
-    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)]|>)[ \t]+)?\[(?:\\.|[^\]\\])*$"
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*\[(?:\\.|[^\]\\])*$"
 )
 
 

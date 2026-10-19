@@ -1101,7 +1101,6 @@ class UntrustedTextTest(unittest.TestCase):
                 verdicts.classify(BODIES["v2-green-clean"] + "\n" + line + "\n", 0)
                 self.assertLess(time.monotonic() - started, 0.5)
 
-    @unittest.expectedFailure
     def test_a_heading_inside_a_container_fails_closed(self) -> None:
         """A heading opening a quote or list item renders; the parser reads neither."""
         reason = "review body holds Markdown the classifier does not read"
