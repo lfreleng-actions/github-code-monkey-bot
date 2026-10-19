@@ -317,6 +317,22 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
+    @unittest.expectedFailure
+    def test_revision_round_comment_names_the_published_head(self) -> None:
+        """Each round's comment records the head after the push (issue #19)."""
+        result = result_json(
+            round=2,
+            round_summary="Fixed both findings.",
+            commits=["c" * 40, NEW_HEAD],
+            review=review_record("clean", assessment="approval"),
+        )
+        text = comments.comment_body(result, "") or ""
+        self.assertIn(f"head {NEW_HEAD[:12]}", text)
+        self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
+        # A first proposal names its head too.
+        text = comments.comment_body(result_json(commits=[NEW_HEAD]), "") or ""
+        self.assertIn(f"head {NEW_HEAD[:12]}", text)
+
     def test_revision_round_comment(self) -> None:
         """A round names itself, the pull request and the summary, then the verdict."""
         result = result_json(
@@ -1471,6 +1487,39 @@ class RunRetitleTest(NoNetworkCase):
         # A retitle that wrote nothing leaves nothing to restore.
         self.retitle(revision_check(pr_title="Fix: Both"), "Fix: Both")
         write = self.restore(result_json(verdict="publish-failed"), HEAD, "Fix: Both")
+        write.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_a_lost_retitle_reply_is_still_restored(self) -> None:
+        """The record is written before the PATCH, so a lost reply loses no rollback.
+
+        GitHub may apply the title and time out on the reply; the step
+        then fails and the push never runs. The restore reads the
+        record, finds the new title in place over the old head, and
+        gives the old one back.
+        """
+        check = self.write_check(revision_check(pr_title="Fix: New subject"))
+        self.record = self.root / "retitle.json"
+        with (
+            patch.object(github, "api_object", return_value={"title": "Fix: Old"}),
+            patch.object(review, "pull_head", return_value=HEAD),
+            patch.object(
+                github, "api_write", side_effect=github.GitHubError("timed out")
+            ),
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            publish.main(
+                ["retitle", "--check", str(check), "--record", str(self.record)]
+            )
+        self.assertTrue(self.record.is_file())
+        (self.root / "result.json").unlink(missing_ok=True)
+        write = self.restore(None, HEAD, "Fix: New subject")
+        write.assert_called_once_with(
+            "PATCH", f"repos/{REPOSITORY}/pulls/41", {"title": "Fix: Old"}
+        )
+        # The PATCH never applied: the old title is in place; nothing written.
+        write = self.restore(None, HEAD, "Fix: Old")
         write.assert_not_called()
 
     def test_a_stale_dispatch_retitles_nothing(self) -> None:
