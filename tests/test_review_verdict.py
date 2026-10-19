@@ -1170,6 +1170,40 @@ class UntrustedTextTest(unittest.TestCase):
         text = BODIES["v2-green-clean"] + "\nNot `### Suppressed comments (1)` here.\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
+    @unittest.expectedFailure
+    def test_a_nested_summary_fails_closed(self) -> None:
+        """A summary inside a summary is nothing the real bodies write."""
+        for extra in (
+            "\n<summary><summary>\n</summary>\n\nSuppressed comments (1)\n\n</summary>\n",
+            "\n<summary>a<summary>b</summary></summary>\n",
+            "\n<summary>\n<summary>x</summary>\n</summary>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:30]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(
+                    "review body holds HTML the classifier does not read",
+                    verdict.reasons,
+                )
+
+    @unittest.expectedFailure
+    def test_a_link_in_a_heading_or_summary_fails_closed(self) -> None:
+        """A link's destination would thread letters into the label."""
+        reason = "review body holds Markdown the classifier does not read"
+        for extra in (
+            "\n### [Suppressed](https://example.test/x) comments (1)\n\n**x.py:1**\n",
+            "\n<summary>Suppressed [comments][ref] (1)</summary>\n",
+            "\n> ## [\U0001f7e2 Approval recommended](u)\n",
+        ):
+            with self.subTest(extra=extra.strip()[:30]):
+                verdict = verdicts.classify(BODIES["v2-overview-yellow"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(reason, verdict.reasons)
+        # The real bodies link from list items, which stay prose.
+        self.assertEqual(
+            verdicts.classify(BODIES["v2-blue-with-findings"], 0).reasons, []
+        )
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
