@@ -597,7 +597,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertRegex(session, r"^[0-9A-Za-z]+$")
         self.assertNotEqual(session, selection["issues"][0]["collected_at"])
 
-    @unittest.expectedFailure
     def test_the_watermark_sits_one_second_before_the_read(self) -> None:
         """A comment posted in the selection's own second is new work later.
 

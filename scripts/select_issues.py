@@ -26,7 +26,7 @@ import re
 import sys
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -210,8 +210,14 @@ def scan_candidates(
 def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     """Run the whole selection and return it with the guidance bytes."""
     # Before any read: a comment posted while the run reads is new
-    # work for the next round, so every entry carries this time.
-    collected_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # work for the next round, so every entry carries this time. It
+    # sits one second early: the time has second precision and later
+    # reads want a comment strictly after it, so a comment posted in
+    # this same second would otherwise equal it and never count. The
+    # overlap may reread a boundary comment and loses none.
+    collected_at = (datetime.now(UTC) - timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     targets = explicit_targets.parse_issues(args.issues, args.org)
     explicit = parse_repositories(args.repositories)
     pulls = explicit_targets.parse_issues(args.pull_requests, args.org)

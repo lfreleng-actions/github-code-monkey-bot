@@ -15,6 +15,7 @@ head, for a rebase (DESIGN.md section 20).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 import bot_github as github
@@ -33,6 +34,23 @@ TASK = "revise"
 
 class Skip(Exception):
     """The pull request cannot be revised; the message says why."""
+
+
+@dataclass(frozen=True)
+class Inputs:
+    """What every build shares: the owner, the bot and the fork mapping."""
+
+    org: str
+    bot: dict[str, Any]
+    fork_orgs: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Prefetch:
+    """Reads a scan made to rank a candidate, handed on so the build repeats none."""
+
+    pull: dict[str, Any]
+    details: dict[str, Any]
 
 
 def outstanding(
@@ -71,20 +89,21 @@ def outstanding(
 
 
 def build_entry(
-    org: str,
+    inputs: Inputs,
     repo_name: str,
     pull_number: int,
     *,
-    bot: dict[str, Any],
-    fork_orgs: dict[str, Any],
     explicit: bool,
+    prefetched: Prefetch | None = None,
 ) -> dict[str, Any]:
     """The selection entry for one bot pull request, or raise ``Skip``.
 
     ``explicit`` means an operator named it: the work-outstanding
     test does not apply, since the operator decided, but the safety
-    tests and the round cap do.
+    tests and the round cap do. ``prefetched`` carries the pull
+    request and issue a scan read to rank the candidate.
     """
+    org, bot, fork_orgs = inputs.org, inputs.bot, inputs.fork_orgs
     meta = repositories.repository_meta(org, repo_name)
     obstacle = explicit_issues.repository_obstacle(meta)
     if obstacle is not None or meta is None:
@@ -95,8 +114,12 @@ def build_entry(
     except ForkOrgError as exc:
         raise SelectionError(str(exc)) from exc
     fork_repository = f"{fork_org}/{meta['name']}"
-    pull = revisions.bot_pull_request(
-        repository, pull_number, str(bot["login"]), fork_repository
+    pull = (
+        prefetched.pull
+        if prefetched is not None
+        else revisions.bot_pull_request(
+            repository, pull_number, str(bot["login"]), fork_repository
+        )
     )
     if pull is None:
         raise Skip("not an open pull request the bot opened from its fork")
@@ -123,7 +146,11 @@ def build_entry(
             raise Skip("handed back to a maintainer; awaiting their comment")
     else:
         reasons = ["named by the operator"]
-    details = issue_packet(repository, issue)
+    details = (
+        issue_packet(repository, issue)
+        if prefetched is None
+        else packet_of(prefetched.details, issue)
+    )
     rebase_sha = reads.branch_head(repository, str(meta["default_branch"]))
     return {
         "key": f"{meta['name']}-{issue}",
@@ -162,12 +189,21 @@ def build_entry(
 
 def issue_packet(repository: str, issue: int) -> dict[str, Any]:
     """The issue's details for the entry, after its own safety tests."""
+    return packet_of(read_issue(repository, issue), issue)
+
+
+def read_issue(repository: str, issue: int) -> dict[str, Any]:
+    """The issue's details, or ``Skip`` when the issue is gone."""
     try:
-        details = reads.issue_details(repository, issue)
+        return reads.issue_details(repository, issue)
     except github.GitHubError as exc:
         if not github.is_absent(exc):
             raise
         raise Skip(f"issue #{issue} is gone") from exc
+
+
+def packet_of(details: dict[str, Any], issue: int) -> dict[str, Any]:
+    """The entry's view of the issue, after its safety tests."""
     if details["state"] != "open":
         raise Skip(f"issue #{issue} is closed")
     if "no-agent" in details["labels"]:
@@ -224,52 +260,6 @@ Builder = Callable[[], dict[str, Any] | None]
 Round = tuple[str, Builder]
 
 
-def scan(
-    org: str,
-    *,
-    bot: dict[str, Any],
-    fork_orgs: dict[str, Any],
-    skipped: dict[str, int],
-    skipped_issues: list[dict[str, str]],
-    allowed: Callable[[str], bool] | None = None,
-) -> list[Round]:
-    """A builder per bot pull request in the owner, oldest first, read on demand.
-
-    The search is one read; building an entry is many. Each builder
-    reads its pull request when called and returns the entry, or None
-    after recording the skip, so the caller's budget decides what is
-    read at all; the repository beside it lets the budget refuse a
-    second round of one repository unread. ``allowed`` is the run's
-    repository policy, by lower-cased name; a hit outside it gets no
-    builder.
-    """
-    slug = str(bot["login"]).removesuffix("[bot]")
-    found = revisions.search_bot_pull_requests(org, slug)
-    builders: list[Round] = []
-    for hit in sorted(found, key=lambda h: (str(h["created_at"]), int(h["number"]))):
-        repo_name = str(hit["repository"]).partition("/")[2]
-        if allowed is not None and not allowed(repo_name.lower()):
-            continue
-        reference = f"{hit['repository']}#{hit['number']}"
-        number = int(hit["number"])
-
-        def build(
-            repo_name: str = repo_name, number: int = number, reference: str = reference
-        ) -> dict[str, Any] | None:
-            try:
-                return build_entry(
-                    org, repo_name, number, bot=bot, fork_orgs=fork_orgs, explicit=False
-                )
-            except Skip as exc:
-                if str(exc) != "nothing outstanding":
-                    skipped["revision"] += 1
-                    skipped_issues.append({"issue": reference, "reason": str(exc)})
-                return None
-
-        builders.append((str(hit["repository"]), build))
-    return builders
-
-
 class Rounds:
     """The revision entries a run works, built on demand with one set of inputs."""
 
@@ -288,6 +278,7 @@ class Rounds:
         self.org = org
         self.bot = bot
         self.fork_orgs = fork_orgs
+        self.inputs = Inputs(org, bot, fork_orgs)
         self.enabled = enabled
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
@@ -302,14 +293,7 @@ class Rounds:
                 repo_name: str = repo_name, number: int = number
             ) -> dict[str, Any] | None:
                 try:
-                    return build_entry(
-                        self.org,
-                        repo_name,
-                        number,
-                        bot=self.bot,
-                        fork_orgs=self.fork_orgs,
-                        explicit=True,
-                    )
+                    return build_entry(self.inputs, repo_name, number, explicit=True)
                 except Skip as exc:
                     self.skipped["revision"] += 1
                     self.skipped_issues.append(
@@ -349,12 +333,14 @@ class Rounds:
             return None
         try:
             return build_entry(
-                self.org,
-                str(candidate["repo_name"]),
-                number,
-                bot=self.bot,
-                fork_orgs=self.fork_orgs,
-                explicit=self.explicit,
+                self.inputs, str(candidate["repo_name"]), number, explicit=self.explicit
             )
         except Skip:
             return None
+
+
+# The scan builds entries through this module, so it imports after
+# the names it needs exist; ``scan`` is reached from here as before.
+from revision_scan import scan  # noqa: E402
+
+__all__ = ["Inputs", "Prefetch", "Round", "Rounds", "Skip", "build_entry", "scan"]

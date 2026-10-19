@@ -151,7 +151,7 @@ class RevisionCase(unittest.TestCase):
     def build(self, *, explicit: bool) -> dict[str, Any]:
         """Build the entry for the fixture pull request."""
         return select.build_entry(
-            "org", "alpha", 41, bot=BOT, fork_orgs=FORK_ORGS, explicit=explicit
+            select.Inputs("org", BOT, FORK_ORGS), "alpha", 41, explicit=explicit
         )
 
 
@@ -291,7 +291,6 @@ class BuildEntryTest(RevisionCase):
 class ScanTest(RevisionCase):
     """The owner-wide scan keeps the pull requests with work, oldest first."""
 
-    @unittest.expectedFailure
     def test_scan_orders_and_records_skips(self) -> None:
         """Hits with nothing outstanding vanish quietly; other skips are named."""
         hits = [
@@ -340,7 +339,6 @@ class ScanTest(RevisionCase):
         self.assertEqual(calls, [40, 41, 9])
         self.assertEqual([e["pull_request"]["number"] for e in entries], [40, 41])
 
-    @unittest.expectedFailure
     def test_scan_ranks_by_the_issues_priority_then_age(self) -> None:
         """An urgent issue's round comes before an older low one's (issue #19)."""
         hits = [

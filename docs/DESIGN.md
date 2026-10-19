@@ -1231,6 +1231,7 @@ scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies
 scripts/round_reads.py                   the issue's rounds and new comments
 scripts/revision_select.py               revision candidates and entries
+scripts/revision_scan.py                 the owner-wide scan, ranked
 scripts/revision_check.py                a revision's offline checks
 scripts/branch_swap.py                   the compare-and-swap branch move
 scripts/revision_publish.py              the push, replies and resolves
@@ -1718,7 +1719,9 @@ Three ways in, all through the select job and its read token:
   review yet waits for the gate; a clean head with nothing else needs
   no round; and after a handoff (§20.3) the disputed threads bring no
   round on their own, a maintainer's comment does. Revisions come
-  before new issues, oldest first, under the same cap and the same
+  before new issues, ranked by the originating issue's priority and
+  then the pull request's age, the scan reading each hit's pull
+  request and issue for the rank before the cap, under the same cap and the same
   one-per-repository rule, and a pull request past the cap, or a
   second one of a repository already chosen, costs no
   reads: the selection builds a candidate when the budget has room
@@ -1740,7 +1743,10 @@ comment history or failing closed when that history outgrows the read. A
 marker in a comment's body text is text. The footer names when its run
 read the comments (`since=`), and that, not the footer's own time, is
 the watermark a maintainer's comment must follow to be new: a comment
-posted while a run was reading is work for the next round. The latest
+posted while a run was reading is work for the next round. The
+watermark sits one second before the read, since it has second
+precision and a comment must follow it strictly to be new; the
+overlap may reread a boundary comment and loses none. The latest
 footer is the one with the latest read time, not the latest post: a
 retry of an older round that posts after a newer handoff rewinds
 neither the watermark nor the pause, and two posts of one read order
