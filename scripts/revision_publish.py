@@ -275,7 +275,9 @@ def run_retitle(args: argparse.Namespace) -> None:
     if not title or title == current:
         print("retitle: title unchanged")
         return
-    github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"title": title})
+    # The record goes down before the write: GitHub may apply the
+    # title and lose the reply, and the restore must still know what
+    # to give back.
     record = {
         "repository": repository,
         "pull_number": number,
@@ -285,15 +287,18 @@ def run_retitle(args: argparse.Namespace) -> None:
     }
     args.record.parent.mkdir(parents=True, exist_ok=True)
     args.record.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"title": title})
     print("retitle: title set")
 
 
 def run_restore_title(args: argparse.Namespace) -> None:
     """``publish.py restore-title``: take back a title the push did not earn.
 
-    Runs after the push whatever its outcome. A publication keeps the
-    title; a failure that confirmed the branch unchanged, or a push
-    that reached no result, gives the old title back, provided the
+    Runs after the push whatever its outcome, and after a retitle that
+    failed, since GitHub may apply the title and lose the reply. A
+    publication keeps the title; a failure that confirmed the branch
+    unchanged, or a push that reached no result, gives the old title
+    back when the new one is in place, provided the
     head is still the one the retitle saw and the title is still the
     one it set, so another session's work is never touched. An
     unknown swap outcome restores nothing, since the branch may hold

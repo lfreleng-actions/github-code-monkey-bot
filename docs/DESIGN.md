@@ -1820,7 +1820,9 @@ still heads at the selected commit, or at this run's own published
 chain on a retry; a head another session moved keeps its title, as
 the swap will refuse that session's branch update. A push that then
 fails with the branch unchanged gives the old title back, with the
-same token, while the head and title are still this attempt's; a
+same token, while the head and title are still this attempt's, and
+after a retitle whose reply GitHub lost, since the record of the old
+title goes down before the write; a
 publication keeps the new title and an unknown swap outcome restores
 nothing, since the branch may hold the new chain. The push syncs
 the fork, replays
@@ -1881,8 +1883,9 @@ footer, posts its own; the resolve
 still runs, since one lost after the reply is its own retry.
 and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,
-the pull request, the summary and the verdict, with the round in its
-marker, which is how the next selection counts rounds. The summary
+the pull request and the head the push left, since later rounds
+replace the same branch, the summary and the verdict, with the round
+in its marker, which is how the next selection counts rounds. The summary
 and the reasons are agent text: flattened to one line, mentions
 defused and HTML escaped, so they can neither hide the verdict and
 the marker after them nor collapse them into a block. At the cap,

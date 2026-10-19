@@ -115,6 +115,21 @@ def capped(result: dict[str, Any]) -> bool:
     return result.get("verdict") != "proposed" or review_verdict(result) != "clean"
 
 
+def published_head(result: dict[str, Any]) -> str:
+    """The head the push left, named in the comment so a round is traceable.
+
+    Later rounds replace the same branch, so the pull request URL
+    alone would not say which head a round described (issue #19).
+    """
+    commits = result.get("commits")
+    if not isinstance(commits, list) or not commits:
+        return ""
+    last = cast("list[Any]", commits)[-1]
+    if not isinstance(last, str) or not github.SHA_RE.fullmatch(last):
+        return ""
+    return f" (head {last[:12]})"
+
+
 def _proposed_comment(
     result: dict[str, Any], _reasons: str, _run_url: str
 ) -> str | None:
@@ -122,14 +137,15 @@ def _proposed_comment(
     if not url:
         return None
     noun = "pull request" if result.get("pull_request_url") else "branch"
+    where = f"{noun} {url}{published_head(result)}"
     round_number = round_of(result)
     if round_number:
         summary = policy.comment_safe(str(result.get("round_summary") or ""))
-        opening = f"🐒 Round {round_number}: an AI agent revised {noun} {url}" + (
+        opening = f"🐒 Round {round_number}: an AI agent revised {where}" + (
             f". {summary}" if summary else ""
         )
         return opening + review_sentence(result)
-    opening = f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
+    opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
     return opening + review_sentence(result)
 
 

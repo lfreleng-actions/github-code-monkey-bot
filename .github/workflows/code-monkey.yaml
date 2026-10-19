@@ -1281,12 +1281,13 @@ jobs:
       # A title set for a push that then failed with the branch
       # unchanged would break the title-and-subject match; the step
       # gives the old title back when the head and title are still this
-      # attempt's, and never after a publication or an unknown swap.
+      # attempt's, and never after a publication or an unknown swap. It
+      # runs after a failed retitle too, since GitHub may apply the
+      # title and lose the reply, and the push then never runs.
       - name: 'Restore the title after a failed push'
         id: restore-title
         if: >-
-          !cancelled() && steps.retitle.outcome == 'success' &&
-          steps.push.outcome != 'skipped'
+          !cancelled() && steps.retitle.outcome != 'skipped'
         env:
           GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
         run: |

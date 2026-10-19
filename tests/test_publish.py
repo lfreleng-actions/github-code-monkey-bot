@@ -205,7 +205,7 @@ class CommentBodyTest(unittest.TestCase):
         self.assertEqual(
             body,
             "🐒 An AI agent has proposed a change for this issue: pull request "
-            f"https://github.com/{REPOSITORY}/pull/8",
+            f"https://github.com/{REPOSITORY}/pull/8 (head {'e' * 12})",
         )
 
     def test_proposed_branch_only(self) -> None:
@@ -317,7 +317,6 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
-    @unittest.expectedFailure
     def test_revision_round_comment_names_the_published_head(self) -> None:
         """Each round's comment records the head after the push (issue #19)."""
         result = result_json(
@@ -1489,7 +1488,6 @@ class RunRetitleTest(NoNetworkCase):
         write = self.restore(result_json(verdict="publish-failed"), HEAD, "Fix: Both")
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_lost_retitle_reply_is_still_restored(self) -> None:
         """The record is written before the PATCH, so a lost reply loses no rollback.
 
