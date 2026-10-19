@@ -52,6 +52,8 @@ CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
 # Inline code: a run of backticks closed by a run of the same length.
 BACKTICKS = re.compile(r"`+")
+# What stands in for a closed span: a letter opens nothing in Markdown.
+SPAN_FILL = "x"
 COMMENT_OPEN = "<!--"
 # <!DOCTYPE, <![CDATA[ and <?xml: raw HTML blocks the classifier
 # does not read, as it does not read comments.
@@ -195,8 +197,11 @@ def mask_spans(line: str) -> tuple[str, bool]:
 
     Inline code is prose: whatever a closed span holds is text to the
     reader, so the HTML and comment checks run on the line without
-    it. A span left open may run on to later lines; it is reported
-    and the rest of the line is checked as written.
+    it. The span is replaced by a run of a letter, not spaces, since
+    spaces could indent what follows into a heading or a code block
+    the writer's line never had. A span left open may run on to later
+    lines; it is reported and the rest of the line is checked as
+    written.
     """
     parts: list[str] = []
     left_open = False
@@ -220,7 +225,7 @@ def mask_spans(line: str) -> tuple[str, bool]:
             i = ticks.end()
         else:
             end = close + len(run)
-            parts.append(" " * (end - ticks.start()))
+            parts.append(SPAN_FILL * (end - ticks.start()))
             i = end
 
 

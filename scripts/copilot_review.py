@@ -46,6 +46,9 @@ PULL_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
 # A refused review request is disclosed at the top of the pull request
 # body (#29), once; the marker makes a retry idempotent.
 REFUSAL_NOTICE_MARKER = "<!-- code-monkey review-request-refused -->"
+# The one line the notice holds after its marker; removal takes the
+# marker and this line alone.
+REFUSAL_NOTICE_LINE = "> **INFO** The workflow "
 MAX_PR_BODY = 65_536
 
 THREADS_QUERY = """
@@ -108,7 +111,7 @@ def add_refusal_notice(repository: str, number: int, warning: str) -> str | None
         if current.startswith(REFUSAL_NOTICE_MARKER):
             return None
         notice = (
-            f"{REFUSAL_NOTICE_MARKER}\n> **INFO** The workflow {warning}; "
+            f"{REFUSAL_NOTICE_MARKER}\n{REFUSAL_NOTICE_LINE}{warning}; "
             "no Copilot review was requested for this pull request, so a "
             "maintainer should request one.\n\n"
         )
@@ -136,9 +139,11 @@ def remove_refusal_notice(repository: str, number: int) -> str | None:
         if not current.startswith(REFUSAL_NOTICE_MARKER):
             return None
         end = current.find("\n\n")
-        if end < 0:
-            # A maintainer's edit took the blank line that bounds the
-            # notice; cutting would empty the description, so it stays.
+        block = current[:end].split("\n") if end >= 0 else []
+        if len(block) != 2 or not block[1].startswith(REFUSAL_NOTICE_LINE):
+            # A maintainer's edit moved the blank line that bounds the
+            # notice: cutting there would take their text, or the
+            # whole description, with it. The notice stays.
             return "the review notice was left in place: its boundary is gone"
         rest = current[end + 2 :]
         github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"body": rest})

@@ -672,7 +672,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "clean")
 
-    @unittest.expectedFailure
     def test_a_masked_span_makes_no_heading(self) -> None:
         """Blanking a code span must not leave a heading indented into existence.
 

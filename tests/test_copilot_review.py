@@ -410,7 +410,6 @@ class HandlersTest(unittest.TestCase):
             any("notice" in w and "left" in w for w in self.stored()["warnings"])
         )
 
-    @unittest.expectedFailure
     def test_a_notice_whose_block_grew_is_left_alone(self) -> None:
         """The cut takes the notice alone; a body merged into it stays whole.
 
