@@ -300,9 +300,11 @@ def suppressed_count(text: str) -> tuple[int, bool]:
                 unreadable = True
     for head in SUPPRESSED_HEAD.finditer(text):
         digits = head.group(1)
-        rest = text[head.end() :]
-        end = SUPPRESSED_END.search(rest)
-        block = rest[: end.start()] if end else rest
+        # Searched in place from the heading's end, so the line-start
+        # anchor binds to real line starts and a heading's closing
+        # hashes end no section.
+        end = SUPPRESSED_END.search(text, head.end())
+        block = text[head.end() : end.start() if end else len(text)]
         listed = len(SUPPRESSED_ENTRY.findall(block))
         if len(digits) > MAX_COUNT_DIGITS:
             unreadable = True

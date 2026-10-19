@@ -1237,7 +1237,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
-    @unittest.expectedFailure
     def test_closing_hashes_end_no_section(self) -> None:
         """A heading's closing hashes are the heading's, not a new one's."""
         text = (
