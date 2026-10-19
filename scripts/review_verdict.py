@@ -71,7 +71,7 @@ MAX_COUNT_DIGITS = 9
 # first; whitespace and emphasis may sit around and between the
 # label's words.
 STRONG_TAGS = re.compile(r"</?strong>", re.I)
-STRONG_ENTRY = re.compile(r"<strong>([^<*_\n]+:\d+)</strong>", re.I)
+STRONG_ENTRY = re.compile(r"<strong>([^<*\n]+:\d+)</strong>", re.I)
 LABEL_NOISE = r"(?:\s|[*_])"
 SUPPRESSED_HEAD = re.compile(
     # One space after the hashes; the noise reads the rest, so the two
@@ -117,7 +117,9 @@ SUPPRESSED_LABEL = "suppressedcomments"
 # whatever the heading says.
 SUPPRESSED_ENTRY = re.compile(
     r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*"
-    r"(?:\*\*[^*\n]+:\d+\*\*|__[^_\n]+:\d+__)",
+    # A path may hold underscores; the underscore form ends at the
+    # pair before the line's end alone.
+    r"(?:\*\*[^*\n]+:\d+\*\*|__(?:(?!__)[^\n])+:\d+__)",
     re.M,
 )
 SUPPRESSED_END = re.compile(
