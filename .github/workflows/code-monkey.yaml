@@ -351,6 +351,7 @@ jobs:
           # parsed to nothing.
           ISSUES_RAW: "${{ inputs.issues }}"
           REPOSITORIES_RAW: "${{ inputs.repositories }}"
+          PULL_REQUESTS_RAW: "${{ inputs.pull_requests }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -385,6 +386,10 @@ jobs:
           fi
           if [ -n "$REPOSITORIES_RAW" ] && [ "$REPOSITORY_COUNT" = 0 ]; then
             echo '::error::repositories was given but names no repository'
+            exit 1
+          fi
+          if [ -n "$PULL_REQUESTS_RAW" ] && [ "${PULL_COUNT:-0}" = 0 ]; then
+            echo '::error::pull_requests was given but names no pull request'
             exit 1
           fi
           if { [ "$ISSUE_COUNT" != 0 ] || [ "$PULL_COUNT" != 0 ]; } &&
@@ -1207,32 +1212,15 @@ jobs:
           python3 monkey-assets/scripts/preflight.py identity \
             --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
 
-      - name: 'Push branch to fork'
-        id: push
-        env:
-          # yamllint disable-line rule:line-length
-          GH_TOKEN: "${{ steps.fork-token.outputs.token || steps.fork-create-token.outputs.token }}"
-          MODE: "${{ inputs.mode }}"
-          DRY_RUN: "${{ inputs.dry_run }}"
-          RUN_ATTEMPT: "${{ github.run_attempt }}"
-          # Empty when no proposal arrived; that session cost nothing
-          # the report can see.
-          AUTHOR_SESSION: "${{ steps.fetch.outputs.artifact_id }}"
-        run: |
-          extra=()
-          if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
-          python3 monkey-assets/scripts/publish.py push \
-            --check artefacts/check.json --workdir work \
-            --run-attempt "$RUN_ATTEMPT" \
-            --author-session "$AUTHOR_SESSION" \
-            --mode "$MODE" --output artefacts/result.json "${extra[@]}"
-
       # The pull request is the one write to the target: a token for
-      # the target that can touch pull requests and nothing else.
+      # the target that can touch pull requests and nothing else. It is
+      # minted before the push so a revision can set its title first;
+      # the push step itself holds the fork token alone.
       - name: 'Mint pull request token'
         id: pr-token
         if: >-
-          !cancelled() && steps.push.outcome == 'success' &&
+          (steps.check.outputs.verdict == 'proposed' ||
+          steps.check.outputs.verdict == 'handoff') &&
           !inputs.dry_run && inputs.mode == 'pull-requests' &&
           inputs.github_app_client_id != ''
         # yamllint disable-line rule:line-length
@@ -1252,6 +1240,43 @@ jobs:
         run: |
           python3 monkey-assets/scripts/preflight.py identity \
             --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
+
+      # A single-commit revision whose subject changed must carry the
+      # new title before the push: the Semantic Pull Request check runs
+      # on the push and compares the title with the subject (AGENTS.md
+      # section 10.1). The description follows after the push.
+      - name: 'Retitle the pull request'
+        id: retitle
+        if: >-
+          matrix.task == 'revise' &&
+          steps.check.outputs.verdict == 'proposed' &&
+          !inputs.dry_run && inputs.mode == 'pull-requests' &&
+          inputs.github_app_client_id != ''
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py retitle \
+            --check artefacts/check.json
+
+      - name: 'Push branch to fork'
+        id: push
+        env:
+          # yamllint disable-line rule:line-length
+          GH_TOKEN: "${{ steps.fork-token.outputs.token || steps.fork-create-token.outputs.token }}"
+          MODE: "${{ inputs.mode }}"
+          DRY_RUN: "${{ inputs.dry_run }}"
+          RUN_ATTEMPT: "${{ github.run_attempt }}"
+          # Empty when no proposal arrived; that session cost nothing
+          # the report can see.
+          AUTHOR_SESSION: "${{ steps.fetch.outputs.artifact_id }}"
+        run: |
+          extra=()
+          if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
+          python3 monkey-assets/scripts/publish.py push \
+            --check artefacts/check.json --workdir work \
+            --run-attempt "$RUN_ATTEMPT" \
+            --author-session "$AUTHOR_SESSION" \
+            --mode "$MODE" --output artefacts/result.json "${extra[@]}"
 
       - name: 'Open pull request'
         id: open

@@ -744,15 +744,18 @@ For each selected issue:
    add `workflows: write`, since the step 7 sync can fast-forward
    over upstream workflow changes (§4.3). The two
    mints exclude each other on the fork's existence.
-7. **Push to the fork.** Find or create the fork (§4.3), sync its
+7. **Mint a pull request token** on the target organisation's
+   installation for that repository alone, with `pull_requests:
+   write` and `metadata: read`: the one token in the pipeline that
+   can write to the target. `pull-requests` mode, for a proposal or
+   a handoff, alone. The mint runs ahead of the push so a revision
+   can set its title first (§20.3); the push step itself holds the
+   fork token alone, and `open` and `respond` wait for the push to
+   succeed.
+8. **Push to the fork.** Find or create the fork (§4.3), sync its
    default branch, create `code-monkey/issue-<n>` there at the base
    SHA (an existing branch is a rejection unless it holds this
    proposal's own chain, §6), then replay commits per §5.
-8. **Mint a pull request token** on the target organisation's
-   installation for that repository alone, with `pull_requests:
-   write` and `metadata: read`: the one token in the pipeline that
-   can write to the target. `pull-requests` mode after a successful
-   push alone.
 9. **Open the pull request** (`pull-requests` mode) against the
    default branch with head `<fork-org>:code-monkey/issue-<n>`:
    title from the manifest (equal to the subject on
@@ -1804,8 +1807,16 @@ next scan leaves the pull
 request alone until a maintainer comments, on the issue, the pull
 request or one of the disputed threads.
 
-The push syncs the fork, replays the chain onto a temporary branch
-(`code-monkey/issue-<n>-r<round>`) through `createCommitOnBranch`,
+A single-commit revision whose subject changed sets the pull
+request's title before the push, with the pull request token minted
+ahead of it: the Semantic Pull Request check runs on the push and
+compares the title with the subject, so the title must lead
+(organisation `AGENTS.md` §10.1). The push syncs the fork, replays
+the chain onto a temporary branch
+(`code-monkey/issue-<n>-r<round>-<session>`, the session being the
+selection's read time, so two named dispatches revising one pull
+request at one round neither resume nor delete each other's branch)
+through `createCommitOnBranch`,
 which signs every commit, then moves `code-monkey/issue-<n>` to the new
 head with `updateRefs`, `beforeOid` set to the recorded head and
 `force: true`: GitHub refuses the move when the branch no longer
@@ -1838,7 +1849,12 @@ nothing: a revision publishes in `pull-requests` mode alone, where
 the replies and the review gate follow. The fork mint is the
 existing one; no new permission.
 
-With the pull request token, `respond` posts each reply on its thread
+With the pull request token, `respond` first reads the pull request's
+head: the compare-and-swap guarded the branch move alone, and another
+run may have advanced the pull request since, so a head other than
+the one this round published, or one it cannot read, leaves every
+write below undone with a warning and the publication standing. It
+then posts each reply on its thread
 prefixed with the AI disclosure and ending in a marker that names
 the round and the session, through the selection's read time,
 resolves the threads the agent

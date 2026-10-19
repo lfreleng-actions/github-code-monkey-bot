@@ -770,7 +770,6 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn("manifest base_sha is neither recorded base", script)
         self.assertIn('"$BASE_SHA" | "$REBASE_SHA")', script)
 
-    @unittest.expectedFailure
     def test_publisher_answers_threads_with_the_pull_request_token(self) -> None:
         """Replies and resolves are writes to the target: the pull request token alone."""
         respond = self.step("publish", "respond")
@@ -790,7 +789,6 @@ class RevisionContracts(ReusableWorkflowCase):
         mint = self.step("publish", "pr-token")
         self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
 
-    @unittest.expectedFailure
     def test_a_revision_retitles_before_the_push(self) -> None:
         """The title leads the push: the Semantic Pull Request check runs on the push.
 
@@ -1015,7 +1013,13 @@ class PublishJobContracts(ReusableWorkflowCase):
         self.assert_expression(pr_with["repositories"], "matrix.repo_name")
         self.assertEqual(pr_with["permission-pull-requests"], "write")
         self.assertEqual(pr_with["permission-metadata"], "read")
-        self.assertEqual(unwrap(str(self.step("publish", "open")["if"])), condition)
+        # The mint runs ahead of the push, for a revision's title; open
+        # and respond still wait for the push to succeed.
+        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        self.assertNotIn("steps.push.outcome", condition)
+        opened = unwrap(str(self.step("publish", "open")["if"]))
+        self.assertIn("steps.push.outcome == 'success'", opened)
+        self.assertIn("inputs.mode == 'pull-requests'", opened)
 
         comment = self.step("publish", "comment-token")
         self.assertTrue(is_action(comment, APP_TOKEN))
@@ -1359,7 +1363,6 @@ class MintProvenanceContracts(ReusableWorkflowCase):
             re.findall(r"steps\.([a-z-]+)\.outputs\.token", opened), ["pr-token"]
         )
 
-    @unittest.expectedFailure
     def test_fork_organisation_is_proven_before_any_fork_mint(self) -> None:
         """The resolve step guards the pattern and the mapping, then the mints run."""
         fork = self.step("publish", "fork")
@@ -1537,7 +1540,6 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
-    @unittest.expectedFailure
     def test_a_list_given_but_naming_nothing_is_refused(self) -> None:
         """Separators alone fail the input check instead of scanning.
 
@@ -1561,7 +1563,6 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertLess(check, self.position("select", "app-token"))
         self.assertLess(check, self.position("select", "Select issues"))
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_a_pull_request_list_naming_nothing_is_refused(self) -> None:
         """Separators alone in pull_requests fail too, rather than scan."""
@@ -1722,9 +1723,9 @@ class ListInputContracts(ReusableWorkflowCase):
     def test_selection_reads_the_split_lists(self) -> None:
         """The raw inputs reach the splitters and nothing else.
 
-        The input check alone also sees the raw issues and repositories,
-        under names of their own, to tell an absent list from one that
-        parsed to nothing.
+        The input check alone also sees the raw issues, repositories
+        and pull requests, under names of their own, to tell an absent
+        list from one that parsed to nothing.
         """
         env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
@@ -1745,7 +1746,12 @@ class ListInputContracts(ReusableWorkflowCase):
                             "env": {
                                 k: v
                                 for k, v in step["env"].items()
-                                if k not in ("ISSUES_RAW", "REPOSITORIES_RAW")
+                                if k
+                                not in (
+                                    "ISSUES_RAW",
+                                    "REPOSITORIES_RAW",
+                                    "PULL_REQUESTS_RAW",
+                                )
                             },
                         }
                     text = json.dumps(checked)

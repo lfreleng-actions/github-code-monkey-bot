@@ -216,6 +216,59 @@ def answer_thread(
         counts["resolved"] += 1
 
 
+def published_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
+    """Whether the pull request still heads at the chain this round published.
+
+    The compare-and-swap guards the branch move alone. Another run may
+    advance the pull request between the swap and these writes, and
+    this round's replies would then resolve threads and replace a
+    newer description with an older one. A moved head, or one that
+    cannot be read, leaves the writes undone with a warning; the
+    publication itself stands.
+    """
+    commits = cast("list[Any]", result.get("commits") or [])
+    tip = str(commits[-1])
+    warnings = cast("list[str]", result["warnings"])
+    try:
+        head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
+    except github.GitHubError as exc:
+        warnings.append(
+            "could not read the pull request head before responding: "
+            f"{github.safe_message(exc)}; no reply posted"
+        )
+        return False
+    if head == tip:
+        return True
+    warnings.append(
+        f"the pull request head moved from {tip[:7]} to {head[:7]} after the "
+        "push; no reply posted and the description left alone"
+    )
+    return False
+
+
+def run_retitle(args: argparse.Namespace) -> None:
+    """``publish.py retitle``: set a revision's title before its branch moves.
+
+    The Semantic Pull Request check runs on the push and compares the
+    title with the commit subject, so the title must lead the push
+    (AGENTS.md section 10.1). Only a proposed revision whose title
+    differs writes; the description follows after the push.
+    """
+    check = model.load_json(args.check, "check")
+    if check.get("task") != "revise" or check.get("verdict") != "proposed":
+        print("retitle: nothing to do")
+        return
+    repository = str(check["repository"])
+    number = int(check["pull_number"])
+    title = str(check.get("pr_title") or "")
+    current = github.api_object(f"repos/{repository}/pulls/{number}").get("title")
+    if not title or title == current:
+        print("retitle: title unchanged")
+        return
+    github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"title": title})
+    print("retitle: title set")
+
+
 def run_respond(args: argparse.Namespace) -> None:
     """``publish.py respond``: answer the threads and update the description.
 
@@ -235,6 +288,8 @@ def run_respond(args: argparse.Namespace) -> None:
         (verdict == "proposed" and result.get("commits")) or verdict == "handoff"
     )
     if answering and verdict == "handoff" and not handoff_head(check, result):
+        answering = False
+    if answering and verdict == "proposed" and not published_head(check, result):
         answering = False
     if answering:
         repository = str(check["repository"])

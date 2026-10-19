@@ -48,7 +48,6 @@ SCRATCH = "code-monkey/issue-7-r3-20261003T000000Z"
 class MoveBranchTest(unittest.TestCase):
     """The chain lands on a scratch branch; the swap is conditional; cleanup always."""
 
-    @unittest.expectedFailure
     def test_swap_from_the_recorded_head(self) -> None:
         """updateRefs names the recorded head as beforeOid and the new tip after."""
         with (
@@ -187,7 +186,6 @@ class MoveBranchTest(unittest.TestCase):
 class ScratchNameTest(unittest.TestCase):
     """The scratch branch is one session's alone."""
 
-    @unittest.expectedFailure
     def test_the_name_carries_the_session(self) -> None:
         """Two sessions at one round, from two selections, build on two branches.
 
@@ -281,7 +279,6 @@ class ScratchBranchTest(unittest.TestCase):
         self.assertFalse(data["_replayed"])
         self.assertTrue(data["_deleted"])
 
-    @unittest.expectedFailure
     def test_a_scratch_branch_of_unknown_content_is_kept(self) -> None:
         """Commits this run did not make are nobody's to delete; the ref is reported."""
         rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")

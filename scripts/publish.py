@@ -342,6 +342,12 @@ def build_parser() -> argparse.ArgumentParser:
     opener.add_argument("--output", type=Path, required=True)
     opener.set_defaults(handler=write_open)
 
+    retitle = commands.add_parser(
+        "retitle", help="set a revision's title before its push (target token)"
+    )
+    retitle.add_argument("--check", type=Path, required=True)
+    retitle.set_defaults(handler=revision_publish.run_retitle)
+
     respond = commands.add_parser(
         "respond", help="answer the review threads of a revision (target token)"
     )

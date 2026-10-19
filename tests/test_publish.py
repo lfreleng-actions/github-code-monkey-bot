@@ -1263,7 +1263,6 @@ class RunRespondTest(NoNetworkCase):
         self.assertEqual(stored["responded"]["replied"], 1)
         self.assertTrue(any("PRRT_1" in w for w in stored["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_moved_head_stops_the_responses(self) -> None:
         """Another run moved the head after this swap: no reply, no description edit.
 
@@ -1386,7 +1385,6 @@ class RunRetitleTest(NoNetworkCase):
             publish.main(["retitle", "--check", str(check)])
         return write
 
-    @unittest.expectedFailure
     def test_a_changed_subject_retitles_before_the_push(self) -> None:
         """The Semantic Pull Request check runs on the push; the title must lead it."""
         write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
