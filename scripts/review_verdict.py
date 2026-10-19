@@ -71,7 +71,9 @@ MAX_COUNT_DIGITS = 9
 STRONG_TAGS = re.compile(r"</?strong>", re.I)
 LABEL_NOISE = r"(?:\s|[*_])"
 SUPPRESSED_HEAD = re.compile(
-    r"(?:^ {0,3}#{1,6}[ \t]+|<summary>)"
+    # One space after the hashes; the noise reads the rest, so the two
+    # never split a run of whitespace between them.
+    r"(?:^ {0,3}#{1,6}[ \t]|<summary>)"
     + LABEL_NOISE
     + r"*Suppressed"
     + LABEL_NOISE

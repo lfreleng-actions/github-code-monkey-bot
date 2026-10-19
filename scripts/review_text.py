@@ -96,7 +96,7 @@ ATTRIBUTE_BACKTICK = re.compile(
 )
 # A tag indented past where a block may open: under a list item it
 # opens a block the guard, which reads column zero alone, cannot place.
-INDENTED_TAG = re.compile(r"^(?: {4,}|[ \t]*\t)[ \t]*</?[A-Za-z]")
+INDENTED_TAG = re.compile(r"^(?=(?: {4}|[ \t]*\t))[ \t]*</?[A-Za-z]")
 # A tag the line does not close holds a multi-line attribute, which
 # may carry anything; the real bodies close every tag on its line. A
 # > inside a quoted value closes nothing, so quotes are tracked.
@@ -120,7 +120,15 @@ LINK_REFERENCE = re.compile(
 # A fence run indented past where a fence may open or close: under a
 # list item it closes a fence the parser, which tracks no container
 # indentation, would otherwise never end.
-INDENTED_FENCE = re.compile(r"^(?: {4,}|[ \t]*\t[ \t]*)(?:`{3,}|~{3,})[ \t]*$")
+# The indentation is read once, by lookahead, so a line of whitespace
+# costs one pass rather than one per split of it.
+INDENTED_FENCE = re.compile(r"^(?=(?: {4}|[ \t]*\t))[ \t]*(?:`{3,}|~{3,})[ \t]*$")
+# A heading opening a quote or a list item, or indented under one,
+# renders as a heading; the classifier reads headings at the line
+# start alone, so these fail the body closed.
+CONTAINER_HEADING = re.compile(
+    r"^(?: {0,3}(?:[-+*]|\d{1,9}[.)]|>)[ \t]+|(?=(?: {4}|[ \t]*\t))[ \t]*)#{1,6}[ \t]"
+)
 # A line opening a bracket it never closes may begin a reference label
 # that spans lines; the definition is then LINK_REFERENCE's to miss.
 OPEN_BRACKET = re.compile(
@@ -129,11 +137,23 @@ OPEN_BRACKET = re.compile(
 
 
 def tag_left_open(line: str) -> bool:
-    """Whether a tag starts on the line and no unquoted > closes it."""
-    for start in TAG_START.finditer(line):
+    """Whether a tag starts on the line and no unquoted > closes it.
+
+    One pass: each tag is walked once to its close, and a < met inside
+    a tag outside quotes is a nested opener the real bodies never
+    write, read as a tag left open.
+    """
+    i = 0
+    while True:
+        start = TAG_START.search(line, i)
+        if start is None:
+            return False
         quote: str | None = None
         closed = False
-        for char in line[start.end() :]:
+        i = start.end()
+        while i < len(line):
+            char = line[i]
+            i += 1
             if quote:
                 if char == quote:
                     quote = None
@@ -142,9 +162,10 @@ def tag_left_open(line: str) -> bool:
             elif char == ">":
                 closed = True
                 break
+            elif char == "<":
+                return True
         if not closed:
             return True
-    return False
 
 
 def mask_spans(line: str) -> tuple[str, bool]:
@@ -213,7 +234,7 @@ def read_line(line: str) -> tuple[str, set[str]]:
         for found in ATTRIBUTE_BACKTICK.finditer(line)
     ):
         problems.add(UNREADABLE_HTML)
-    if OPEN_BRACKET.match(masked):
+    if OPEN_BRACKET.match(masked) or CONTAINER_HEADING.match(masked):
         problems.add(UNREADABLE_MARKDOWN)
     for tag in ANY_TAG.finditer(masked):
         if not TAG_SHAPE.fullmatch(tag.group(0)):
