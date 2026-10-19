@@ -118,7 +118,11 @@ ESCAPED_BACKTICK = "\\`"
 STRAY_FENCE = re.compile(r"`{3,}|~{3,}")
 # A link reference definition's title may run over the lines after
 # it, taking a heading with it; the real bodies define none.
-LINK_REFERENCE = re.compile(r"^ {0,3}\[[^\]]*\]:")
+LINK_REFERENCE = re.compile(r"^ {0,3}\[(?:\\.|[^\]\\])*\]:")
+# A fence run indented past where a fence may open or close: under a
+# list item it closes a fence the parser, which tracks no container
+# indentation, would otherwise never end.
+INDENTED_FENCE = re.compile(r"^ {4,}(?:`{3,}|~{3,})[ \t]*$")
 # Digits beyond this are no count GitHub would write.
 MAX_COUNT_DIGITS = 9
 
@@ -290,6 +294,13 @@ def visible(text: str) -> tuple[str, list[str]]:
         if fence is not None:
             if fence_closes(line, *fence):
                 fence = None
+            elif INDENTED_FENCE.match(line) and line.lstrip(" ").startswith(
+                fence[0] * fence[1]
+            ):
+                # A closer the parser cannot see as one: inside a list
+                # it ends the fence, and what follows would be dropped
+                # as code here, so the body fails closed.
+                problems.add(UNREADABLE_MARKDOWN)
             continue
         if in_html:
             # Inside an HTML block a heading or fence is HTML text,

@@ -736,7 +736,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn(reason, verdict.reasons)
 
-    @unittest.expectedFailure
     def test_escaped_bracket_in_a_reference_label_fails_closed(self) -> None:
         """A label may escape a bracket; the definition is one all the same."""
         for extra in (
@@ -751,7 +750,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_a_fence_closed_under_list_indentation_fails_closed(self) -> None:
         """A closer indented past three spaces closes a fence the parser never ends."""
         text = (
