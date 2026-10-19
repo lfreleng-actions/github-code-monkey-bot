@@ -313,6 +313,10 @@ jobs:
           REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
           ISSUE_REPOSITORIES: "${{ steps.named.outputs.repositories }}"
           ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
+          # The raw lists, only to tell an absent list from one that
+          # parsed to nothing.
+          ISSUES_RAW: "${{ inputs.issues }}"
+          REPOSITORIES_RAW: "${{ inputs.repositories }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -333,6 +337,20 @@ jobs:
             echo '::error::model must be a lower-case identifier'; exit 1; }
           # Expressions cannot add, so the job budget (session plus
           # toolchain setup and upload) is computed here.
+          #
+          # Only an empty list means "scan". The concurrency group tests
+          # the raw issues input, while selection sees the split one, so
+          # a list of separators alone would take a per-run lock and
+          # then scan; it fails here, before selection and the mint.
+          # Issues and repositories exclude each other.
+          if [ -n "$ISSUES_RAW" ] && [ "$ISSUE_COUNT" = 0 ]; then
+            echo '::error::issues was given but names no issue'
+            exit 1
+          fi
+          if [ -n "$REPOSITORIES_RAW" ] && [ "$REPOSITORY_COUNT" = 0 ]; then
+            echo '::error::repositories was given but names no repository'
+            exit 1
+          fi
           if [ "$ISSUE_COUNT" != 0 ] && [ "$REPOSITORY_COUNT" != 0 ]; then
             echo '::error::issues and repositories cannot both be given'
             exit 1

@@ -1294,7 +1294,6 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
-    @unittest.expectedFailure
     def test_a_list_given_but_naming_nothing_is_refused(self) -> None:
         """Separators alone fail the input check instead of scanning.
 
@@ -1314,7 +1313,6 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertLess(check, self.position("select", "app-token"))
         self.assertLess(check, self.position("select", "Select issues"))
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_only_an_empty_list_means_a_scan(self) -> None:
         """An empty list scans; one that parsed to nothing fails."""
@@ -1419,11 +1417,17 @@ class ListInputContracts(ReusableWorkflowCase):
         )
 
     def test_selection_reads_the_split_lists(self) -> None:
-        """The raw inputs reach the splitters and nothing else."""
+        """The raw inputs reach the splitters and nothing else.
+
+        The input check alone also sees the raw issues and repositories,
+        under names of their own, to tell an absent list from one that
+        parsed to nothing.
+        """
         env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
         self.assert_expression(env["EXCLUDE_REPOS"], "steps.exclusions.outputs.csv")
         splitters = {id(s) for s in self.actions("select", SPLITTER)}
+        budget = self.step("select", "budget")
         for job in self.jobs:
             if "steps" not in self.jobs[job]:
                 continue
@@ -1431,7 +1435,17 @@ class ListInputContracts(ReusableWorkflowCase):
                 if id(step) in splitters:
                     continue
                 with self.subTest(job=job, step=step.get("name")):
-                    text = json.dumps(step)
+                    checked = step
+                    if step is budget:
+                        checked = {
+                            **step,
+                            "env": {
+                                k: v
+                                for k, v in step["env"].items()
+                                if k not in ("ISSUES_RAW", "REPOSITORIES_RAW")
+                            },
+                        }
+                    text = json.dumps(checked)
                     for name in self.LISTS:
                         self.assertNotRegex(text, rf"inputs\.{name}\b")
 

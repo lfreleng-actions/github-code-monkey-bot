@@ -435,7 +435,9 @@ fails. The splitter works offline and takes no token. The read
 mint's scope is the splitter's names plus the guidance repository,
 and the selector receives the split lists, never the raw inputs; it
 still checks each name against `[A-Za-z0-9_.-]+`, so its own tests
-stand behind the splitter's.
+stand behind the splitter's. An empty `repositories` means the whole
+organisation; a list given but naming no repository, such as
+separators alone, fails the input check rather than widening the scan.
 
 **Explicit issues.** When `issues` names one or more issues, the run
 works those and scans nothing. The splitter accepts `repo#N`,
@@ -458,8 +460,11 @@ failure still fails the run. The selection records
 every named issue it skipped with its reason, in `skipped_issues`,
 and the summary lists them, so a maintainer who named five issues
 and sees three in the matrix learns why. Issues and `repositories`
-exclude each other: the input check fails a run naming both. The read
-mint scopes to the issues' repositories plus the guidance repository.
+exclude each other: the input check fails a run naming both. An
+`issues` list given but naming no issue, such as separators alone,
+is an input error rather than a scan, and fails before selection.
+The read mint scopes to the issues' repositories plus the guidance
+repository.
 The token action finds the installation through the first repository
 in that scope, so a step before the mint reads each named repository
 with the native token and keeps the ones GitHub reports as existing
