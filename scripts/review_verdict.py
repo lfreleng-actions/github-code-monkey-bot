@@ -85,8 +85,13 @@ SUPPRESSED_HEAD = re.compile(
 # a count unreadable, a finding in itself, since the label's
 # formatting has no end of variants and a clean verdict must not
 # rest on missing one.
+# A heading reads to its line's end; a summary, wherever it starts,
+# reads to its close across lines, bounded so a body left open costs
+# one pass.
 SUPPRESSED_MENTION = re.compile(
-    r"^ {0,3}(?:#{1,6}[ \t]|<summary>)(?P<line>.*)$", re.M | re.I
+    r"^ {0,3}#{1,6}[ \t](?P<line>.*)$"
+    r"|<summary>(?P<summary>[\s\S]{0,400}?)(?:</summary>|\Z)",
+    re.M | re.I,
 )
 LETTERS = re.compile(r"[^a-z]")
 ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
@@ -233,7 +238,8 @@ def suppressed_count(text: str) -> tuple[int, bool]:
     text = STRONG_TAGS.sub("", text)
     readable = {head.start() for head in SUPPRESSED_HEAD.finditer(text)}
     for mention in SUPPRESSED_MENTION.finditer(text):
-        letters = LETTERS.sub("", ANY_TAG_TEXT.sub("", mention.group("line")).lower())
+        content = mention.group("line") or mention.group("summary") or ""
+        letters = LETTERS.sub("", ANY_TAG_TEXT.sub("", content).lower())
         if letters.startswith(SUPPRESSED_LABEL) and mention.start() not in readable:
             unreadable = True
     for head in SUPPRESSED_HEAD.finditer(text):
