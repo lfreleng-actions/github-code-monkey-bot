@@ -86,11 +86,10 @@ SUPPRESSED_HEAD = re.compile(
 # formatting has no end of variants and a clean verdict must not
 # rest on missing one.
 # A heading reads to its line's end; a summary, wherever it starts,
-# reads to its close across lines, bounded so a body left open costs
-# one pass.
+# reads to its close across lines, or to the body's end, which the
+# 64 KiB bound on the body already keeps short.
 SUPPRESSED_MENTION = re.compile(
-    r"^ {0,3}#{1,6}[ \t](?P<line>.*)$"
-    r"|<summary>(?P<summary>[\s\S]{0,400}?)(?:</summary>|\Z)",
+    r"^ {0,3}#{1,6}[ \t](?P<line>.*)$|<summary>(?P<summary>[\s\S]*?)(?:</summary>|\Z)",
     re.M | re.I,
 )
 LETTERS = re.compile(r"[^a-z]")
