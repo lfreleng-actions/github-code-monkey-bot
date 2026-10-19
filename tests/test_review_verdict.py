@@ -1185,7 +1185,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_a_link_in_a_heading_or_summary_fails_closed(self) -> None:
         """A link's destination would thread letters into the label."""
         reason = "review body holds Markdown the classifier does not read"

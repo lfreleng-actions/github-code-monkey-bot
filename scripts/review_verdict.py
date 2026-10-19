@@ -170,9 +170,9 @@ def visible(text: str) -> tuple[str, list[str]]:
     previous = ""
     in_summary = False
     for line in text.split("\n"):
-        if in_summary and "`" in line:
-            # A summary open across lines is one summary: a span in it
-            # could hide part of its label, as on one line.
+        if in_summary and ("`" in line or "[" in line):
+            # A summary open across lines is one summary: a span or a
+            # link in it could hide part of its label, as on one line.
             problems.add(UNREADABLE_MARKDOWN)
         # Under a container prefix the underline reads the same, so
         # both lines are read with their prefix removed.
