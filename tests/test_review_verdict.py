@@ -1049,7 +1049,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).suppressed, 2)
 
-    @unittest.expectedFailure
     def test_setext_headings_fail_closed(self) -> None:
         """An underline makes the line above a heading the parser does not read."""
         reason = "review body holds Markdown the classifier does not read"
