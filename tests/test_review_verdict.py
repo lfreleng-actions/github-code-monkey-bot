@@ -1348,7 +1348,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_entries_in_every_bold_form_count(self) -> None:
         """An entry's path and line may be bold by underscores or a strong tag."""
         for entry in (

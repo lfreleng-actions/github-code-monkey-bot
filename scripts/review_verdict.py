@@ -66,10 +66,12 @@ MAX_COUNT_DIGITS = 9
 
 # Suppressed findings sit under a heading or a <summary>; each entry
 # opens with the bold path and line. The strong tags the real bodies
-# use change nothing a reader sees and may fall anywhere, so they are
-# stripped before the count is read; whitespace and emphasis may sit
-# around and between the label's words.
+# use change nothing a reader sees and may fall anywhere, so they come
+# off before the count is read, one around an entry read as asterisks
+# first; whitespace and emphasis may sit around and between the
+# label's words.
 STRONG_TAGS = re.compile(r"</?strong>", re.I)
+STRONG_ENTRY = re.compile(r"<strong>([^<*_\n]+:\d+)</strong>", re.I)
 LABEL_NOISE = r"(?:\s|[*_])"
 SUPPRESSED_HEAD = re.compile(
     # One space after the hashes; the noise reads the rest, so the two
@@ -109,16 +111,15 @@ ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
 SUPPRESSED_LABEL = "suppressedcomments"
 # Indentation of spaces and tabs alone: a class crossing newlines
 # would rescan every blank line after the section once per line.
-# An entry may sit under a list marker or a quote; the stated count is
-# a floor, so each entry counts whatever the heading says.
+# An entry may sit under a list marker or a quote, bold by asterisks
+# or underscores, a strong tag around it having been read as
+# asterisks; the stated count is a floor, so each entry counts
+# whatever the heading says.
 SUPPRESSED_ENTRY = re.compile(
-    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*\*\*[^*\n]+:\d+\*\*", re.M
+    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*"
+    r"(?:\*\*[^*\n]+:\d+\*\*|__[^_\n]+:\d+__)",
+    re.M,
 )
-# A heading ends the section; a space, a tab or the line's end alone
-# follows its hashes, as Markdown has it, so hashes before other
-# whitespace are prose and end nothing.
-# A details closer ends it on a line of its own, as the real bodies
-# write it; one mid-line is text or a title and ends nothing.
 SUPPRESSED_END = re.compile(
     r"^ {0,3}#{1,6}(?:[ \t]|$)|^ {0,3}</details>[ \t]*$", re.M | re.I
 )
@@ -298,7 +299,10 @@ def suppressed_count(text: str) -> tuple[int, bool]:
     """
     total = 0
     unreadable = False
-    text = STRONG_TAGS.sub("", text)
+    # A strong tag around an entry's path and line is bold as a pair
+    # of asterisks is, and is read as them; every other strong tag,
+    # which may split the label or wrap its count, comes off.
+    text = STRONG_TAGS.sub("", STRONG_ENTRY.sub(r"**\1**", text))
     readable = {head.start() for head in SUPPRESSED_HEAD.finditer(text)}
     for pattern in SUPPRESSED_MENTIONS:
         for mention in pattern.finditer(text):
