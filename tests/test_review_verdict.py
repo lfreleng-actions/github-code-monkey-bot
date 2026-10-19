@@ -672,6 +672,30 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "clean")
 
+    @unittest.expectedFailure
+    def test_a_masked_span_makes_no_heading(self) -> None:
+        """Blanking a code span must not leave a heading indented into existence.
+
+        Three spaces then a hash is a heading to Markdown's reader of
+        the blanked line, where the writer's line, code then a hash,
+        is prose.
+        """
+        base = "<!-- ccr-overview-v2 -->\n\nSome prose.\n"
+        self.assertEqual(verdicts.classify(base, 0).assessment, None)
+        for prose in (
+            "`x`### \U0001f7e2 Approval recommended\n",
+            "`x` ## \U0001f7e2 Approval recommended\n",
+        ):
+            with self.subTest(prose=prose[:16]):
+                verdict = verdicts.classify(base + prose, 0)
+                self.assertIsNone(verdict.assessment)
+                self.assertEqual(verdict.verdict, "findings")
+        counted = verdicts.classify(
+            BODIES["v2-green-clean"] + "\n`xy`### Suppressed comments (1)\n", 0
+        )
+        self.assertEqual(counted.suppressed, 0)
+        self.assertEqual(counted.verdict, "clean")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (

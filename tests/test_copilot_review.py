@@ -410,6 +410,31 @@ class HandlersTest(unittest.TestCase):
             any("notice" in w and "left" in w for w in self.stored()["warnings"])
         )
 
+    @unittest.expectedFailure
+    def test_a_notice_whose_block_grew_is_left_alone(self) -> None:
+        """The cut takes the notice alone; a body merged into it stays whole.
+
+        With the separator after INFO gone, the first blank line is a
+        later one, and cutting there would take the maintainer's text
+        with the notice. The removed block must be the marker and the
+        INFO line and nothing else.
+        """
+        self.write()
+        merged = (
+            review.REFUSAL_NOTICE_MARKER
+            + "\n> **INFO** The workflow x.\nCloses #7\n\nbody"
+        )
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "api_object", return_value={"body": merged}),
+            patch.object(github, "api_write") as write,
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        write.assert_not_called()
+        self.assertTrue(
+            any("notice" in w and "left" in w for w in self.stored()["warnings"])
+        )
+
     def test_refusal_notice_is_idempotent_and_best_effort(self) -> None:
         """A body already carrying the notice is left alone; a failed edit is a warning."""
         self.write()
