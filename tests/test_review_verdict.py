@@ -528,7 +528,8 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(
             verdicts.classify(
-                BODIES["v2-green-clean"] + "\n- <picture><img src=x></picture> ok\n", 0
+                BODIES["v2-green-clean"] + '\n- <picture><img src="x"></picture> ok\n',
+                0,
             ).verdict,
             "clean",
         )
@@ -606,7 +607,9 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertEqual(
             verdicts.classify(BODIES["v2-blue-with-findings"], 0).reasons, []
         )
-        text = BODIES["v2-green-clean"] + "\n- <picture><img src=x></picture> [x](u)\n"
+        text = (
+            BODIES["v2-green-clean"] + '\n- <picture><img src="x"></picture> [x](u)\n'
+        )
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
     def test_character_references_fail_closed(self) -> None:
@@ -815,7 +818,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
-    @unittest.expectedFailure
     def test_legacy_named_references_fail_closed(self) -> None:
         """A legacy entity name renders without its semicolon; it fails closed too."""
         reason = "review body holds Markdown the classifier does not read"
@@ -830,13 +832,9 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertIn(reason, verdict.reasons)
         # A name no entity table knows, an ampersand in prose and a URL
         # query string are not references.
-        text = (
-            BODIES["v2-green-clean"]
-            + "\nA & B, &foo and https://x/y?a=1&b=2&copyx=3.\n"
-        )
+        text = BODIES["v2-green-clean"] + "\nA & B, &foo and https://x/y?a=1&b=2&x=3.\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_tag_attributes_hold_only_plain_values(self) -> None:
         """An attribute value with a backtick, quote or entity is not a real body's."""
         reason = "review body holds HTML the classifier does not read"
@@ -858,7 +856,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_an_indented_html_block_fails_closed(self) -> None:
         """A tag indented past three spaces opens a block the guard cannot place."""
         reason = "review body holds HTML the classifier does not read"

@@ -1200,6 +1200,7 @@ scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
+scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
 tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
