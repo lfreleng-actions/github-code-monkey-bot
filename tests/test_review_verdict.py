@@ -1288,6 +1288,29 @@ class UntrustedTextTest(unittest.TestCase):
         text = BODIES["v2-green-clean"] + "\nWrite `\\</details>` to show it.\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
+    @unittest.expectedFailure
+    def test_only_a_space_or_tab_separates_a_heading(self) -> None:
+        """Hashes before a no-break space or a form feed make prose, not a heading."""
+        for separator in ("\u00a0", "\f", "\u2003"):
+            text = (
+                BODIES["v2-green-clean"]
+                + f"\n### Suppressed comments (0)\n\n###{separator}Context\n\n"
+                "**scripts/x.py:12**\n"
+            )
+            with self.subTest(separator=repr(separator)):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.suppressed, 1)
+                self.assertEqual(verdict.verdict, "findings")
+        # A heading proper, with a space or a tab, still ends the section.
+        for separator in (" ", "\t"):
+            text = (
+                BODIES["v2-green-clean"]
+                + f"\n### Suppressed comments (0)\n\n###{separator}Context\n\n"
+                "**scripts/x.py:12**\n"
+            )
+            with self.subTest(separator=repr(separator)):
+                self.assertEqual(verdicts.classify(text, 0).suppressed, 0)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
