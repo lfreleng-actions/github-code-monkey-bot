@@ -300,11 +300,11 @@ def visible(text: str) -> tuple[str, list[str]]:
             # alone; a line of other whitespace is text inside it.
             in_html = line.strip(" \t") != ""
             if in_html:
-                lines.append(read_into(line, problems))
+                lines.append(read_html_line(line, problems))
                 continue
         if BLOCK_TAG.match(line):
             in_html = True
-            lines.append(read_into(line, problems))
+            lines.append(read_html_line(line, problems))
             continue
         opened = FENCE_OPEN.match(line)
         if opened:
@@ -315,6 +315,18 @@ def visible(text: str) -> tuple[str, list[str]]:
             continue
         lines.append(read_into(line, problems))
     return "\n".join(lines), sorted(problems)
+
+
+def read_html_line(line: str, problems: set[str]) -> str:
+    """Read a line inside an HTML block, where a backtick is text, not a span.
+
+    A span would mask a tag or a comment opener the block shows as
+    written, so a backtick there fails the body closed; the line is
+    otherwise read as any other.
+    """
+    if "`" in line:
+        problems.add(UNREADABLE_HTML)
+    return read_into(line, problems)
 
 
 def read_into(line: str, problems: set[str]) -> str:

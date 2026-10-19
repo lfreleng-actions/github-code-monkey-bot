@@ -149,6 +149,30 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     return template(result, reasons, run_url)
 
 
+def review_token(result: dict[str, Any]) -> str:
+    """The review as one marker token: verdict, then counts and assessment.
+
+    A findings review names its thread and suppressed counts and its
+    assessment too, so a rerun that resolved threads under the same
+    verdict reads as a new outcome; one token, with no spaces, so a
+    reader of the footer splits it as before.
+    """
+    verdict = review_verdict(result)
+    if verdict != "findings":
+        return str(verdict)
+    record = cast("dict[str, Any]", result["review"])
+    return (
+        f"findings/{record.get('unresolved_threads')}/{record.get('suppressed')}"
+        f"/{record.get('assessment')}"
+    )
+
+
+# Pages of comments since the run's selection the search reads; a
+# search that fills them all may have the latest outcome beyond them
+# and proves nothing.
+MAX_COMMENT_PAGES = 3
+
+
 def run_comment(args: argparse.Namespace) -> None:
     """Post the outcome comment and record its URL in result.json."""
     result = model.load_json(args.result, "result")
@@ -165,7 +189,7 @@ def run_comment(args: argparse.Namespace) -> None:
     # included: a rerun that changed either posts again rather than
     # leaving the issue at odds with result.json.
     verdict = review_verdict(result)
-    suffix = f" review={verdict}" if verdict else ""
+    suffix = f" review={review_token(result)}" if verdict else ""
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (
@@ -211,7 +235,7 @@ def posted(
     # the outcome. The outcome part is what may change between attempts.
     prefix = f"<!-- code-monkey {run_url} "
     latest: dict[str, Any] | None = None
-    for page in range(1, 4):
+    for page in range(1, MAX_COMMENT_PAGES + 1):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
             f"?since={since}&per_page=100&page={page}"
@@ -231,6 +255,10 @@ def posted(
                 latest = entry
         if len(entries) < 100:
             break
+    else:
+        # Every page was full: the latest outcome may sit past the
+        # read, so an older match is no proof and the comment posts.
+        return None
     if latest is None or marker not in str(latest.get("body") or ""):
         return None
     url = latest.get("html_url")

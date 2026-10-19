@@ -1127,10 +1127,12 @@ class RunCommentTest(NoNetworkCase):
         write.assert_called_once()
         body = write.call_args.args[2]["body"]
         self.assertTrue(
-            body.endswith("<!-- code-monkey https://run proposed review=findings -->")
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=findings/0/0/None -->"
+            ),
+            body,
         )
 
-    @unittest.expectedFailure
     def test_marker_carries_the_review_counts(self) -> None:
         """Counts that changed under the same verdict are a new outcome to report."""
         path = self.write_result(
@@ -1176,7 +1178,6 @@ class RunCommentTest(NoNetworkCase):
             )
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_an_exhausted_comment_search_posts_rather_than_trusts(self) -> None:
         """Past the pages the search reads, an older match proves nothing."""
         path = self.write_result(

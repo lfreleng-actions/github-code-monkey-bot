@@ -856,10 +856,13 @@ For each selected issue:
     the line states the review's verdict: clean; findings, with the
     counts and the assessment and the statement that a maintainer
     must act on them; or pending. The marker carries the review
-    verdict too, so a rerun whose wait ended differently posts again
+    verdict too, and for findings the counts and the assessment, so
+    a rerun whose wait ended differently, or resolved a thread under
+    the same verdict, posts again
     instead of leaving the issue at odds with `result.json`; the
     bot's latest outcome for the run alone suppresses a repeat, so an
-    outcome that changed and changed back posts as well. A record
+    outcome that changed and changed back posts as well, and a search
+    that fills every page it may read proves nothing and posts. A record
     the publisher does not recognise reads as pending.
 13. **Record** `result.json` and a step-summary section. A step that
     runs whatever came before writes a `publish-failed` result when an

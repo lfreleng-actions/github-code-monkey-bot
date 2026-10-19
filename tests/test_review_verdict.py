@@ -723,7 +723,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertGreater(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_backticks_inside_an_html_block_fail_closed(self) -> None:
         """Inside raw HTML a backtick is text, so a span masks nothing there."""
         reason = "review body holds HTML the classifier does not read"
