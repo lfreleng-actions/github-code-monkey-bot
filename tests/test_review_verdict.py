@@ -973,6 +973,21 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
+    def test_strong_tags_split_a_word_or_wrap_the_count(self) -> None:
+        """Strong tags are stripped before the count is read, wherever they fall."""
+        for extra in (
+            "\n<summary>Suppre<strong>ssed</strong> comments (1)</summary>\n",
+            "\n<summary>Suppressed comments (<strong>1</strong>)</summary>\n",
+            "\n### Suppressed comments <strong>(</strong>2<strong>)</strong>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:40]):
+                verdict = verdicts.classify(
+                    BODIES["v2-green-clean"] + extra + "\n**scripts/x.py:12**\n", 0
+                )
+                self.assertGreater(verdict.suppressed, 0)
+                self.assertEqual(verdict.verdict, "findings")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
