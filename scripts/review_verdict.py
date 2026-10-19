@@ -114,7 +114,10 @@ SUPPRESSED_LABEL = "suppressedcomments"
 SUPPRESSED_ENTRY = re.compile(
     r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*\*\*[^*\n]+:\d+\*\*", re.M
 )
-SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}\s|</details>", re.M)
+# A heading ends the section; a space, a tab or the line's end alone
+# follows its hashes, as Markdown has it, so hashes before other
+# whitespace are prose and end nothing.
+SUPPRESSED_END = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)|</details>", re.M)
 
 
 @dataclass(frozen=True)

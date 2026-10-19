@@ -1288,7 +1288,6 @@ class UntrustedTextTest(unittest.TestCase):
         text = BODIES["v2-green-clean"] + "\nWrite `\\</details>` to show it.\n"
         self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
 
-    @unittest.expectedFailure
     def test_only_a_space_or_tab_separates_a_heading(self) -> None:
         """Hashes before a no-break space or a form feed make prose, not a heading."""
         for separator in ("\u00a0", "\f", "\u2003"):
