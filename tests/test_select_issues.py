@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -595,6 +596,34 @@ class RevisionIntegrationTest(NoSubprocessCase):
         session = selection["issues"][0]["session"]
         self.assertRegex(session, r"^[0-9A-Za-z]+$")
         self.assertNotEqual(session, selection["issues"][0]["collected_at"])
+
+    @unittest.expectedFailure
+    def test_the_watermark_sits_one_second_before_the_read(self) -> None:
+        """A comment posted in the selection's own second is new work later.
+
+        The cutoff has second precision and later reads want a comment
+        strictly after it, so one posted in the same second would
+        otherwise equal the cutoff and never count. A second's overlap
+        may reread a boundary comment and loses none.
+        """
+
+        def built(entry: dict[str, Any]) -> Any:
+            return entry
+
+        first = self.revision("alpha", 41, 7)
+        patch.object(
+            revision_select, "scan", return_value=[("org/alpha", lambda: built(first))]
+        ).start()
+        fixed = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz: Any = None) -> Any:
+                return fixed
+
+        with patch.object(select, "datetime", Clock):
+            selection, _ = select.build_selection(self.args())
+        self.assertEqual(selection["issues"][0]["collected_at"], "2026-10-03T11:59:59Z")
 
     def test_scan_puts_revisions_first_under_the_cap(self) -> None:
         """Revisions come before new issues and share the cap; past it nothing is read."""

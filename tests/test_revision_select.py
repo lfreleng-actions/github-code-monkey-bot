@@ -291,6 +291,7 @@ class BuildEntryTest(RevisionCase):
 class ScanTest(RevisionCase):
     """The owner-wide scan keeps the pull requests with work, oldest first."""
 
+    @unittest.expectedFailure
     def test_scan_orders_and_records_skips(self) -> None:
         """Hits with nothing outstanding vanish quietly; other skips are named."""
         hits = [
@@ -330,13 +331,69 @@ class ScanTest(RevisionCase):
                 skipped=skipped,
                 skipped_issues=named,
             )
-        # Nothing is read until a builder is called: the budget decides first.
-        self.assertEqual(calls, [])
+        # The scan reads each pull request and its issue, to rank them;
+        # the packet, many reads, waits for the budget to call.
+        self.assertEqual(calls, [40, 41, 9])
+        self.assertEqual(skipped["revision"], 1)
+        self.assertEqual(named[0]["issue"], "org/beta#9")
         entries = [entry for _, build in builders if (entry := build()) is not None]
         self.assertEqual(calls, [40, 41, 9])
         self.assertEqual([e["pull_request"]["number"] for e in entries], [40, 41])
-        self.assertEqual(skipped["revision"], 1)
-        self.assertEqual(named[0]["issue"], "org/beta#9")
+
+    @unittest.expectedFailure
+    def test_scan_ranks_by_the_issues_priority_then_age(self) -> None:
+        """An urgent issue's round comes before an older low one's (issue #19)."""
+        hits = [
+            {
+                "repository": "org/alpha",
+                "number": 40,
+                "created_at": "2026-10-01T00:00:00Z",
+            },
+            {
+                "repository": "org/alpha",
+                "number": 41,
+                "created_at": "2026-10-02T00:00:00Z",
+            },
+            {
+                "repository": "org/beta",
+                "number": 9,
+                "created_at": "2026-10-03T00:00:00Z",
+            },
+        ]
+        priorities = {7: "Low", 8: "Urgent", -24: None}
+
+        def per_pull(_repo: str, number: int, *_a: Any) -> dict[str, Any] | None:
+            return pull(number=number, issue=number - 33)
+
+        def per_issue(_repo: str, number: int) -> dict[str, Any]:
+            return {
+                "state": "open",
+                "title": "T",
+                "body": "B",
+                "labels": [],
+                "type": "Bug",
+                "assignees": [],
+                "priority": priorities[number],
+                "url": f"https://github.com/org/x/issues/{number}",
+                "created_at": "2026-09-01T00:00:00Z",
+                "author_association": "MEMBER",
+            }
+
+        patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
+        patch.object(reads, "issue_details", side_effect=per_issue).start()
+        self.threads = [thread()]
+        with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
+            builders = select.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped={"revision": 0},
+                skipped_issues=[],
+            )
+        entries = [entry for _, build in builders if (entry := build()) is not None]
+        # Urgent first, then Low, then the issue with no priority.
+        self.assertEqual([e["pull_request"]["number"] for e in entries], [41, 40, 9])
+        self.assertEqual([e["priority"] for e in entries], ["Urgent", "Low", None])
 
     def test_scan_honours_the_repository_policy(self) -> None:
         """Hits outside the run's repositories, or excluded, are passed over unread."""
