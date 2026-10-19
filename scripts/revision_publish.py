@@ -261,6 +261,15 @@ def run_retitle(args: argparse.Namespace) -> None:
     repository = str(check["repository"])
     number = int(check["pull_number"])
     title = str(check.get("pr_title") or "")
+    # The head must be the selected one, or this run's own published
+    # chain on a retry; any other is another session's, whose branch
+    # update the swap will refuse, and whose title stays.
+    head = review.pull_head(repository, number)
+    if head != str(check["head_sha"]):
+        chain = already_moved(check)
+        if chain is None or head != chain[-1]:
+            print(f"retitle: head moved to {head[:7]}; title left alone")
+            return
     current = github.api_object(f"repos/{repository}/pulls/{number}").get("title")
     if not title or title == current:
         print("retitle: title unchanged")

@@ -368,7 +368,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual(history.since, "2026-10-02T00:00:00Z")
         self.assertEqual(history.last_verdict, "proposed")
 
-    @unittest.expectedFailure
     def test_an_older_retry_does_not_rewind_a_newer_handoff(self) -> None:
         """Handled rounds order by their read time; creation orders retries alone.
 

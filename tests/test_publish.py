@@ -1393,7 +1393,6 @@ class RunRetitleTest(NoNetworkCase):
             publish.main(["retitle", "--check", str(check)])
         return write
 
-    @unittest.expectedFailure
     def test_a_stale_dispatch_retitles_nothing(self) -> None:
         """A head that moved since selection is another session's; the title stays.
 

@@ -1734,7 +1734,11 @@ comment history or failing closed when that history outgrows the read. A
 marker in a comment's body text is text. The footer names when its run
 read the comments (`since=`), and that, not the footer's own time, is
 the watermark a maintainer's comment must follow to be new: a comment
-posted while a run was reading is work for the next round. A footer
+posted while a run was reading is work for the next round. The latest
+footer is the one with the latest read time, not the latest post: a
+retry of an older round that posts after a newer handoff rewinds
+neither the watermark nor the pause, and two posts of one read order
+by their time. A footer
 whose round published nothing, an abstention, a rejection or a failure,
 counts toward the cap and moves no watermark, since it handled no
 request. At the cap the selector skips the pull request with that
@@ -1811,7 +1815,11 @@ A single-commit revision whose subject changed sets the pull
 request's title before the push, with the pull request token minted
 ahead of it: the Semantic Pull Request check runs on the push and
 compares the title with the subject, so the title must lead
-(organisation `AGENTS.md` §10.1). The push syncs the fork, replays
+(organisation `AGENTS.md` §10.1). It writes when the pull request
+still heads at the selected commit, or at this run's own published
+chain on a retry; a head another session moved keeps its title, as
+the swap will refuse that session's branch update. The push syncs
+the fork, replays
 the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>-<session>`, the session being the
 selection's read time, so two named dispatches revising one pull

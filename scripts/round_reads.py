@@ -60,7 +60,10 @@ def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
     """
     highest = 0
     summaries: list[dict[str, Any]] = []
-    latest: tuple[str, str, str | None] | None = None  # created, since, verdict
+    # since, created, verdict: handled rounds order by the read time
+    # they record, so a retry of an older round posted after a newer
+    # handoff rewinds nothing; creation orders two posts of one read.
+    latest: tuple[str, str, str | None] | None = None
     for page in range(1, MAX_HISTORY_PAGES + 1):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
@@ -83,12 +86,10 @@ def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
             verdict = found.group("verdict")
             # An attempt that published nothing handled no request: it
             # counts toward the cap below, but moves no watermark.
-            if (
-                verdict in HANDLED_VERDICTS
-                and isinstance(created, str)
-                and (latest is None or created > latest[0])
-            ):
-                latest = (created, found.group("since") or created, verdict)
+            if verdict in HANDLED_VERDICTS and isinstance(created, str):
+                key = (found.group("since") or created, created)
+                if latest is None or key > (latest[0], latest[1]):
+                    latest = (key[0], created, verdict)
             if found.group("round") is None:
                 continue
             number = int(found.group("round"))
@@ -104,7 +105,7 @@ def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
             return RoundHistory(
                 highest,
                 summaries[-MAX_ROUNDS:],
-                latest[1] if latest else None,
+                latest[0] if latest else None,
                 latest[2] if latest else None,
             )
     raise reads.SelectionError(
