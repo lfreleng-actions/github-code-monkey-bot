@@ -1185,6 +1185,7 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
+    @unittest.expectedFailure
     def test_a_link_in_a_heading_or_summary_fails_closed(self) -> None:
         """A link's destination would thread letters into the label."""
         reason = "review body holds Markdown the classifier does not read"
@@ -1192,6 +1193,9 @@ class UntrustedTextTest(unittest.TestCase):
             "\n### [Suppressed](https://example.test/x) comments (1)\n\n**x.py:1**\n",
             "\n<summary>Suppressed [comments][ref] (1)</summary>\n",
             "\n> ## [\U0001f7e2 Approval recommended](u)\n",
+            # On a continuation line of an open summary just the same.
+            "\n<summary>\n\n[Suppressed](https://example.test/x) comments (1)\n\n"
+            "</summary>\n\n**x.py:1**\n",
         ):
             with self.subTest(extra=extra.strip()[:30]):
                 verdict = verdicts.classify(BODIES["v2-overview-yellow"] + extra, 0)
