@@ -368,6 +368,46 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual(history.since, "2026-10-02T00:00:00Z")
         self.assertEqual(history.last_verdict, "proposed")
 
+    @unittest.expectedFailure
+    def test_an_older_retry_does_not_rewind_a_newer_handoff(self) -> None:
+        """Handled rounds order by their read time; creation orders retries alone.
+
+        Round 2 hands off; a retry of round 1 then posts again, later
+        in time but from an older read. The watermark and the pause
+        are round 2's still.
+        """
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://r/1 proposed review=findings round=1 since=2026-10-02T00:00:00Z -->",
+                "created_at": "2026-10-02T00:10:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "b\n\n<!-- code-monkey https://r/2 handoff round=2 since=2026-10-05T00:00:00Z -->",
+                "created_at": "2026-10-05T00:10:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "a2\n\n<!-- code-monkey https://r/1 proposed review=clean round=1 since=2026-10-02T00:00:00Z -->",
+                "created_at": "2026-10-06T00:10:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            history = round_reads.round_history(REPO, 7, BOT)
+        self.assertEqual(history.since, "2026-10-05T00:00:00Z")
+        self.assertEqual(history.last_verdict, "handoff")
+        # Two footers from one read: the later-posted one is the outcome.
+        entries = entries[:1] + [
+            {
+                **entries[2],
+                "body": "a2\n\n<!-- code-monkey https://r/1 handoff round=1 since=2026-10-02T00:00:00Z -->",
+            }
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            history = round_reads.round_history(REPO, 7, BOT)
+        self.assertEqual(history.last_verdict, "handoff")
+
     def test_oversized_comment_does_not_hide_smaller_ones(self) -> None:
         """A newest comment past the byte budget is skipped; earlier ones still fit."""
         big = {

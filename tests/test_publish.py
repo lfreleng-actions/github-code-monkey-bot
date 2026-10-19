@@ -1374,16 +1374,44 @@ class RunRespondTest(NoNetworkCase):
 class RunRetitleTest(NoNetworkCase):
     """``publish.py retitle`` sets a revision's title before the branch moves."""
 
-    def retitle(self, check_data: dict[str, Any], current: str) -> Any:
-        """Run retitle against a pull request titled ``current``; return the PATCH mock."""
+    def retitle(
+        self,
+        check_data: dict[str, Any],
+        current: str,
+        head: str = HEAD,
+        chain: list[str] | None = None,
+    ) -> Any:
+        """Run retitle against a pull request titled ``current`` at ``head``."""
         check = self.write_check(check_data)
         with (
             patch.object(github, "api_object", return_value={"title": current}),
+            patch.object(review, "pull_head", return_value=head),
+            patch.object(refs, "branch_matches", return_value=chain),
             patch.object(github, "api_write", return_value={}) as write,
             redirect_stdout(io.StringIO()),
         ):
             publish.main(["retitle", "--check", str(check)])
         return write
+
+    @unittest.expectedFailure
+    def test_a_stale_dispatch_retitles_nothing(self) -> None:
+        """A head that moved since selection is another session's; the title stays.
+
+        The swap will refuse the stale branch update; the title must
+        not be left behind. A retry after this run's own push finds
+        the head at its verified chain and may still retitle.
+        """
+        write = self.retitle(
+            revision_check(pr_title="Fix: New subject"), "Fix: Old", head="f" * 40
+        )
+        write.assert_not_called()
+        write = self.retitle(
+            revision_check(pr_title="Fix: New subject"),
+            "Fix: Old",
+            head=NEW_HEAD,
+            chain=["c" * 40, NEW_HEAD],
+        )
+        write.assert_called_once()
 
     def test_a_changed_subject_retitles_before_the_push(self) -> None:
         """The Semantic Pull Request check runs on the push; the title must lead it."""
