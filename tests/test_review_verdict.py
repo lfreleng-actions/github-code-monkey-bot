@@ -927,6 +927,39 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
+    def test_dressed_closing_tags_fail_closed(self) -> None:
+        """A closing summary or strong tag with whitespace is as unread as an opener."""
+        for extra in (
+            "\n<summary><strong>Suppressed comments</strong > (1)</summary>\n",
+            "\n<summary>Suppressed comments (1)</summary\t>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:40]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(
+                    "review body holds HTML the classifier does not read",
+                    verdict.reasons,
+                )
+
+    @unittest.expectedFailure
+    def test_suppressed_heading_at_every_level(self) -> None:
+        """Any heading level names the section, and any heading ends it."""
+        for level in (1, 5, 6):
+            extra = f"\n{'#' * level} Suppressed comments (1)\n\n**scripts/x.py:12**\n"
+            with self.subTest(level=level):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.suppressed, 1)
+                self.assertEqual(verdict.verdict, "findings")
+        # Adjacent sections under deep headings count apart: the stated
+        # count rules each, and the entries of the second are not the first's.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n##### Suppressed comments (1)\n\n**a.py:1**\n"
+            + "\n###### Other\n\n**b.py:2**\n**c.py:3**\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).suppressed, 1)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
