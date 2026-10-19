@@ -118,8 +118,9 @@ SUPPRESSED_LABEL = "suppressedcomments"
 SUPPRESSED_ENTRY = re.compile(
     r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*"
     # A path may hold underscores, a pair included; the underscore
-    # form ends at the pair that follows the line number.
-    r"(?:\*\*[^*\n]+:\d+\*\*|__[^\n]+?:\d+__(?=\s|$))",
+    # form ends at the pair that follows the line number, whatever
+    # comes after it, so long as it is not a third underscore.
+    r"(?:\*\*[^*\n]+:\d+\*\*|__[^\n]+?:\d+__(?!_))",
     re.M,
 )
 SUPPRESSED_END = re.compile(
