@@ -88,10 +88,16 @@ SUPPRESSED_HEAD = re.compile(
 # A heading reads to its line's end; a summary, wherever it starts,
 # reads to its close across lines, or to the body's end, which the
 # 64 KiB bound on the body already keeps short.
-SUPPRESSED_MENTION = re.compile(
-    r"^ {0,3}#{1,6}[ \t](?P<line>.*)$|<summary>(?P<summary>[\s\S]*?)(?:</summary>|\Z)",
-    re.M | re.I,
+# Two scans, since a summary may sit inside a heading's line and one
+# pattern would read the heading alone.
+SUPPRESSED_MENTIONS = (
+    re.compile(r"^ {0,3}#{1,6}[ \t](?P<text>.*)$", re.M),
+    re.compile(r"<summary>(?P<text>[\s\S]*?)(?:</summary>|\Z)", re.I),
 )
+# A setext underline makes the line above a heading; the classifier
+# reads ATX headings alone, so one fails the body closed. A rule after
+# a blank line, as the real bodies write it, is no underline.
+SETEXT_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-+(?:[ \t]*-+)*)[ \t]*$")
 LETTERS = re.compile(r"[^a-z]")
 ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
 SUPPRESSED_LABEL = "suppressedcomments"
@@ -154,7 +160,11 @@ def visible(text: str) -> tuple[str, list[str]]:
     problems: set[str] = set()
     fence: tuple[str, int] | None = None
     in_html = False
+    previous = ""
     for line in text.split("\n"):
+        if fence is None and previous.strip(" \t") and SETEXT_UNDERLINE.match(line):
+            problems.add(UNREADABLE_MARKDOWN)
+        previous = line
         if fence is not None:
             if fence_closes(line, *fence):
                 fence = None
@@ -236,11 +246,12 @@ def suppressed_count(text: str) -> tuple[int, bool]:
     unreadable = False
     text = STRONG_TAGS.sub("", text)
     readable = {head.start() for head in SUPPRESSED_HEAD.finditer(text)}
-    for mention in SUPPRESSED_MENTION.finditer(text):
-        content = mention.group("line") or mention.group("summary") or ""
-        letters = LETTERS.sub("", ANY_TAG_TEXT.sub("", content).lower())
-        if letters.startswith(SUPPRESSED_LABEL) and mention.start() not in readable:
-            unreadable = True
+    for pattern in SUPPRESSED_MENTIONS:
+        for mention in pattern.finditer(text):
+            content = ANY_TAG_TEXT.sub("", mention.group("text"))
+            letters = LETTERS.sub("", content.lower())
+            if letters.startswith(SUPPRESSED_LABEL) and mention.start() not in readable:
+                unreadable = True
     for head in SUPPRESSED_HEAD.finditer(text):
         digits = head.group(1)
         rest = text[head.end() :]
