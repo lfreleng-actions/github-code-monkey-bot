@@ -1149,7 +1149,6 @@ class RunRespondTest(NoNetworkCase):
             {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
 
-    @unittest.expectedFailure
     def test_rerun_posts_no_reply_twice(self) -> None:
         """A retry finds the round's reply already on a thread and posts it no more.
 

@@ -22,16 +22,16 @@ MAX_RESPONSES = 100
 REPLY_PREFIX = "🐒 Reply from the AI agent that authored this pull request: "
 
 
-def reply_marker(round_number: int, collected_at: str) -> str:
+def reply_marker(round_number: int, session: str) -> str:
     """The last line of a session's replies: what a rerun looks for before posting.
 
     The round alone would not do: a session whose issue comment never
     went up leaves no footer, so the next session takes the same round
     number and must not mistake the earlier replies for its own. The
-    selection's read time names the session, as the footer's
-    ``since`` does.
+    session is the run id: unique per run where two runs may share a
+    read time, and the same across the run's retries.
     """
-    return f"<!-- code-monkey reply round={round_number} since={collected_at} -->"
+    return f"<!-- code-monkey reply round={round_number} session={session} -->"
 
 
 def check_entry(data: dict[str, Any]) -> None:
@@ -125,7 +125,7 @@ def read_responses(manifest: dict[str, Any], check: Check) -> None:
                 "thread_id": thread_id,
                 "comment_id": comment_id,
                 "reply": f"{REPLY_PREFIX}{text}\n\n"
-                f"{reply_marker(check.round, check.collected_at)}",
+                f"{reply_marker(check.round, check.session)}",
                 "resolve": resolve,
             }
         )

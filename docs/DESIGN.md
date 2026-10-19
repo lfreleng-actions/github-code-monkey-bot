@@ -1123,18 +1123,21 @@ today. Move it when a second consumer appears.
   cancels it, so this is not a FIFO queue. A dry `workflow_dispatch`
   writes nothing and takes `code-monkey-dry-run-<run_id>` instead:
   it neither waits behind the schedule nor cancels a pending live
-  run. A live dispatch that names `issues` takes
+  run. A live dispatch that names `issues` or `pull_requests` takes
   `code-monkey-named-<run_id>` for the same reason: overlapping named
   dispatches would otherwise evict each other without trace. Its
-  scope is the named issues alone (§6 "Explicit issues"),
-  `max_pull_requests` bounds it, and the §6 open-pull-request check
-  and the publisher's branch-exists refusal limit an overlap on one
-  issue to a wasted author session, never a duplicate pull request.
+  scope is the named targets alone (§6 "Explicit issues", §20.1),
+  `max_pull_requests` bounds it, and the §6 open-pull-request check,
+  the publisher's branch-exists refusal and the revision's
+  compare-and-swap limit an overlap on one
+  target to a wasted author session, never a duplicate pull request
+  or a lost round.
   A scan keeps the shared group even when `repositories` narrows it.
 - The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
   A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, and a
-  live run naming `issues` on `code-monkey-named-<run_id>-<owner>`,
+  live run naming `issues` or `pull_requests` on
+  `code-monkey-named-<run_id>-<owner>`,
   both keyed on the caller run, so the legs of one caller run queue
   on that run's own lock and never cancel or wait on another run.
   All three groups set `cancel-in-progress: false`.
@@ -1416,7 +1419,9 @@ dropped; both are empty on a scan. `explicit_pull_requests` and
 "revise"`, `rebase_sha`, `checkout_sha`, `pull_request` (`number`,
 `url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
 `collected_at` (when the selection read the comments; every entry
-carries it), `round_reasons`, `rounds`, `threads` (`thread_id`,
+carries it), `session` (the run id, unique per run and the same
+across its retries; every entry carries it, and the scratch branch
+and the reply marker are its), `round_reasons`, `rounds`, `threads` (`thread_id`,
 `comment_id`, `path`, `line`, `outdated`, `author`, `maintainer`,
 `created_at`, `body`, `replies` as `{author, maintainer, created_at,
 body}` for the newest later comments from Copilot or a maintainer,
@@ -1828,8 +1833,9 @@ nothing, since the branch may hold the new chain. The push syncs
 the fork, replays
 the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>-<session>`, the session being the
-selection's read time, so two named dispatches revising one pull
-request at one round neither resume nor delete each other's branch)
+run id, so two named dispatches revising one pull request at one
+round, within one second even, neither resume nor delete each
+other's branch)
 through `createCommitOnBranch`,
 which signs every commit, then moves `code-monkey/issue-<n>` to the new
 head with `updateRefs`, `beforeOid` set to the recorded head and
@@ -1870,7 +1876,7 @@ the one this round published, or one it cannot read, leaves every
 write below undone with a warning and the publication standing. It
 then posts each reply on its thread
 prefixed with the AI disclosure and ending in a marker that names
-the round and the session, through the selection's read time,
+the round and the session, the run id,
 resolves the threads the agent
 marked fixed, and replaces the title and body with the composed
 ones, keeping the publisher's header. One refused write is a warning

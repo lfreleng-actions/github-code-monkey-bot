@@ -44,13 +44,13 @@ class SwapUnknown(PublishError):
 def temporary_branch(check: dict[str, Any]) -> str:
     """Where the round's chain is built before the bot branch moves to it.
 
-    The name carries the session, the selection's read time with its
-    punctuation dropped: two named dispatches may revise one pull
-    request at the same round, and a shared name would let one resume
-    or delete the other's branch. A retry of the same run names the
-    same branch and may resume it.
+    The name carries the session, the run id: two named dispatches may
+    revise one pull request at the same round, within one second even,
+    and a shared name would let one resume or delete the other's
+    branch. A retry of the same run names the same branch and may
+    resume it.
     """
-    session = re.sub(r"[^0-9A-Za-z]", "", str(check.get("collected_at") or ""))
+    session = re.sub(r"[^0-9A-Za-z]", "", str(check.get("session") or ""))
     suffix = f"-{session}" if session else ""
     return f"{check['branch']}-r{int(check['round'])}{suffix}"
 

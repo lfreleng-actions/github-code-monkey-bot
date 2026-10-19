@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -283,8 +285,13 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
         reviser=rounds.for_issue,
     )
+    # The session names the run: unique per run and the same across
+    # its retries, so a scratch branch or a reply marked with it is
+    # this run's alone where two runs may share a read time.
+    session = re.sub(r"[^0-9A-Za-z]", "", args.session) or uuid.uuid4().hex
     for entry in chosen:
         entry["collected_at"] = collected_at
+        entry["session"] = session
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
     )
@@ -368,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repositories", default="")
     parser.add_argument("--issues", default="")
     parser.add_argument("--pull-requests", default="")
+    parser.add_argument("--session", default="")
     parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")

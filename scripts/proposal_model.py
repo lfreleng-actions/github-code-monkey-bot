@@ -78,6 +78,9 @@ class Check:
     # round footer carries, so a comment posted during the run is new
     # work for the next round.
     collected_at: str = ""
+    # The run's session: unique per run, the same across its retries,
+    # and trusted; the scratch branch and the reply marker are its.
+    session: str = ""
 
     @classmethod
     def from_entry(cls, key: str, entry: dict[str, Any]) -> Check:
@@ -94,6 +97,7 @@ class Check:
             task=str(entry.get("task") or "issue"),
         )
         check.collected_at = str(entry.get("collected_at") or "")
+        check.session = str(entry.get("session") or "")
         if check.task == "revise":
             pull = cast("dict[str, Any]", entry["pull_request"])
             check.rebase_sha = str(entry["rebase_sha"])
@@ -144,6 +148,7 @@ class Check:
             "responses": self.responses,
             "round_summary": self.round_summary,
             "collected_at": self.collected_at,
+            "session": self.session,
         }
 
 

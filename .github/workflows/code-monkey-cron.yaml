@@ -104,14 +104,16 @@ permissions: {}
 # keeps one pending run and a newcomer cancels it, so this is not a
 # FIFO queue. A dry dispatch writes nothing and takes a group of its
 # own: it neither waits behind the schedule nor cancels a pending
-# live run. A live dispatch that names `issues` also takes a group of
-# its own: its scope is those issues alone, and the per-issue pull
-# request check and branch-exists refusal stop a duplicate.
+# live run. A live dispatch that names `issues` or `pull_requests`
+# also takes a group of its own: its scope is those targets alone,
+# and the per-issue pull request check, the branch-exists refusal and
+# the revision's compare-and-swap stop a duplicate.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
     && format('code-monkey-dry-run-{0}', github.run_id)
-    || github.event_name == 'workflow_dispatch' && inputs.issues != ''
+    || github.event_name == 'workflow_dispatch'
+    && (inputs.issues != '' || inputs.pull_requests != '')
     && format('code-monkey-named-{0}', github.run_id)
     || 'code-monkey' }}
   cancel-in-progress: false

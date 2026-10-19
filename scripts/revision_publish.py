@@ -362,7 +362,7 @@ def run_respond(args: argparse.Namespace) -> None:
         repository = str(check["repository"])
         number = int(check["pull_number"])
         marker = reply_marker(
-            int(check.get("round") or 0), str(check.get("collected_at") or "")
+            int(check.get("round") or 0), str(check.get("session") or "")
         )
         for response in cast("list[dict[str, Any]]", check.get("responses") or []):
             thread = str(response["thread_id"])

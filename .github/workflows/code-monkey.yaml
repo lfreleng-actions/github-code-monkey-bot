@@ -147,14 +147,15 @@ permissions: {}
 # pending run and a newcomer cancels it, so dry runs, which write
 # nothing, lock within their own caller run and never cancel or wait
 # on a live run or another caller run's dry run. Live runs that name
-# `issues` lock within their own caller run the same way: their scope
-# is those issues alone, and the per-issue pull request check and
-# branch-exists refusal stop a duplicate.
+# `issues` or `pull_requests` lock within their own caller run the
+# same way: their scope is those targets alone, and the per-issue
+# pull request check, the branch-exists refusal and the revision's
+# compare-and-swap stop a duplicate.
 concurrency:
   group: >-
     ${{ inputs.dry_run
     && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)
-    || inputs.issues != ''
+    || (inputs.issues != '' || inputs.pull_requests != '')
     && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
@@ -540,6 +541,9 @@ jobs:
           DRY_RUN: "${{ inputs.dry_run }}"
           REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
           ISSUES: "${{ steps.issues.outputs.csv }}"
+          # The session: unique per run, the same across its retries,
+          # and trusted, so it may own a scratch branch and a reply.
+          RUN_ID: "${{ github.run_id }}"
           PULL_REQUESTS: "${{ steps.pulls.outputs.csv }}"
           REVISE: "${{ inputs.revise }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
@@ -569,6 +573,7 @@ jobs:
             --repositories "$REPOSITORIES" \
             --issues "$ISSUES" \
             --pull-requests "$PULL_REQUESTS" \
+            --session "$RUN_ID" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \
