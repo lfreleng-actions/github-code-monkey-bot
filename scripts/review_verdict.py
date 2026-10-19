@@ -25,6 +25,7 @@ from typing import Any
 
 from review_text import (
     BLOCK_TAG,
+    CONTAINER_PREFIX,
     INDENTED_FENCE,
     MARKDOWN_SHAPE,
     MARKER_LINE,
@@ -168,9 +169,12 @@ def visible(text: str) -> tuple[str, list[str]]:
     in_html = False
     previous = ""
     for line in text.split("\n"):
-        if fence is None and previous.strip(" \t") and SETEXT_UNDERLINE.match(line):
+        # Under a container prefix the underline reads the same, so
+        # both lines are read with their prefix removed.
+        bare = CONTAINER_PREFIX.sub("", line, count=1)
+        if fence is None and previous.strip(" \t") and SETEXT_UNDERLINE.match(bare):
             problems.add(UNREADABLE_MARKDOWN)
-        previous = line
+        previous = CONTAINER_PREFIX.sub("", line, count=1)
         if fence is not None:
             if fence_closes(line, *fence):
                 fence = None

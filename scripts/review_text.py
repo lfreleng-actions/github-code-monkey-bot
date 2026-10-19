@@ -61,6 +61,7 @@ BLOCK_TAGS = frozenset({"details", "summary", "source"})
 # indentation, since a list continuation indents what it holds, and
 # read in one linear pass; the real bodies nest none.
 CONTAINER = r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)+"
+CONTAINER_PREFIX = re.compile(CONTAINER)
 CONTAINER_BLOCK = re.compile(
     CONTAINER + r"</?(" + "|".join(sorted(BLOCK_TAGS)) + r")\b", re.I
 )
@@ -184,30 +185,36 @@ def mask_spans(line: str) -> tuple[str, bool]:
     lines; it is reported and the rest of the line is checked as
     written.
     """
+    runs = list(BACKTICKS.finditer(line))
+    # The next run of the same length after each run, found in one
+    # pass from the end; two runs of equal length bound a span, and a
+    # longer run matches nothing shorter inside it.
+    next_same: list[int | None] = [None] * len(runs)
+    latest: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        length = runs[index].end() - runs[index].start()
+        next_same[index] = latest.get(length)
+        latest[length] = index
     parts: list[str] = []
     left_open = False
     i = 0
-    while True:
-        ticks = BACKTICKS.search(line, i)
-        if ticks is None:
-            parts.append(line[i:])
-            return "".join(parts), left_open
-        run = ticks.group()
-        close = line.find(run, ticks.end())
-        while close >= 0 and (
-            (close + len(run) < len(line) and line[close + len(run)] == "`")
-            or line[close - 1] == "`"
-        ):
-            close = line.find(run, close + 1)
-        parts.append(line[i : ticks.start()])
-        if close < 0:
+    index = 0
+    while index < len(runs):
+        opener = runs[index]
+        closer = next_same[index]
+        parts.append(line[i : opener.start()])
+        if closer is None:
             left_open = True
-            parts.append(run)
-            i = ticks.end()
+            parts.append(opener.group())
+            i = opener.end()
+            index += 1
         else:
-            end = close + len(run)
-            parts.append(SPAN_FILL * (end - ticks.start()))
+            end = runs[closer].end()
+            parts.append(SPAN_FILL * (end - opener.start()))
             i = end
+            index = closer + 1
+    parts.append(line[i:])
+    return "".join(parts), left_open
 
 
 def read_line(line: str) -> tuple[str, set[str]]:

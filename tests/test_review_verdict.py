@@ -1049,7 +1049,6 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).suppressed, 2)
 
-    @unittest.expectedFailure
     def test_setext_headings_fail_closed(self) -> None:
         """An underline makes the line above a heading the parser does not read."""
         reason = "review body holds Markdown the classifier does not read"
@@ -1091,7 +1090,6 @@ class UntrustedTextTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertEqual(verdict.verdict, "clean")
 
-    @unittest.expectedFailure
     def test_long_lines_classify_in_bounded_time(self) -> None:
         """Every scan is linear: a long adversarial line costs milliseconds."""
         import time
