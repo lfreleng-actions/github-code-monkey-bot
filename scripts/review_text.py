@@ -119,6 +119,9 @@ MARKDOWN_SHAPE = re.compile(r"^ {0,3}(?:#{1,6}[ \t]|`{3,}|~{3,})")
 # A backslash makes the backtick after it literal; an escaped one is
 # no span delimiter, and the classifier does not parse escapes.
 ESCAPED_BACKTICK = "\\`"
+# An escaped angle bracket is text Markdown shows, while the classifier
+# would read a tag or a section boundary; it does not parse escapes.
+ESCAPED_BRACKET = re.compile(r"\\[<>]")
 # A fence run anywhere but where FENCE_OPEN reads it: in a list item
 # or a blockquote it opens a fence the classifier does not track, and
 # its close would read as an opener hiding the rest of the body. The
@@ -245,6 +248,8 @@ def read_line(line: str) -> tuple[str, set[str]]:
     if left_open or ESCAPED_BACKTICK in line:
         problems.add(UNREADABLE_SPAN)
     if STRAY_FENCE.search(masked) or LINK_REFERENCE.match(masked):
+        problems.add(UNREADABLE_MARKDOWN)
+    if ESCAPED_BRACKET.search(masked):
         problems.add(UNREADABLE_MARKDOWN)
     if CHARACTER_REFERENCE.search(masked) or NAMED_REFERENCE.search(masked):
         problems.add(UNREADABLE_MARKDOWN)

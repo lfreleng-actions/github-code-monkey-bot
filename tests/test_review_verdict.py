@@ -1271,7 +1271,6 @@ class UntrustedTextTest(unittest.TestCase):
             verdicts.classify(BODIES["legacy-suppressed"], 0).suppressed, 1
         )
 
-    @unittest.expectedFailure
     def test_escaped_angle_brackets_fail_closed(self) -> None:
         """An escaped bracket is text Markdown shows; the classifier reads a tag."""
         reason = "review body holds Markdown the classifier does not read"
