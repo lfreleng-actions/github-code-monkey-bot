@@ -1348,6 +1348,26 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
+    @unittest.expectedFailure
+    def test_entries_in_every_bold_form_count(self) -> None:
+        """An entry's path and line may be bold by underscores or a strong tag."""
+        for entry in (
+            "**scripts/x.py:12**",
+            "__scripts/x.py:12__",
+            "<strong>scripts/x.py:12</strong>",
+            "- <strong>scripts/x.py:12</strong> note",
+        ):
+            text = (
+                BODIES["v2-green-clean"]
+                + "\n### Suppressed comments (0)\n\n"
+                + entry
+                + "\n"
+            )
+            with self.subTest(entry=entry):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.suppressed, 1)
+                self.assertEqual(verdict.verdict, "findings")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
