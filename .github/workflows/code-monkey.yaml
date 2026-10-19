@@ -123,16 +123,21 @@ on:
 
 permissions: {}
 
-# Live runs hold one lock per caller repository and owner across the
+# Live scans hold one lock per caller repository and owner across the
 # whole pipeline; different caller repositories need external
 # coordination if they target the same estate. A group keeps one
 # pending run and a newcomer cancels it, so dry runs, which write
 # nothing, lock within their own caller run and never cancel or wait
-# on a live run or another caller run's dry run.
+# on a live run or another caller run's dry run. Live runs that name
+# `issues` lock within their own caller run the same way: their scope
+# is those issues alone, and the per-issue pull request check and
+# branch-exists refusal stop a duplicate.
 concurrency:
   group: >-
     ${{ inputs.dry_run
     && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)
+    || inputs.issues != ''
+    && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
 

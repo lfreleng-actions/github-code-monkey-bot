@@ -221,16 +221,19 @@ class TopLevelContracts(ReusableWorkflowCase):
         self.assertEqual(self.workflow["permissions"], {})
 
     def test_concurrency_is_per_caller_and_owner_without_cancel(self) -> None:
-        """Live runs lock per caller and owner; dry runs within their run.
+        """Live scans lock per caller and owner; others within their run.
 
         A group keeps one pending run and a newcomer cancels it, so a
-        dry run that wrote nothing must not share the live group.
+        dry run that wrote nothing, or a live run naming its issues,
+        must not share the live scan group.
         """
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
             str(concurrency["group"]),
             "inputs.dry_run"
             " && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)"
+            " || inputs.issues != ''"
+            " && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)"
             " || format('code-monkey-{0}-{1}', github.repository, inputs.org)",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
@@ -1434,13 +1437,16 @@ class CronCallerContracts(WorkflowCase):
     WORKFLOW = CRON
 
     def test_schedule_and_concurrency(self) -> None:
-        """Weekday 09:00 UTC; live runs share a group, dry dispatches do not."""
+        """Weekday 09:00 UTC; scans share a group, dry and named do not."""
         self.assertEqual(self.triggers["schedule"], [{"cron": "0 9 * * 1-5"}])
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
             str(concurrency["group"]),
             "github.event_name == 'workflow_dispatch' && inputs.dry_run"
             " && format('code-monkey-dry-run-{0}', github.run_id)"
+            " || github.event_name == 'workflow_dispatch'"
+            " && inputs.issues != ''"
+            " && format('code-monkey-named-{0}', github.run_id)"
             " || 'code-monkey'",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
