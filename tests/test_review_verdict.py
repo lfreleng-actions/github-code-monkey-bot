@@ -987,6 +987,33 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertGreater(verdict.suppressed, 0)
                 self.assertEqual(verdict.verdict, "findings")
 
+    @unittest.expectedFailure
+    def test_an_unreadable_suppressed_section_is_findings(self) -> None:
+        """A heading or summary naming suppressed findings in a form unread is findings.
+
+        The label's formatting has no end of variants; one the count
+        cannot read is a finding in itself rather than a clean review.
+        """
+        for extra in (
+            "\n### Suppressed comments (**1**)\n",
+            "\n<summary>Sup**pressed** comments (1)</summary>\n",
+            "\n<summary><sub>Suppressed comments (1)</sub></summary>\n",
+            '\n<summary><a href="https://x/y">Suppressed comments (1)</a></summary>\n',
+            "\n### Suppressed comments\n",
+        ):
+            with self.subTest(extra=extra.strip()[:40]):
+                verdict = verdicts.classify(
+                    BODIES["v2-green-clean"] + extra + "\n**scripts/x.py:12**\n", 0
+                )
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn("suppressed count unreadable", verdict.reasons)
+        # The word in prose, or quoted in code, is no section.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\nNothing was suppressed; see `### Suppressed comments (1)`.\n"
+        )
+        self.assertEqual(verdicts.classify(text, 0).verdict, "clean")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
