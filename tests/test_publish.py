@@ -1097,6 +1097,7 @@ class RunRespondTest(NoNetworkCase):
             encoding="utf-8",
         )
         with (
+            patch.object(review, "pull_head", return_value=NEW_HEAD),
             patch.object(
                 publish.revision_publish.threads_of, "read_thread", return_value=[]
             ),
@@ -1181,6 +1182,7 @@ class RunRespondTest(NoNetworkCase):
             return threads[thread_id]
 
         with (
+            patch.object(review, "pull_head", return_value=NEW_HEAD),
             patch.object(publish.revision_publish.threads_of, "read_thread", read),
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(
@@ -1233,6 +1235,7 @@ class RunRespondTest(NoNetworkCase):
             return []
 
         with (
+            patch.object(review, "pull_head", return_value=NEW_HEAD),
             patch.object(publish.revision_publish.threads_of, "read_thread", read),
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(publish.revision_publish, "resolve") as resolve,
@@ -1260,6 +1263,68 @@ class RunRespondTest(NoNetworkCase):
         self.assertEqual(stored["responded"]["replied"], 1)
         self.assertTrue(any("PRRT_1" in w for w in stored["warnings"]))
 
+    @unittest.expectedFailure
+    def test_a_moved_head_stops_the_responses(self) -> None:
+        """Another run moved the head after this swap: no reply, no description edit.
+
+        The compare-and-swap guards the branch move alone; the writes
+        after it would resolve threads and replace a newer description
+        with this round's. The result keeps its publication.
+        """
+        check = self.write_check(revision_check())
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        for head in ("f" * 40, github.GitHubError("unreachable")):
+            lookup = (
+                patch.object(review, "pull_head", side_effect=head)
+                if isinstance(head, Exception)
+                else patch.object(review, "pull_head", return_value=head)
+            )
+            with (
+                self.subTest(head=str(head)[:7]),
+                patch.object(
+                    publish.revision_publish.threads_of, "read_thread", return_value=[]
+                ),
+                lookup,
+                patch.object(publish.revision_publish, "reply") as reply,
+                patch.object(publish.revision_publish, "resolve") as resolve,
+                patch.object(publish.revision_publish, "update_pull_request") as update,
+                redirect_stdout(io.StringIO()),
+            ):
+                publish.main(
+                    [
+                        "respond",
+                        "--result",
+                        str(result),
+                        "--check",
+                        str(check),
+                        "--output",
+                        str(result),
+                    ]
+                )
+            reply.assert_not_called()
+            resolve.assert_not_called()
+            update.assert_not_called()
+            stored = json.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual(stored["verdict"], "proposed")
+            self.assertEqual(stored["commits"], [NEW_HEAD])
+            self.assertTrue(
+                any(
+                    "head" in w and "moved" in w or "could not read" in w
+                    for w in stored["warnings"]
+                )
+            )
+
     def test_a_failed_reply_is_a_warning_and_the_rest_proceed(self) -> None:
         """One refused write does not stop the others or fail the step."""
         check = self.write_check(revision_check())
@@ -1276,6 +1341,7 @@ class RunRespondTest(NoNetworkCase):
             encoding="utf-8",
         )
         with (
+            patch.object(review, "pull_head", return_value=NEW_HEAD),
             patch.object(
                 publish.revision_publish.threads_of, "read_thread", return_value=[]
             ),
@@ -1304,6 +1370,37 @@ class RunRespondTest(NoNetworkCase):
         stored = json.loads(result.read_text(encoding="utf-8"))
         self.assertEqual(stored["responded"]["failed"], 1)
         self.assertTrue(any("PRRT_1" in w for w in stored["warnings"]))
+
+
+class RunRetitleTest(NoNetworkCase):
+    """``publish.py retitle`` sets a revision's title before the branch moves."""
+
+    def retitle(self, check_data: dict[str, Any], current: str) -> Any:
+        """Run retitle against a pull request titled ``current``; return the PATCH mock."""
+        check = self.write_check(check_data)
+        with (
+            patch.object(github, "api_object", return_value={"title": current}),
+            patch.object(github, "api_write", return_value={}) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(["retitle", "--check", str(check)])
+        return write
+
+    @unittest.expectedFailure
+    def test_a_changed_subject_retitles_before_the_push(self) -> None:
+        """The Semantic Pull Request check runs on the push; the title must lead it."""
+        write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
+        write.assert_called_once_with(
+            "PATCH", f"repos/{REPOSITORY}/pulls/41", {"title": "Fix: New subject"}
+        )
+        # Already right: nothing written.
+        write = self.retitle(revision_check(pr_title="Fix: Both"), "Fix: Both")
+        write.assert_not_called()
+        # Not a revision, or not a proposal: nothing to do.
+        write = self.retitle(check_json(), "x")
+        write.assert_not_called()
+        write = self.retitle(revision_check(verdict="handoff", commits=[]), "x")
+        write.assert_not_called()
 
 
 class RunOpenTest(NoNetworkCase):

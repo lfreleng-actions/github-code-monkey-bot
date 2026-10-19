@@ -770,6 +770,7 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn("manifest base_sha is neither recorded base", script)
         self.assertIn('"$BASE_SHA" | "$REBASE_SHA")', script)
 
+    @unittest.expectedFailure
     def test_publisher_answers_threads_with_the_pull_request_token(self) -> None:
         """Replies and resolves are writes to the target: the pull request token alone."""
         respond = self.step("publish", "respond")
@@ -783,11 +784,46 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn("publish.py respond", flatten(respond["run"]))
         order = [
             self.position("publish", name)
-            for name in ("push", "pr-token", "respond", "review-request")
+            for name in ("pr-token", "retitle", "push", "respond", "review-request")
         ]
         self.assertEqual(order, sorted(order))
         mint = self.step("publish", "pr-token")
         self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
+
+    @unittest.expectedFailure
+    def test_a_revision_retitles_before_the_push(self) -> None:
+        """The title leads the push: the Semantic Pull Request check runs on the push.
+
+        AGENTS.md section 10.1 wants the title set before or with the
+        push. The pull request token is minted before the push for
+        that one write; the push step itself still holds the fork
+        token alone.
+        """
+        retitle = self.step("publish", "retitle")
+        condition = unwrap(str(retitle["if"]))
+        self.assertIn("matrix.task == 'revise'", condition)
+        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        self.assertIn("!inputs.dry_run", condition)
+        self.assertIn("inputs.mode == 'pull-requests'", condition)
+        self.assert_expression(
+            retitle["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py retitle", flatten(retitle["run"]))
+        self.assertLess(
+            self.position("publish", "pr-token"), self.position("publish", "retitle")
+        )
+        self.assertLess(
+            self.position("publish", "retitle"), self.position("publish", "push")
+        )
+        push = self.step("publish", "push")
+        self.assertNotIn("pr-token", str(push["env"]["GH_TOKEN"]))
+        mint = unwrap(str(self.step("publish", "pr-token")["if"]))
+        self.assertNotIn("steps.push.outcome", mint)
+        for name in ("open", "respond"):
+            self.assertIn(
+                "steps.push.outcome == 'success'",
+                unwrap(str(self.step("publish", name)["if"])),
+            )
 
     def test_a_handoff_reaches_push_without_a_token(self) -> None:
         """Both fork mints need a proposal, so a handoff's push step holds no token.
@@ -971,8 +1007,6 @@ class PublishJobContracts(ReusableWorkflowCase):
         pr = self.step("publish", "pr-token")
         self.assertTrue(is_action(pr, APP_TOKEN))
         condition = unwrap(str(pr["if"]))
-        self.assertIn("!cancelled()", condition)
-        self.assertIn("steps.push.outcome == 'success'", condition)
         self.assertIn("!inputs.dry_run", condition)
         self.assertIn("inputs.mode == 'pull-requests'", condition)
         self.assertIn("inputs.github_app_client_id != ''", condition)
@@ -1325,6 +1359,7 @@ class MintProvenanceContracts(ReusableWorkflowCase):
             re.findall(r"steps\.([a-z-]+)\.outputs\.token", opened), ["pr-token"]
         )
 
+    @unittest.expectedFailure
     def test_fork_organisation_is_proven_before_any_fork_mint(self) -> None:
         """The resolve step guards the pattern and the mapping, then the mints run."""
         fork = self.step("publish", "fork")
@@ -1342,10 +1377,10 @@ class MintProvenanceContracts(ReusableWorkflowCase):
         self.assertLess(self.position("publish", "fork-state"), min(positions))
         self.assertLess(max(positions), self.position("publish", "push"))
         self.assertLess(
-            self.position("publish", "push"), self.position("publish", "pr-token")
+            self.position("publish", "pr-token"), self.position("publish", "push")
         )
         self.assertLess(
-            self.position("publish", "pr-token"), self.position("publish", "open")
+            self.position("publish", "push"), self.position("publish", "open")
         )
 
 
@@ -1502,6 +1537,7 @@ class ListInputContracts(ReusableWorkflowCase):
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
 
+    @unittest.expectedFailure
     def test_a_list_given_but_naming_nothing_is_refused(self) -> None:
         """Separators alone fail the input check instead of scanning.
 
@@ -1517,9 +1553,63 @@ class ListInputContracts(ReusableWorkflowCase):
         script = squash(str(budget["run"]))
         self.assertIn("::error::issues was given but names no issue", script)
         self.assertIn("::error::repositories was given but names no repository", script)
+        self.assert_expression(env["PULL_REQUESTS_RAW"], "inputs.pull_requests")
+        self.assertIn(
+            "::error::pull_requests was given but names no pull request", script
+        )
         check = self.position("select", "budget")
         self.assertLess(check, self.position("select", "app-token"))
         self.assertLess(check, self.position("select", "Select issues"))
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_a_pull_request_list_naming_nothing_is_refused(self) -> None:
+        """Separators alone in pull_requests fail too, rather than scan."""
+        budget = self.step("select", "budget")
+        env = {
+            "PATH": os.environ["PATH"],
+            "MODE": "pull-requests",
+            "MAX_PRS": "1",
+            "MAX_RUNTIME": "60",
+            "MAX_AGENTS": "1",
+            "MODEL": "auto",
+            "REPOSITORIES": "",
+            "REPOSITORIES_RAW": "",
+            "REPOSITORY_COUNT": "0",
+            "ISSUE_REPOSITORIES": "",
+            "ISSUES_RAW": "",
+            "ISSUE_COUNT": "0",
+            "ORG": "o",
+            "GUIDANCE_REPOSITORY": "o/.github",
+        }
+        for raw, count, error in (
+            (" , ", "0", "pull_requests was given but names no pull request"),
+            (",", "0", "pull_requests was given but names no pull request"),
+            ("repo#41", "1", None),
+            ("", "0", None),
+        ):
+            with (
+                self.subTest(pull_requests=raw),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        **env,
+                        "PULL_REQUESTS_RAW": raw,
+                        "PULL_COUNT": count,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if error is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn(f"::error::{error}", proc.stdout)
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_only_an_empty_list_means_a_scan(self) -> None:
@@ -1535,6 +1625,7 @@ class ListInputContracts(ReusableWorkflowCase):
             "REPOSITORIES": "",
             "ISSUE_REPOSITORIES": "",
             "PULL_COUNT": "0",
+            "PULL_REQUESTS_RAW": "",
             "ORG": "o",
             "GUIDANCE_REPOSITORY": "o/.github",
         }

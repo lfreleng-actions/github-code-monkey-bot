@@ -35,15 +35,20 @@ def check(**overrides: Any) -> dict[str, Any]:
         "base_sha": BASE,
         "head_sha": HEAD,
         "round": 3,
+        "collected_at": "2026-10-03T00:00:00Z",
         "commits": [{"sha": "c" * 40}],
     }
     data.update(overrides)
     return data
 
 
+SCRATCH = "code-monkey/issue-7-r3-20261003T000000Z"
+
+
 class MoveBranchTest(unittest.TestCase):
     """The chain lands on a scratch branch; the swap is conditional; cleanup always."""
 
+    @unittest.expectedFailure
     def test_swap_from_the_recorded_head(self) -> None:
         """updateRefs names the recorded head as beforeOid and the new tip after."""
         with (
@@ -55,8 +60,8 @@ class MoveBranchTest(unittest.TestCase):
         ):
             commits = swap.move_branch(Path("clone"), check())
         self.assertEqual(commits, [NEW])
-        create.assert_called_once_with(FORK, "code-monkey/issue-7-r3", BASE)
-        self.assertEqual(replay.call_args.args[1]["branch"], "code-monkey/issue-7-r3")
+        create.assert_called_once_with(FORK, SCRATCH, BASE)
+        self.assertEqual(replay.call_args.args[1]["branch"], SCRATCH)
         update = gql.call_args.args[1]["input"]["refUpdates"][0]
         self.assertEqual(
             update,
@@ -68,7 +73,7 @@ class MoveBranchTest(unittest.TestCase):
             },
         )
         self.assertEqual(gql.call_args.args[1]["input"]["repositoryId"], "R_1")
-        delete.assert_called_once_with(FORK, "code-monkey/issue-7-r3")
+        delete.assert_called_once_with(FORK, SCRATCH)
 
     def test_moved_head_is_a_rejection_and_the_scratch_branch_goes(self) -> None:
         """A beforeOid mismatch means someone moved the branch: refuse, clean up."""
@@ -179,6 +184,28 @@ class MoveBranchTest(unittest.TestCase):
         self.assertEqual(commits, [NEW])
 
 
+class ScratchNameTest(unittest.TestCase):
+    """The scratch branch is one session's alone."""
+
+    @unittest.expectedFailure
+    def test_the_name_carries_the_session(self) -> None:
+        """Two sessions at one round, from two selections, build on two branches.
+
+        Named dispatches may overlap and revise one pull request at the
+        same round; a shared scratch name would let one session resume
+        or delete the other's branch. The selection's read time names
+        the session and is stable across retries of the same run.
+        """
+        first = swap.temporary_branch(check())
+        second = swap.temporary_branch(check(collected_at="2026-10-03T00:00:05Z"))
+        self.assertEqual(first, SCRATCH)
+        self.assertNotEqual(first, second)
+        self.assertTrue(second.startswith("code-monkey/issue-7-r3-"))
+        self.assertRegex(second, r"^[A-Za-z0-9/_.-]+$")
+        # A retry of the same run names the same branch.
+        self.assertEqual(swap.temporary_branch(check()), first)
+
+
 class ScratchBranchTest(unittest.TestCase):
     """The scratch branch's creation is reconciled when its reply is lost."""
 
@@ -254,6 +281,7 @@ class ScratchBranchTest(unittest.TestCase):
         self.assertFalse(data["_replayed"])
         self.assertTrue(data["_deleted"])
 
+    @unittest.expectedFailure
     def test_a_scratch_branch_of_unknown_content_is_kept(self) -> None:
         """Commits this run did not make are nobody's to delete; the ref is reported."""
         rejection = policy.Rejection("branch code-monkey/issue-7-r3 already exists")
@@ -262,7 +290,7 @@ class ScratchBranchTest(unittest.TestCase):
         self.assertIsNone(commits)
         self.assertFalse(data["_replayed"])
         self.assertFalse(data["_deleted"])
-        self.assertTrue(any("code-monkey/issue-7-r3" in w for w in data["warnings"]))
+        self.assertTrue(any(SCRATCH in w for w in data["warnings"]))
 
     def test_a_create_that_left_no_branch_is_a_plain_failure(self) -> None:
         """No branch after the error means nothing was made; nothing is kept."""
