@@ -958,6 +958,22 @@ class UntrustedTextTest(unittest.TestCase):
         )
         self.assertEqual(verdicts.classify(text, 0).suppressed, 1)
 
+    @unittest.expectedFailure
+    def test_strong_tags_anywhere_in_the_suppressed_label_count(self) -> None:
+        """Strong tags, emphasis and whitespace may sit anywhere in the label."""
+        for extra in (
+            "\n### <strong>Suppressed comments (1)</strong>\n",
+            "\n<summary><strong>Suppressed</strong> comments (1)</summary>\n",
+            "\n<summary>Suppressed <strong>comments</strong> (1)</summary>\n",
+            "\n### <strong>**Suppressed**</strong> _comments_ <strong>(1)</strong>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:40]):
+                verdict = verdicts.classify(
+                    BODIES["v2-green-clean"] + extra + "\n**scripts/x.py:12**\n", 0
+                )
+                self.assertEqual(verdict.suppressed, 1)
+                self.assertEqual(verdict.verdict, "findings")
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (
