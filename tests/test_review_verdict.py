@@ -51,7 +51,6 @@ class RealBodiesTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-blue-clean"], 0).assessment, "closer-look"
         )
 
-    @unittest.expectedFailure
     def test_every_real_body_is_readable(self) -> None:
         """No real body, the current format included, trips a fail-closed rule.
 
@@ -82,7 +81,6 @@ class RealBodiesTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-yellow-open-current"], 2).verdict, "findings"
         )
 
-    @unittest.expectedFailure
     def test_previously_missed_findings_are_findings(self) -> None:
         """Findings on unchanged code live in the body alone; the gate counts them.
 
@@ -118,7 +116,6 @@ class RealBodiesTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("previously missed count unreadable", verdict.reasons)
 
-    @unittest.expectedFailure
     def test_an_unknown_summary_fails_closed(self) -> None:
         """A details section the classifier does not know is findings, not clean.
 
@@ -1525,6 +1522,7 @@ class PendingAndRecordTest(unittest.TestCase):
                 "assessment",
                 "unresolved_threads",
                 "suppressed",
+                "previously_missed",
                 "reasons",
                 "review_id",
                 "commit_id",

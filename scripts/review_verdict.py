@@ -23,6 +23,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from review_sections import (
+    UNREADABLE_SECTION,
+    previously_missed_count,
+    suppressed_count,
+    unknown_sections,
+)
 from review_text import (
     BLOCK_TAG,
     CONTAINER_PREFIX,
@@ -61,44 +67,6 @@ CLEAN_ASSESSMENTS = frozenset({"approval", "closer-look"})
 # code opens nothing. It closes on a run of the same character at
 # least as long with nothing but whitespace after it.
 FENCE_OPEN = re.compile(r"^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$")
-# Digits beyond this are no count GitHub would write.
-MAX_COUNT_DIGITS = 9
-
-# Suppressed findings sit under a heading or a <summary>; each entry
-# opens with the bold path and line. The strong tags the real bodies
-# use change nothing a reader sees and may fall anywhere, so they come
-# off before the count is read, one around an entry read as asterisks
-# first; whitespace and emphasis may sit around and between the
-# label's words.
-STRONG_TAGS = re.compile(r"</?strong>", re.I)
-STRONG_ENTRY = re.compile(r"<strong>([^<*\n]+:\d+)</strong>", re.I)
-LABEL_NOISE = r"(?:\s|[*_])"
-SUPPRESSED_HEAD = re.compile(
-    # One space after the hashes; the noise reads the rest, so the two
-    # never split a run of whitespace between them.
-    r"(?:^ {0,3}#{1,6}[ \t]|<summary>)"
-    + LABEL_NOISE
-    + r"*Suppressed"
-    + LABEL_NOISE
-    + r"+comments"
-    + LABEL_NOISE
-    + r"*\\?\((\d+)\\?\)",
-    re.M | re.I,
-)
-# A heading or summary line that names suppressed findings in any
-# form, letters alone considered: one SUPPRESSED_HEAD cannot read is
-# a count unreadable, a finding in itself, since the label's
-# formatting has no end of variants and a clean verdict must not
-# rest on missing one.
-# A heading reads to its line's end; a summary, wherever it starts,
-# reads to its close across lines, or to the body's end, which the
-# 64 KiB bound on the body already keeps short.
-# Two scans, since a summary may sit inside a heading's line and one
-# pattern would read the heading alone.
-SUPPRESSED_MENTIONS = (
-    re.compile(r"^ {0,3}#{1,6}[ \t](?P<text>.*)$", re.M),
-    re.compile(r"<summary>(?P<text>[\s\S]*?)(?:</summary>|\Z)", re.I),
-)
 # A setext underline makes the line above a heading; the classifier
 # reads ATX headings alone, so one fails the body closed. A rule after
 # a blank line, as the real bodies write it, is no underline.
@@ -106,27 +74,6 @@ SUPPRESSED_MENTIONS = (
 # would backtrack exponentially on a long run that is no underline.
 # Any indentation: a list continuation indents past three spaces.
 SETEXT_UNDERLINE = re.compile(r"^[ \t]*(?:=+[ \t]*|-[ \t-]*)$")
-LETTERS = re.compile(r"[^a-z]")
-ANY_TAG_TEXT = re.compile(r"<[^<>]*>")
-SUPPRESSED_LABEL = "suppressedcomments"
-# Indentation of spaces and tabs alone: a class crossing newlines
-# would rescan every blank line after the section once per line.
-# An entry may sit under a list marker or a quote, bold by asterisks
-# or underscores, a strong tag around it having been read as
-# asterisks; the stated count is a floor, so each entry counts
-# whatever the heading says.
-SUPPRESSED_ENTRY = re.compile(
-    r"^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|>[ \t]*)*"
-    # A path may hold underscores, a pair included; the underscore
-    # form ends at the pair that follows the line number, whatever
-    # comes after it, so long as it is not a third underscore.
-    r"(?:\*\*[^*\n]+:\d+\*\*|__[^\n]+?:\d+__(?!_))",
-    re.M,
-)
-SUPPRESSED_END = re.compile(
-    r"^ {0,3}#{1,6}(?:[ \t]|$)|^ {0,3}</details>[ \t]*$", re.M | re.I
-)
-INLINE_CLOSER = re.compile(r"\A(?:[ \t]*</summary>)?[ \t]*</details>", re.I)
 
 
 @dataclass(frozen=True)
@@ -138,6 +85,10 @@ class Verdict:
     unresolved_threads: int
     suppressed: int
     reasons: list[str] = field(default_factory=list)
+    # Findings on code unchanged since Copilot's last review: listed in
+    # the body alone, with no thread, so the thread count never sees
+    # them.
+    previously_missed: int = 0
 
     def to_json(
         self, *, review_id: int | None, commit_id: str | None
@@ -148,6 +99,7 @@ class Verdict:
             "assessment": self.assessment,
             "unresolved_threads": self.unresolved_threads,
             "suppressed": self.suppressed,
+            "previously_missed": self.previously_missed,
             "reasons": list(self.reasons),
             "review_id": review_id,
             "commit_id": commit_id,
@@ -294,50 +246,6 @@ def assessment_of(text: str) -> str | None:
     return earliest[1] if earliest else None
 
 
-def suppressed_count(text: str) -> tuple[int, bool]:
-    """Suppressed findings: the entries listed, or the stated count if larger.
-
-    The second value says a stated count was unreadable, which is a
-    finding in itself rather than a crash.
-    """
-    total = 0
-    unreadable = False
-    # A strong tag around an entry's path and line is bold as a pair
-    # of asterisks is, and is read as them; every other strong tag,
-    # which may split the label or wrap its count, comes off.
-    text = STRONG_TAGS.sub("", STRONG_ENTRY.sub(r"**\1**", text))
-    readable = {head.start() for head in SUPPRESSED_HEAD.finditer(text)}
-    for pattern in SUPPRESSED_MENTIONS:
-        for mention in pattern.finditer(text):
-            content = ANY_TAG_TEXT.sub("", mention.group("text"))
-            letters = LETTERS.sub("", content.lower())
-            if letters.startswith(SUPPRESSED_LABEL) and mention.start() not in readable:
-                unreadable = True
-    for head in SUPPRESSED_HEAD.finditer(text):
-        digits = head.group(1)
-        # Searched in place from the heading's end, so the line-start
-        # anchor binds to real line starts and a heading's closing
-        # hashes end no section.
-        end = SUPPRESSED_END.search(text, head.end())
-        block = text[head.end() : end.start() if end else len(text)]
-        # A closer right after the summary, on its line, closes an
-        # empty section: nothing after it is the section's.
-        if INLINE_CLOSER.match(block):
-            block = ""
-        listed = len(SUPPRESSED_ENTRY.findall(block))
-        if "<details" in block.lower() or "</details" in block.lower():
-            # A details block inside the section closes before the
-            # section does, and a closer mid-line is text the parser
-            # cannot place; the real bodies write neither there.
-            unreadable = True
-        if len(digits) > MAX_COUNT_DIGITS:
-            unreadable = True
-            total += listed
-            continue
-        total += max(int(digits), listed)
-    return total, unreadable
-
-
 def classify(body: str | None, unresolved_threads: int) -> Verdict:
     """Apply the section 11.5 definition to a review body and its threads."""
     if type(unresolved_threads) is not int or unresolved_threads < 0:
@@ -347,9 +255,14 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
     text, problems = visible(text.replace("\r\n", "\n").replace("\r", "\n"))
     assessment = assessment_of(text)
     suppressed, unreadable = suppressed_count(text)
+    missed, missed_unreadable = previously_missed_count(text)
     reasons: list[str] = list(problems)
     if unreadable:
         reasons.append("suppressed count unreadable")
+    if missed_unreadable:
+        reasons.append("previously missed count unreadable")
+    if unknown_sections(text):
+        reasons.append(UNREADABLE_SECTION)
     if oversized:
         # The part past the cap may hold suppressed findings; a body
         # the classifier cannot read whole is never clean.
@@ -360,12 +273,15 @@ def classify(body: str | None, unresolved_threads: int) -> Verdict:
     if suppressed:
         plural = "s" if suppressed != 1 else ""
         reasons.append(f"{suppressed} suppressed finding{plural}")
+    if missed:
+        plural = "s" if missed != 1 else ""
+        reasons.append(f"{missed} previously missed finding{plural}")
     if assessment is None:
         reasons.append("no assessment")
     elif assessment not in CLEAN_ASSESSMENTS:
         reasons.append("assessment: changes recommended")
     verdict = "clean" if not reasons else "findings"
-    return Verdict(verdict, assessment, unresolved_threads, suppressed, reasons)
+    return Verdict(verdict, assessment, unresolved_threads, suppressed, reasons, missed)
 
 
 def pending(reason: str) -> Verdict:

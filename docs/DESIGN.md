@@ -794,7 +794,10 @@ For each selected issue:
     organisation definition (`AGENTS.md` §11.5) in a pure function
     with offline tests built from real review bodies: **clean** when
     every thread has a resolution, the overview lists no suppressed
-    finding and the assessment is `🟢 Approval recommended` (`🟢 Ready to approve`
+    finding and no finding on code unchanged since the last review
+    (a section Copilot writes in the body alone and opens no thread
+    for, above which the body says "No open issues"), and the
+    assessment is `🟢 Approval recommended` (`🟢 Ready to approve`
     in older reviews) or `🔵 Needs a closer look`; **findings**
     otherwise, `🟡 Changes recommended` and the older format with no
     assessment included; **pending** when no review of the head
@@ -813,7 +816,10 @@ For each selected issue:
     parsing what such text hides is a losing game and none of it can
     then supply an assessment or hide a finding. The tag set tracks a
     format Copilot moves under us, so the fixtures hold a body of each
-    format seen and a test holds every one to a reading; takes the
+    format seen and a test holds every one to a reading, and a details
+    section the classifier does not know, neither a count it reads nor
+    a finding's own badged title, fails the body closed rather than
+    wait for a rule of its own; takes the
     earliest heading as the
     assessment; and records labels and counts, never the text,
     matching headings on one line, reading a CRLF body as its LF twin,
@@ -1200,6 +1206,7 @@ scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
+scripts/review_sections.py               its suppressed and unchanged-code counts
 scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
 tests/                                   unittest suite, offline
@@ -1480,6 +1487,7 @@ line and provenance block first, then the agent's text.
     "assessment": "closer-look",
     "unresolved_threads": 1,
     "suppressed": 0,
+    "previously_missed": 0,
     "reasons": ["1 unresolved review thread"],
     "review_id": 5425770192,
     "commit_id": "<40 hex>"
@@ -1496,8 +1504,9 @@ says whether GitHub accepted the request, `verdict` is `clean`,
 The comment and the report read a record with any field missing or
 added, or any other verdict, as `pending`. The report job merges
 every `result.json` into one table whose review column names the
-verdict and, for findings, the thread and suppressed counts, a count
-of the wrong shape left out.
+verdict and, for findings, the counts of threads, suppressed
+findings and findings on unchanged code, a count of the wrong shape
+left out.
 
 **Open gap.** The publisher writes this file, but the report cannot
 yet prove it did: the author job can reach the Actions runtime

@@ -22,6 +22,7 @@ REVIEW_FIELDS = frozenset(
         "assessment",
         "unresolved_threads",
         "suppressed",
+        "previously_missed",
         "reasons",
         "review_id",
         "commit_id",
@@ -78,6 +79,9 @@ def review_sentence(result: dict[str, Any]) -> str:
         counts.append(
             f"{suppressed} suppressed finding{'s' if suppressed != 1 else ''}"
         )
+    missed = record.get("previously_missed")
+    if type(missed) is int and missed:
+        counts.append(f"{missed} previously missed finding{'s' if missed != 1 else ''}")
     assessment = ASSESSMENT_TEXT.get(str(record.get("assessment")), "no assessment")
     detail = "; ".join([*counts, f"assessment: {assessment}"])
     return (
@@ -163,7 +167,7 @@ def review_token(result: dict[str, Any]) -> str:
     record = cast("dict[str, Any]", result["review"])
     return (
         f"findings/{record.get('unresolved_threads')}/{record.get('suppressed')}"
-        f"/{record.get('assessment')}"
+        f"/{record.get('previously_missed')}/{record.get('assessment')}"
     )
 
 

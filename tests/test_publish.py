@@ -262,6 +262,16 @@ class CommentBodyTest(unittest.TestCase):
         )
         self.assertIn("2 unresolved review threads", findings or "")
         self.assertIn("1 suppressed finding", findings or "")
+        missed = comments.comment_body(
+            result_json(
+                review=review_record(
+                    "findings", assessment="closer-look", previously_missed=3
+                )
+            ),
+            "",
+        )
+        self.assertIn("3 previously missed findings", missed or "")
+        self.assertIn("needs a closer look", missed or "")
         self.assertIn("changes recommended", findings or "")
         self.assertIn("a maintainer must act", findings or "")
         self.assertNotIn("ready", (findings or "").lower())
@@ -292,6 +302,7 @@ def review_record(verdict: str, **overrides: Any) -> dict[str, Any]:
         "assessment": None,
         "unresolved_threads": 0,
         "suppressed": 0,
+        "previously_missed": 0,
         "reasons": [],
         "review_id": 5 if verdict != "pending" else None,
         "commit_id": "e" * 40,
@@ -1128,7 +1139,7 @@ class RunCommentTest(NoNetworkCase):
         body = write.call_args.args[2]["body"]
         self.assertTrue(
             body.endswith(
-                "<!-- code-monkey https://run proposed review=findings/0/0/None -->"
+                "<!-- code-monkey https://run proposed review=findings/0/0/0/None -->"
             ),
             body,
         )
@@ -1146,7 +1157,7 @@ class RunCommentTest(NoNetworkCase):
         earlier = {
             "id": 1,
             "user": {"login": BOT},
-            "body": "<!-- code-monkey https://run proposed review=findings/2/1/changes -->",
+            "body": "<!-- code-monkey https://run proposed review=findings/2/1/0/changes -->",
             "html_url": "https://x/c/1",
         }
         with (
@@ -1163,7 +1174,7 @@ class RunCommentTest(NoNetworkCase):
         body = write.call_args.args[2]["body"]
         self.assertTrue(
             body.endswith(
-                "<!-- code-monkey https://run proposed review=findings/0/1/changes -->"
+                "<!-- code-monkey https://run proposed review=findings/0/1/0/changes -->"
             ),
             body,
         )
@@ -1559,6 +1570,10 @@ class RunReportTest(NoNetworkCase):
                 "findings (2 threads, 1 suppressed)",
             ),
             (review_record("findings", suppressed=3), "findings (3 suppressed)"),
+            (
+                review_record("findings", previously_missed=2),
+                "findings (2 previously missed)",
+            ),
             (review_record("findings", assessment="changes"), "findings"),
             (review_record("clean", assessment="approval"), "clean"),
             (review_record("pending"), "pending"),

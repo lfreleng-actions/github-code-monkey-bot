@@ -74,6 +74,9 @@ def review_cell(item: dict[str, Any]) -> str:
     suppressed = record.get("suppressed")
     if type(suppressed) is int and suppressed > 0:
         parts.append(f"{suppressed} suppressed")
+    missed = record.get("previously_missed")
+    if type(missed) is int and missed > 0:
+        parts.append(f"{missed} previously missed")
     return f"findings ({', '.join(parts)})" if parts else "findings"
 
 
