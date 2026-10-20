@@ -21,6 +21,9 @@ import re
 BACKTICKS = re.compile(r"`+")
 # What stands in for a closed span: a letter opens nothing in Markdown.
 SPAN_FILL = "x"
+# A span that is a path and line alone, as a suppressed entry's is:
+# kept when bold wraps it, so the count can read it.
+ENTRY_SPAN = re.compile(r"`[A-Za-z0-9_./-]+:\d+`")
 COMMENT_OPEN = "<!--"
 # <!DOCTYPE, <![CDATA[ and <?xml: raw HTML blocks the classifier
 # does not read, as it does not read comments.
@@ -224,7 +227,18 @@ def mask_spans(line: str) -> tuple[str, bool]:
             index += 1
         else:
             end = runs[closer].end()
-            parts.append(SPAN_FILL * (end - opener.start()))
+            span = line[opener.start() : end]
+            if (
+                line[max(0, opener.start() - 2) : opener.start()] == "**"
+                and line[end : end + 2] == "**"
+                and ENTRY_SPAN.fullmatch(span)
+            ):
+                # A path and line in bold code is a suppressed entry
+                # as much as one in bold text; the span's text stays
+                # for the count, since it holds no HTML or Markdown.
+                parts.append(span)
+            else:
+                parts.append(SPAN_FILL * (end - opener.start()))
             i = end
             index = closer + 1
     parts.append(line[i:])

@@ -67,9 +67,14 @@ SUPPRESSED_ENTRY = re.compile(
     # A path may hold underscores, a pair included; the underscore
     # form ends at the pair that follows the line number, whatever
     # comes after it, so long as it is not a third underscore.
-    r"(?:\*\*[^*\n]+:\d+\*\*|__[^\n]+?:\d+__(?!_))",
+    # Bold, or bold and italic, by asterisks or underscores.
+    r"(?:\*{2,3}`?[^*\n]+:\d+`?\*{2,3}|_{2,3}[^\n]+?:\d+_{2,3}(?!_))",
     re.M,
 )
+# Hashes inside a strong tag are text; with the tag stripped they would
+# read as a heading and end a section early, so such a line fails the
+# count closed instead.
+STRONG_HEADING = re.compile(r"<strong>\s*#{1,6}(?:[ \t]|</strong>)", re.I)
 SUPPRESSED_END = re.compile(
     r"^ {0,3}#{1,6}(?:[ \t]|$)|^ {0,3}</details>[ \t]*$", re.M | re.I
 )
@@ -79,6 +84,13 @@ SUPPRESSED_END = re.compile(
 PREVIOUSLY_MISSED = re.compile(
     r"<summary>\s*(?:<strong>\s*)?(?:(\d+)\s+previously\s+missed\s+issues?"
     r"|previously\s+missed\s*\((\d+)\))",
+    re.I,
+)
+# Where one count section ends and the next begins: a summary that is
+# a count rather than a finding's badged title.
+NEXT_COUNT = re.compile(
+    r"<summary>\s*(?:<strong>\s*)?(?:\d+\s+(?:open|resolved|previously)"
+    r"|open\s*\(|resolved\s*\(|previously\s+missed\s*\(|suppressed\s+comments)",
     re.I,
 )
 # The details sections the real bodies write: the counts, and a
@@ -116,6 +128,8 @@ def suppressed_count(text: str) -> tuple[int, bool]:
     # A strong tag around an entry's path and line is bold as a pair
     # of asterisks is, and is read as them; every other strong tag,
     # which may split the label or wrap its count, comes off.
+    if STRONG_HEADING.search(text):
+        unreadable = True
     text = STRONG_TAGS.sub("", STRONG_ENTRY.sub(r"**\1**", text))
     readable = {head.start() for head in SUPPRESSED_HEAD.finditer(text)}
     for pattern in SUPPRESSED_MENTIONS:
@@ -156,12 +170,21 @@ def previously_missed_count(text: str) -> tuple[int, bool]:
     """
     total = 0
     unreadable = False
-    for head in PREVIOUSLY_MISSED.finditer(STRONG_TAGS.sub("", text)):
+    stripped = STRONG_TAGS.sub("", text)
+    for head in PREVIOUSLY_MISSED.finditer(stripped):
         digits = head.group(1) or head.group(2)
+        # The stated count is a floor: the badged finding titles listed
+        # under it, to the next count section or the body's end, count
+        # whatever it says.
+        rest = stripped[head.end() :]
+        end = NEXT_COUNT.search(rest)
+        block = rest[: end.start()] if end else rest
+        listed = len(FINDING_BADGE.findall(block))
         if len(digits) > MAX_COUNT_DIGITS:
             unreadable = True
+            total += listed
             continue
-        total += int(digits)
+        total += max(int(digits), listed)
     return total, unreadable
 
 
