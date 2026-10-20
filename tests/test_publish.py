@@ -978,6 +978,24 @@ class HandoffTest(NoNetworkCase):
         self.assertIn("a maintainer", text)
         self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
 
+    @unittest.expectedFailure
+    def test_handoff_comment_discloses_failed_replies(self) -> None:
+        """A reply that did not post is said so, not claimed to be on its thread."""
+        result = result_json(
+            verdict="handoff",
+            round=2,
+            reasons=["Wrong."],
+            responded={"replied": 1, "already": 0, "resolved": 0, "failed": 2},
+        )
+        text = comments.comment_body(result, "https://x/run") or ""
+        self.assertIn("2 of its replies did not post", text)
+        self.assertIn("https://x/run", text)
+        self.assertNotIn("Its replies are on the threads", text)
+        # All posted: the plain sentence.
+        result["responded"] = {"replied": 3, "already": 0, "resolved": 0, "failed": 0}
+        text = comments.comment_body(result, "https://x/run") or ""
+        self.assertIn("Its replies are on the threads", text)
+
     def test_handoff_comment_carries_the_round_summary(self) -> None:
         """The agent's summary of what it disputed reaches the issue, defused."""
         text = (
