@@ -15,6 +15,80 @@ import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
 
+REVIEW_VERDICTS = ("clean", "findings", "pending")
+REVIEW_FIELDS = frozenset(
+    {
+        "verdict",
+        "assessment",
+        "unresolved_threads",
+        "suppressed",
+        "previously_missed",
+        "reasons",
+        "review_id",
+        "commit_id",
+        "requested",
+    }
+)
+ASSESSMENT_TEXT = {
+    "approval": "approval recommended",
+    "closer-look": "needs a closer look",
+    "changes": "changes recommended",
+}
+
+
+def review_verdict(result: dict[str, Any]) -> str | None:
+    """The Copilot verdict a result records, or None when no review was awaited.
+
+    A record the publisher does not recognise, by shape or by verdict,
+    reads as pending: whatever it says, it is not proof of a clean review.
+    """
+    record = result.get("review")
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        return "pending"
+    data = cast("dict[str, Any]", record)
+    # Every field, no more and no fewer: a record missing its counts or
+    # the head it judged is not proof of a clean review either.
+    if frozenset(data) != REVIEW_FIELDS or data.get("verdict") not in REVIEW_VERDICTS:
+        return "pending"
+    return str(data["verdict"])
+
+
+def review_sentence(result: dict[str, Any]) -> str:
+    """What the comment says about Copilot's review, if one was awaited."""
+    verdict = review_verdict(result)
+    if verdict is None:
+        return ""
+    if verdict == "clean":
+        return ". The Copilot review of it is clean."
+    if verdict == "pending":
+        return (
+            "; no Copilot review of its head arrived within the wait, so the"
+            " review is pending and a maintainer should check for it."
+        )
+    record = cast("dict[str, Any]", result["review"])
+    counts: list[str] = []
+    threads = record.get("unresolved_threads")
+    if type(threads) is int and threads:
+        counts.append(
+            f"{threads} unresolved review thread{'s' if threads != 1 else ''}"
+        )
+    suppressed = record.get("suppressed")
+    if type(suppressed) is int and suppressed:
+        counts.append(
+            f"{suppressed} suppressed finding{'s' if suppressed != 1 else ''}"
+        )
+    missed = record.get("previously_missed")
+    if type(missed) is int and missed:
+        counts.append(f"{missed} previously missed finding{'s' if missed != 1 else ''}")
+    assessment = ASSESSMENT_TEXT.get(str(record.get("assessment")), "no assessment")
+    detail = "; ".join([*counts, f"assessment: {assessment}"])
+    return (
+        f". The Copilot review of it has findings ({detail}). "
+        f"{policy.REVISION_DISCLOSURE}"
+    )
+
 
 def _proposed_comment(
     result: dict[str, Any], _reasons: str, _run_url: str
@@ -23,7 +97,8 @@ def _proposed_comment(
     if not url:
         return None
     noun = "pull request" if result.get("pull_request_url") else "branch"
-    return f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
+    opening = f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
+    return opening + review_sentence(result)
 
 
 def _abstain_comment(_result: dict[str, Any], reasons: str, _run_url: str) -> str:
@@ -78,6 +153,30 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     return template(result, reasons, run_url)
 
 
+def review_token(result: dict[str, Any]) -> str:
+    """The review as one marker token: verdict, then counts and assessment.
+
+    A findings review names its thread and suppressed counts and its
+    assessment too, so a rerun that resolved threads under the same
+    verdict reads as a new outcome; one token, with no spaces, so a
+    reader of the footer splits it as before.
+    """
+    verdict = review_verdict(result)
+    if verdict != "findings":
+        return str(verdict)
+    record = cast("dict[str, Any]", result["review"])
+    return (
+        f"findings/{record.get('unresolved_threads')}/{record.get('suppressed')}"
+        f"/{record.get('previously_missed')}/{record.get('assessment')}"
+    )
+
+
+# Pages of comments since the run's selection the search reads; a
+# search that fills them all may have the latest outcome beyond them
+# and proves nothing.
+MAX_COMMENT_PAGES = 3
+
+
 def run_comment(args: argparse.Namespace) -> None:
     """Post the outcome comment and record its URL in result.json."""
     result = model.load_json(args.result, "result")
@@ -90,10 +189,17 @@ def run_comment(args: argparse.Namespace) -> None:
         return
     repository = github.require_str(result, "repository", "result")
     issue = github.require_int(result, "issue", "result")
-    marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')} -->"
+    # The marker names the run and the outcome, the review verdict
+    # included: a rerun that changed either posts again rather than
+    # leaving the issue at odds with result.json.
+    verdict = review_verdict(result)
+    suffix = f" review={review_token(result)}" if verdict else ""
+    marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (
-        posted(repository, issue, marker, args.since, bot_login) if bot_login else None
+        posted(repository, issue, marker, args.since, bot_login, run_url=args.run_url)
+        if bot_login
+        else None
     )
     if earlier is not None:
         # A retry after the POST succeeded but its reply was lost, or
@@ -111,16 +217,29 @@ def run_comment(args: argparse.Namespace) -> None:
 
 
 def posted(
-    repository: str, issue: int, marker: str, since: str, bot_login: str
+    repository: str,
+    issue: int,
+    marker: str,
+    since: str,
+    bot_login: str,
+    *,
+    run_url: str,
 ) -> str | None:
-    """The URL of this run's comment carrying ``marker``, if one exists.
+    """The URL of this run's comment carrying ``marker``, if it is the latest.
 
     Searches the comments made since the run's selection, which bounds
-    the read to what this run can have posted.
+    the read to what this run can have posted, and compares against
+    the bot's latest outcome for this run alone: an outcome that
+    changed and changed back is a new outcome to report, so an older
+    matching marker does not suppress it.
     """
     if not since:
         return None
-    for page in range(1, 4):
+    # Every marker of this run opens the same way: the run URL, then
+    # the outcome. The outcome part is what may change between attempts.
+    prefix = f"<!-- code-monkey {run_url} "
+    latest: dict[str, Any] | None = None
+    for page in range(1, MAX_COMMENT_PAGES + 1):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
             f"?since={since}&per_page=100&page={page}"
@@ -134,9 +253,17 @@ def posted(
             )
             # Anyone can paste the marker; only the bot's own comment
             # proves the outcome is on record.
-            if login == bot_login and marker in str(entry.get("body") or ""):
-                url = entry.get("html_url")
-                return url if isinstance(url, str) else ""
+            if login != bot_login or prefix not in str(entry.get("body") or ""):
+                continue
+            if latest is None or int(entry.get("id") or 0) > int(latest.get("id") or 0):
+                latest = entry
         if len(entries) < 100:
             break
-    return None
+    else:
+        # Every page was full: the latest outcome may sit past the
+        # read, so an older match is no proof and the comment posts.
+        return None
+    if latest is None or marker not in str(latest.get("body") or ""):
+        return None
+    url = latest.get("html_url")
+    return url if isinstance(url, str) else ""

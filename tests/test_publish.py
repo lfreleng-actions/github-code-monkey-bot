@@ -245,6 +245,72 @@ class CommentBodyTest(unittest.TestCase):
                 self.assertIn("https://run", text or "")
                 self.assertNotIn("eligible", text or "")
 
+    def test_review_verdict_is_stated(self) -> None:
+        """The comment says what Copilot's review of the head concluded."""
+        clean = comments.comment_body(
+            result_json(review=review_record("clean", assessment="approval")), ""
+        )
+        self.assertIn("pull request", clean or "")
+        self.assertIn("Copilot review of it is clean", clean or "")
+        findings = comments.comment_body(
+            result_json(
+                review=review_record(
+                    "findings", assessment="changes", unresolved_threads=2, suppressed=1
+                )
+            ),
+            "",
+        )
+        self.assertIn("2 unresolved review threads", findings or "")
+        self.assertIn("1 suppressed finding", findings or "")
+        missed = comments.comment_body(
+            result_json(
+                review=review_record(
+                    "findings", assessment="closer-look", previously_missed=3
+                )
+            ),
+            "",
+        )
+        self.assertIn("3 previously missed findings", missed or "")
+        self.assertIn("needs a closer look", missed or "")
+        self.assertIn("changes recommended", findings or "")
+        self.assertIn("a maintainer must act", findings or "")
+        self.assertNotIn("ready", (findings or "").lower())
+        pending = comments.comment_body(
+            result_json(review=review_record("pending")), ""
+        )
+        self.assertIn("no Copilot review", pending or "")
+        self.assertNotIn("clean", pending or "")
+
+    def test_unrecognised_review_record_reads_as_pending(self) -> None:
+        """A record the publisher does not know is never read as clean."""
+        for record in (
+            {"verdict": "approved"},
+            {"verdict": "clean", "extra": 1},
+            {"verdict": "clean"},
+            "clean",
+        ):
+            with self.subTest(record=record):
+                text = comments.comment_body(result_json(review=record), "") or ""
+                self.assertNotIn("is clean", text)
+                self.assertIn("no Copilot review", text)
+
+
+def review_record(verdict: str, **overrides: Any) -> dict[str, Any]:
+    """The ``review`` record result.json carries (DESIGN.md 18.4)."""
+    record: dict[str, Any] = {
+        "verdict": verdict,
+        "assessment": None,
+        "unresolved_threads": 0,
+        "suppressed": 0,
+        "previously_missed": 0,
+        "reasons": [],
+        "review_id": 5 if verdict != "pending" else None,
+        "commit_id": "e" * 40,
+        "requested": True,
+    }
+    record.update(overrides)
+    return record
+
 
 class RunPushTest(NoNetworkCase):
     """``run_push`` gates fork writes on verdict, dry-run and mode."""
@@ -401,7 +467,11 @@ class RunPushTest(NoNetworkCase):
                 publish, "create_branch", side_effect=policy.Rejection("branch exists")
             ),
             patch.object(publish, "existing_pull_request", return_value=pr) as lookup,
-            patch.object(publish, "branch_matches", return_value=same_tree) as match,
+            patch.object(
+                publish,
+                "branch_matches",
+                return_value=["c" * 40] if same_tree else None,
+            ) as match,
             patch.object(publish, "replay_commits") as replay,
             patch.object(publish, "delete_branch") as delete,
         ):
@@ -412,6 +482,11 @@ class RunPushTest(NoNetworkCase):
         if same_tree:
             lookup.assert_called_once_with(REPOSITORY, BRANCH, BOT, FORK)
         return result
+
+    def test_adopted_branch_records_its_chain(self) -> None:
+        """The verified chain's commits are the published head the review binds to."""
+        result = self.reconcile_existing("pull-requests", same_tree=True)
+        self.assertEqual(result["commits"], ["c" * 40])
 
     def test_rerun_after_success_reports_the_existing_pull_request(self) -> None:
         """A retry meeting its own open PR is published, not rejected, and silent."""
@@ -456,7 +531,7 @@ class RunPushTest(NoNetworkCase):
             patch.object(
                 publish, "create_branch", side_effect=policy.Rejection("branch exists")
             ),
-            patch.object(publish, "branch_matches", return_value=True),
+            patch.object(publish, "branch_matches", return_value=["c" * 40]),
             patch.object(
                 publish,
                 "existing_pull_request",
@@ -1040,6 +1115,157 @@ class RunCommentTest(NoNetworkCase):
             )
         write.assert_called_once()
 
+    def test_marker_carries_the_review_verdict(self) -> None:
+        """A rerun whose review verdict changed is a new outcome, not a repeat."""
+        path = self.write_result(
+            result_json(bot_login=BOT, review=review_record("findings"))
+        )
+        earlier = {
+            "user": {"login": BOT},
+            "body": "<!-- code-monkey https://run proposed review=pending -->",
+            "html_url": "https://x/c/1",
+        }
+        with (
+            patch.object(reads, "api_page", return_value=[earlier]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/2"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_called_once()
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=findings/0/0/0/None -->"
+            ),
+            body,
+        )
+
+    def test_marker_carries_the_review_counts(self) -> None:
+        """Counts that changed under the same verdict are a new outcome to report."""
+        path = self.write_result(
+            result_json(
+                bot_login=BOT,
+                review=review_record(
+                    "findings", assessment="changes", unresolved_threads=0, suppressed=1
+                ),
+            )
+        )
+        earlier = {
+            "id": 1,
+            "user": {"login": BOT},
+            "body": "<!-- code-monkey https://run proposed review=findings/2/1/0/changes -->",
+            "html_url": "https://x/c/1",
+        }
+        with (
+            patch.object(reads, "api_page", return_value=[earlier]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/2"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_called_once()
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=findings/0/1/0/changes -->"
+            ),
+            body,
+        )
+        # The same counts again: nothing posts.
+        with (
+            patch.object(reads, "api_page", return_value=[{**earlier, "body": body}]),
+            patch.object(github, "api_write") as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_not_called()
+
+    def test_an_exhausted_comment_search_posts_rather_than_trusts(self) -> None:
+        """Past the pages the search reads, an older match proves nothing."""
+        path = self.write_result(
+            result_json(bot_login=BOT, review=review_record("pending"))
+        )
+        match = {
+            "id": 1,
+            "user": {"login": BOT},
+            "body": "<!-- code-monkey https://run proposed review=pending -->",
+            "html_url": "https://x/c/1",
+        }
+        filler = [
+            {"id": 2 + i, "user": {"login": "x"}, "body": "..."} for i in range(99)
+        ]
+        full = [match, *filler]
+        with (
+            patch.object(reads, "api_page", return_value=full) as page,
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/9"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        # Every page the search allows was full, so the latest outcome may
+        # sit beyond them: the comment posts.
+        self.assertEqual(page.call_count, comments.MAX_COMMENT_PAGES)
+        write.assert_called_once()
+
+    def test_only_the_latest_outcome_of_the_run_suppresses_a_repeat(self) -> None:
+        """pending, clean, pending: the third posts, since the latest says clean."""
+        path = self.write_result(
+            result_json(bot_login=BOT, review=review_record("pending"))
+        )
+        earlier = [
+            {
+                "id": 1,
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://run proposed review=pending -->",
+                "html_url": "https://x/c/1",
+            },
+            {
+                "id": 2,
+                "user": {"login": BOT},
+                "body": "b\n\n<!-- code-monkey https://run proposed review=clean -->",
+                "html_url": "https://x/c/2",
+            },
+        ]
+        with (
+            patch.object(reads, "api_page", return_value=earlier),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/3"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_called_once()
+        # And when the latest already says what this result says, nothing posts.
+        later = [
+            {**earlier[1], "id": 1},
+            {**earlier[0], "id": 2, "html_url": "https://x/c/9"},
+        ]
+        with (
+            patch.object(reads, "api_page", return_value=later),
+            patch.object(github, "api_write") as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_not_called()
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["comment_url"], "https://x/c/9")
+
     def test_dry_run_and_silent_verdicts_skip(self) -> None:
         """Dry run and results with nothing to say post nothing."""
         for data in (result_json(dry_run=True), result_json(verdict="weird")):
@@ -1073,7 +1299,7 @@ class ReportRowTest(unittest.TestCase):
         self.assertEqual(row.count("\n"), 0)
         self.assertIn("A \\| B", row)
         self.assertNotIn("::error::", row)
-        self.assertEqual(row.count("|") - row.count("\\|"), 6)
+        self.assertEqual(row.count("|") - row.count("\\|"), 7)
 
 
 class RunReportTest(NoNetworkCase):
@@ -1202,7 +1428,7 @@ class RunReportTest(NoNetworkCase):
         self.assertFalse(
             [line for line in lines if line.startswith(("#", "- "))][1:], lines
         )
-        self.assertEqual(rows[2].count(" | "), 4, rows[2])
+        self.assertEqual(rows[2].count(" | "), 5, rows[2])
 
     def test_malformed_note_fields_do_not_abort_the_report(self) -> None:
         """Non-list reasons or warnings still yield one row per result."""
@@ -1264,10 +1490,12 @@ class RunReportTest(NoNetworkCase):
         markdown = output_md.read_text(encoding="utf-8")
         self.assertIn(
             f"| {REPOSITORY}#7 | proposed | https://github.com/{REPOSITORY}/pull/8 "
-            "| 4 | Fix: Both |",
+            "| — | 4 | Fix: Both |",
             markdown,
         )
-        self.assertIn(f"| {REPOSITORY}#2 | rejected | — | 3 | a \\| b; w |", markdown)
+        self.assertIn(
+            f"| {REPOSITORY}#2 | rejected | — | — | 3 | a \\| b; w |", markdown
+        )
         self.assertEqual(markdown.count("| unreadable |"), 1)
         self.assertIn(
             "Proposed 1, abstained 0, rejected 1, failed 0, publish failures 0; "
@@ -1301,6 +1529,63 @@ class RunReportTest(NoNetworkCase):
             )
         )
         self.assertIn("| no proposals |", output_md.read_text(encoding="utf-8"))
+
+    def test_review_column_and_totals(self) -> None:
+        """Each row states the Copilot verdict; the summary counts them."""
+        results = self.root / "results"
+        for key, record in (
+            ("a-1", review_record("clean", assessment="approval")),
+            ("b-2", review_record("findings", unresolved_threads=1)),
+            ("c-3", None),
+        ):
+            directory = results / key
+            directory.mkdir(parents=True)
+            data = result_json(key=key)
+            if record is not None:
+                data["review"] = record
+            (directory / "result.json").write_text(json.dumps(data), encoding="utf-8")
+        md = self.root / "report.md"
+        out = self.root / "report.json"
+        reporting.run_report(
+            argparse.Namespace(results=results, output_md=md, output_json=out)
+        )
+        text = md.read_text(encoding="utf-8")
+        self.assertIn("| Copilot review |", text)
+        self.assertIn("| clean |", text)
+        self.assertIn("| findings (1 thread) |", text)
+        self.assertIn("Copilot reviews: clean 1, findings 1, pending 0, none 1.", text)
+        report = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(
+            report["review_totals"],
+            {"clean": 1, "findings": 1, "pending": 0, "none": 1},
+        )
+
+    def test_review_column_carries_the_counts(self) -> None:
+        """A findings review names its thread and suppressed counts (issue #29)."""
+        for record, cell in (
+            (
+                review_record(
+                    "findings", assessment="changes", unresolved_threads=2, suppressed=1
+                ),
+                "findings (2 threads, 1 suppressed)",
+            ),
+            (review_record("findings", suppressed=3), "findings (3 suppressed)"),
+            (
+                review_record("findings", previously_missed=2),
+                "findings (2 previously missed)",
+            ),
+            (review_record("findings", assessment="changes"), "findings"),
+            (review_record("clean", assessment="approval"), "clean"),
+            (review_record("pending"), "pending"),
+            # Counts of the wrong shape stay out of the table.
+            (
+                review_record("findings", unresolved_threads="2", suppressed=None),
+                "findings",
+            ),
+        ):
+            with self.subTest(cell=cell):
+                row = reporting.report_row(result_json(review=record))
+                self.assertIn(f"| {cell} |", row)
 
     def test_dry_run_row(self) -> None:
         """A dry-run proposed result shows ``dry run`` instead of a URL."""

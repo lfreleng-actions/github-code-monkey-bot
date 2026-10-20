@@ -9,11 +9,13 @@ import argparse
 import json
 from typing import Any, cast
 
+import issue_comment as comments
 import proposal_model as model
 import proposal_policy as policy
 from proposal_policy import PublishError
 
 SCHEMA = 1
+REVIEW_COLUMNS = (*comments.REVIEW_VERDICTS, "none")
 
 
 def cell(value: Any, limit: int = 300) -> str:
@@ -46,10 +48,36 @@ def report_row(item: dict[str, Any]) -> str:
     # reasons alike descend from agent output.
     text = "; ".join(notes) or str(item.get("pr_title") or "")
     issue = cell(f"{item.get('repository')}#{item.get('issue')}")
+    copilot = review_cell(item)
     return (
-        f"| {issue} | {cell(verdict)} | {cell(output)} "
+        f"| {issue} | {cell(verdict)} | {cell(output)} | {copilot} "
         f"| {'—' if requests is None else f'{requests:g}'} | {cell(text)} |"
     )
+
+
+def review_cell(item: dict[str, Any]) -> str:
+    """The review column: the verdict, and for findings the counts (issue #29).
+
+    A count of the wrong shape stays out of the table; the verdict
+    alone is shown then.
+    """
+    verdict = comments.review_verdict(item)
+    if verdict is None:
+        return "—"
+    if verdict != "findings":
+        return verdict
+    record = cast("dict[str, Any]", item["review"])
+    parts: list[str] = []
+    threads = record.get("unresolved_threads")
+    if type(threads) is int and threads > 0:
+        parts.append(f"{threads} thread{'s' if threads != 1 else ''}")
+    suppressed = record.get("suppressed")
+    if type(suppressed) is int and suppressed > 0:
+        parts.append(f"{suppressed} suppressed")
+    missed = record.get("previously_missed")
+    if type(missed) is int and missed > 0:
+        parts.append(f"{missed} previously missed")
+    return f"findings ({', '.join(parts)})" if parts else "findings"
 
 
 def attempt_of(item: dict[str, Any]) -> int:
@@ -103,25 +131,31 @@ def run_report(args: argparse.Namespace) -> None:
     lines = [
         "## Code monkey results",
         "",
-        "| Issue | Verdict | Output | Premium requests | Detail |",
-        "| --- | --- | --- | --- | --- |",
+        "| Issue | Verdict | Output | Copilot review | Premium requests | Detail |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     totals: dict[str, int] = dict.fromkeys(policy.VERDICTS, 0)
+    review_totals: dict[str, int] = dict.fromkeys(REVIEW_COLUMNS, 0)
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
+        review_totals[comments.review_verdict(item) or "none"] += 1
         lines.append(report_row(item))
     spend = total_spend(every, results)
     for problem in unreadable:
-        lines.append(f"| — | unreadable | — | — | {cell(problem)} |")
+        lines.append(f"| — | unreadable | — | — | — | {cell(problem)} |")
     if not results and not unreadable:
-        lines.append("| — | — | — | — | no proposals |")
+        lines.append("| — | — | — | — | — | no proposals |")
     lines += [
         "",
         f"Proposed {totals['proposed']}, abstained {totals['abstain']}, "
         f"rejected {totals['rejected']}, failed {totals['author-failed']}, "
         f"publish failures {totals.get('publish-failed', 0)}; "
         f"premium requests {spend:g}.",
+        "",
+        "Copilot reviews: "
+        + ", ".join(f"{name} {review_totals[name]}" for name in REVIEW_COLUMNS)
+        + ".",
         "",
         policy.REVISION_DISCLOSURE,
         "",
@@ -133,6 +167,7 @@ def run_report(args: argparse.Namespace) -> None:
             {
                 "schema": SCHEMA,
                 "totals": totals,
+                "review_totals": review_totals,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,

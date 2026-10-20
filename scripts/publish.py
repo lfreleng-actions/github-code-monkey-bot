@@ -3,7 +3,7 @@
 
 """Verify an agent's proposal, replay it into the fork, and open the PR.
 
-Five commands, run in the trusted publish and report jobs:
+Seven commands, run in the trusted publish and report jobs:
 
 ``check`` works offline (see ``proposal_check``) and writes
 ``check.json`` with a verdict and the composed messages.
@@ -20,6 +20,11 @@ the fork. Two commands because the two writes need two tokens
 
 ``comment`` posts one line on the issue describing the outcome.
 
+``review-request`` and ``review-await`` ask Copilot to review the
+pull request with the target token, then wait for its review of the
+head with the job's own token and record the verdict
+(``copilot_review``).
+
 ``report`` merges every ``result.json`` into one table.
 
 A verdict other than ``proposed`` is data, not an error. The script
@@ -35,6 +40,7 @@ from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import bot_github as github
+import copilot_review as review
 import issue_comment as comments
 import proposal_check as checks
 import proposal_model as model
@@ -178,10 +184,14 @@ def reconcile(
     branch = str(check["branch"])
     bot = str(check["bot_login"])
     commits = cast("list[dict[str, Any]]", check["commits"])
-    if not branch_matches(fork, branch, str(check["base_sha"]), commits, bot):
+    chain = branch_matches(fork, branch, str(check["base_sha"]), commits, bot)
+    if chain is None:
         result["verdict"] = "rejected"
         cast("list[str]", result["reasons"]).append(str(conflict))
         return result
+    # The adopted chain is the published work; its head is what a
+    # review must judge.
+    result["commits"] = chain
     earlier = existing_pull_request(str(check["repository"]), branch, bot, fork)
     warnings = cast("list[str]", result["warnings"])
     result["branch_url"] = fork_tree_url(check)
@@ -288,7 +298,7 @@ def write_open(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Describe the five commands."""
+    """Describe the seven commands."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -327,6 +337,23 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--run-url", default="")
     comment.add_argument("--since", default="")
     comment.set_defaults(handler=comments.run_comment)
+
+    request = commands.add_parser(
+        "review-request", help="ask Copilot to review the pull request (target token)"
+    )
+    request.add_argument("--result", type=Path, required=True)
+    request.add_argument("--output", type=Path, required=True)
+    request.set_defaults(handler=review.run_request)
+
+    awaiting = commands.add_parser(
+        "review-await", help="wait for Copilot's review of the head (native token)"
+    )
+    awaiting.add_argument("--result", type=Path, required=True)
+    awaiting.add_argument("--output", type=Path, required=True)
+    awaiting.add_argument(
+        "--wait-minutes", type=int, default=review.DEFAULT_WAIT_MINUTES
+    )
+    awaiting.set_defaults(handler=review.run_await)
 
     report = commands.add_parser("report", help="merge results into a table")
     report.add_argument("--results", type=Path, required=True)

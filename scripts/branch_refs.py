@@ -263,13 +263,14 @@ def branch_matches(
     base_sha: str,
     expected: list[dict[str, Any]],
     bot_login: str,
-) -> bool:
-    """Whether a branch holds exactly the commits the replay would make.
+) -> list[str] | None:
+    """The branch's commits when it holds exactly the chain the replay would make.
 
     The branch must sit on the recorded base with no other history,
     carry as many commits as the proposal, each authored by the bot,
     Verified by GitHub, and bearing the checked message. Anything else
-    is not this run's work, whatever its final tree.
+    is not this run's work, whatever its final tree, and yields None.
+    The commits come back so the result records the published head.
     """
     # The bot branch carries a slash; the compare path needs it encoded.
     encoded = urllib.parse.quote(branch, safe="")
@@ -288,19 +289,23 @@ def branch_matches(
         or not isinstance(commits, list)
         or len(cast("list[Any]", commits)) != len(expected)
     ):
-        return False
+        return None
     parent = base_sha
+    chain: list[str] = []
     for actual, wanted in zip(cast("list[Any]", commits), expected, strict=True):
         if not isinstance(actual, dict):
-            return False
+            return None
         data = cast("dict[str, Any]", actual)
         if not chain_link(data, parent, str(wanted.get("tree", ""))):
-            return False
+            return None
         parent = str(data.get("sha"))
+        if not policy.SHA_RE.fullmatch(parent):
+            return None
+        chain.append(parent)
         author = data.get("author")
         inner = data.get("commit")
         if not isinstance(author, dict) or not isinstance(inner, dict):
-            return False
+            return None
         commit = cast("dict[str, Any]", inner)
         verification = commit.get("verification")
         message = str(commit.get("message") or "")
@@ -311,8 +316,8 @@ def branch_matches(
             or cast("dict[str, Any]", verification).get("verified") is not True
             or message.rstrip("\n") != composed.rstrip("\n")
         ):
-            return False
-    return True
+            return None
+    return chain
 
 
 def chain_link(data: dict[str, Any], parent: str, tree: str) -> bool:
