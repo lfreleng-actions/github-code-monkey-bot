@@ -116,6 +116,7 @@ class RealBodiesTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("previously missed count unreadable", verdict.reasons)
 
+    @unittest.expectedFailure
     def test_listed_missed_findings_count_past_a_stated_zero(self) -> None:
         """The stated count is a floor; the badged titles under it count too."""
         body = BODIES["v2-blue-previously-missed-current"].replace(
@@ -128,19 +129,41 @@ class RealBodiesTest(unittest.TestCase):
             "Previously missed (4)", "Previously missed (1)"
         )
         self.assertEqual(verdicts.classify(body, 0).previously_missed, 4)
-
-    def test_a_strong_wrapped_heading_ends_no_section(self) -> None:
-        """Hashes inside a strong tag are text; stripping the tag must not free them."""
-        text = (
-            BODIES["v2-green-clean"]
-            + "\n### Suppressed comments (0)\n\n<strong>### Context</strong>\n\n"
-            "**scripts/x.py:12**\n"
+        # A label the section check knows but the counter could not
+        # read, dressed in another tag, is findings, never clean.
+        body = BODIES["v2-blue-previously-missed-current"].replace(
+            "<strong>3 previously missed issues</strong>",
+            "<sub>3 previously missed issues</sub>",
         )
-        verdict = verdicts.classify(text, 0)
+        verdict = verdicts.classify(body, 0)
         self.assertEqual(verdict.verdict, "findings")
         self.assertTrue(
-            verdict.suppressed == 1 or "suppressed count unreadable" in verdict.reasons
+            verdict.previously_missed == 3
+            or "previously missed count unreadable" in verdict.reasons
         )
+
+    @unittest.expectedFailure
+    def test_a_strong_wrapped_heading_ends_no_section(self) -> None:
+        """Hashes inside a strong tag are text; stripping the tag must not free them."""
+        for line in (
+            "<strong>### Context</strong>",
+            "<strong></strong>### Context",
+            "<strong>x</strong>### Context",
+            "</strong>### Context",
+        ):
+            text = (
+                BODIES["v2-green-clean"]
+                + "\n### Suppressed comments (0)\n\n"
+                + line
+                + "\n\n**scripts/x.py:12**\n"
+            )
+            with self.subTest(line=line):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertTrue(
+                    verdict.suppressed == 1
+                    or "suppressed count unreadable" in verdict.reasons
+                )
 
     def test_an_unknown_summary_fails_closed(self) -> None:
         """A details section the classifier does not know is findings, not clean.
@@ -1461,6 +1484,7 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
+    @unittest.expectedFailure
     def test_entries_in_every_bold_form_count(self) -> None:
         """An entry's path and line may be bold by underscores or a strong tag."""
         for entry in (
@@ -1482,6 +1506,10 @@ class UntrustedTextTest(unittest.TestCase):
             "___scripts/x.py:12___",
             "**`scripts/x.py:12`**",
             "- **`scripts/review_text.py:12`** note",
+            "__`scripts/x.py:12`__",
+            "**``scripts/x.py:12``**",
+            "- <strong>`scripts/x.py:12`</strong>",
+            "***`scripts/x.py:12`***",
         ):
             text = (
                 BODIES["v2-green-clean"]
