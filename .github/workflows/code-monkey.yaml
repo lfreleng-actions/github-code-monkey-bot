@@ -505,7 +505,7 @@ jobs:
         id: app-token
         if: inputs.github_app_client_id != ''
         # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         # v3.2.0 forwards INPUT_PERMISSION-* but does not declare
         # these org grants; env avoids main/post input warnings.
         env:
@@ -1203,7 +1203,7 @@ jobs:
           inputs.github_app_client_id != '' &&
           steps.fork-state.outputs.exists == 'true'
         # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: "${{ inputs.github_app_client_id }}"
           private-key: "${{ secrets.github_app_private_key }}"
@@ -1222,7 +1222,7 @@ jobs:
           inputs.github_app_client_id != '' &&
           steps.fork-state.outputs.exists == 'false'
         # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: "${{ inputs.github_app_client_id }}"
           private-key: "${{ secrets.github_app_private_key }}"
@@ -1258,7 +1258,7 @@ jobs:
           !inputs.dry_run && inputs.mode == 'pull-requests' &&
           inputs.github_app_client_id != ''
         # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: "${{ inputs.github_app_client_id }}"
           private-key: "${{ secrets.github_app_private_key }}"
@@ -1399,7 +1399,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: ${{ !cancelled() && steps.push.outcome != 'skipped' && !inputs.dry_run && inputs.github_app_client_id != '' }}
         # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: "${{ inputs.github_app_client_id }}"
           private-key: "${{ secrets.github_app_private_key }}"
