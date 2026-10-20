@@ -23,7 +23,7 @@ BACKTICKS = re.compile(r"`+")
 SPAN_FILL = "x"
 # A span that is a path and line alone, as a suppressed entry's is:
 # kept when bold wraps it, so the count can read it.
-ENTRY_SPAN = re.compile(r"`[A-Za-z0-9_./-]+:\d+`")
+ENTRY_SPAN = re.compile(r"(`+)[A-Za-z0-9_./-]+:\d+\1")
 COMMENT_OPEN = "<!--"
 # <!DOCTYPE, <![CDATA[ and <?xml: raw HTML blocks the classifier
 # does not read, as it does not read comments.
@@ -228,14 +228,11 @@ def mask_spans(line: str) -> tuple[str, bool]:
         else:
             end = runs[closer].end()
             span = line[opener.start() : end]
-            if (
-                line[max(0, opener.start() - 2) : opener.start()] == "**"
-                and line[end : end + 2] == "**"
-                and ENTRY_SPAN.fullmatch(span)
-            ):
-                # A path and line in bold code is a suppressed entry
-                # as much as one in bold text; the span's text stays
-                # for the count, since it holds no HTML or Markdown.
+            if ENTRY_SPAN.fullmatch(span):
+                # A path and line in code is a suppressed entry as much
+                # as one in text, whatever bold wraps it; the span's
+                # text stays for the count, since it holds no HTML or
+                # Markdown.
                 parts.append(span)
             else:
                 parts.append(SPAN_FILL * (end - opener.start()))

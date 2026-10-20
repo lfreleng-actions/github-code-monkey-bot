@@ -116,7 +116,6 @@ class RealBodiesTest(unittest.TestCase):
         self.assertEqual(verdict.verdict, "findings")
         self.assertIn("previously missed count unreadable", verdict.reasons)
 
-    @unittest.expectedFailure
     def test_listed_missed_findings_count_past_a_stated_zero(self) -> None:
         """The stated count is a floor; the badged titles under it count too."""
         body = BODIES["v2-blue-previously-missed-current"].replace(
@@ -142,7 +141,6 @@ class RealBodiesTest(unittest.TestCase):
             or "previously missed count unreadable" in verdict.reasons
         )
 
-    @unittest.expectedFailure
     def test_a_strong_wrapped_heading_ends_no_section(self) -> None:
         """Hashes inside a strong tag are text; stripping the tag must not free them."""
         for line in (
@@ -1484,7 +1482,6 @@ class UntrustedTextTest(unittest.TestCase):
                     verdict.reasons,
                 )
 
-    @unittest.expectedFailure
     def test_entries_in_every_bold_form_count(self) -> None:
         """An entry's path and line may be bold by underscores or a strong tag."""
         for entry in (

@@ -25,7 +25,7 @@ MAX_COUNT_DIGITS = 9
 # first; whitespace and emphasis may sit around and between the
 # label's words.
 STRONG_TAGS = re.compile(r"</?strong>", re.I)
-STRONG_ENTRY = re.compile(r"<strong>([^<*\n]+:\d+)</strong>", re.I)
+STRONG_ENTRY = re.compile(r"<strong>(`*[^<*`\n]+:\d+`*)</strong>", re.I)
 LABEL_NOISE = r"(?:\s|[*_])"
 SUPPRESSED_HEAD = re.compile(
     # One space after the hashes; the noise reads the rest, so the two
@@ -68,13 +68,15 @@ SUPPRESSED_ENTRY = re.compile(
     # form ends at the pair that follows the line number, whatever
     # comes after it, so long as it is not a third underscore.
     # Bold, or bold and italic, by asterisks or underscores.
-    r"(?:\*{2,3}`?[^*\n]+:\d+`?\*{2,3}|_{2,3}[^\n]+?:\d+_{2,3}(?!_))",
+    r"(?:\*{2,3}`*[^*`\n]+:\d+`*\*{2,3}|_{2,3}`*[^`\n]+?:\d+`*_{2,3}(?!_))",
     re.M,
 )
 # Hashes inside a strong tag are text; with the tag stripped they would
 # read as a heading and end a section early, so such a line fails the
 # count closed instead.
-STRONG_HEADING = re.compile(r"<strong>\s*#{1,6}(?:[ \t]|</strong>)", re.I)
+STRONG_HEADING = re.compile(
+    r"^[ \t]*(?:</?strong>[ \t]*)+#{1,6}(?:[ \t]|$|</strong>)", re.I | re.M
+)
 SUPPRESSED_END = re.compile(
     r"^ {0,3}#{1,6}(?:[ \t]|$)|^ {0,3}</details>[ \t]*$", re.M | re.I
 )
@@ -82,14 +84,13 @@ SUPPRESSED_END = re.compile(
 # summary of their own, in two forms, and the body says "No open
 # issues" above them. The count is read as the suppressed one is.
 PREVIOUSLY_MISSED = re.compile(
-    r"<summary>\s*(?:<strong>\s*)?(?:(\d+)\s+previously\s+missed\s+issues?"
-    r"|previously\s+missed\s*\((\d+)\))",
+    r"^(?:(\d+)\s+previously\s+missed\s+issues?|previously\s+missed\s*\((\d+)\))$",
     re.I,
 )
 # Where one count section ends and the next begins: a summary that is
 # a count rather than a finding's badged title.
 NEXT_COUNT = re.compile(
-    r"<summary>\s*(?:<strong>\s*)?(?:\d+\s+(?:open|resolved|previously)"
+    r"<summary>\s*(?:<[^<>]+>\s*)*(?:\d+\s+(?:open|resolved|previously)"
     r"|open\s*\(|resolved\s*\(|previously\s+missed\s*\(|suppressed\s+comments)",
     re.I,
 )
@@ -170,13 +171,18 @@ def previously_missed_count(text: str) -> tuple[int, bool]:
     """
     total = 0
     unreadable = False
-    stripped = STRONG_TAGS.sub("", text)
-    for head in PREVIOUSLY_MISSED.finditer(stripped):
+    for found in SUMMARY_TEXT.finditer(text):
+        # Read as the section check reads a label, every tag off, so a
+        # label it knows is one the counter reads.
+        label = " ".join(ANY_TAG_TEXT.sub("", found.group(1)).split())
+        head = PREVIOUSLY_MISSED.match(label)
+        if head is None:
+            continue
         digits = head.group(1) or head.group(2)
         # The stated count is a floor: the badged finding titles listed
         # under it, to the next count section or the body's end, count
         # whatever it says.
-        rest = stripped[head.end() :]
+        rest = text[found.end() :]
         end = NEXT_COUNT.search(rest)
         block = rest[: end.start()] if end else rest
         listed = len(FINDING_BADGE.findall(block))
