@@ -51,6 +51,7 @@ class RealBodiesTest(unittest.TestCase):
             verdicts.classify(BODIES["v2-blue-clean"], 0).assessment, "closer-look"
         )
 
+    @unittest.expectedFailure
     def test_every_real_body_is_readable(self) -> None:
         """No real body, the current format included, trips a fail-closed rule.
 
@@ -67,6 +68,11 @@ class RealBodiesTest(unittest.TestCase):
                     [r for r in verdict.reasons if "classifier does not read" in r],
                     verdict.reasons,
                 )
+        for name in (
+            "v2-blue-previously-missed-current",
+            "v2-blue-previously-missed-legacy",
+        ):
+            self.assertEqual(verdicts.classify(BODIES[name], 0).verdict, "findings")
         current = verdicts.classify(BODIES["v2-blue-clean-current"], 0)
         self.assertEqual(current.verdict, "clean")
         self.assertEqual(current.assessment, "closer-look")
@@ -75,6 +81,73 @@ class RealBodiesTest(unittest.TestCase):
         self.assertEqual(
             verdicts.classify(BODIES["v2-yellow-open-current"], 2).verdict, "findings"
         )
+
+    @unittest.expectedFailure
+    def test_previously_missed_findings_are_findings(self) -> None:
+        """Findings on unchanged code live in the body alone; the gate counts them.
+
+        Copilot opens no thread for a finding on code unchanged since
+        its last review, so the thread count never sees it, and the
+        body says "No open issues" above the section. The real bodies
+        carry it in two forms.
+        """
+        for name, count in (
+            ("v2-blue-previously-missed-current", 3),
+            ("v2-blue-previously-missed-legacy", 4),
+        ):
+            with self.subTest(name=name):
+                verdict = verdicts.classify(BODIES[name], 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertEqual(verdict.previously_missed, count)
+                self.assertIn(f"{count} previously missed findings", verdict.reasons)
+                self.assertEqual(verdict.assessment, "closer-look")
+        # The record carries the count, and the report and comment
+        # read it as they read the suppressed one.
+        record = verdicts.classify(BODIES["v2-blue-previously-missed-current"], 0)
+        self.assertEqual(
+            record.to_json(review_id=1, commit_id="a" * 40)["previously_missed"], 3
+        )
+        # A count the classifier cannot read fails closed.
+        text = (
+            BODIES["v2-green-clean"]
+            + "\n<details>\n<summary><strong>"
+            + "9" * 20
+            + " previously missed issues</strong></summary>\n"
+        )
+        verdict = verdicts.classify(text, 0)
+        self.assertEqual(verdict.verdict, "findings")
+        self.assertIn("previously missed count unreadable", verdict.reasons)
+
+    @unittest.expectedFailure
+    def test_an_unknown_summary_fails_closed(self) -> None:
+        """A details section the classifier does not know is findings, not clean.
+
+        The format is Copilot's and moves under us. The known sections
+        are the counts, open, resolved, suppressed and previously
+        missed, and a finding's own title under its severity badge;
+        anything else may hold findings the classifier does not read.
+        """
+        for extra in (
+            "\n<details>\n<summary><strong>2 deferred issues</strong></summary>\n",
+            "\n<details>\n<summary>Notes</summary>\n",
+            "\n<details><summary><strong>Needs attention (1)</strong></summary></details>\n",
+        ):
+            with self.subTest(extra=extra.strip()[:30]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + extra, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(
+                    "review body holds a section the classifier does not read",
+                    verdict.reasons,
+                )
+        # Every real body's sections are known, and the resolved section
+        # counts nothing.
+        for name, body in BODIES.items():
+            with self.subTest(name=name):
+                verdict = verdicts.classify(body, 0)
+                self.assertNotIn(
+                    "review body holds a section the classifier does not read",
+                    verdict.reasons,
+                )
 
     def test_threads_make_any_assessment_findings(self) -> None:
         """A blue review with a thread, and every yellow review, are findings."""

@@ -103,6 +103,115 @@ BODIES: dict[str, str] = {
         "\n"
         '💡 <a href="/lfreleng-actions/github-code-monkey-bot/new/main?filename=.github/skills/code-review/SKILL.md" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Add a `code-review` agent skill</a> or configure MCP servers for context-aware, tailored reviews. <a href="https://docs.github.com/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review?tool=webui#mcp-servers-and-agent-skills" class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">Learn more in the docs.</a>'
     ),
+    # github-code-monkey-bot#36, review 5577731412: no open issues, and
+    # three findings on code unchanged since the last review, which
+    # Copilot lists in the body alone and opens no thread for.
+    "v2-blue-previously-missed-current": (
+        "<!-- ccr-overview-v2 -->\n"
+        "\n"
+        "### 🔵 Needs a closer look\n"
+        "\n"
+        "Unresolved classifier gaps and the unverified live App-token request path require fixes and human validation.\n"
+        "\n"
+        "**No open issues** 🎉\n"
+        "\n"
+        "<details>\n"
+        "<summary><strong>3 previously missed issues</strong></summary>\n"
+        "\n"
+        "In code that hasn't changed since last review\n"
+        "\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Inline code masking hides suppressed entries</summary>\n'
+        "\n"
+        "`scripts/​review_text.py:249`\n"
+        "\n"
+        "Masking inline code erases code-formatted suppressed entries before they can be counted. With a green assessment, zero threads and `### Suppressed comments (0)`, the entry ``**`scripts/x.py:12`**`` becomes bold `x` characters with no path or line number. Classification therefore returns `clean` with zero suppressed findings, even though listed entries must override the stated zero. Preserve entry information before masking, or mark the affected suppressed section unreadable. Add a regression while keeping ordinary inline examples elsewhere ignored.\n"
+        "</details>\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Bold-italic suppressed entries are not recognized</summary>\n'
+        "\n"
+        "`scripts/​review_verdict.py:123`\n"
+        "\n"
+        "Bold-italic entries bypass this matcher. With a green assessment, zero threads and `### Suppressed comments (0)`, either `***scripts/x.py:12***` or `___scripts/x.py:12___` returns `clean` with zero suppressed findings; the ordinary bold form counts one. Recognize these additional emphasis forms so listed findings still override the stated zero, and add both cases to the entry-format regression tests.\n"
+        "</details>\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Normalization hides suppressed findings after heading boundaries</summary>\n'
+        "\n"
+        "`scripts/​review_verdict.py:308`\n"
+        "\n"
+        "Removing strong tags can create a section-ending heading and hide a suppressed finding. With a green assessment and zero threads, `### Suppressed comments (0)` followed by a blank line, `<strong>### Context</strong>`, another blank line and `**scripts/x.py:12**` returns `clean` with `suppressed=0`. The wrapped hashes are not a Markdown heading, but normalization makes `SUPPRESSED_END` stop before the entry. Preserve the original boundaries or fail closed when normalization creates one, and add this regression. The suggested guard takes the fail-closed approach.\n"
+        "</details>\n"
+        "</details>\n"
+        "\n"
+        "<details>\n"
+        "<summary><strong>1 resolved since last review</strong></summary>\n"
+        "\n"
+        '- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> [Accept punctuation after closing underscores in bold finding entries](https://github.com/lfreleng-actions/github-code-monkey-bot/pull/36#discussion_r4318742999)\n'
+        "</details>\n"
+        "\n"
+        "<sub>Review effort: Balanced</sub>"
+    ),
+    # github-code-monkey-bot#36, review 5551026701: the older form of
+    # the same section, "Previously missed (N)".
+    "v2-blue-previously-missed-legacy": (
+        "<!-- ccr-overview-v2 -->\n"
+        "\n"
+        "### 🔵 Needs a closer look\n"
+        "\n"
+        "Parsing, head verification and rerun handling can report incorrect review outcomes, while an initial read failure leaves an incomplete record.\n"
+        "\n"
+        "**0 open findings**\n"
+        "\n"
+        "<details>\n"
+        "<summary><strong>5 resolved since last review</strong></summary>\n"
+        "\n"
+        '- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> [Classify oversized review bodies instead of reporting them clean](https://github.com/lfreleng-actions/github-code-monkey-bot/pull/36#discussion_r4296998578)\n'
+        '- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> [Select the earliest recognized assessment heading](https://github.com/lfreleng-actions/github-code-monkey-bot/pull/36#discussion_r4296998503)\n'
+        '- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> [Require only whitespace after closing Markdown fences](https://github.com/lfreleng-actions/github-code-monkey-bot/pull/36#discussion_r4296998436)\n'
+        '- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> [Require complete assessment records before reporting clean](https://github.com/lfreleng-actions/github-code-monkey-bot/pull/36#discussion_r4296998308)\n'
+        '- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> [Enforce deadline budget across paginated thread reads](https://github.com/lfreleng-actions/github-code-monkey-bot/pull/36#discussion_r4296998657)\n'
+        "</details>\n"
+        "\n"
+        "<details>\n"
+        "<summary><strong>Previously missed (4)</strong></summary>\n"
+        "\n"
+        "In code that hasn't changed since last review\n"
+        "\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Revalidate the pull request head after polling</summary>\n'
+        "\n"
+        "`scripts/​copilot_review.py:222`\n"
+        "\n"
+        "The head is read only before polling. If a push changes the pull request from A to B during the wait, this still accepts a clean review of A and the issue comment announces a clean review without identifying the old commit. B has not been reviewed. Verify that the head still matches before accepting the verdict, within the read budget, and return pending if it changed or cannot be verified. Add a test where the head changes during polling.\n"
+        "</details>\n"
+        "\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Handle initial head read failures as pending results</summary>\n'
+        "\n"
+        "`scripts/​copilot_review.py:273`\n"
+        "\n"
+        "The initial head read is outside the error handling in await_review(). If it exhausts retries, review-await exits without writing a complete pending record or its failure reason; after a successful request, result.json still contains only the requested flag. Convert this read failure to pending and serialize it through the normal result-writing path. Add a handler test for a failed head read.\n"
+        "</details>\n"
+        "\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Deduplicate comments using only the latest bot outcome</summary>\n'
+        "\n"
+        "`scripts/​issue_comment.py:169`\n"
+        "\n"
+        "If reruns produce pending → clean → pending, posted() finds the first pending marker and suppresses the third comment. The latest issue outcome still says clean while the current report says pending. Deduplicate against only the latest bot outcome for this run, rather than any historical matching verdict, and test a verdict that changes back to an earlier value.\n"
+        "</details>\n"
+        "\n"
+        "<details>\n"
+        '<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Accept closing fences longer than their opening fence</summary>\n'
+        "\n"
+        "`scripts/​review_verdict.py:47`\n"
+        "\n"
+        "Markdown permits a closing fence longer than its opener, but this pattern requires an exact-length match. A green assessment followed by a three-backtick example closed with four backticks, then a suppressed-comments section, is incorrectly classified as clean: the parser removes the suppressed findings through the end of the body. Accept closing runs of the same character that are at least as long as the opener, retaining the whitespace-only suffix check. Add regression cases for both backticks and tildes.\n"
+        "</details>\n"
+        "</details>\n"
+        "\n"
+        "🧠 **Review effort:** Balanced"
+    ),
     # gerrit-clone-action#304, review 5366612856
     "v2-green-clean": (
         "<!-- ccr-overview-v2 -->\n"
