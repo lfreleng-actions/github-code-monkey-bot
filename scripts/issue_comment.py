@@ -149,7 +149,7 @@ def _proposed_comment(
     return opening + review_sentence(result)
 
 
-def _handoff_comment(result: dict[str, Any], reasons: str, _run_url: str) -> str:
+def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:
     url = result.get("pull_request_url") or ""
     summary = policy.comment_safe(str(result.get("round_summary") or ""))
     text = (
@@ -157,7 +157,21 @@ def _handoff_comment(result: dict[str, Any], reasons: str, _run_url: str) -> str
         f"back to a maintainer. It disputes every remaining finding and changed "
         f"nothing: {reasons}" + (f" {summary}" if summary else "")
     )
-    text += " Its replies are on the threads, which stay open"
+    responded = result.get("responded")
+    failed: Any = (
+        cast("dict[str, Any]", responded).get("failed")
+        if isinstance(responded, dict)
+        else 0
+    )
+    if type(failed) is int and failed > 0:
+        # A reply that did not post is not on its thread; the run
+        # report holds the warning that says why.
+        text += (
+            f" {failed} of its replies did not post (see the run: "
+            f"{run_url or 'n/a'}); the rest are on the threads, which stay open"
+        )
+    else:
+        text += " Its replies are on the threads, which stay open"
     if capped(result):
         return text + "."
     return (

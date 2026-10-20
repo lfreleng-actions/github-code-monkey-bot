@@ -978,7 +978,6 @@ class HandoffTest(NoNetworkCase):
         self.assertIn("a maintainer", text)
         self.assertIn(f"https://github.com/{REPOSITORY}/pull/8", text)
 
-    @unittest.expectedFailure
     def test_handoff_comment_discloses_failed_replies(self) -> None:
         """A reply that did not post is said so, not claimed to be on its thread."""
         result = result_json(
