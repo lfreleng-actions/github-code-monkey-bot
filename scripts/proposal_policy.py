@@ -11,6 +11,7 @@ policy in one place, and the tests can exercise it without a clone.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -62,15 +63,26 @@ MODE_EXECUTABLE = "100755"
 MODE_SYMLINK = "120000"
 MODE_SUBMODULE = "160000"
 LABEL = "code-monkey"
-VERDICTS = ("proposed", "abstain", "rejected", "author-failed", "publish-failed")
-MANIFEST_OUTCOMES = ("proposed", "abstain", "author-failed")
+VERDICTS = (
+    "proposed",
+    "abstain",
+    "handoff",
+    "rejected",
+    "author-failed",
+    "publish-failed",
+)
+MANIFEST_OUTCOMES = ("proposed", "abstain", "handoff", "author-failed")
 # The one manifest schema this publisher reads (docs/DESIGN.md 18.2).
 MANIFEST_SCHEMA = 1
-# AGENTS.md §11.6: a pipeline that cannot yet revise its own pull
-# requests says so in each one it opens and in its report.
+# AGENTS.md §11.6: a pipeline says in each pull request and its report
+# how review findings reach a fix. Here a later round of this workflow
+# revises the pull request (DESIGN.md section 20), and a human reads
+# every round before anything merges.
 REVISION_DISCLOSURE = (
-    "This pipeline cannot yet revise its own pull requests, "
-    "so a maintainer must act on any review findings."
+    "Review findings on this pull request are answered by a later "
+    "revision round of this workflow, up to ten rounds; a maintainer "
+    "must act on any finding that remains after that, and reviews "
+    "every round before merge."
 )
 
 
@@ -193,11 +205,15 @@ def check_body(body: list[str]) -> None:
 def comment_safe(text: str) -> str:
     """Flatten untrusted text for a one-line issue comment.
 
-    Newlines would let agent output add rendered blocks, and an
-    @-mention would notify whoever it names; a zero-width space after
-    each @ keeps the text readable without the ping.
+    Newlines would let agent output add rendered blocks, raw HTML
+    would let it wrap the verdict after it in a collapsed element or
+    a comment, and an @-mention would notify whoever it names. The
+    markup is escaped, which GitHub renders as the characters typed,
+    and a zero-width space after each @ keeps the text readable
+    without the ping.
     """
-    return " ".join(text.split()).replace("@", "@\u200b")
+    flat = " ".join(text.split()).replace("@", "@\u200b")
+    return html.escape(flat, quote=False)
 
 
 MENTION_RE = re.compile(r"(?<![\w@/.-])@(?=[A-Za-z0-9][A-Za-z0-9-]*(?:/[\w.-]+)?)")

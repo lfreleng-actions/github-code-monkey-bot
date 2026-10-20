@@ -81,6 +81,16 @@ on:
           repo/issues/N or URLs (commas and/or spaces)
         type: string
         default: ''
+      pull_requests:
+        description: >-
+          Open bot pull requests to revise: repo#N, owner/repo#N,
+          repo/pull/N or URLs (commas and/or spaces)
+        type: string
+        default: ''
+      revise:
+        description: 'Revise open bot pull requests with work outstanding'
+        type: boolean
+        default: true
       categories:
         description: >-
           Issue categories to work: all, or any of bugs, features, docs,
@@ -94,15 +104,20 @@ permissions: {}
 # keeps one pending run and a newcomer cancels it, so this is not a
 # FIFO queue. A dry dispatch writes nothing and takes a group of its
 # own: it neither waits behind the schedule nor cancels a pending
-# live run. A live dispatch that names `issues` also takes a group of
-# its own: its scope is those issues alone, and the per-issue pull
-# request check and branch-exists refusal stop a duplicate.
+# live run. A live dispatch that names `issues` or `pull_requests`
+# locks on its target list instead: two dispatches naming the same
+# targets are duplicates and queue on one lock, while dispatches
+# naming different targets run apart. Lists that overlap without
+# matching still run apart; there the per-issue pull request check,
+# the branch-exists refusal and the revision's compare-and-swap stop
+# a duplicate.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
     && format('code-monkey-dry-run-{0}', github.run_id)
-    || github.event_name == 'workflow_dispatch' && inputs.issues != ''
-    && format('code-monkey-named-{0}', github.run_id)
+    || github.event_name == 'workflow_dispatch'
+    && (inputs.issues != '' || inputs.pull_requests != '')
+    && format('code-monkey-named-{0}-{1}', inputs.issues, inputs.pull_requests)
     || 'code-monkey' }}
   cancel-in-progress: false
 
@@ -181,6 +196,10 @@ jobs:
             || inputs.request_review }}
       repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
+      pull_requests: "${{ inputs.pull_requests || '' }}"
+      # A schedule passes no inputs; it revises before working issues.
+      revise: >-
+        ${{ github.event_name != 'workflow_dispatch' || inputs.revise }}
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       egress_policy: 'block'

@@ -47,7 +47,11 @@ def report_row(item: dict[str, Any]) -> str:
     # Choose the text first, then make it one cell: the title and the
     # reasons alike descend from agent output.
     text = "; ".join(notes) or str(item.get("pr_title") or "")
-    issue = cell(f"{item.get('repository')}#{item.get('issue')}")
+    label = f"{item.get('repository')}#{item.get('issue')}"
+    round_number = item.get("round")
+    if type(round_number) is int and round_number > 0:
+        label += f" (round {round_number})"
+    issue = cell(label)
     copilot = review_cell(item)
     return (
         f"| {issue} | {cell(verdict)} | {cell(output)} | {copilot} "
@@ -149,6 +153,7 @@ def run_report(args: argparse.Namespace) -> None:
     lines += [
         "",
         f"Proposed {totals['proposed']}, abstained {totals['abstain']}, "
+        f"handed off {totals.get('handoff', 0)}, "
         f"rejected {totals['rejected']}, failed {totals['author-failed']}, "
         f"publish failures {totals.get('publish-failed', 0)}; "
         f"premium requests {spend:g}.",

@@ -83,6 +83,18 @@ on:
           repo/issues/N or URLs; commas and/or spaces
         type: string
         default: ''
+      pull_requests:
+        description: >-
+          Open bot pull requests to revise: repo#N, owner/repo#N,
+          repo/pull/N or URLs; commas and/or spaces
+        type: string
+        default: ''
+      revise:
+        description: >-
+          Revise open bot pull requests with review findings or new
+          maintainer comments, before working new issues
+        type: boolean
+        default: true
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -135,15 +147,21 @@ permissions: {}
 # pending run and a newcomer cancels it, so dry runs, which write
 # nothing, lock within their own caller run and never cancel or wait
 # on a live run or another caller run's dry run. Live runs that name
-# `issues` lock within their own caller run the same way: their scope
-# is those issues alone, and the per-issue pull request check and
-# branch-exists refusal stop a duplicate.
+# `issues` or `pull_requests` lock on their target list: two runs
+# naming the same targets are duplicates and queue on one lock, so
+# neither can retitle, push or roll back a title under the other,
+# while runs naming different targets run apart. Lists that overlap
+# without matching still run apart; there the per-issue pull request
+# check, the branch-exists refusal and the revision's compare-and-swap
+# stop a duplicate, and the description update after a push restores
+# the title.
 concurrency:
   group: >-
     ${{ inputs.dry_run
     && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)
-    || inputs.issues != ''
-    && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)
+    || (inputs.issues != '' || inputs.pull_requests != '')
+    && format('code-monkey-named-{0}-{1}-{2}',
+    inputs.org, inputs.issues, inputs.pull_requests)
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
 
@@ -248,6 +266,16 @@ jobs:
           owner: "${{ inputs.org }}"
           token: ''
 
+      - name: 'Split pull requests'
+        id: pulls
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/list-splitter-action@b56a625474875d05ca8d1c1eb3314c29c526c9a6 # v0.1.0
+        with:
+          list: "${{ inputs.pull_requests }}"
+          validate: 'pull-request'
+          owner: "${{ inputs.org }}"
+          token: ''
+
       # The token action finds the installation through the first
       # repository in its scope, so an absent name there fails the mint
       # before selection could say so. Public repositories answer the
@@ -263,6 +291,7 @@ jobs:
           GH_TOKEN: "${{ github.token }}"
           ORG: "${{ inputs.org }}"
           ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
+          PULL_REPOSITORIES: "${{ steps.pulls.outputs.repositories }}"
           REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
         run: |
           # Whether the repository exists and is public; 2 on any
@@ -288,15 +317,19 @@ jobs:
               echo "::error::repository $ORG/$name not found or not public"
               exit 1; }
           done
-          IFS=, read -ra named <<< "$ISSUE_REPOSITORIES"
+          # Named issues and named pull requests share one scope.
+          IFS=, read -ra named <<< "$ISSUE_REPOSITORIES,$PULL_REPOSITORIES"
           kept=()
           for name in "${named[@]}"; do
             [ -n "$name" ] || continue
+            case ",${kept[*]:-}," in *",$name,"*) continue ;; esac
             if usable "$name"; then kept+=("$name"); fi
           done
-          if [ -n "$ISSUE_REPOSITORIES" ] && [ "${#kept[@]}" -eq 0 ]; then
+          if [ -n "$ISSUE_REPOSITORIES$PULL_REPOSITORIES" ] &&
+            [ "${#kept[@]}" -eq 0 ]; then
             echo "::error::none of the named issues' repositories exist" \
-              "as public repositories in $ORG: $ISSUE_REPOSITORIES"
+              "as public repositories in $ORG:" \
+              "$ISSUE_REPOSITORIES $PULL_REPOSITORIES"
             exit 1
           fi
           joined=''
@@ -319,10 +352,12 @@ jobs:
           REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
           ISSUE_REPOSITORIES: "${{ steps.named.outputs.repositories }}"
           ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
+          PULL_COUNT: "${{ steps.pulls.outputs.count }}"
           # The raw lists, only to tell an absent list from one that
           # parsed to nothing.
           ISSUES_RAW: "${{ inputs.issues }}"
           REPOSITORIES_RAW: "${{ inputs.repositories }}"
+          PULL_REQUESTS_RAW: "${{ inputs.pull_requests }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -347,9 +382,11 @@ jobs:
           # Only an empty list means "scan". The concurrency group tests
           # the raw issues input, while selection sees the split one, so
           # a list of separators alone would take a per-run lock and
-          # then scan; it fails here, before selection and the mint.
-          # Issues and repositories exclude each other.
-          if [ -n "$ISSUES_RAW" ] && [ "$ISSUE_COUNT" = 0 ]; then
+          # then scan; it fails here, before selection and the mint. An
+          # issues list may name pull requests, which count beside the
+          # issues here. Issues and repositories exclude each other.
+          if [ -n "$ISSUES_RAW" ] && [ "$ISSUE_COUNT" = 0 ] &&
+            [ "${PULL_COUNT:-0}" = 0 ]; then
             echo '::error::issues was given but names no issue'
             exit 1
           fi
@@ -357,8 +394,14 @@ jobs:
             echo '::error::repositories was given but names no repository'
             exit 1
           fi
-          if [ "$ISSUE_COUNT" != 0 ] && [ "$REPOSITORY_COUNT" != 0 ]; then
+          if [ -n "$PULL_REQUESTS_RAW" ] && [ "${PULL_COUNT:-0}" = 0 ]; then
+            echo '::error::pull_requests was given but names no pull request'
+            exit 1
+          fi
+          if { [ "$ISSUE_COUNT" != 0 ] || [ "$PULL_COUNT" != 0 ]; } &&
+            [ "$REPOSITORY_COUNT" != 0 ]; then
             echo '::error::issues and repositories cannot both be given'
+            echo '::error::(named pull requests count as issues here)'
             exit 1
           fi
           repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
@@ -503,6 +546,14 @@ jobs:
           DRY_RUN: "${{ inputs.dry_run }}"
           REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
           ISSUES: "${{ steps.issues.outputs.csv }}"
+          # The session: the run and this select job's attempt. New on
+          # a full rerun, which selects and authors anew; kept across a
+          # publish-only retry, which reads this selection; and trusted,
+          # so it may own a scratch branch and a reply.
+          RUN_ID: "${{ github.run_id }}"
+          RUN_ATTEMPT: "${{ github.run_attempt }}"
+          PULL_REQUESTS: "${{ steps.pulls.outputs.csv }}"
+          REVISE: "${{ inputs.revise }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
@@ -521,11 +572,16 @@ jobs:
           if [ "$INCLUDE_ASSIGNED" = true ]; then
             extra+=(--include-assigned)
           fi
+          if [ "$REVISE" != true ]; then
+            extra+=(--no-revise)
+          fi
           python3 monkey-assets/scripts/select_issues.py \
             --org "$ORG" --output-dir artefacts \
             --mode "$MODE" --model "$MODEL" \
             --repositories "$REPOSITORIES" \
             --issues "$ISSUES" \
+            --pull-requests "$PULL_REQUESTS" \
+            --session "$RUN_ID-$RUN_ATTEMPT" \
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \
@@ -603,10 +659,16 @@ jobs:
         env:
           ASSETS_SHA: "${{ needs.select.outputs.assets_sha }}"
           BASE_SHA: "${{ matrix.base_sha }}"
+          CHECKOUT_SHA: "${{ matrix.checkout_sha }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
+          TASK: "${{ matrix.task }}"
           KEY: "${{ matrix.key }}"
         run: |
           [[ "$ASSETS_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^([0-9a-f]{40})?$ ]]
+          [[ "$TASK" =~ ^(issue|revise)$ ]]
           [[ "$KEY" =~ ^[A-Za-z0-9_.-]+$ ]]
 
       - name: 'Checkout prompt assets'
@@ -637,16 +699,37 @@ jobs:
 
       # The default token has no grant on the target repository; the
       # checkout succeeds because the estate is public. Nothing here
-      # can push (docs/DESIGN.md section 4.1).
+      # can push (docs/DESIGN.md section 4.1). An issue checks out its
+      # base; a revision checks out the default branch head, so the
+      # agent can rebase onto it (docs/DESIGN.md section 20).
       - name: 'Checkout target repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: "${{ matrix.repository }}"
-          ref: "${{ matrix.base_sha }}"
+          ref: "${{ matrix.checkout_sha }}"
           path: 'workspace'
           fetch-depth: 0
           persist-credentials: false
+
+      # The bot branch lives in a public fork, so it fetches without a
+      # credential. The head must be the one the selection recorded:
+      # a branch that moved since is not the work this round was
+      # chosen for, and the publisher would refuse the result anyway.
+      - name: 'Fetch pull request branch'
+        if: matrix.task == 'revise'
+        env:
+          FORK_REPOSITORY: "${{ matrix.fork_repository }}"
+          BRANCH: "${{ matrix.branch }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
+        run: |
+          git -C workspace fetch -q "https://github.com/$FORK_REPOSITORY.git" \
+            "refs/heads/$BRANCH"
+          [ "$(git -C workspace rev-parse FETCH_HEAD)" = "$HEAD_SHA" ] || {
+            echo "::error::$BRANCH in $FORK_REPOSITORY is not at $HEAD_SHA"
+            exit 1; }
+          git -C workspace branch -q "$BRANCH" "$HEAD_SHA"
+          git -C workspace switch -q "$BRANCH"
 
       - name: 'Set up Node.js'
         # yamllint disable-line rule:line-length
@@ -670,7 +753,9 @@ jobs:
         id: packet
         env:
           KEY: "${{ matrix.key }}"
-          BASE_SHA: "${{ matrix.base_sha }}"
+          TASK: "${{ matrix.task }}"
+          CHECKOUT_SHA: "${{ matrix.checkout_sha }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
         run: |
           mkdir -p artefacts
           jq -e --arg key "$KEY" '.issues[] | select(.key == $key)' \
@@ -683,7 +768,9 @@ jobs:
           git -C workspace config user.name "$git_name"
           git -C workspace config user.email "$git_email"
           git -C workspace config commit.gpgsign false
-          [ "$(git -C workspace rev-parse HEAD)" = "$BASE_SHA" ]
+          expected="$CHECKOUT_SHA"
+          if [ "$TASK" = revise ]; then expected="$HEAD_SHA"; fi
+          [ "$(git -C workspace rev-parse HEAD)" = "$expected" ]
           {
             echo "git_identity=$git_name <$git_email>"
             echo "branch=$(jq -r '.branch' artefacts/issue.json)"
@@ -695,6 +782,10 @@ jobs:
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           BRANCH: "${{ steps.packet.outputs.branch }}"
           BASE_SHA: "${{ matrix.base_sha }}"
+          REBASE_SHA: "${{ matrix.rebase_sha }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
+          PULL_NUMBER: "${{ matrix.pull_number }}"
+          TASK: "${{ matrix.task }}"
           GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
         run: |
@@ -704,12 +795,22 @@ jobs:
           if [ -f workspace/AGENTS.md ]; then
             local_stub='present: AGENTS.md'
           fi
+          case "$TASK" in
+            issue) prompt=monkey-assets/prompt/author.md ;;
+            revise) prompt=monkey-assets/prompt/revise.md ;;
+            *) echo "::error::no prompt for task $TASK"; exit 1 ;;
+          esac
           # shellcheck disable=SC2016  # literal backticks for markdown
           {
-            cat monkey-assets/prompt/author.md
+            cat "$prompt"
             printf '\n## Runtime context\n\n'
             printf -- '- repository: `%s`\n' "$REPOSITORY"
             printf -- '- base_sha: `%s`\n' "$BASE_SHA"
+            if [ "$TASK" = revise ]; then
+              printf -- '- rebase_sha: `%s`\n' "$REBASE_SHA"
+              printf -- '- pull request: #%s, head `%s`\n' \
+                "$PULL_NUMBER" "$HEAD_SHA"
+            fi
             printf -- '- branch: `%s`\n' "$BRANCH"
             printf -- '- git identity: `%s` (placeholder, set in git)\n' \
               "$GIT_IDENTITY"
@@ -778,6 +879,7 @@ jobs:
         env:
           BRANCH: "${{ steps.packet.outputs.branch }}"
           BASE_SHA: "${{ matrix.base_sha }}"
+          REBASE_SHA: "${{ matrix.rebase_sha }}"
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           ISSUE: "${{ matrix.number }}"
           AGENT_OUTCOME: "${{ steps.agent.outcome }}"
@@ -804,10 +906,19 @@ jobs:
             *) outcome=unrecognised ;;
           esac
           if [ "$outcome" = proposed ]; then
+            # A revision may sit on either recorded base; the manifest
+            # says which, and nothing but those two values reaches the
+            # command line.
+            case "$(jq -r '.base_sha // ""' artefacts/manifest.json)" in
+              "$BASE_SHA" | "$REBASE_SHA") base="$(jq -r .base_sha \
+                artefacts/manifest.json)" ;;
+              *) echo "::warning::manifest base_sha is neither recorded base"
+                 base="$BASE_SHA" ;;
+            esac
             ref="refs/heads/$BRANCH"
             if git -C workspace rev-parse --verify -q "$ref" > /dev/null; then
               git -C workspace bundle create "$(pwd)/artefacts/changes.bundle" \
-                "$BASE_SHA..$ref"
+                "$base..$ref"
             else
               echo "::warning::manifest says proposed but $ref is absent"
             fi
@@ -878,6 +989,27 @@ jobs:
       !cancelled() && needs.select.result == 'success' &&
       needs.select.outputs.run_agent == 'true'
     runs-on: 'ubuntu-latest'
+    # One publish at a time per pull request, across named and scanned
+    # runs: the workflow-level groups keep runs apart by their target
+    # lists, and two lists that overlap on one pull request, or a scan
+    # and a named run, still reach it together. A revision's retitle,
+    # push, restore and respond must not interleave with another
+    # run's, so a revision locks on the pull request it revises and a
+    # new issue's publish on its issue, which also owns the branch. A
+    # dry run writes nothing and locks within its own run. A group
+    # keeps one pending job, so a third run on one pull request waits
+    # for neither; its selection is redone next time.
+    concurrency:
+      group: >-
+        ${{ inputs.dry_run
+        && format('code-monkey-publish-dry-run-{0}-{1}',
+        github.run_id, matrix.key)
+        || matrix.task == 'revise'
+        && format('code-monkey-publish-{0}-pull-{1}',
+        matrix.repository, matrix.pull_number)
+        || format('code-monkey-publish-{0}-issue-{1}',
+        matrix.repository, matrix.number) }}
+      cancel-in-progress: false
     # Twenty minutes for the publish itself, plus the Copilot review
     # wait and the read reserve copilot_review.py keeps for it.
     timeout-minutes: 60
@@ -910,12 +1042,16 @@ jobs:
           SELECTION_SHA: "${{ needs.select.outputs.selection_sha256 }}"
           GUIDANCE_SHA: "${{ needs.select.outputs.guidance_sha256 }}"
           KEY: "${{ matrix.key }}"
+          TASK: "${{ matrix.task }}"
+          HEAD_SHA: "${{ matrix.head_sha }}"
         run: |
           [[ "$ASSETS_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EVIDENCE_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SELECTION_SHA" =~ ^[0-9a-f]{64}$ ]]
           [[ "$GUIDANCE_SHA" =~ ^[0-9a-f]{64}$ ]]
           [[ "$KEY" =~ ^[A-Za-z0-9_.-]+$ ]]
+          [[ "$TASK" =~ ^(issue|revise)$ ]]
+          [[ "$HEAD_SHA" =~ ^([0-9a-f]{40})?$ ]]
 
       - name: 'Checkout trusted publisher'
         # yamllint disable-line rule:line-length
@@ -1110,32 +1246,15 @@ jobs:
           python3 monkey-assets/scripts/preflight.py identity \
             --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
 
-      - name: 'Push branch to fork'
-        id: push
-        env:
-          # yamllint disable-line rule:line-length
-          GH_TOKEN: "${{ steps.fork-token.outputs.token || steps.fork-create-token.outputs.token }}"
-          MODE: "${{ inputs.mode }}"
-          DRY_RUN: "${{ inputs.dry_run }}"
-          RUN_ATTEMPT: "${{ github.run_attempt }}"
-          # Empty when no proposal arrived; that session cost nothing
-          # the report can see.
-          AUTHOR_SESSION: "${{ steps.fetch.outputs.artifact_id }}"
-        run: |
-          extra=()
-          if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
-          python3 monkey-assets/scripts/publish.py push \
-            --check artefacts/check.json --workdir work \
-            --run-attempt "$RUN_ATTEMPT" \
-            --author-session "$AUTHOR_SESSION" \
-            --mode "$MODE" --output artefacts/result.json "${extra[@]}"
-
       # The pull request is the one write to the target: a token for
-      # the target that can touch pull requests and nothing else.
+      # the target that can touch pull requests and nothing else. It is
+      # minted before the push so a revision can set its title first;
+      # the push step itself holds the fork token alone.
       - name: 'Mint pull request token'
         id: pr-token
         if: >-
-          !cancelled() && steps.push.outcome == 'success' &&
+          (steps.check.outputs.verdict == 'proposed' ||
+          steps.check.outputs.verdict == 'handoff') &&
           !inputs.dry_run && inputs.mode == 'pull-requests' &&
           inputs.github_app_client_id != ''
         # yamllint disable-line rule:line-length
@@ -1156,6 +1275,59 @@ jobs:
           python3 monkey-assets/scripts/preflight.py identity \
             --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
 
+      # A single-commit revision whose subject changed must carry the
+      # new title before the push: the Semantic Pull Request check runs
+      # on the push and compares the title with the subject (AGENTS.md
+      # section 10.1). The description follows after the push.
+      - name: 'Retitle the pull request'
+        id: retitle
+        if: >-
+          matrix.task == 'revise' &&
+          steps.check.outputs.verdict == 'proposed' &&
+          !inputs.dry_run && inputs.mode == 'pull-requests' &&
+          inputs.github_app_client_id != ''
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py retitle \
+            --check artefacts/check.json --record artefacts/retitle.json
+
+      - name: 'Push branch to fork'
+        id: push
+        env:
+          # yamllint disable-line rule:line-length
+          GH_TOKEN: "${{ steps.fork-token.outputs.token || steps.fork-create-token.outputs.token }}"
+          MODE: "${{ inputs.mode }}"
+          DRY_RUN: "${{ inputs.dry_run }}"
+          RUN_ATTEMPT: "${{ github.run_attempt }}"
+          # Empty when no proposal arrived; that session cost nothing
+          # the report can see.
+          AUTHOR_SESSION: "${{ steps.fetch.outputs.artifact_id }}"
+        run: |
+          extra=()
+          if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
+          python3 monkey-assets/scripts/publish.py push \
+            --check artefacts/check.json --workdir work \
+            --run-attempt "$RUN_ATTEMPT" \
+            --author-session "$AUTHOR_SESSION" \
+            --mode "$MODE" --output artefacts/result.json "${extra[@]}"
+
+      # A title set for a push that then failed with the branch
+      # unchanged would break the title-and-subject match; the step
+      # gives the old title back when the head and title are still this
+      # attempt's, and never after a publication or an unknown swap. It
+      # runs after a failed retitle too, since GitHub may apply the
+      # title and lose the reply, and the push then never runs.
+      - name: 'Restore the title after a failed push'
+        id: restore-title
+        if: >-
+          !cancelled() && steps.retitle.outcome != 'skipped'
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py restore-title \
+            --record artefacts/retitle.json --result artefacts/result.json
+
       - name: 'Open pull request'
         id: open
         if: >-
@@ -1166,6 +1338,25 @@ jobs:
           GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
         run: |
           python3 monkey-assets/scripts/publish.py open \
+            --result artefacts/result.json --check artefacts/check.json \
+            --output artefacts/result.json
+
+      # A revision's pull request already exists; open above did
+      # nothing. Answer each review thread with the agent's reply,
+      # resolve the ones it marked fixed, and replace the description,
+      # all writes to the target's pull requests and nothing else
+      # (docs/DESIGN.md section 20).
+      - name: 'Respond to review threads'
+        id: respond
+        if: >-
+          !cancelled() && matrix.task == 'revise' &&
+          steps.push.outcome == 'success' &&
+          !inputs.dry_run && inputs.mode == 'pull-requests' &&
+          inputs.github_app_client_id != ''
+        env:
+          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+        run: |
+          python3 monkey-assets/scripts/publish.py respond \
             --result artefacts/result.json --check artefacts/check.json \
             --output artefacts/result.json
 

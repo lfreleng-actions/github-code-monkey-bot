@@ -31,6 +31,7 @@ REUSABLE = WORKFLOWS / "code-monkey.yaml"
 CRON = WORKFLOWS / "code-monkey-cron.yaml"
 TESTING = WORKFLOWS / "testing.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
+REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
 
 PLACEHOLDER_NAME = "Code Monkey"
 PLACEHOLDER_EMAIL = "code-monkey@example.invalid"
@@ -232,8 +233,9 @@ class TopLevelContracts(ReusableWorkflowCase):
             str(concurrency["group"]),
             "inputs.dry_run"
             " && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)"
-            " || inputs.issues != ''"
-            " && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)"
+            " || (inputs.issues != '' || inputs.pull_requests != '')"
+            " && format('code-monkey-named-{0}-{1}-{2}', inputs.org,"
+            " inputs.issues, inputs.pull_requests)"
             " || format('code-monkey-{0}-{1}', github.repository, inputs.org)",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
@@ -373,7 +375,7 @@ class AuthorJobContracts(ReusableWorkflowCase):
                 encoding="utf-8",
             )
             subprocess.run(["git", "init", "-q", "workspace"], cwd=work, check=True)
-            # The base-commit check needs HEAD to equal BASE_SHA; a
+            # The checkout check needs HEAD to equal CHECKOUT_SHA; a
             # fake rev-parse on PATH answers with the fixture SHA.
             fake = work / "bin"
             fake.mkdir()
@@ -391,7 +393,9 @@ class AuthorJobContracts(ReusableWorkflowCase):
             env = {
                 "PATH": f"{fake}:{os.environ['PATH']}",
                 "KEY": "repo-7",
-                "BASE_SHA": base,
+                "TASK": "issue",
+                "CHECKOUT_SHA": base,
+                "HEAD_SHA": "",
                 "GITHUB_OUTPUT": str(output),
             }
             proc = subprocess.run(
@@ -445,7 +449,7 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertTrue(is_action(checkout, CHECKOUT))
         with_ = cast(dict[str, Any], checkout["with"])
         self.assert_expression(with_["repository"], "matrix.repository")
-        self.assert_expression(with_["ref"], "matrix.base_sha")
+        self.assert_expression(with_["ref"], "matrix.checkout_sha")
         self.assertEqual(with_["path"], "workspace")
         self.assertIs(with_["persist-credentials"], False)
 
@@ -684,6 +688,211 @@ class PromptReviewContracts(ReusableWorkflowCase):
         self.assertEqual(skip_instructions(prompt), [])
 
 
+class RevisionContracts(ReusableWorkflowCase):
+    """A revision round reuses the pipeline; what differs is pinned here.
+
+    The author job checks out the default branch head, fetches the
+    bot branch from the public fork without a credential and refuses
+    any head but the recorded one; the publisher moves the branch
+    with a compare-and-swap and answers the review threads with the
+    pull request token (DESIGN.md section 20).
+    """
+
+    def test_revise_input_defaults_on_and_the_caller_forwards_it(self) -> None:
+        """Revisions are on unless a caller says otherwise."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertIs(inputs["revise"]["default"], True)
+        self.assertEqual(inputs["pull_requests"]["default"], "")
+        cron = cast(
+            dict[str | bool, Any], yaml.safe_load(CRON.read_text(encoding="utf-8"))
+        )
+        form = cast(
+            dict[str, dict[str, Any]], cron[TRIGGERS]["workflow_dispatch"]["inputs"]
+        )
+        self.assertIs(form["revise"]["default"], True)
+        self.assertEqual(form["pull_requests"]["default"], "")
+        with_ = cast(dict[str, Any], cron["jobs"]["code-monkey"]["with"])
+        self.assert_expression(with_["pull_requests"], "inputs.pull_requests || ''")
+        self.assert_expression(
+            with_["revise"], "github.event_name != 'workflow_dispatch' || inputs.revise"
+        )
+
+    def test_author_fetches_the_bot_branch_without_a_credential(self) -> None:
+        """The fork is public; the fetch names it and checks the head it recorded."""
+        fetch = self.step("author", "Fetch pull request branch")
+        self.assert_expression(fetch["if"], "matrix.task == 'revise'")
+        env = cast(dict[str, Any], fetch["env"])
+        self.assert_expression(env["FORK_REPOSITORY"], "matrix.fork_repository")
+        self.assert_expression(env["BRANCH"], "matrix.branch")
+        self.assert_expression(env["HEAD_SHA"], "matrix.head_sha")
+        script = flatten(fetch["run"])
+        self.assertIn('"https://github.com/$FORK_REPOSITORY.git"', script)
+        self.assertIn(
+            '[ "$(git -C workspace rev-parse FETCH_HEAD)" = "$HEAD_SHA" ]', script
+        )
+        self.assertNotIn("token", script.lower())
+        self.assertLess(
+            self.position("author", "Checkout target repository"),
+            self.position("author", "Fetch pull request branch"),
+        )
+        self.assertLess(
+            self.position("author", "Fetch pull request branch"),
+            self.position("author", "packet"),
+        )
+        guard = flatten(self.step("author", "Require pinned assets")["run"])
+        self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
+        self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
+
+    def test_prompt_follows_the_task(self) -> None:
+        """The revise prompt exists and the assemble step picks it by task."""
+        self.assertTrue(REVISE_PROMPT.is_file())
+        assemble = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], assemble["env"])
+        self.assert_expression(env["TASK"], "matrix.task")
+        script = flatten(assemble["run"])
+        # Each task maps to its own prompt file; a task with no mapping
+        # fails the step rather than reading a wrong file.
+        self.assertIn("issue) prompt=monkey-assets/prompt/author.md", script)
+        self.assertIn("revise) prompt=monkey-assets/prompt/revise.md", script)
+        self.assertIn("*) echo", script)
+        self.assertNotIn('"$TASK".md', script)
+        self.assertEqual(
+            skip_instructions(REVISE_PROMPT.read_text(encoding="utf-8")), []
+        )
+
+    def test_bundle_base_comes_from_the_manifest_within_the_recorded_pair(self) -> None:
+        """A revision bundles from the base the agent chose, if it is one of the two."""
+        bundle = self.step("author", "Bundle proposed commits")
+        env = cast(dict[str, Any], bundle["env"])
+        self.assert_expression(env["REBASE_SHA"], "matrix.rebase_sha")
+        script = flatten(bundle["run"])
+        self.assertIn("manifest base_sha is neither recorded base", script)
+        self.assertIn('"$BASE_SHA" | "$REBASE_SHA")', script)
+
+    def test_publisher_answers_threads_with_the_pull_request_token(self) -> None:
+        """Replies and resolves are writes to the target: the pull request token alone."""
+        respond = self.step("publish", "respond")
+        condition = unwrap(str(respond["if"]))
+        self.assertIn("matrix.task == 'revise'", condition)
+        self.assertIn("steps.push.outcome == 'success'", condition)
+        self.assertIn("inputs.mode == 'pull-requests'", condition)
+        self.assert_expression(
+            respond["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py respond", flatten(respond["run"]))
+        order = [
+            self.position("publish", name)
+            for name in ("pr-token", "retitle", "push", "respond", "review-request")
+        ]
+        self.assertEqual(order, sorted(order))
+        mint = self.step("publish", "pr-token")
+        self.assertNotIn("inputs.mode == 'pull-requests' &&\n", str(mint["if"]))
+
+    def test_a_revision_retitles_before_the_push(self) -> None:
+        """The title leads the push: the Semantic Pull Request check runs on the push.
+
+        AGENTS.md section 10.1 wants the title set before or with the
+        push. The pull request token is minted before the push for
+        that one write; the push step itself still holds the fork
+        token alone.
+        """
+        retitle = self.step("publish", "retitle")
+        condition = unwrap(str(retitle["if"]))
+        self.assertIn("matrix.task == 'revise'", condition)
+        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        self.assertIn("!inputs.dry_run", condition)
+        self.assertIn("inputs.mode == 'pull-requests'", condition)
+        self.assert_expression(
+            retitle["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py retitle", flatten(retitle["run"]))
+        self.assertLess(
+            self.position("publish", "pr-token"), self.position("publish", "retitle")
+        )
+        self.assertLess(
+            self.position("publish", "retitle"), self.position("publish", "push")
+        )
+        self.assertIn("--record artefacts/retitle.json", flatten(retitle["run"]))
+        push = self.step("publish", "push")
+        self.assertNotIn("pr-token", str(push["env"]["GH_TOKEN"]))
+        # A title the push did not earn is taken back after it, with
+        # the same token, before anything else writes to the target.
+        restore = self.step("publish", "restore-title")
+        restore_if = unwrap(str(restore["if"]))
+        self.assertIn("!cancelled()", restore_if)
+        # After a failed retitle too: GitHub may apply the title and
+        # lose the reply, and the push then never runs.
+        self.assertIn("steps.retitle.outcome != 'skipped'", restore_if)
+        self.assertNotIn("steps.retitle.outcome == 'success'", restore_if)
+        self.assertNotIn("steps.push.outcome", restore_if)
+        self.assert_expression(
+            restore["env"]["GH_TOKEN"], "steps.pr-token.outputs.token"
+        )
+        self.assertIn("publish.py restore-title", flatten(restore["run"]))
+        self.assertLess(
+            self.position("publish", "push"), self.position("publish", "restore-title")
+        )
+        self.assertLess(
+            self.position("publish", "restore-title"), self.position("publish", "open")
+        )
+        mint = unwrap(str(self.step("publish", "pr-token")["if"]))
+        self.assertNotIn("steps.push.outcome", mint)
+        for name in ("open", "respond"):
+            self.assertIn(
+                "steps.push.outcome == 'success'",
+                unwrap(str(self.step("publish", name)["if"])),
+            )
+
+    def test_a_handoff_reaches_push_without_a_token(self) -> None:
+        """Both fork mints need a proposal, so a handoff's push step holds no token.
+
+        Any GitHub read a handoff needs, the head check above all,
+        therefore belongs in ``respond``, which holds the pull request
+        token; the push step must stay offline for a handoff.
+        """
+        for identity in ("fork-token", "fork-create-token"):
+            condition = unwrap(str(self.step("publish", identity)["if"]))
+            self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        push = self.step("publish", "push")
+        self.assertEqual(
+            unwrap(str(push["env"]["GH_TOKEN"])),
+            "steps.fork-token.outputs.token || steps.fork-create-token.outputs.token",
+        )
+        self.assertNotIn("github.token", str(push["env"]["GH_TOKEN"]))
+        respond = self.step("publish", "respond")
+        self.assertNotIn("steps.check.outputs.verdict", str(respond["if"]))
+
+    def test_publish_serialises_per_pull_request(self) -> None:
+        """One publish at a time per pull request, across named and scanned runs.
+
+        The workflow-level groups keep runs apart by their target
+        lists; two lists that overlap on one pull request, or a scan
+        and a named run, still reach it together. The retitle, push,
+        restore and respond writes of a revision must not interleave
+        with another run's, so the publish job locks on the pull
+        request it revises, and a new issue's publish on its issue.
+        A dry run writes nothing and locks within its own run.
+        """
+        publish = self.jobs["publish"]
+        concurrency = cast(dict[str, Any], publish["concurrency"])
+        group = unwrap(str(concurrency["group"]))
+        self.assertIn("inputs.dry_run", group)
+        self.assertIn("github.run_id", group)
+        self.assertIn("matrix.repository", group)
+        self.assertIn("matrix.task", group)
+        self.assertIn("matrix.pull_number", group)
+        self.assertIn("matrix.number", group)
+        self.assertIs(concurrency["cancel-in-progress"], False)
+
+    def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
+        """head_sha and task are checked before any step reads them."""
+        guard = flatten(self.step("publish", "Require trusted provenance")["run"])
+        self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
+        self.assertIn('[[ "$HEAD_SHA" =~ ^([0-9a-f]{40})?$ ]]', guard)
+
+
 class ReviewGateContracts(ReusableWorkflowCase):
     """The publish job requests, awaits and reports the Copilot review.
 
@@ -840,8 +1049,6 @@ class PublishJobContracts(ReusableWorkflowCase):
         pr = self.step("publish", "pr-token")
         self.assertTrue(is_action(pr, APP_TOKEN))
         condition = unwrap(str(pr["if"]))
-        self.assertIn("!cancelled()", condition)
-        self.assertIn("steps.push.outcome == 'success'", condition)
         self.assertIn("!inputs.dry_run", condition)
         self.assertIn("inputs.mode == 'pull-requests'", condition)
         self.assertIn("inputs.github_app_client_id != ''", condition)
@@ -850,7 +1057,13 @@ class PublishJobContracts(ReusableWorkflowCase):
         self.assert_expression(pr_with["repositories"], "matrix.repo_name")
         self.assertEqual(pr_with["permission-pull-requests"], "write")
         self.assertEqual(pr_with["permission-metadata"], "read")
-        self.assertEqual(unwrap(str(self.step("publish", "open")["if"])), condition)
+        # The mint runs ahead of the push, for a revision's title; open
+        # and respond still wait for the push to succeed.
+        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        self.assertNotIn("steps.push.outcome", condition)
+        opened = unwrap(str(self.step("publish", "open")["if"]))
+        self.assertIn("steps.push.outcome == 'success'", opened)
+        self.assertIn("inputs.mode == 'pull-requests'", opened)
 
         comment = self.step("publish", "comment-token")
         self.assertTrue(is_action(comment, APP_TOKEN))
@@ -1211,10 +1424,10 @@ class MintProvenanceContracts(ReusableWorkflowCase):
         self.assertLess(self.position("publish", "fork-state"), min(positions))
         self.assertLess(max(positions), self.position("publish", "push"))
         self.assertLess(
-            self.position("publish", "push"), self.position("publish", "pr-token")
+            self.position("publish", "pr-token"), self.position("publish", "push")
         )
         self.assertLess(
-            self.position("publish", "pr-token"), self.position("publish", "open")
+            self.position("publish", "push"), self.position("publish", "open")
         )
 
 
@@ -1321,6 +1534,7 @@ class ListInputContracts(ReusableWorkflowCase):
         "repositories": ("repositories", "repository"),
         "exclude_repos": ("exclusions", "repository"),
         "issues": ("issues", "issue"),
+        "pull_requests": ("pulls", "pull-request"),
     }
 
     def test_each_list_is_split_as_objects_of_the_org(self) -> None:
@@ -1361,6 +1575,18 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertIn("::error::issues and repositories cannot both be given", script)
         select = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(select["ISSUES"], "steps.issues.outputs.csv")
+        self.assert_expression(select["PULL_REQUESTS"], "steps.pulls.outputs.csv")
+        self.assert_expression(select["REVISE"], "inputs.revise")
+        run = flatten(self.step("select", "Select issues")["run"])
+        self.assertIn('--pull-requests "$PULL_REQUESTS"', run)
+        self.assertIn("--no-revise", run)
+        # The run id and the select job's attempt are the session: a
+        # full rerun selects and authors anew under the same run id
+        # and must not reuse the earlier attempt's replies, while a
+        # publish-only retry reads the earlier selection and keeps it.
+        self.assertIn('--session "$RUN_ID-$RUN_ATTEMPT"', run)
+        self.assert_expression(select["RUN_ID"], "github.run_id")
+        self.assert_expression(select["RUN_ATTEMPT"], "github.run_attempt")
         self.assertIn(
             '--issues "$ISSUES"', flatten(self.step("select", "Select issues")["run"])
         )
@@ -1380,9 +1606,62 @@ class ListInputContracts(ReusableWorkflowCase):
         script = squash(str(budget["run"]))
         self.assertIn("::error::issues was given but names no issue", script)
         self.assertIn("::error::repositories was given but names no repository", script)
+        self.assert_expression(env["PULL_REQUESTS_RAW"], "inputs.pull_requests")
+        self.assertIn(
+            "::error::pull_requests was given but names no pull request", script
+        )
         check = self.position("select", "budget")
         self.assertLess(check, self.position("select", "app-token"))
         self.assertLess(check, self.position("select", "Select issues"))
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_a_pull_request_list_naming_nothing_is_refused(self) -> None:
+        """Separators alone in pull_requests fail too, rather than scan."""
+        budget = self.step("select", "budget")
+        env = {
+            "PATH": os.environ["PATH"],
+            "MODE": "pull-requests",
+            "MAX_PRS": "1",
+            "MAX_RUNTIME": "60",
+            "MAX_AGENTS": "1",
+            "MODEL": "auto",
+            "REPOSITORIES": "",
+            "REPOSITORIES_RAW": "",
+            "REPOSITORY_COUNT": "0",
+            "ISSUE_REPOSITORIES": "",
+            "ISSUES_RAW": "",
+            "ISSUE_COUNT": "0",
+            "ORG": "o",
+            "GUIDANCE_REPOSITORY": "o/.github",
+        }
+        for raw, count, error in (
+            (" , ", "0", "pull_requests was given but names no pull request"),
+            (",", "0", "pull_requests was given but names no pull request"),
+            ("repo#41", "1", None),
+            ("", "0", None),
+        ):
+            with (
+                self.subTest(pull_requests=raw),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        **env,
+                        "PULL_REQUESTS_RAW": raw,
+                        "PULL_COUNT": count,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if error is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn(f"::error::{error}", proc.stdout)
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_only_an_empty_list_means_a_scan(self) -> None:
@@ -1397,6 +1676,8 @@ class ListInputContracts(ReusableWorkflowCase):
             "MODEL": "auto",
             "REPOSITORIES": "",
             "ISSUE_REPOSITORIES": "",
+            "PULL_COUNT": "0",
+            "PULL_REQUESTS_RAW": "",
             "ORG": "o",
             "GUIDANCE_REPOSITORY": "o/.github",
         }
@@ -1453,6 +1734,9 @@ class ListInputContracts(ReusableWorkflowCase):
             env["ISSUE_REPOSITORIES"], "steps.issues.outputs.repositories"
         )
         self.assert_expression(
+            env["PULL_REPOSITORIES"], "steps.pulls.outputs.repositories"
+        )
+        self.assert_expression(
             env["REPOSITORIES"], "steps.repositories.outputs.repositories"
         )
         script = squash(str(named["run"]))
@@ -1490,9 +1774,9 @@ class ListInputContracts(ReusableWorkflowCase):
     def test_selection_reads_the_split_lists(self) -> None:
         """The raw inputs reach the splitters and nothing else.
 
-        The input check alone also sees the raw issues and repositories,
-        under names of their own, to tell an absent list from one that
-        parsed to nothing.
+        The input check alone also sees the raw issues, repositories
+        and pull requests, under names of their own, to tell an absent
+        list from one that parsed to nothing.
         """
         env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
@@ -1513,7 +1797,12 @@ class ListInputContracts(ReusableWorkflowCase):
                             "env": {
                                 k: v
                                 for k, v in step["env"].items()
-                                if k not in ("ISSUES_RAW", "REPOSITORIES_RAW")
+                                if k
+                                not in (
+                                    "ISSUES_RAW",
+                                    "REPOSITORIES_RAW",
+                                    "PULL_REQUESTS_RAW",
+                                )
                             },
                         }
                     text = json.dumps(checked)
@@ -1538,6 +1827,8 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "max_pull_requests",
                 "categories",
                 "issues",
+                "pull_requests",
+                "revise",
                 "max_runtime_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
@@ -1580,6 +1871,8 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_assigned": False,
             "load_repo_skills": False,
             "request_review": True,
+            "revise": True,
+            "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
             "assets_repository": "lfreleng-actions/github-code-monkey-bot",
@@ -1605,8 +1898,9 @@ class CronCallerContracts(WorkflowCase):
             "github.event_name == 'workflow_dispatch' && inputs.dry_run"
             " && format('code-monkey-dry-run-{0}', github.run_id)"
             " || github.event_name == 'workflow_dispatch'"
-            " && inputs.issues != ''"
-            " && format('code-monkey-named-{0}', github.run_id)"
+            " && (inputs.issues != '' || inputs.pull_requests != '')"
+            " && format('code-monkey-named-{0}-{1}', inputs.issues,"
+            " inputs.pull_requests)"
             " || 'code-monkey'",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)

@@ -35,10 +35,11 @@ verifies both offline against the trusted selection, then replays
 the commits through GitHub's `createCommitOnBranch`, which signs
 them, opens the pull request, requests a Copilot review of it and
 waits for the verdict, which the issue comment and the run report
-state. The pipeline cannot yet revise its own pull requests, so a
-review with findings waits for a maintainer. The agent reads the
-organisation's `AGENTS.md` at a recorded commit and works to its
-rules.
+state. A review with findings, or a maintainer's comment, brings a
+revision round: a later session reads the findings, revises the
+same pull request in place, answers each thread, and the review
+runs again, up to ten rounds. The agent reads the organisation's
+`AGENTS.md` at a recorded commit and works to its rules.
 
 ## Where bot branches live
 
@@ -71,7 +72,10 @@ administrators can dispatch it by hand with a model, a mode
 (`select`, `branches`, `pull-requests`), issue and runtime caps,
 a category list, and either a repository list to scan or a list of
 issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
-skips the scan and the triage filters.
+skips the scan and the triage filters. A list of the bot's open pull
+requests runs a revision round on each; an issue whose earlier
+attempt is still open gets a round too, and scheduled runs revise
+before they take new issues unless `revise` is off.
 
 ## Reusable workflow
 

@@ -23,6 +23,14 @@ from proposal_policy import PublishError, Rejection
 
 FORK_WAIT_SECONDS = 60
 FORK_POLL_SECONDS = 5
+# Two publishes in one run may sync the same fork at once: one
+# merge-upstream wins and the other answers 422 with the fork synced
+# all the same (issue #38). A concurrent sync finishes in seconds,
+# so the call is retried with a short backoff before the base lookup
+# decides, as it does after a 409.
+SYNC_BACKOFF_SECONDS = (2, 4, 8)
+SYNC_ATTEMPTS = len(SYNC_BACKOFF_SECONDS) + 1
+SYNC_TOLERATED = frozenset({409, 422})
 
 COMMIT_MUTATION = """
 mutation($input: CreateCommitOnBranchInput!) {
@@ -92,24 +100,41 @@ def ensure_fork(target: str, fork_org: str, repo_name: str) -> str:
 def sync_fork(fork: str, default_branch: str, base_sha: str) -> None:
     """Bring the fork's default branch up to date, then require the base.
 
-    ``merge-upstream`` answers 409 when the fork's branch has diverged;
-    the base commit may still be present, so the commit lookup, not
-    the sync status, decides whether the branch can be created.
+    ``merge-upstream`` answers 409 when the fork's branch has diverged
+    and 422 when another job's sync is updating the branch at the same
+    moment; the base commit may still be present either way, so the
+    commit lookup, not the sync status, decides whether the branch can
+    be created. The 422 is retried first, since the other sync is
+    about to finish. Any other status is no race and fails at once.
     """
-    try:
-        github.api_write(
-            "POST", f"repos/{fork}/merge-upstream", {"branch": default_branch}
-        )
-    except github.GitHubError as exc:
-        if exc.status != 409:
-            raise PublishError(f"could not sync fork {fork}: {exc}") from exc
+    unsynced = merge_upstream(fork, default_branch)
     try:
         github.api_object(f"repos/{fork}/commits/{base_sha}")
     except github.GitHubError as exc:
         # GitHub answers an unknown SHA with 422, a missing repo with 404.
         if github.is_absent(exc) or exc.status == 422:
-            raise PublishError(f"base commit {base_sha} is not in fork {fork}") from exc
+            cause = f"; the sync answered {unsynced}" if unsynced else ""
+            raise PublishError(
+                f"base commit {base_sha} is not in fork {fork}{cause}"
+            ) from exc
         raise PublishError(f"could not read {fork}: {exc}") from exc
+
+
+def merge_upstream(fork: str, default_branch: str) -> github.GitHubError | None:
+    """Sync the fork's branch; return the tolerated error it ended on, if any."""
+    for attempt in range(SYNC_ATTEMPTS):
+        try:
+            github.api_write(
+                "POST", f"repos/{fork}/merge-upstream", {"branch": default_branch}
+            )
+            return None
+        except github.GitHubError as exc:
+            if exc.status not in SYNC_TOLERATED:
+                raise PublishError(f"could not sync fork {fork}: {exc}") from exc
+            if exc.status == 409 or attempt == SYNC_ATTEMPTS - 1:
+                return exc
+            time.sleep(SYNC_BACKOFF_SECONDS[attempt])
+    return None  # pragma: no cover - the loop returns or raises
 
 
 def create_branch(repository: str, branch: str, base_sha: str) -> None:

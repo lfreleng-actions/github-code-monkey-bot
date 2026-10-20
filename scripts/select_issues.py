@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
+import re
 import sys
-from datetime import UTC, datetime
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,9 +36,11 @@ import fork_orgs as forks
 import issue_categories as categories
 import issue_reads as reads
 import repository_reads as repositories
+import revision_select
 import selection_outputs as outputs
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
+from selection_choose import choose
 from selection_inputs import (
     load_exclusions,
     parse_max_pull_requests,
@@ -46,15 +50,6 @@ from selection_inputs import (
 SCHEMA = 1
 PRIORITY_RANK = {"Urgent": 0, "High": 1, "Medium": 2, "Low": 3}
 SKIP_LABELS = frozenset({"question", "breaking-change", "chore", "no-agent"})
-BRANCH_PREFIX = "code-monkey/issue-"
-# GitHub expands at most 256 jobs from one matrix; a larger selection
-# would fail at the author job rather than run.
-MATRIX_LIMIT = 256
-# The verifier refuses a selection.json over 16 MiB. Issue bodies and
-# comments are bounded per issue, but 256 of them could still exceed
-# that, so the cumulative serialised size stops the selection first,
-# with headroom for the header fields and indentation.
-MAX_SELECTION_BYTES = 12 * 1024 * 1024
 
 
 def rank_key(candidate: dict[str, Any]) -> tuple[int, str, str, int]:
@@ -164,89 +159,6 @@ def enrich(
     return enriched
 
 
-def choose(
-    ranked: list[dict[str, Any]],
-    *,
-    fork_orgs: dict[str, Any],
-    max_pull_requests: int,
-    skipped: dict[str, int],
-    one_per_repository: bool = True,
-    skipped_issues: list[dict[str, str]] | None = None,
-) -> list[dict[str, Any]]:
-    """Run the expensive checks and cap; keep one issue per repository on a scan.
-
-    ``skipped_issues`` collects a reason per skipped issue when the
-    caller named them, so an operator learns why a named issue is
-    missing from the matrix.
-    """
-
-    def skip(candidate: dict[str, Any], counter: str, reason: str) -> None:
-        skipped[counter] += 1
-        if skipped_issues is not None:
-            reference = f"{candidate['repository']}#{candidate['number']}"
-            skipped_issues.append({"issue": reference, "reason": reason})
-
-    seen: set[str] = set()
-    chosen: list[dict[str, Any]] = []
-    # One issue yields at most one pull request, so capping the issues
-    # a run works caps the pull requests it can raise.
-    cap = min(max_pull_requests, MATRIX_LIMIT) if max_pull_requests else MATRIX_LIMIT
-    used_bytes = 0
-    for candidate in ranked:
-        repo = str(candidate["repository"])
-        if one_per_repository and repo in seen:
-            skipped["one_per_repo"] += 1
-            continue
-        if len(chosen) >= cap or used_bytes >= MAX_SELECTION_BYTES:
-            skip(candidate, "cap", "over the pull request cap")
-            continue
-        number = int(candidate["number"])
-        branch = f"{BRANCH_PREFIX}{number}"
-        # The publisher pushes into a fork in the bot pool, never the
-        # target (DESIGN.md section 4.3); a prior attempt lives there.
-        try:
-            fork_org = forks.resolve(fork_orgs, repo.partition("/")[0])
-        except ForkOrgError as exc:
-            raise SelectionError(str(exc)) from exc
-        fork_repository = f"{fork_org}/{candidate['repo_name']}"
-        # A pull request from the fork branch is an attempt a human has
-        # not processed yet. A fork branch with no pull request is an
-        # orphan from a publish that failed after pushing: select the
-        # issue so the publisher can adopt the branch and finish.
-        prior = reads.prior_attempt(repo, fork_repository, branch)
-        if prior == "pull_request":
-            skip(
-                candidate,
-                "attempted",
-                "an earlier attempt's pull request from the bot fork exists",
-            )
-            continue
-        if reads.has_open_linked_pr(repo, number):
-            skip(candidate, "linked_pr", "an open pull request is linked to close it")
-            continue
-        comments, dropped, truncated = reads.filtered_comments(repo, number)
-        entry: dict[str, Any] = {
-            "key": f"{candidate['repo_name']}-{number}",
-            **{k: v for k, v in candidate.items() if k != "assignees"},
-            "base_sha": reads.branch_head(repo, str(candidate["default_branch"])),
-            "branch": branch,
-            "fork_org": fork_org,
-            "fork_repository": fork_repository,
-            "resume": prior == "branch",
-            "comments": comments,
-            "comments_dropped": dropped,
-            "comments_truncated": truncated,
-        }
-        size = len(json.dumps(entry, indent=2).encode("utf-8"))
-        if used_bytes + size > MAX_SELECTION_BYTES:
-            skip(candidate, "cap", "over the selection size budget")
-            continue
-        used_bytes += size
-        seen.add(repo)
-        chosen.append(entry)
-    return chosen
-
-
 SKIP_COUNTERS = (
     "pull_request",
     "repository",
@@ -259,6 +171,8 @@ SKIP_COUNTERS = (
     "linked_pr",
     "one_per_repo",
     "cap",
+    "revision",
+    "duplicate",
 )
 
 
@@ -295,10 +209,26 @@ def scan_candidates(
 
 def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     """Run the whole selection and return it with the guidance bytes."""
+    # Before any read: a comment posted while the run reads is new
+    # work for the next round, so every entry carries this time. It
+    # sits one second early: the time has second precision and later
+    # reads want a comment strictly after it, so a comment posted in
+    # this same second would otherwise equal it and never count. The
+    # overlap may reread a boundary comment and loses none.
+    collected_at = (datetime.now(UTC) - timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     targets = explicit_targets.parse_issues(args.issues, args.org)
     explicit = parse_repositories(args.repositories)
-    if targets and explicit:
-        raise SelectionError("issues and repositories cannot both be given")
+    pulls = explicit_targets.parse_issues(args.pull_requests, args.org)
+    if (targets or pulls) and explicit:
+        raise SelectionError(
+            "issues or pull requests and repositories cannot both be given"
+        )
+    if pulls and args.mode != "pull-requests":
+        # A round moves a live pull request's head and answers its
+        # review; no other mode publishes that.
+        raise SelectionError("pull_requests needs pull-requests mode")
     exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
     try:
@@ -311,7 +241,28 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         raise SelectionError(str(exc)) from exc
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
-    if targets:
+    bot = reads.bot_identity(args.bot_slug)
+    explicit_run = bool(targets or pulls)
+    lowered = {name.lower() for name in exclusions}
+
+    def allowed(name: str) -> bool:
+        """The run's repository policy for a scan, as cheap_filter applies it."""
+        if explicit:
+            return name in explicit
+        return name not in lowered and (name != ".github" or args.include_dotgithub)
+
+    rounds = revision_select.Rounds(
+        args.org,
+        bot=bot,
+        fork_orgs=fork_orgs,
+        # A round moves a live pull request's head; branches mode
+        # publishes none, so it selects none.
+        enabled=bool(args.revise) and args.mode == "pull-requests",
+        explicit=explicit_run,
+        skips=(skipped, skipped_issues),
+        allowed=allowed,
+    )
+    if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given
         # order kept.
         seen = len(targets)
@@ -335,13 +286,60 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         fork_orgs=fork_orgs,
         max_pull_requests=max_pull_requests,
         skipped=skipped,
-        one_per_repository=not targets,
-        skipped_issues=skipped_issues if targets else None,
+        one_per_repository=not explicit_run,
+        skipped_issues=skipped_issues if explicit_run else None,
+        revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
+        reviser=rounds.for_issue,
     )
+    # The session names this selection: the run and its attempt, so
+    # a full rerun that selects anew takes a new one and a publish-only
+    # retry, reading this selection, keeps it. A scratch branch or a
+    # reply marked with it is this selection's alone where two runs
+    # may share a read time.
+    session = re.sub(r"[^0-9A-Za-z-]", "", args.session) or uuid.uuid4().hex
+    for entry in chosen:
+        entry["collected_at"] = collected_at
+        entry["session"] = session
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
     )
-    selection: dict[str, Any] = {
+    selection = selection_document(
+        args,
+        Settings(bot, enabled, max_pull_requests, guidance, commit),
+        lists=(explicit, targets, pulls, exclusions),
+        outcome=(seen, skipped, skipped_issues, chosen),
+    )
+    return selection, guidance
+
+
+@dataclass(frozen=True)
+class Settings:
+    """What the run was asked for, as the selection records it."""
+
+    bot: dict[str, Any]
+    enabled: frozenset[str]
+    max_pull_requests: int
+    guidance: bytes
+    commit: str
+
+
+def selection_document(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    lists: tuple[list[str], list[tuple[str, int]], list[tuple[str, int]], set[str]],
+    outcome: tuple[int, dict[str, int], list[dict[str, str]], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Assemble selection.json (DESIGN.md section 18.1)."""
+    bot, enabled, max_pull_requests = (
+        settings.bot,
+        settings.enabled,
+        settings.max_pull_requests,
+    )
+    content, commit = settings.guidance, settings.commit
+    explicit, targets, pulls, exclusions = lists
+    seen, skipped, skipped_issues, chosen = outcome
+    return {
         "schema": SCHEMA,
         "org": args.org,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -350,23 +348,26 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         "model": args.model,
         "categories": sorted(enabled),
         "max_pull_requests": max_pull_requests,
-        "bot": reads.bot_identity(args.bot_slug),
+        "bot": bot,
+        "revise": bool(args.revise),
         "guidance": {
             "repository": args.guidance_repository,
             "path": args.guidance_path,
             "ref": args.guidance_ref,
             "commit": commit,
-            "sha256": hashlib.sha256(guidance).hexdigest(),
+            "sha256": hashlib.sha256(content).hexdigest(),
         },
-        "exclusions": sorted(exclusions) if not (explicit or targets) else [],
+        "exclusions": sorted(exclusions) if not (explicit or targets or pulls) else [],
         "explicit_repositories": explicit,
         "explicit_issues": [f"{args.org}/{repo}#{number}" for repo, number in targets],
+        "explicit_pull_requests": [
+            f"{args.org}/{repo}#{number}" for repo, number in pulls
+        ],
         "skipped_issues": skipped_issues,
         "candidates_seen": seen,
         "skipped": skipped,
         "issues": chosen,
     }
-    return selection, guidance
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -381,6 +382,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--repositories", default="")
     parser.add_argument("--issues", default="")
+    parser.add_argument("--pull-requests", default="")
+    parser.add_argument("--session", default="")
+    parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)

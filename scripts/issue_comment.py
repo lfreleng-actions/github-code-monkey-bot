@@ -90,6 +90,46 @@ def review_sentence(result: dict[str, Any]) -> str:
     )
 
 
+MAX_ROUNDS = 10
+CAP_NOTICE = (
+    f" This was the round cap of {MAX_ROUNDS}: the workflow selects this"
+    " pull request no further, and a human must take over."
+)
+
+
+def round_of(result: dict[str, Any]) -> int:
+    """The revision round a result records, or 0 for a first proposal."""
+    value = result.get("round")
+    return value if type(value) is int and value > 0 else 0
+
+
+def capped(result: dict[str, Any]) -> bool:
+    """Whether the round leaves the pull request at the cap with work undone.
+
+    The selector skips a pull request at the cap whatever its state,
+    so every tenth-round outcome but a clean proposal needs a human;
+    a clean one is finished.
+    """
+    if round_of(result) < MAX_ROUNDS:
+        return False
+    return result.get("verdict") != "proposed" or review_verdict(result) != "clean"
+
+
+def published_head(result: dict[str, Any]) -> str:
+    """The head the push left, named in the comment so a round is traceable.
+
+    Later rounds replace the same branch, so the pull request URL
+    alone would not say which head a round described (issue #19).
+    """
+    commits = result.get("commits")
+    if not isinstance(commits, list) or not commits:
+        return ""
+    last = cast("list[Any]", commits)[-1]
+    if not isinstance(last, str) or not github.SHA_RE.fullmatch(last):
+        return ""
+    return f" (head {last[:12]})"
+
+
 def _proposed_comment(
     result: dict[str, Any], _reasons: str, _run_url: str
 ) -> str | None:
@@ -97,8 +137,47 @@ def _proposed_comment(
     if not url:
         return None
     noun = "pull request" if result.get("pull_request_url") else "branch"
-    opening = f"🐒 An AI agent has proposed a change for this issue: {noun} {url}"
+    where = f"{noun} {url}{published_head(result)}"
+    round_number = round_of(result)
+    if round_number:
+        summary = policy.comment_safe(str(result.get("round_summary") or ""))
+        opening = f"🐒 Round {round_number}: an AI agent revised {where}" + (
+            f". {summary}" if summary else ""
+        )
+        return opening + review_sentence(result)
+    opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
     return opening + review_sentence(result)
+
+
+def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:
+    url = result.get("pull_request_url") or ""
+    summary = policy.comment_safe(str(result.get("round_summary") or ""))
+    text = (
+        f"🐒 Round {round_of(result)}: an AI agent handed pull request {url} "
+        f"back to a maintainer. It disputes every remaining finding and changed "
+        f"nothing: {reasons}" + (f" {summary}" if summary else "")
+    )
+    responded = result.get("responded")
+    failed: Any = (
+        cast("dict[str, Any]", responded).get("failed")
+        if isinstance(responded, dict)
+        else 0
+    )
+    if type(failed) is int and failed > 0:
+        # A reply that did not post is not on its thread; the run
+        # report holds the warning that says why.
+        text += (
+            f" {failed} of its replies did not post (see the run: "
+            f"{run_url or 'n/a'}); the rest are on the threads, which stay open"
+        )
+    else:
+        text += " Its replies are on the threads, which stay open"
+    if capped(result):
+        return text + "."
+    return (
+        text
+        + "; the workflow revises this pull request again once a maintainer comments."
+    )
 
 
 def _abstain_comment(_result: dict[str, Any], reasons: str, _run_url: str) -> str:
@@ -128,6 +207,7 @@ def _publish_failed_comment(_result: dict[str, Any], reasons: str, run_url: str)
 
 COMMENTS: dict[str, Callable[[dict[str, Any], str, str], str | None]] = {
     "proposed": _proposed_comment,
+    "handoff": _handoff_comment,
     "abstain": _abstain_comment,
     "rejected": _rejected_comment,
     "author-failed": _failed_comment,
@@ -150,7 +230,10 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     )
     if len(reasons) > policy.MAX_COMMENT_REASON:
         reasons = reasons[: policy.MAX_COMMENT_REASON - 1] + "…"
-    return template(result, reasons, run_url)
+    text = template(result, reasons, run_url)
+    if text is not None and capped(result):
+        text += CAP_NOTICE
+    return text
 
 
 def review_token(result: dict[str, Any]) -> str:
@@ -194,6 +277,13 @@ def run_comment(args: argparse.Namespace) -> None:
     # leaving the issue at odds with result.json.
     verdict = review_verdict(result)
     suffix = f" review={review_token(result)}" if verdict else ""
+    if round_of(result):
+        suffix += f" round={round_of(result)}"
+    collected = result.get("collected_at")
+    if isinstance(collected, str) and collected:
+        # The watermark for the next round: when this run read the
+        # comments, not when it wrote this one.
+        suffix += f" since={collected}"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (

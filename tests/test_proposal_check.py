@@ -144,7 +144,7 @@ class Fixture:
         run_git(self.agent, *args)
         return run_git(self.agent, "rev-parse", "HEAD").strip()
 
-    def bundle(self) -> Path:
+    def bundle(self, base: str | None = None) -> Path:
         """Create changes.bundle from the base to the agent branch."""
         target = self.proposal / "changes.bundle"
         run_git(
@@ -153,9 +153,62 @@ class Fixture:
             "create",
             "-q",
             str(target),
-            f"{self.base_sha}..refs/heads/{self.branch}",
+            f"{base or self.base_sha}..refs/heads/{self.branch}",
         )
         return target
+
+    def advance_upstream(self) -> str:
+        """Add a commit to the upstream default branch; return its SHA."""
+        (self.upstream / "CHANGES.md").write_text("new\n", encoding="utf-8")
+        run_git(self.upstream, "add", "-A")
+        run_git(self.upstream, "commit", "-q", "-m", "Chore: Advance main")
+        return run_git(self.upstream, "rev-parse", "HEAD").strip()
+
+    def revision_entry(self, rebase_sha: str, head_sha: str) -> dict[str, Any]:
+        """The selection entry fields a revision adds."""
+        return {
+            "task": "revise",
+            "rebase_sha": rebase_sha,
+            "checkout_sha": rebase_sha,
+            "collected_at": "2026-09-18T00:00:00Z",
+            "session": "39115306869",
+            "round": 2,
+            "pull_request": {
+                "number": 41,
+                "url": f"https://github.com/{REPOSITORY}/pull/41",
+                "title": "Fix(readme): Correct typo",
+                "head_sha": head_sha,
+                "mergeable": True,
+                "created_at": "2026-09-02T00:00:00Z",
+            },
+            "threads": [
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "path": "README.md",
+                    "line": 3,
+                    "outdated": False,
+                    "author": "copilot-pull-request-reviewer",
+                    "body": "Typo here too.",
+                }
+            ],
+        }
+
+    def revision_manifest(self, **overrides: Any) -> None:
+        """A proposed revision manifest."""
+        fields: dict[str, Any] = {
+            "round_summary": "Fixed the typo the reviewer found.",
+            "responses": [
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "reply": "Fixed in the amended commit, @someone.",
+                    "resolve": True,
+                }
+            ],
+        }
+        fields.update(overrides)
+        self.manifest(**fields)
 
     def manifest(self, **overrides: Any) -> None:
         """Write a proposed manifest, applying overrides."""
@@ -1048,6 +1101,193 @@ class LoadJsonTest(unittest.TestCase):
                 model.load_json(path, "ctx")
             path.write_text('{"a": 1}', encoding="utf-8")
             self.assertEqual(model.load_json(path, "ctx"), {"a": 1})
+
+
+class RevisionCheckTest(GitCase):
+    """A revision verifies the whole chain on either recorded base."""
+
+    def setUp(self) -> None:
+        """A pull request head on the original base, and an advanced upstream."""
+        super().setUp()
+        self.head = self.fixture.commit(
+            "Fix(readme): Correct typo", {"README.md": README.replace("typo", "fix")}
+        )
+        self.tip = self.fixture.advance_upstream()
+
+    def run_revision(self) -> Any:
+        """Run the check with a revision selection entry."""
+        selection = self.fixture.selection(
+            **self.fixture.revision_entry(self.tip, self.head)
+        )
+        with patch.object(
+            checks, "prepare_clone", local_prepare_clone(self.fixture.upstream)
+        ):
+            return checks.run_check(
+                selection_path=self.fixture.write_selection(selection),
+                key=KEY,
+                proposal_dir=self.fixture.proposal,
+                workdir=self.fixture.workdir,
+                coauthors_path=self.fixture.write_coauthors(),
+                run_url=RUN_URL,
+            )
+
+    def test_chain_on_the_original_base(self) -> None:
+        """An amended chain on the pull request's own base is accepted."""
+        self.fixture.commit(
+            "Fix(readme): Correct typo", {"README.md": "# Repo\n\nfixed\n"}
+        )
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.task, "revise")
+        self.assertEqual(check.base_sha, self.fixture.base_sha)
+        self.assertFalse(check.rebased)
+        self.assertEqual(check.head_sha, self.head)
+        self.assertEqual(check.pull_number, 41)
+        self.assertEqual(check.round, 2)
+        self.assertEqual(len(check.commits), 2)
+        (response,) = check.responses
+        self.assertEqual(response["thread_id"], "PRRT_1")
+        self.assertEqual(response["comment_id"], 100)
+        self.assertIs(response["resolve"], True)
+        # Mentions in agent text are defused before any human reads them.
+        self.assertNotIn("@someone", response["reply"])
+        self.assertIn("someone", response["reply"])
+        self.assertEqual(check.round_summary, "Fixed the typo the reviewer found.")
+        self.assertTrue(check.pr_body.startswith(f"Closes #{ISSUE}\n"))
+        self.assertIn("Round 2", check.pr_body)
+
+    def test_each_reply_ends_with_the_round_marker(self) -> None:
+        """The marker is what a rerun looks for before it posts a reply again."""
+        self.fixture.commit(
+            "Fix(readme): Correct typo", {"README.md": "# Repo\n\nfixed\n"}
+        )
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        (response,) = self.run_revision().responses
+        # The round and the session, the run id, name the reply: a later
+        # session at the same round is another reply.
+        self.assertTrue(
+            response["reply"].endswith(
+                "\n\n<!-- code-monkey reply round=2 session=39115306869 -->"
+            ),
+            response["reply"],
+        )
+
+    def test_chain_rebased_onto_the_default_branch_head(self) -> None:
+        """A chain on the recorded rebase commit is accepted and marked rebased."""
+        run_git(self.fixture.agent, "fetch", "-q", str(self.fixture.upstream), "main")
+        run_git(self.fixture.agent, "rebase", "-q", "FETCH_HEAD")
+        self.fixture.bundle(self.tip)
+        self.fixture.revision_manifest(base_sha=self.tip)
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.base_sha, self.tip)
+        self.assertTrue(check.rebased)
+
+    def test_any_other_base_is_rejected(self) -> None:
+        """A chain on neither recorded commit is not this round's work."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest(base_sha="e" * 40)
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "rejected")
+        self.assertTrue(any("base_sha" in r for r in check.reasons))
+
+    def test_responses_must_name_the_packets_threads(self) -> None:
+        """A reply to a thread the selection never carried is a rejection."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest(
+            responses=[
+                {
+                    "thread_id": "PRRT_9",
+                    "comment_id": 100,
+                    "reply": "x",
+                    "resolve": True,
+                }
+            ]
+        )
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "rejected")
+        self.assertTrue(any("PRRT_9" in r for r in check.reasons))
+        self.fixture.revision_manifest(
+            responses=[
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "reply": "x",
+                    "resolve": "yes",
+                }
+            ]
+        )
+        self.assertEqual(self.run_revision().verdict, "rejected")
+
+    def test_round_summary_required_and_bounded(self) -> None:
+        """The summary is the issue comment: required, and cut to the reason cap."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest(round_summary="")
+        self.assertEqual(self.run_revision().verdict, "rejected")
+        self.fixture.revision_manifest(round_summary="x" * 5000)
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertLessEqual(len(check.round_summary), 2000)
+
+    def test_handoff_outcome_replies_without_a_chain(self) -> None:
+        """Disputing every finding is a handoff: replies validated, nothing to replay."""
+        self.fixture.revision_manifest(
+            outcome="handoff",
+            reason="Both findings are wrong about the cause; a human should decide.",
+            responses=[
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "reply": "Disputed: ...",
+                    "resolve": False,
+                }
+            ],
+        )
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "handoff", check.reasons)
+        self.assertEqual(check.commits, [])
+        (response,) = check.responses
+        self.assertIs(response["resolve"], False)
+        self.assertIn("a human should decide", check.reasons[0])
+        self.assertEqual(check.round_summary, "Fixed the typo the reviewer found.")
+
+    def test_handoff_may_resolve_nothing(self) -> None:
+        """A handoff that resolves a thread is a contradiction."""
+        self.fixture.revision_manifest(
+            outcome="handoff",
+            reason="r",
+            responses=[
+                {
+                    "thread_id": "PRRT_1",
+                    "comment_id": 100,
+                    "reply": "x",
+                    "resolve": True,
+                }
+            ],
+        )
+        self.assertEqual(self.run_revision().verdict, "rejected")
+        # And an issue session cannot hand off; it abstains.
+        self.fixture.manifest(outcome="handoff", reason="r")
+        self.assertEqual(self.fixture.run().verdict, "rejected")
+
+    def test_entry_records_when_its_comments_were_read(self) -> None:
+        """The check carries the selection's read time for the round footer."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        check = self.run_revision()
+        self.assertEqual(check.collected_at, "2026-09-18T00:00:00Z")
+
+    def test_unanswered_thread_is_a_warning_not_a_rejection(self) -> None:
+        """A thread the agent left alone stays open for a human; the check says so."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest(responses=[])
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.responses, [])
+        self.assertTrue(any("1 thread" in w for w in check.warnings))
 
 
 if __name__ == "__main__":
