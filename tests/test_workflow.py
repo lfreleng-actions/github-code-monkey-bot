@@ -2021,6 +2021,44 @@ class CronCallerContracts(WorkflowCase):
         self.assert_pinned_steps()
 
 
+# Free-length dispatch inputs. GitHub refuses a concurrency group name
+# of 400 characters or more before any job starts, so no group may
+# embed one of these. A test for emptiness yields a boolean that picks
+# a branch and never reaches the name, so it is allowed.
+UNBOUNDED_INPUTS = ("inputs.issues", "inputs.pull_requests", "inputs.repositories")
+EMPTINESS_TEST = re.compile(r"\binputs\.[a-z_]+\s*!=\s*''")
+
+
+class ConcurrencyGroupLengthContracts(unittest.TestCase):
+    """No concurrency group name can grow with a dispatch's target lists."""
+
+    @unittest.expectedFailure
+    def test_no_group_embeds_a_target_list(self) -> None:
+        """Workflow- and job-level groups in both workflows stay bounded."""
+        for path in (REUSABLE, CRON):
+            loaded = cast(
+                dict[str | bool, Any],
+                yaml.safe_load(path.read_text(encoding="utf-8")),
+            )
+            jobs = cast(dict[str, dict[str, Any]], loaded["jobs"])
+            scopes: list[tuple[str, object]] = [("workflow", loaded["concurrency"])]
+            scopes += [
+                (job, body["concurrency"])
+                for job, body in jobs.items()
+                if "concurrency" in body
+            ]
+            for scope, concurrency in scopes:
+                group = (
+                    cast(dict[str, Any], concurrency)["group"]
+                    if isinstance(concurrency, dict)
+                    else concurrency
+                )
+                named = EMPTINESS_TEST.sub("", str(group))
+                for name in UNBOUNDED_INPUTS:
+                    with self.subTest(workflow=path.name, scope=scope, input=name):
+                        self.assertNotIn(name, named)
+
+
 class TestingCallerContracts(WorkflowCase):
     """Pull request plumbing: secretless selection and the offline suite."""
 
