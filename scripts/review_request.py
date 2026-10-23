@@ -6,12 +6,19 @@
 The publish job's request is best effort (DESIGN.md section 8 step
 10): a refusal never fails the publish, but becomes a warning and an
 ``INFO`` notice at the top of the pull request body, which a later
-request that succeeds takes down again.
+request that succeeds takes down again. GitHub can accept the
+request without adding the reviewer, so it counts only once the
+reviewer reads back.
 """
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import bot_github as github
+
+# GraphQL names the bot without the suffix REST adds.
+REVIEWER_NAME = "copilot-pull-request-reviewer"
 
 # A refused review request is disclosed at the top of the pull request
 # body (#29), once; the marker makes a retry idempotent.
@@ -21,6 +28,34 @@ REFUSAL_NOTICE_MARKER = "<!-- code-monkey review-request-refused -->"
 REFUSAL_NOTICE_LINE = "> **INFO** The workflow "
 MAX_PR_BODY = 65_536
 
+REQUESTS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewRequests(first: 100) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on Bot { login }
+            ... on User { login }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+UNVERIFIED_REQUEST = (
+    "Copilot review request was accepted but no Copilot reviewer was added"
+)
+
+
+def is_copilot(login: object) -> bool:
+    """Whether a login names the Copilot reviewer bot, in either form."""
+    if not isinstance(login, str):
+        return False
+    return login.lower().removesuffix("[bot]") == REVIEWER_NAME
+
 
 def request_review(repository: str, number: int) -> str | None:
     """Ask Copilot to review; return a warning instead of raising on failure.
@@ -28,6 +63,11 @@ def request_review(repository: str, number: int) -> str | None:
     ``@copilot`` is the form GitHub accepts; the bare login fails. The
     request is best effort: a refusal is recorded, and the wait still
     runs in case a review starts another way.
+
+    Exit status 0 proves nothing: called with an App installation
+    token, the mutation ``gh`` sends succeeds without adding the
+    reviewer, so the request counts only once ``verify_request``
+    reads it back.
     """
     try:
         github.run_gh(
@@ -43,7 +83,77 @@ def request_review(repository: str, number: int) -> str | None:
         )
     except github.GitHubError as exc:
         return f"could not request a Copilot review: {github.safe_message(exc)}"
-    return None
+    return verify_request(repository, number)
+
+
+def copilot_requested(repository: str, number: int) -> bool:
+    """Whether the Copilot reviewer is among the pending review requests.
+
+    GraphQL, because its ``requestedReviewer`` union includes ``Bot``;
+    the REST ``requested_reviewers`` listing is not known to.
+    """
+    owner, _, name = repository.partition("/")
+    data = github.graphql(
+        REQUESTS_QUERY, {"owner": owner, "name": name, "number": number}, read=True
+    )
+    reply = data.get("repository")
+    pull = (
+        cast("dict[str, Any]", reply).get("pullRequest")
+        if isinstance(reply, dict)
+        else None
+    )
+    requests = (
+        cast("dict[str, Any]", pull).get("reviewRequests")
+        if isinstance(pull, dict)
+        else None
+    )
+    nodes = (
+        cast("dict[str, Any]", requests).get("nodes")
+        if isinstance(requests, dict)
+        else None
+    )
+    if not isinstance(nodes, list):
+        raise github.GitHubError("review request query returned no nodes")
+    for node in cast("list[Any]", nodes):
+        reviewer = (
+            cast("dict[str, Any]", node).get("requestedReviewer")
+            if isinstance(node, dict)
+            else None
+        )
+        if isinstance(reviewer, dict) and is_copilot(
+            cast("dict[str, Any]", reviewer).get("login")
+        ):
+            return True
+    return False
+
+
+def copilot_reviewed(repository: str, number: int) -> bool:
+    """Whether Copilot has reviewed the pull request at all, of any commit."""
+    for review in github.api_list(f"repos/{repository}/pulls/{number}/reviews"):
+        user = review.get("user")
+        if isinstance(user, dict) and is_copilot(
+            cast("dict[str, Any]", user).get("login")
+        ):
+            return True
+    return False
+
+
+def verify_request(repository: str, number: int) -> str | None:
+    """Confirm the request landed; return a warning when it did not.
+
+    A review already given counts, since it clears the pending
+    request. A failed read is a warning too, never a success.
+    """
+    try:
+        if copilot_requested(repository, number) or copilot_reviewed(
+            repository, number
+        ):
+            return None
+    except github.GitHubError as exc:
+        return (
+            f"could not confirm the Copilot review request: {github.safe_message(exc)}"
+        )
+    return UNVERIFIED_REQUEST
 
 
 def add_refusal_notice(repository: str, number: int, warning: str) -> str | None:

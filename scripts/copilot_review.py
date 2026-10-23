@@ -5,7 +5,8 @@
 
 GitHub starts no review by itself for a pull request a GitHub App
 opens (DESIGN.md section 8), so the trusted publish job asks for one
-with the pull request token, best effort, then polls with the job's
+with the pull request token, best effort, reads the request back to
+confirm GitHub added the reviewer, then polls with the job's
 own token for a review by Copilot whose ``commit_id`` is the head it
 published, reads the unresolved review threads, and classifies the
 pair (``review_verdict``). A review that never arrives within the
@@ -165,13 +166,18 @@ def await_review(
     read's worst case. Read failures that outlast the wrapper's own
     retries end the wait as pending with the reason, never as clean.
     """
-    deadline = clock() + wait_minutes * 60
+    start = clock()
+    deadline = start + wait_minutes * 60
     while True:
         remaining = deadline - clock()
         if remaining <= RESERVE_SECONDS:
+            # The reserve cuts polling short of the nominal wait; the
+            # reason reports the time actually spent.
+            polled = (clock() - start) / 60
             return (
                 verdicts.pending(
-                    f"no Copilot review of {head_sha[:7]} within {wait_minutes} minutes"
+                    f"no Copilot review of {head_sha[:7]} after polling for "
+                    f"{polled:.1f} minutes of a {wait_minutes}-minute wait"
                 ),
                 None,
             )

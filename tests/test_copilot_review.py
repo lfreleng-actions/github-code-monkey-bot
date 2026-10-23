@@ -118,7 +118,6 @@ class RequestReviewTest(unittest.TestCase):
             ["pr", "edit", "41", "--repo", REPO, "--add-reviewer", "@copilot"],
         )
 
-    @unittest.expectedFailure
     def test_request_is_read_back(self) -> None:
         """A request counts once the Copilot reviewer reads back, in either form."""
         for login in (
@@ -138,7 +137,6 @@ class RequestReviewTest(unittest.TestCase):
                 self.assertIs(gql.call_args.kwargs.get("read"), True)
                 self.assertEqual(gql.call_args.args[1]["number"], 41)
 
-    @unittest.expectedFailure
     def test_request_that_added_no_reviewer_is_a_warning(self) -> None:
         """Exit status 0 without the reviewer reading back is not success."""
         with (
@@ -154,7 +152,6 @@ class RequestReviewTest(unittest.TestCase):
         assert warning is not None
         self.assertIn("no Copilot reviewer was added", warning)
 
-    @unittest.expectedFailure
     def test_a_copilot_review_already_given_counts(self) -> None:
         """A fast review clears the pending request; the request still landed."""
         with (
@@ -167,7 +164,6 @@ class RequestReviewTest(unittest.TestCase):
             self.assertIsNone(request.request_review(REPO, 41))
         self.assertEqual(listing.call_args.args[0], f"repos/{REPO}/pulls/41/reviews")
 
-    @unittest.expectedFailure
     def test_a_failed_read_back_is_a_warning(self) -> None:
         """A request that cannot be confirmed is never recorded as sent."""
         failure = github.GitHubError("gh: Server Error (HTTP 502)")
@@ -268,14 +264,13 @@ class AwaitReviewTest(unittest.TestCase):
             )
         self.assertEqual(verdict.verdict, "pending")
         self.assertIsNone(review_id)
-        self.assertIn("within 20 minutes", verdict.reasons[0])
+        self.assertIn("20-minute wait", verdict.reasons[0])
         # Every read began with the reserve still available, and the
         # clock never passed the deadline.
         self.assertLessEqual(clock.now, 20 * 60)
         self.assertGreater(len(listing.call_args_list), 1)
         self.assertGreaterEqual(20 * 60 - sum(clock.sleeps), review.RESERVE_SECONDS)
 
-    @unittest.expectedFailure
     def test_pending_reason_reports_the_time_polled(self) -> None:
         """The reserve ends polling early; the reason says how long it ran."""
         clock = Clock()
@@ -459,7 +454,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
 
-    @unittest.expectedFailure
     def test_request_that_added_no_reviewer_is_refused(self) -> None:
         """An accepted request with no reviewer takes the refusal path."""
         self.write()

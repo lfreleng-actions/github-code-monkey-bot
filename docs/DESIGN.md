@@ -781,16 +781,24 @@ For each selected issue:
 10. **Request the Copilot review** (`request_review`, on by default)
     with the pull request token, through
     `gh pr edit --add-reviewer @copilot`, the form GitHub accepts
-    (the organisation guidance, Appendix B). The request is best
-    effort: a refusal becomes a warning in `result.json` with
-    GitHub's answer and an `INFO` notice at the top of the pull
-    request body, placed once with the same token and taken down by
-    a retry whose request succeeds, so a maintainer reading the pull
-    request knows whether the workflow requested a review; the
-    publish goes on, and no token gains a permission for it.
-    Whether GitHub accepts the request from an App installation token
-    is the open point of §17; if it does not, the fallback is a
-    credential that can, held by this step alone.
+    (the organisation guidance, Appendix B). An exit status of 0
+    proves nothing: `gh` sends a `requestReviewsByLogin` mutation
+    that selects nothing but `clientMutationId`, and from the App's
+    installation token GitHub accepts it without adding the
+    reviewer. So the step reads the request back through GraphQL
+    (`reviewRequests.nodes.requestedReviewer`, whose union includes
+    `Bot`) and counts it as sent when the Copilot reviewer is there,
+    or when a Copilot review already exists, since a fast review
+    clears the pending request; a missing reviewer or a failed read is a
+    refusal. The request is best effort: a refusal becomes a warning
+    in `result.json` with GitHub's answer and an `INFO` notice at
+    the top of the pull request body, placed once with the same
+    token and taken down by a retry whose request succeeds, so a
+    maintainer reading the pull request knows whether the workflow
+    requested a review; the publish goes on, and no token gains a
+    permission for it. The App's token cannot add the reviewer
+    (§17); the remedy is a credential that can, held by this step
+    alone.
 11. **Await the Copilot review** with the job's own token, since the
     target is public: poll for a review by
     `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
@@ -808,7 +816,9 @@ For each selected issue:
     in older reviews) or `🔵 Needs a closer look`; **findings**
     otherwise, `🟡 Changes recommended` and the older format with no
     assessment included; **pending** when no review of the head
-    arrives within the wait. The body is text from outside: the
+    arrives within the wait, whose reason states how long polling
+    ran, since the reserve for a hit's reads stops it short of the
+    nominal wait. The body is text from outside: the
     classifier reads 64 KiB at most and treats a longer body as
     findings, since the part it cannot read may hold suppressed
     findings; drops fenced code and Copilot's one HTML comment, its
@@ -1199,7 +1209,7 @@ conflicts while producer artifacts survive.
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
-| Copilot refuses the App's review request | No review arrives | Recorded as a warning and `pending` (§8 steps 10–11); the fallback credential of §17 |
+| Copilot ignores the App's review request | No review arrives | Read back; recorded as a warning and `pending` (§8 steps 10–11); the fallback credential of §17 |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 
 <!-- markdownlint-enable MD013 -->
@@ -1353,13 +1363,18 @@ Still to confirm during rollout rather than before it:
    covers larger changes.
 4. **Requesting a Copilot review with an App token** (§8 step 10).
    GitHub's documentation bills a review "when a bot requests" it
-   to the organisation, which implies an App may ask, but nobody has
-   yet tried with this App's installation token. The first live
-   `pull-requests` run settles it. If GitHub refuses, the warning in
-   `result.json` records the answer and the review stays pending;
-   the agreed fallback is a fine-grained token with Pull requests:
-   write on the target organisation, held as a secret and used by
-   that one step alone, flagged here as a follow-up and a possible
+   to the organisation, which implies an App may ask. The live
+   `pull-requests` runs showed it cannot: the mutation succeeds
+   with the installation token, but the timeline shows no Copilot
+   request and no review arrives, while the same request with a
+   user token brought a review every time. GitHub never refused, so
+   the step reported `sent` until it learnt to read the request
+   back; it now records the refusal, and the review stays pending.
+   The remedy is still the fallback credential, a fine-grained token
+   with Pull requests: write on the target organisation, or a user
+   with a Copilot seat, held as a secret and used by that one step
+   alone. Nobody has yet decided which account owns it or where
+   GitHub bills its reviews, so it stays a follow-up and a possible
    redesign rather than widened into any App mint.
 
 ## 18. Data Contracts
