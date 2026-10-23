@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 github = import_module("bot_github")
 review = import_module("copilot_review")
+request = import_module("review_request")
 BODIES = import_module("review_fixtures").BODIES
 
 HEAD = "a" * 40
@@ -89,7 +90,7 @@ class RequestReviewTest(unittest.TestCase):
     def test_request_form(self) -> None:
         """``gh pr edit --add-reviewer @copilot`` on the repository's pull request."""
         with patch.object(github, "run_gh", return_value="") as gh:
-            self.assertIsNone(review.request_review(REPO, 41))
+            self.assertIsNone(request.request_review(REPO, 41))
         self.assertEqual(
             gh.call_args.args[0],
             ["pr", "edit", "41", "--repo", REPO, "--add-reviewer", "@copilot"],
@@ -101,7 +102,7 @@ class RequestReviewTest(unittest.TestCase):
             "gh: Resource not accessible::by integration (HTTP 403)"
         )
         with patch.object(github, "run_gh", side_effect=failure):
-            warning = review.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41)
         assert warning is not None
         self.assertIn("could not request a Copilot review", warning)
         self.assertNotIn("::", warning)
@@ -357,7 +358,7 @@ class HandlersTest(unittest.TestCase):
         method, endpoint, payload = write.call_args.args
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/pulls/41"))
         body = payload["body"]
-        self.assertTrue(body.startswith(review.REFUSAL_NOTICE_MARKER))
+        self.assertTrue(body.startswith(request.REFUSAL_NOTICE_MARKER))
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
 
@@ -365,7 +366,7 @@ class HandlersTest(unittest.TestCase):
         """A request that succeeds on a rerun takes its earlier notice down."""
         self.write()
         noted = (
-            review.REFUSAL_NOTICE_MARKER
+            request.REFUSAL_NOTICE_MARKER
             + "\n> **INFO** The workflow x.\n\nCloses #7\n\nbody"
         )
         with (
@@ -397,7 +398,7 @@ class HandlersTest(unittest.TestCase):
         """
         self.write()
         edited = (
-            review.REFUSAL_NOTICE_MARKER + "\n> **INFO** The workflow x.\nCloses #7"
+            request.REFUSAL_NOTICE_MARKER + "\n> **INFO** The workflow x.\nCloses #7"
         )
         with (
             patch.object(github, "run_gh", return_value=""),
@@ -420,7 +421,7 @@ class HandlersTest(unittest.TestCase):
         """
         self.write()
         merged = (
-            review.REFUSAL_NOTICE_MARKER
+            request.REFUSAL_NOTICE_MARKER
             + "\n> **INFO** The workflow x.\nCloses #7\n\nbody"
         )
         with (
@@ -437,7 +438,7 @@ class HandlersTest(unittest.TestCase):
     def test_refusal_notice_is_idempotent_and_best_effort(self) -> None:
         """A body already carrying the notice is left alone; a failed edit is a warning."""
         self.write()
-        noted = review.REFUSAL_NOTICE_MARKER + "\n> note\n\nCloses #7"
+        noted = request.REFUSAL_NOTICE_MARKER + "\n> note\n\nCloses #7"
         with (
             patch.object(github, "run_gh", side_effect=github.GitHubError("no")),
             patch.object(github, "api_object", return_value={"body": noted}),

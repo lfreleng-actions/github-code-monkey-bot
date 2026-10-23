@@ -29,6 +29,7 @@ from typing import Any, cast
 
 import bot_github as github
 import proposal_model as model
+import review_request
 import review_verdict as verdicts
 from review_verdict import Verdict
 
@@ -43,14 +44,6 @@ READ_BUDGET_SECONDS = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
 # A hit costs the review listing, the thread count and the head check.
 RESERVE_SECONDS = 3 * READ_BUDGET_SECONDS
 PULL_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
-# A refused review request is disclosed at the top of the pull request
-# body (#29), once; the marker makes a retry idempotent.
-REFUSAL_NOTICE_MARKER = "<!-- code-monkey review-request-refused -->"
-# The one line the notice holds after its marker; removal takes the
-# marker and this line alone.
-REFUSAL_NOTICE_LINE = "> **INFO** The workflow "
-MAX_PR_BODY = 65_536
-
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -71,85 +64,6 @@ def pull_reference(url: str) -> tuple[str, int]:
     if found is None:
         raise github.GitHubError(f"not a pull request URL: {url!r}")
     return found.group(1), int(found.group(2))
-
-
-def request_review(repository: str, number: int) -> str | None:
-    """Ask Copilot to review; return a warning instead of raising on failure.
-
-    ``@copilot`` is the form GitHub accepts; the bare login fails. The
-    request is best effort: a refusal is recorded, and the wait still
-    runs in case a review starts another way.
-    """
-    try:
-        github.run_gh(
-            [
-                "pr",
-                "edit",
-                str(number),
-                "--repo",
-                repository,
-                "--add-reviewer",
-                "@copilot",
-            ]
-        )
-    except github.GitHubError as exc:
-        return f"could not request a Copilot review: {github.safe_message(exc)}"
-    return None
-
-
-def add_refusal_notice(repository: str, number: int, warning: str) -> str | None:
-    """Put the refusal at the top of the pull request body, once; warn on failure.
-
-    The notice tells a maintainer the review they expect was never
-    requested, in the place they read first. Best effort with the
-    token the publish already holds: no permission widens for it.
-    """
-    try:
-        data = github.api_object(f"repos/{repository}/pulls/{number}")
-        body = data.get("body")
-        current = body if isinstance(body, str) else ""
-        if current.startswith(REFUSAL_NOTICE_MARKER):
-            return None
-        notice = (
-            f"{REFUSAL_NOTICE_MARKER}\n{REFUSAL_NOTICE_LINE}{warning}; "
-            "no Copilot review was requested for this pull request, so a "
-            "maintainer should request one.\n\n"
-        )
-        if len(notice) + len(current) > MAX_PR_BODY:
-            return "could not add the review notice: the body is at its size limit"
-        github.api_write(
-            "PATCH", f"repos/{repository}/pulls/{number}", {"body": notice + current}
-        )
-    except github.GitHubError as exc:
-        return f"could not add the review notice: {github.safe_message(exc)}"
-    return None
-
-
-def remove_refusal_notice(repository: str, number: int) -> str | None:
-    """Take an earlier refusal notice off the body once a request succeeds.
-
-    The notice is the publisher's own block: the marker and the INFO
-    paragraph, up to the first blank line. Best effort, like placing
-    it; a failure is a warning.
-    """
-    try:
-        data = github.api_object(f"repos/{repository}/pulls/{number}")
-        body = data.get("body")
-        current = body if isinstance(body, str) else ""
-        if not current.startswith(REFUSAL_NOTICE_MARKER):
-            return None
-        end = current.find("\n\n")
-        block = current[:end].split("\n") if end >= 0 else []
-        if len(block) != 2 or not block[1].startswith(REFUSAL_NOTICE_LINE):
-            # A maintainer's edit moved the blank line that bounds the
-            # notice: cutting there would take their text, or the
-            # whole description, with it. The notice stays.
-            return "the review notice was left in place: its boundary is gone"
-        rest = current[end + 2 :]
-        github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"body": rest})
-    except github.GitHubError as exc:
-        return f"could not remove the review notice: {github.safe_message(exc)}"
-    return None
 
 
 def pull_head(repository: str, number: int) -> str:
@@ -345,17 +259,17 @@ def run_request(args: argparse.Namespace) -> None:
     if target is None:
         print("no pull request to request a review of")
         return
-    warning = request_review(*target)
+    warning = review_request.request_review(*target)
     record = cast("dict[str, Any]", result.get("review") or {})
     record["requested"] = warning is None
     result["review"] = record
     warnings = cast("list[Any]", result.setdefault("warnings", []))
     if warning is not None:
         warnings.append(warning)
-        notice = add_refusal_notice(*target, warning)
+        notice = review_request.add_refusal_notice(*target, warning)
     else:
         # A retry that succeeded after a refusal: the notice is stale.
-        notice = remove_refusal_notice(*target)
+        notice = review_request.remove_refusal_notice(*target)
     if notice is not None:
         warnings.append(notice)
     write_result(args.output, result)

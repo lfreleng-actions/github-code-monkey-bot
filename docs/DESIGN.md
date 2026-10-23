@@ -1240,6 +1240,7 @@ scripts/review_verdict.py                classify a Copilot review (§8 step 11)
 scripts/review_sections.py               its suppressed and unchanged-code counts
 scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
+scripts/review_request.py                the request and its refusal notice
 scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies
 scripts/round_reads.py                   the issue's rounds and new comments
