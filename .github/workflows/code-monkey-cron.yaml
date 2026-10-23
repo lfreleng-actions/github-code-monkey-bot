@@ -105,19 +105,20 @@ permissions: {}
 # FIFO queue. A dry dispatch writes nothing and takes a group of its
 # own: it neither waits behind the schedule nor cancels a pending
 # live run. A live dispatch that names `issues` or `pull_requests`
-# locks on its target list instead: two dispatches naming the same
-# targets are duplicates and queue on one lock, while dispatches
-# naming different targets run apart. Lists that overlap without
-# matching still run apart; there the per-issue pull request check,
-# the branch-exists refusal and the revision's compare-and-swap stop
-# a duplicate.
+# locks on its own run, a fixed-length key: a group name built from
+# the target lists would grow with them past GitHub's 400-character
+# limit. Two dispatches naming the same or overlapping targets run
+# apart; the reusable workflow's publish locks serialise their writes
+# to any one pull request or issue, and the per-issue pull request
+# check, the branch-exists refusal and the revision's compare-and-swap
+# stop a duplicate.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
     && format('code-monkey-dry-run-{0}', github.run_id)
     || github.event_name == 'workflow_dispatch'
     && (inputs.issues != '' || inputs.pull_requests != '')
-    && format('code-monkey-named-{0}-{1}', inputs.issues, inputs.pull_requests)
+    && format('code-monkey-named-{0}', github.run_id)
     || 'code-monkey' }}
   cancel-in-progress: false
 

@@ -234,8 +234,7 @@ class TopLevelContracts(ReusableWorkflowCase):
             "inputs.dry_run"
             " && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)"
             " || (inputs.issues != '' || inputs.pull_requests != '')"
-            " && format('code-monkey-named-{0}-{1}-{2}', inputs.org,"
-            " inputs.issues, inputs.pull_requests)"
+            " && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)"
             " || format('code-monkey-{0}-{1}', github.repository, inputs.org)",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
@@ -1899,8 +1898,7 @@ class CronCallerContracts(WorkflowCase):
             " && format('code-monkey-dry-run-{0}', github.run_id)"
             " || github.event_name == 'workflow_dispatch'"
             " && (inputs.issues != '' || inputs.pull_requests != '')"
-            " && format('code-monkey-named-{0}-{1}', inputs.issues,"
-            " inputs.pull_requests)"
+            " && format('code-monkey-named-{0}', github.run_id)"
             " || 'code-monkey'",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
@@ -2032,7 +2030,6 @@ EMPTINESS_TEST = re.compile(r"\binputs\.[a-z_]+\s*!=\s*''")
 class ConcurrencyGroupLengthContracts(unittest.TestCase):
     """No concurrency group name can grow with a dispatch's target lists."""
 
-    @unittest.expectedFailure
     def test_no_group_embeds_a_target_list(self) -> None:
         """Workflow- and job-level groups in both workflows stay bounded."""
         for path in (REUSABLE, CRON):

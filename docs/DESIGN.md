@@ -1124,33 +1124,39 @@ today. Move it when a second consumer appears.
   writes nothing and takes `code-monkey-dry-run-<run_id>` instead:
   it neither waits behind the schedule nor cancels a pending live
   run. A live dispatch that names `issues` or `pull_requests` takes
-  `code-monkey-named-<issues>-<pull_requests>`, its target list:
-  dispatches naming different targets run apart rather than evict
-  each other without trace, and two naming the same targets are
-  duplicates that queue on one lock, so neither can retitle, push or
-  roll back a title under the other (§20.3). Its
-  scope is the named targets alone (§6 "Explicit issues", §20.1),
-  `max_pull_requests` bounds it, and lists that overlap without
-  matching still run apart: there the §6 open-pull-request check,
-  the publisher's branch-exists refusal and the revision's
-  compare-and-swap limit an overlap on one
-  target to a wasted author session, never a duplicate pull request
-  or a lost round.
+  `code-monkey-named-<run_id>`, keyed on its own run: dispatches run
+  apart rather than evict each other without trace, and the group
+  name keeps a fixed length, where one built from the target lists
+  would pass GitHub's 400-character limit at about fifteen `repo#N`
+  references and fail the run before any job starts. Its scope is
+  the named targets alone (§6 "Explicit issues", §20.1), and
+  `max_pull_requests` bounds it. Two dispatches naming the same or
+  overlapping targets run together; the publish job's locks below
+  serialise their writes to any one pull request or issue, so
+  neither can retitle, push or roll back a title under the other
+  (§20.3), and the §6 open-pull-request check, the publisher's
+  branch-exists refusal and the revision's compare-and-swap limit
+  the overlap to a wasted author session, never a duplicate pull
+  request or a lost round.
   A scan keeps the shared group even when `repositories` narrows it.
 - The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
-  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>`, keyed on
-  the caller run, and a live run naming `issues` or `pull_requests`
-  on `code-monkey-named-<owner>-<issues>-<pull_requests>`, keyed on
-  its targets, so the legs of one caller run queue on their own lock
-  and never cancel or wait on an unrelated run.
-  All three groups set `cancel-in-progress: false`.
+  A dry run locks on `code-monkey-dry-run-<run_id>-<owner>` and a
+  live run naming `issues` or `pull_requests` on
+  `code-monkey-named-<run_id>-<owner>`, both keyed on the caller run
+  (`github.run_id` in a reusable workflow is the caller's), so the
+  legs of one caller run queue on their own lock and never cancel or
+  wait on an unrelated run. No group name embeds an input list, so
+  none can grow past GitHub's limit. All three groups set
+  `cancel-in-progress: false`.
 - The publish job locks once more, on the pull request it revises
   (`code-monkey-publish-<repository>-pull-<n>`) or the issue it
-  publishes (`…-issue-<n>`), across named and scanned runs: two
-  target lists that overlap on one pull request, or a scan and a
-  named run, reach it together, and a revision's retitle, push,
-  restore and respond must not interleave with another run's (§20.3).
+  publishes (`…-issue-<n>`), across named and scanned runs. These
+  locks are what serialise two runs on one pull request or issue:
+  two named runs, whether their target lists match or merely overlap,
+  or a scan and a named run, reach it together, and a revision's
+  retitle, push, restore and respond must not interleave with
+  another run's (§20.3).
   A dry run writes nothing and locks within its own run. A group
   keeps one pending job, so a third run on one pull request waits for
   neither; the next scan selects it again.

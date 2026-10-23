@@ -147,21 +147,20 @@ permissions: {}
 # pending run and a newcomer cancels it, so dry runs, which write
 # nothing, lock within their own caller run and never cancel or wait
 # on a live run or another caller run's dry run. Live runs that name
-# `issues` or `pull_requests` lock on their target list: two runs
-# naming the same targets are duplicates and queue on one lock, so
-# neither can retitle, push or roll back a title under the other,
-# while runs naming different targets run apart. Lists that overlap
-# without matching still run apart; there the per-issue pull request
-# check, the branch-exists refusal and the revision's compare-and-swap
-# stop a duplicate, and the description update after a push restores
-# the title.
+# `issues` or `pull_requests` lock within their own caller run too, a
+# fixed-length key: a group name built from the target lists would
+# grow with them past GitHub's 400-character limit. Runs naming the
+# same or overlapping targets therefore run apart; the publish job's
+# locks keep any two runs from retitling, pushing or rolling back a
+# title on one pull request or issue at once, and the per-issue pull
+# request check, the branch-exists refusal and the revision's
+# compare-and-swap stop a duplicate.
 concurrency:
   group: >-
     ${{ inputs.dry_run
     && format('code-monkey-dry-run-{0}-{1}', github.run_id, inputs.org)
     || (inputs.issues != '' || inputs.pull_requests != '')
-    && format('code-monkey-named-{0}-{1}-{2}',
-    inputs.org, inputs.issues, inputs.pull_requests)
+    && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
 
@@ -990,15 +989,15 @@ jobs:
       needs.select.outputs.run_agent == 'true'
     runs-on: 'ubuntu-latest'
     # One publish at a time per pull request, across named and scanned
-    # runs: the workflow-level groups keep runs apart by their target
-    # lists, and two lists that overlap on one pull request, or a scan
-    # and a named run, still reach it together. A revision's retitle,
-    # push, restore and respond must not interleave with another
-    # run's, so a revision locks on the pull request it revises and a
-    # new issue's publish on its issue, which also owns the branch. A
-    # dry run writes nothing and locks within its own run. A group
-    # keeps one pending job, so a third run on one pull request waits
-    # for neither; its selection is redone next time.
+    # runs: the workflow-level group of a named run is keyed on that
+    # run, so two named runs on one pull request, even with identical
+    # lists, or a scan and a named run, reach it together. A revision's
+    # retitle, push, restore and respond must not interleave with
+    # another run's, so a revision locks on the pull request it revises
+    # and a new issue's publish on its issue, which also owns the
+    # branch. A dry run writes nothing and locks within its own run. A
+    # group keeps one pending job, so a third run on one pull request
+    # waits for neither; its selection is redone next time.
     concurrency:
       group: >-
         ${{ inputs.dry_run
