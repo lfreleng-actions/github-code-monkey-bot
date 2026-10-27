@@ -112,7 +112,7 @@ class RequestReviewTest(unittest.TestCase):
             patch.object(github, "run_gh", return_value="") as gh,
             patch.object(github, "graphql", return_value=REQUESTED),
         ):
-            self.assertIsNone(request.request_review(REPO, 41))
+            self.assertIsNone(request.request_review(REPO, 41, HEAD))
         self.assertEqual(
             gh.call_args_list[0].args[0],
             ["pr", "edit", "41", "--repo", REPO, "--add-reviewer", "@copilot"],
@@ -133,7 +133,7 @@ class RequestReviewTest(unittest.TestCase):
                     return_value=requests_reply(["alice", login]),
                 ) as gql,
             ):
-                self.assertIsNone(request.request_review(REPO, 41))
+                self.assertIsNone(request.request_review(REPO, 41, HEAD))
                 self.assertIs(gql.call_args.kwargs.get("read"), True)
                 self.assertEqual(gql.call_args.args[1]["number"], 41)
 
@@ -148,11 +148,10 @@ class RequestReviewTest(unittest.TestCase):
                 return_value=[{"id": 1, "user": {"login": "alice"}}],
             ),
         ):
-            warning = request.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41, HEAD)
         assert warning is not None
         self.assertIn("no Copilot reviewer was added", warning)
 
-    @unittest.expectedFailure
     def test_a_copilot_review_already_given_counts(self) -> None:
         """A fast review of the head clears the pending request; it landed."""
         with (
@@ -165,7 +164,6 @@ class RequestReviewTest(unittest.TestCase):
             self.assertIsNone(request.request_review(REPO, 41, HEAD))
         self.assertEqual(listing.call_args.args[0], f"repos/{REPO}/pulls/41/reviews")
 
-    @unittest.expectedFailure
     def test_a_copilot_review_of_another_commit_does_not_count(self) -> None:
         """A revision round's earlier review proves nothing about this request."""
         with (
@@ -176,7 +174,6 @@ class RequestReviewTest(unittest.TestCase):
             warning = request.request_review(REPO, 41, HEAD)
         self.assertEqual(warning, request.UNVERIFIED_REQUEST)
 
-    @unittest.expectedFailure
     def test_no_review_counts_without_a_head(self) -> None:
         """With no published head, only a pending request proves the request."""
         with (
@@ -198,7 +195,7 @@ class RequestReviewTest(unittest.TestCase):
             patch.object(github, "run_gh", return_value=""),
             patch.object(github, "graphql", side_effect=failure),
         ):
-            warning = request.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41, HEAD)
         assert warning is not None
         self.assertIn("could not confirm", warning)
 
@@ -208,7 +205,7 @@ class RequestReviewTest(unittest.TestCase):
             "gh: Resource not accessible::by integration (HTTP 403)"
         )
         with patch.object(github, "run_gh", side_effect=failure):
-            warning = request.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41, HEAD)
         assert warning is not None
         self.assertIn("could not request a Copilot review", warning)
         self.assertNotIn("::", warning)
@@ -503,7 +500,6 @@ class HandlersTest(unittest.TestCase):
         self.assertTrue(body.endswith("Closes #7"))
         printed.assert_called_with("review request: refused")
 
-    @unittest.expectedFailure
     def test_request_is_bound_to_the_published_head(self) -> None:
         """The read-back judges the head the publisher pushed, not any commit."""
         self.write(commits=[OTHER, HEAD])
@@ -533,7 +529,6 @@ class HandlersTest(unittest.TestCase):
         self.assertTrue(body.endswith("Closes #7"))
         printed.assert_called_with("review request: refused")
 
-    @unittest.expectedFailure
     def test_request_without_commits_verifies_by_the_pending_request(self) -> None:
         """No published head: the request is still sent; no review counts."""
         self.write(commits=[])
