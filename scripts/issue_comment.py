@@ -55,6 +55,19 @@ def review_verdict(result: dict[str, Any]) -> str | None:
     return str(data["verdict"])
 
 
+def review_unrequested(result: dict[str, Any]) -> bool:
+    """Whether the record says the workflow could not request the review.
+
+    Read from ``requested`` alone, so a record of any other shape
+    still reads as pending without adding a field to it.
+    """
+    record = result.get("review")
+    return (
+        isinstance(record, dict)
+        and cast("dict[str, Any]", record).get("requested") is False
+    )
+
+
 def review_sentence(result: dict[str, Any]) -> str:
     """What the comment says about Copilot's review, if one was awaited."""
     verdict = review_verdict(result)
@@ -62,6 +75,11 @@ def review_sentence(result: dict[str, Any]) -> str:
         return ""
     if verdict == "clean":
         return ". The Copilot review of it is clean."
+    if verdict == "pending" and review_unrequested(result):
+        return (
+            "; the workflow could not request a Copilot review of it, so the"
+            " review is pending and a maintainer should request one."
+        )
     if verdict == "pending":
         return (
             "; no Copilot review of its head arrived within the wait, so the"
@@ -241,10 +259,14 @@ def review_token(result: dict[str, Any]) -> str:
 
     A findings review names its thread and suppressed counts and its
     assessment too, so a rerun that resolved threads under the same
-    verdict reads as a new outcome; one token, with no spaces, so a
-    reader of the footer splits it as before.
+    verdict reads as a new outcome; a pending review the workflow could
+    not request reads apart from one that did not arrive, since the
+    comment says different things of them. One token, with no spaces,
+    so a reader of the footer splits it as before.
     """
     verdict = review_verdict(result)
+    if verdict == "pending" and review_unrequested(result):
+        return "pending/not-requested"
     if verdict != "findings":
         return str(verdict)
     record = cast("dict[str, Any]", result["review"])
