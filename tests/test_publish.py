@@ -318,6 +318,19 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
+    @unittest.expectedFailure
+    def test_unrequested_review_is_not_reported_as_late(self) -> None:
+        """A refused request is told apart from a review that never came."""
+        sentence = comments.review_sentence(
+            result_json(review=review_record("pending", requested=False))
+        )
+        self.assertIn("could not request a Copilot review", sentence)
+        self.assertIn("a maintainer should request one", sentence)
+        self.assertNotIn("within the wait", sentence)
+        # A request that landed and drew no review keeps the old sentence.
+        late = comments.review_sentence(result_json(review=review_record("pending")))
+        self.assertIn("within the wait", late)
+
     def test_revision_round_comment_names_the_published_head(self) -> None:
         """Each round's comment records the head after the push (issue #19)."""
         result = result_json(
@@ -2635,6 +2648,18 @@ class RunReportTest(NoNetworkCase):
             with self.subTest(cell=cell):
                 row = reporting.report_row(result_json(review=record))
                 self.assertIn(f"| {cell} |", row)
+
+    @unittest.expectedFailure
+    def test_review_column_names_an_unrequested_review(self) -> None:
+        """A pending review that was never requested says so in the table."""
+        row = reporting.report_row(
+            result_json(review=review_record("pending", requested=False))
+        )
+        self.assertIn("| pending (not requested) |", row)
+        self.assertEqual(
+            reporting.review_cell(result_json(review=review_record("pending"))),
+            "pending",
+        )
 
     def test_dry_run_row(self) -> None:
         """A dry-run proposed result shows ``dry run`` instead of a URL."""
