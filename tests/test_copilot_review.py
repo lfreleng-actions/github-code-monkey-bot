@@ -112,7 +112,7 @@ class RequestReviewTest(unittest.TestCase):
             patch.object(github, "run_gh", return_value="") as gh,
             patch.object(github, "graphql", return_value=REQUESTED),
         ):
-            self.assertIsNone(request.request_review(REPO, 41))
+            self.assertIsNone(request.request_review(REPO, 41, HEAD))
         self.assertEqual(
             gh.call_args_list[0].args[0],
             ["pr", "edit", "41", "--repo", REPO, "--add-reviewer", "@copilot"],
@@ -133,7 +133,7 @@ class RequestReviewTest(unittest.TestCase):
                     return_value=requests_reply(["alice", login]),
                 ) as gql,
             ):
-                self.assertIsNone(request.request_review(REPO, 41))
+                self.assertIsNone(request.request_review(REPO, 41, HEAD))
                 self.assertIs(gql.call_args.kwargs.get("read"), True)
                 self.assertEqual(gql.call_args.args[1]["number"], 41)
 
@@ -148,21 +148,45 @@ class RequestReviewTest(unittest.TestCase):
                 return_value=[{"id": 1, "user": {"login": "alice"}}],
             ),
         ):
-            warning = request.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41, HEAD)
         assert warning is not None
         self.assertIn("no Copilot reviewer was added", warning)
 
     def test_a_copilot_review_already_given_counts(self) -> None:
-        """A fast review clears the pending request; the request still landed."""
+        """A fast review of the head clears the pending request; it landed."""
         with (
             patch.object(github, "run_gh", return_value=""),
             patch.object(github, "graphql", return_value=requests_reply([])),
             patch.object(
-                github, "api_list", return_value=[copilot(3, OTHER, "done")]
+                github, "api_list", return_value=[copilot(3, HEAD, "done")]
             ) as listing,
         ):
-            self.assertIsNone(request.request_review(REPO, 41))
+            self.assertIsNone(request.request_review(REPO, 41, HEAD))
         self.assertEqual(listing.call_args.args[0], f"repos/{REPO}/pulls/41/reviews")
+
+    def test_a_copilot_review_of_another_commit_does_not_count(self) -> None:
+        """A revision round's earlier review proves nothing about this request."""
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "graphql", return_value=requests_reply([])),
+            patch.object(github, "api_list", return_value=[copilot(3, OTHER, "done")]),
+        ):
+            warning = request.request_review(REPO, 41, HEAD)
+        self.assertEqual(warning, request.UNVERIFIED_REQUEST)
+
+    def test_no_review_counts_without_a_head(self) -> None:
+        """With no published head, only a pending request proves the request."""
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "graphql", return_value=requests_reply([])),
+            patch.object(
+                github,
+                "api_list",
+                return_value=[copilot(3, HEAD, "done"), copilot(4, OTHER, "done")],
+            ),
+        ):
+            warning = request.request_review(REPO, 41, None)
+        self.assertEqual(warning, request.UNVERIFIED_REQUEST)
 
     def test_a_failed_read_back_is_a_warning(self) -> None:
         """A request that cannot be confirmed is never recorded as sent."""
@@ -171,7 +195,7 @@ class RequestReviewTest(unittest.TestCase):
             patch.object(github, "run_gh", return_value=""),
             patch.object(github, "graphql", side_effect=failure),
         ):
-            warning = request.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41, HEAD)
         assert warning is not None
         self.assertIn("could not confirm", warning)
 
@@ -181,7 +205,7 @@ class RequestReviewTest(unittest.TestCase):
             "gh: Resource not accessible::by integration (HTTP 403)"
         )
         with patch.object(github, "run_gh", side_effect=failure):
-            warning = request.request_review(REPO, 41)
+            warning = request.request_review(REPO, 41, HEAD)
         assert warning is not None
         self.assertIn("could not request a Copilot review", warning)
         self.assertNotIn("::", warning)
@@ -475,6 +499,60 @@ class HandlersTest(unittest.TestCase):
         self.assertTrue(body.startswith(request.REFUSAL_NOTICE_MARKER))
         self.assertTrue(body.endswith("Closes #7"))
         printed.assert_called_with("review request: refused")
+
+    def test_request_is_bound_to_the_published_head(self) -> None:
+        """The read-back judges the head the publisher pushed, not any commit."""
+        self.write(commits=[OTHER, HEAD])
+        with (
+            patch.object(request, "request_review", return_value=None) as sent,
+            patch.object(github, "api_object", return_value={"body": "Closes #7"}),
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        self.assertEqual(sent.call_args.args, (REPO, 41, HEAD))
+        # A revision round: the only Copilot review is of the previous
+        # head and GitHub added no reviewer, so the request was refused.
+        self.write(commits=[HEAD])
+        with (
+            patch.object(github, "run_gh", return_value=""),
+            patch.object(github, "graphql", return_value=requests_reply([])),
+            patch.object(github, "api_list", return_value=[copilot(3, OTHER, "done")]),
+            patch.object(github, "api_object", return_value={"body": "Closes #7"}),
+            patch.object(github, "api_write", return_value={}) as write,
+            patch("builtins.print") as printed,
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        stored = self.stored()
+        self.assertIs(stored["review"]["requested"], False)
+        self.assertIn(request.UNVERIFIED_REQUEST, stored["warnings"])
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(body.startswith(request.REFUSAL_NOTICE_MARKER))
+        self.assertTrue(body.endswith("Closes #7"))
+        printed.assert_called_with("review request: refused")
+
+    def test_request_without_commits_verifies_by_the_pending_request(self) -> None:
+        """No published head: the request is still sent; no review counts."""
+        self.write(commits=[])
+        with (
+            patch.object(github, "run_gh", return_value="") as gh,
+            patch.object(github, "graphql", return_value=REQUESTED),
+            patch.object(github, "api_object", return_value={"body": "Closes #7"}),
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        gh.assert_called_once()
+        self.assertIs(self.stored()["review"]["requested"], True)
+        self.write(commits=[])
+        with (
+            patch.object(github, "run_gh", return_value="") as gh,
+            patch.object(github, "graphql", return_value=requests_reply([])),
+            patch.object(github, "api_list", return_value=[copilot(3, HEAD, "done")]),
+            patch.object(github, "api_object", return_value={"body": "Closes #7"}),
+            patch.object(github, "api_write", return_value={}),
+        ):
+            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+        gh.assert_called_once()
+        stored = self.stored()
+        self.assertIs(stored["review"]["requested"], False)
+        self.assertIn(request.UNVERIFIED_REQUEST, stored["warnings"])
 
     def test_successful_retry_removes_the_refusal_notice(self) -> None:
         """A request that succeeds on a rerun takes its earlier notice down."""

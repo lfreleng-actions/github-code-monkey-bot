@@ -788,10 +788,13 @@ For each selected issue:
     reviewer. So the step reads the request back through GraphQL
     (`reviewRequests.nodes.requestedReviewer`, whose union includes
     `Bot`) and counts it as sent when the Copilot reviewer is there,
-    or when a Copilot review already exists, since a fast review
-    clears the pending request; a missing reviewer or a failed read is a
-    refusal. The request is best effort: a refusal becomes a warning
-    in `result.json` with GitHub's answer and an `INFO` notice at
+    or when a Copilot review of the published head already exists,
+    since a fast review clears the pending request. A review of an
+    earlier head proves nothing, since a revision round always has
+    one, and with no published head recorded no review counts; a
+    missing reviewer or a failed read is a refusal. The request is
+    best effort: a refusal becomes a warning in `result.json` with
+    GitHub's answer and an `INFO` notice at
     the top of the pull request body, placed once with the same
     token and taken down by a retry whose request succeeds, so a
     maintainer reading the pull request knows whether the workflow

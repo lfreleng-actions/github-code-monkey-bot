@@ -8,7 +8,8 @@ The publish job's request is best effort (DESIGN.md section 8 step
 ``INFO`` notice at the top of the pull request body, which a later
 request that succeeds takes down again. GitHub can accept the
 request without adding the reviewer, so it counts only once the
-reviewer reads back.
+reviewer reads back: as a pending request, or as a review of the
+head the round published.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import bot_github as github
 
 # GraphQL names the bot without the suffix REST adds.
 REVIEWER_NAME = "copilot-pull-request-reviewer"
+REVIEWER_LOGIN = f"{REVIEWER_NAME}[bot]"
 
 # A refused review request is disclosed at the top of the pull request
 # body (#29), once; the marker makes a retry idempotent.
@@ -57,7 +59,7 @@ def is_copilot(login: object) -> bool:
     return login.lower().removesuffix("[bot]") == REVIEWER_NAME
 
 
-def request_review(repository: str, number: int) -> str | None:
+def request_review(repository: str, number: int, head_sha: str | None) -> str | None:
     """Ask Copilot to review; return a warning instead of raising on failure.
 
     ``@copilot`` is the form GitHub accepts; the bare login fails. The
@@ -83,7 +85,7 @@ def request_review(repository: str, number: int) -> str | None:
         )
     except github.GitHubError as exc:
         return f"could not request a Copilot review: {github.safe_message(exc)}"
-    return verify_request(repository, number)
+    return verify_request(repository, number, head_sha)
 
 
 def copilot_requested(repository: str, number: int) -> bool:
@@ -127,26 +129,38 @@ def copilot_requested(repository: str, number: int) -> bool:
     return False
 
 
-def copilot_reviewed(repository: str, number: int) -> bool:
-    """Whether Copilot has reviewed the pull request at all, of any commit."""
+def head_review(repository: str, number: int, head_sha: str) -> dict[str, Any] | None:
+    """The newest Copilot review of ``head_sha``, or None."""
+    newest: dict[str, Any] | None = None
     for review in github.api_list(f"repos/{repository}/pulls/{number}/reviews"):
         user = review.get("user")
-        if isinstance(user, dict) and is_copilot(
+        login = (
             cast("dict[str, Any]", user).get("login")
-        ):
-            return True
-    return False
+            if isinstance(user, dict)
+            else None
+        )
+        if login != REVIEWER_LOGIN or review.get("commit_id") != head_sha:
+            continue
+        if newest is None or int(review.get("id") or 0) > int(newest.get("id") or 0):
+            newest = review
+    return newest
 
 
-def verify_request(repository: str, number: int) -> str | None:
+def verify_request(repository: str, number: int, head_sha: str | None) -> str | None:
     """Confirm the request landed; return a warning when it did not.
 
-    A review already given counts, since it clears the pending
-    request. A failed read is a warning too, never a success.
+    A review of ``head_sha`` already given counts, since a fast review
+    clears the pending request. A review of any other commit does not:
+    on a revision round the previous head's review is always there.
+    Without a head no review counts. A failed read is a warning too,
+    never a success.
     """
     try:
-        if copilot_requested(repository, number) or copilot_reviewed(
-            repository, number
+        if copilot_requested(repository, number):
+            return None
+        if (
+            head_sha is not None
+            and head_review(repository, number, head_sha) is not None
         ):
             return None
     except github.GitHubError as exc:

@@ -32,9 +32,10 @@ import bot_github as github
 import proposal_model as model
 import review_request
 import review_verdict as verdicts
+from review_request import REVIEWER_LOGIN as REVIEWER_LOGIN
+from review_request import head_review
 from review_verdict import Verdict
 
-REVIEWER_LOGIN = "copilot-pull-request-reviewer[bot]"
 DEFAULT_WAIT_MINUTES = 30
 POLL_SECONDS = 30
 # The worst one read can cost through bot_github.run_gh: every attempt
@@ -74,23 +75,6 @@ def pull_head(repository: str, number: int) -> str:
     if not isinstance(head, dict):
         raise github.GitHubError("pull request reply carried no head")
     return github.require_sha(cast("dict[str, Any]", head), "sha", "pull request head")
-
-
-def head_review(repository: str, number: int, head_sha: str) -> dict[str, Any] | None:
-    """The newest Copilot review of ``head_sha``, or None."""
-    newest: dict[str, Any] | None = None
-    for review in github.api_list(f"repos/{repository}/pulls/{number}/reviews"):
-        user = review.get("user")
-        login = (
-            cast("dict[str, Any]", user).get("login")
-            if isinstance(user, dict)
-            else None
-        )
-        if login != REVIEWER_LOGIN or review.get("commit_id") != head_sha:
-            continue
-        if newest is None or int(review.get("id") or 0) > int(newest.get("id") or 0):
-            newest = review
-    return newest
 
 
 class WaitExpired(Exception):
@@ -265,7 +249,7 @@ def run_request(args: argparse.Namespace) -> None:
     if target is None:
         print("no pull request to request a review of")
         return
-    warning = review_request.request_review(*target)
+    warning = review_request.request_review(*target, published_head(result))
     record = cast("dict[str, Any]", result.get("review") or {})
     record["requested"] = warning is None
     result["review"] = record
