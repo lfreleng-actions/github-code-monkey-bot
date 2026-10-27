@@ -62,12 +62,17 @@ def report_row(item: dict[str, Any]) -> str:
 def review_cell(item: dict[str, Any]) -> str:
     """The review column: the verdict, and for findings the counts (issue #29).
 
+    A pending review the workflow could not request says so, apart
+    from one requested that did not arrive within the wait.
+
     A count of the wrong shape stays out of the table; the verdict
     alone is shown then.
     """
     verdict = comments.review_verdict(item)
     if verdict is None:
         return "—"
+    if verdict == "pending" and comments.review_unrequested(item):
+        return "pending (not requested)"
     if verdict != "findings":
         return verdict
     record = cast("dict[str, Any]", item["review"])

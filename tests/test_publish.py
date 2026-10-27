@@ -318,6 +318,18 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("no Copilot review", pending or "")
         self.assertNotIn("clean", pending or "")
 
+    def test_unrequested_review_is_not_reported_as_late(self) -> None:
+        """A refused request is told apart from a review that never came."""
+        sentence = comments.review_sentence(
+            result_json(review=review_record("pending", requested=False))
+        )
+        self.assertIn("could not request a Copilot review", sentence)
+        self.assertIn("a maintainer should request one", sentence)
+        self.assertNotIn("within the wait", sentence)
+        # A request that landed and drew no review keeps the old sentence.
+        late = comments.review_sentence(result_json(review=review_record("pending")))
+        self.assertIn("within the wait", late)
+
     def test_revision_round_comment_names_the_published_head(self) -> None:
         """Each round's comment records the head after the push (issue #19)."""
         result = result_json(
@@ -2192,6 +2204,44 @@ class RunCommentTest(NoNetworkCase):
             body,
         )
 
+    def test_marker_tells_an_unrequested_pending_review_apart(self) -> None:
+        """A retry that changed ``requested`` under a pending verdict posts again."""
+        for requested, before, after in (
+            (False, "pending", "pending/not-requested"),
+            (True, "pending/not-requested", "pending"),
+        ):
+            path = self.write_result(
+                result_json(
+                    bot_login=BOT,
+                    review=review_record("pending", requested=requested),
+                )
+            )
+            earlier = {
+                "id": 1,
+                "user": {"login": BOT},
+                "body": f"<!-- code-monkey https://run proposed review={before} -->",
+                "html_url": "https://x/c/1",
+            }
+            with (
+                self.subTest(requested=requested),
+                patch.object(reads, "api_page", return_value=[earlier]),
+                patch.object(
+                    github, "api_write", return_value={"html_url": "https://x/c/2"}
+                ) as write,
+                redirect_stdout(io.StringIO()),
+            ):
+                comments.run_comment(
+                    argparse.Namespace(result=path, run_url="https://run", since="t")
+                )
+                write.assert_called_once()
+                body = write.call_args.args[2]["body"]
+                self.assertTrue(
+                    body.endswith(
+                        f"<!-- code-monkey https://run proposed review={after} -->"
+                    ),
+                    body,
+                )
+
     def test_marker_carries_the_review_counts(self) -> None:
         """Counts that changed under the same verdict are a new outcome to report."""
         path = self.write_result(
@@ -2635,6 +2685,17 @@ class RunReportTest(NoNetworkCase):
             with self.subTest(cell=cell):
                 row = reporting.report_row(result_json(review=record))
                 self.assertIn(f"| {cell} |", row)
+
+    def test_review_column_names_an_unrequested_review(self) -> None:
+        """A pending review that was never requested says so in the table."""
+        row = reporting.report_row(
+            result_json(review=review_record("pending", requested=False))
+        )
+        self.assertIn("| pending (not requested) |", row)
+        self.assertEqual(
+            reporting.review_cell(result_json(review=review_record("pending"))),
+            "pending",
+        )
 
     def test_dry_run_row(self) -> None:
         """A dry-run proposed result shows ``dry run`` instead of a URL."""

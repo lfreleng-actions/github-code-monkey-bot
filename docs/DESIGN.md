@@ -779,29 +779,39 @@ For each selected issue:
    the orphan, selects the issue with `resume` set, and its publisher
    adopts the branch and opens the pull request.
 10. **Request the Copilot review** (`request_review`, on by default)
-    with the pull request token, through
-    `gh pr edit --add-reviewer @copilot`, the form GitHub accepts
-    (the organisation guidance, Appendix B). An exit status of 0
-    proves nothing: `gh` sends a `requestReviewsByLogin` mutation
-    that selects nothing but `clientMutationId`, and from the App's
-    installation token GitHub accepts it without adding the
-    reviewer. So the step reads the request back through GraphQL
-    (`reviewRequests.nodes.requestedReviewer`, whose union includes
-    `Bot`) and counts it as sent when the Copilot reviewer is there,
-    or when a Copilot review of the published head already exists,
-    since a fast review clears the pending request. A review of an
-    earlier head proves nothing, since a revision round always has
-    one, and with no published head recorded no review counts; a
-    missing reviewer or a failed read is a refusal. The request is
-    best effort: a refusal becomes a warning in `result.json` with
-    GitHub's answer and an `INFO` notice at
-    the top of the pull request body, placed once with the same
-    token and taken down by a retry whose request succeeds, so a
-    maintainer reading the pull request knows whether the workflow
-    requested a review; the publish goes on, and no token gains a
-    permission for it. The App's token cannot add the reviewer
-    (§17); the remedy is a credential that can, held by this step
-    alone.
+    with the pull request token, as one `requestReviewsByLogin`
+    GraphQL mutation, run once, for the pull request's `node_id`,
+    with `botLogins: ["copilot-pull-request-reviewer[bot]"]` (the
+    input takes the `[bot]` suffix) and `union: true`, so it adds the
+    bot to the reviewers already requested and sends no user or team.
+    `gh pr edit --add-reviewer @copilot` is not used: `gh` sends the
+    same mutation with `union: false`, replacing the whole reviewer
+    set from a read it made first, so a stale read drops the
+    CODEOWNERS team request; and it selects nothing but
+    `clientMutationId`, so its reply says nothing of what GitHub did.
+    From the App's installation token GitHub can accept the mutation
+    without adding the reviewer, so the step reads the outcome from
+    the mutation's own reply (`pullRequest.reviewRequests`, whose
+    `requestedReviewer` union includes `Bot`) and counts the request
+    as sent when the Copilot reviewer is there, or when a Copilot
+    review of the published head already exists, since a fast review
+    clears the pending request. A review of an earlier head proves
+    nothing, since a revision round always has one, and with no
+    published head recorded no review counts; a missing reviewer, a
+    reply of any other shape or a failed read is a refusal. The
+    request is best effort: a refusal becomes a warning in
+    `result.json` with GitHub's answer, a line in the job log and a
+    `::warning title=Copilot review request::` annotation on the run,
+    in the publisher's own words with GitHub's text defused, and an
+    `INFO` notice at the top of the pull request body, placed once
+    with the same token and taken down by a retry whose request
+    succeeds, so a maintainer reading the pull request knows whether
+    the workflow requested a review; the issue comment and the report
+    (`pending (not requested)`) say so too. The publish goes on, and
+    no token gains a permission for it. A request that lands logs the
+    reviewers the reply listed. The App's token cannot add the
+    reviewer (§17); the remedy is a credential that can, held by this
+    step alone.
 11. **Await the Copilot review** with the job's own token, since the
     target is public: poll for a review by
     `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
@@ -886,9 +896,11 @@ For each selected issue:
     the line states the review's verdict: clean; findings, with the
     counts and the assessment and the statement that a maintainer
     must act on them; or pending. The marker carries the review
-    verdict too, and for findings the counts and the assessment, so
-    a rerun whose wait ended differently, or resolved a thread under
-    the same verdict, posts again
+    verdict too, for findings the counts and the assessment, and for
+    a pending review the workflow could not request
+    `pending/not-requested`, so a rerun whose wait ended differently,
+    resolved a thread under the same verdict, or requested the review
+    a first attempt could not, posts again
     instead of leaving the issue at odds with `result.json`; the
     bot's latest outcome for the run alone suppresses a repeat, so an
     outcome that changed and changed back posts as well, and a search
@@ -1218,7 +1230,7 @@ conflicts while producer artifacts survive.
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
-| Copilot ignores the App's review request | No review arrives | Read back; recorded as a warning and `pending` (§8 steps 10–11); the fallback credential of §17 |
+| Copilot ignores the App's review request | No review arrives | Verified from the mutation's reply; recorded as a warning, a `::warning` annotation on the run and `pending (not requested)` (§8 steps 10–11); the fallback credential of §17 |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 
 <!-- markdownlint-enable MD013 -->
@@ -1591,13 +1603,16 @@ line and provenance block first, then the agent's text.
 URLs are `null` where the mode or a rejection stopped short, and
 `author_session` where no proposal arrived. `review` is present on
 a published pull request when `request_review` is on: `requested`
-says whether GitHub accepted the request, `verdict` is `clean`,
+says whether the request landed (§8 step 10), `verdict` is `clean`,
 `findings` or `pending`, `assessment` is `approval`, `closer-look`,
 `changes` or `null`, and `commit_id` is the head the review judged.
 The comment and the report read a record with any field missing or
-added, or any other verdict, as `pending`. The report job merges
+added, or any other verdict, as `pending`, and a `pending` record
+whose `requested` is `false` as a review the workflow could not
+request rather than one that did not arrive. The report job merges
 every `result.json` into one table whose review column names the
-verdict and, for findings, the counts of threads, suppressed
+verdict (`pending (not requested)` for that case) and, for findings,
+the counts of threads, suppressed
 findings and findings on unchanged code, a count of the wrong shape
 left out.
 

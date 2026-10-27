@@ -5,8 +5,8 @@
 
 GitHub starts no review by itself for a pull request a GitHub App
 opens (DESIGN.md section 8), so the trusted publish job asks for one
-with the pull request token, best effort, reads the request back to
-confirm GitHub added the reviewer, then polls with the job's
+with the pull request token, best effort, confirms from the request's
+own reply that GitHub added the reviewer, then polls with the job's
 own token for a review by Copilot whose ``commit_id`` is the head it
 published, reads the unresolved review threads, and classifies the
 pair (``review_verdict``). A review that never arrives within the
@@ -242,28 +242,60 @@ def write_result(path: Path, result: dict[str, Any]) -> None:
     path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
+def annotation(text: str) -> str:
+    """A ``::warning`` workflow command for a refused review request.
+
+    ``text`` is the publisher's own sentence with any GitHub text
+    already through ``safe_message``; the data escapes GitHub's
+    workflow command syntax defines keep it on one line.
+    """
+    data = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return f"::warning title=Copilot review request::{data}"
+
+
+def reviewer_text(reviewer: review_request.Reviewer) -> str:
+    """One reviewer the request's reply listed, for the job log."""
+    typename, login = reviewer
+    return typename if login is None else f"{typename} {login}"
+
+
 def run_request(args: argparse.Namespace) -> None:
-    """``publish.py review-request``: ask for the review, record the answer."""
+    """``publish.py review-request``: ask for the review, record the answer.
+
+    The job log carries the outcome and, on a refusal, each warning
+    and one ``::warning`` annotation, so the run shows what the
+    ``result.json`` record holds.
+    """
     result = model.load_json(args.result, "result")
     target = published(result)
     if target is None:
         print("no pull request to request a review of")
         return
-    warning = review_request.request_review(*target, published_head(result))
+    outcome = review_request.request_review(*target, published_head(result))
+    warning = outcome.warning
     record = cast("dict[str, Any]", result.get("review") or {})
     record["requested"] = warning is None
     result["review"] = record
     warnings = cast("list[Any]", result.setdefault("warnings", []))
+    added: list[str] = []
     if warning is not None:
-        warnings.append(warning)
+        added.append(warning)
         notice = review_request.add_refusal_notice(*target, warning)
     else:
         # A retry that succeeded after a refusal: the notice is stale.
         notice = review_request.remove_refusal_notice(*target)
     if notice is not None:
-        warnings.append(notice)
+        added.append(notice)
+    warnings.extend(added)
     write_result(args.output, result)
     print(f"review request: {'sent' if warning is None else 'refused'}")
+    if warning is None:
+        listed = ", ".join(reviewer_text(r) for r in outcome.reviewers) or "none"
+        print(f"requested reviewers: {listed}")
+    for line in added:
+        print(line)
+    if warning is not None:
+        print(annotation(warning))
 
 
 def run_await(args: argparse.Namespace) -> None:
