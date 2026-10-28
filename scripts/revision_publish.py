@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections.abc import Callable
 from typing import Any, NoReturn, cast
 
@@ -25,6 +26,10 @@ import thread_reads as threads_of
 from branch_swap import SwapUnknown, already_moved, move_branch
 from proposal_policy import PublishError, Rejection
 from revision_check import reply_marker
+
+# Waits between head reads while the pull request still names the
+# pre-round head: GitHub's pull request object lags the ref update.
+LAG_BACKOFF_SECONDS = (2, 4, 8)
 
 RESOLVE_THREAD = """
 mutation($id: ID!) {
@@ -222,27 +227,45 @@ def published_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     The compare-and-swap guards the branch move alone. Another run may
     advance the pull request between the swap and these writes, and
     this round's replies would then resolve threads and replace a
-    newer description with an older one. A moved head, or one that
-    cannot be read, leaves the writes undone with a warning; the
+    newer description with an older one. GitHub's pull request object
+    lags the ref update, so a read naming the head the round began
+    from is read again after a backoff; any other head is a genuine
+    move. A moved head, one still lagging after the retries, or one
+    that cannot be read, leaves the writes undone with a warning; the
     publication itself stands.
     """
     commits = cast("list[Any]", result.get("commits") or [])
     tip = str(commits[-1])
+    previous = str(check.get("head_sha") or "")
     warnings = cast("list[str]", result["warnings"])
-    try:
-        head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
-    except github.GitHubError as exc:
+    head = ""
+    for delay in (*LAG_BACKOFF_SECONDS, None):
+        try:
+            head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
+        except github.GitHubError as exc:
+            warnings.append(
+                "could not read the pull request head before responding: "
+                f"{github.safe_message(exc)}; no reply posted"
+            )
+            return False
+        if head == tip:
+            return True
+        if head != previous or delay is None:
+            break
+        time.sleep(delay)
+    if head == previous:
         warnings.append(
-            "could not read the pull request head before responding: "
-            f"{github.safe_message(exc)}; no reply posted"
+            f"the pull request still heads at the previous head {previous[:7]}, "
+            f"not this round's tip {tip[:7]}, after "
+            f"{len(LAG_BACKOFF_SECONDS) + 1} reads; no reply posted and the "
+            "description left alone"
         )
-        return False
-    if head == tip:
-        return True
-    warnings.append(
-        f"the pull request head moved from {tip[:7]} to {head[:7]} after the "
-        "push; no reply posted and the description left alone"
-    )
+    else:
+        warnings.append(
+            f"the pull request head moved from this round's tip {tip[:7]} to "
+            f"{head[:7]} after the push; no reply posted and the description "
+            "left alone"
+        )
     return False
 
 

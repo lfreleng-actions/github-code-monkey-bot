@@ -1414,7 +1414,6 @@ class RunRespondTest(NoNetworkCase):
             )
         return reply, update, sleep, head
 
-    @unittest.expectedFailure
     def test_a_lagging_head_read_is_retried(self) -> None:
         """The pull request still names the pre-round head: read again, then answer.
 
@@ -1431,7 +1430,6 @@ class RunRespondTest(NoNetworkCase):
         self.assertEqual(stored["responded"]["replied"], 2)
         self.assertFalse(any("moved" in w for w in stored["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_head_that_never_catches_up_is_skipped(self) -> None:
         """Every retry still reads the pre-round head: warn, naming both, and skip."""
         backoff = publish.revision_publish.LAG_BACKOFF_SECONDS
@@ -1447,7 +1445,6 @@ class RunRespondTest(NoNetworkCase):
         self.assertIn(f"round's tip {NEW_HEAD[:7]}", warning)
         self.assertIn(f"previous head {HEAD[:7]}", warning)
 
-    @unittest.expectedFailure
     def test_an_unrelated_head_is_skipped_without_retry(self) -> None:
         """A head that is neither the tip nor the pre-round head is a genuine move."""
         other = "f" * 40
