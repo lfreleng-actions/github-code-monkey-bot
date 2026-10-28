@@ -111,7 +111,6 @@ class EnsureForkTest(NoNetworkCase):
             refs.ensure_fork(TARGET, FORK_ORG, "repo")
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_missing_fork_is_created_then_awaited(self) -> None:
         """A 404 with no listed fork creates one and polls until it appears."""
         with (
@@ -135,7 +134,6 @@ class EnsureForkTest(NoNetworkCase):
         self.assertEqual(read.call_count, 3)
         sleep.assert_called_once_with(refs.FORK_POLL_SECONDS)
 
-    @unittest.expectedFailure
     def test_create_reply_under_an_old_name_is_renamed(self) -> None:
         """The create reply, not the target's name, says where the fork is."""
         old = f"{FORK_ORG}/old-repo"
@@ -155,7 +153,6 @@ class EnsureForkTest(NoNetworkCase):
         write.assert_called_with("PATCH", f"repos/{old}", {"name": "repo"})
         self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
 
-    @unittest.expectedFailure
     def test_create_reply_outside_the_pool_is_refused(self) -> None:
         """A create reply naming no fork in the pool is never trusted."""
         for reply in ({}, repo_object(full_name="someone/repo")):
@@ -171,7 +168,6 @@ class EnsureForkTest(NoNetworkCase):
                 refs.ensure_fork(TARGET, FORK_ORG, "repo")
             sleep.assert_not_called()
 
-    @unittest.expectedFailure
     def test_fork_under_an_old_name_is_renamed(self) -> None:
         """A fork kept from before a target rename is found and renamed."""
         old = f"{FORK_ORG}/old-repo"
@@ -192,7 +188,6 @@ class EnsureForkTest(NoNetworkCase):
         write.assert_called_once_with("PATCH", f"repos/{old}", {"name": "repo"})
         self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
 
-    @unittest.expectedFailure
     def test_rename_refusal_is_operational(self) -> None:
         """A 422 because the target's name is taken fails the publish."""
         listed = [{"full_name": f"{FORK_ORG}/old-repo", "owner": {"login": FORK_ORG}}]
@@ -210,7 +205,6 @@ class EnsureForkTest(NoNetworkCase):
             refs.ensure_fork(TARGET, FORK_ORG, "repo")
         sleep.assert_not_called()
 
-    @unittest.expectedFailure
     def test_fork_list_failure_is_operational(self) -> None:
         """A failed fork listing never leads to a fork request."""
         with (

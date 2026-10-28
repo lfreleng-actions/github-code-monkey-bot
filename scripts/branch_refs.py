@@ -68,9 +68,57 @@ def await_fork(fork: str) -> dict[str, Any]:
         time.sleep(FORK_POLL_SECONDS)
 
 
+def listed_fork(target: str, fork_org: str) -> str | None:
+    """The full name of the target's fork in the pool, under any name."""
+    try:
+        forks = github.api_list(f"repos/{target}/forks?sort=newest")
+    except github.GitHubError as exc:
+        raise PublishError(f"could not list forks of {target}: {exc}") from exc
+    for entry in forks:
+        owner = entry.get("owner")
+        login = (
+            cast("dict[str, Any]", owner).get("login")
+            if isinstance(owner, dict)
+            else None
+        )
+        name = entry.get("full_name")
+        if (
+            isinstance(login, str)
+            and login.lower() == fork_org.lower()
+            and isinstance(name, str)
+        ):
+            return name
+    return None
+
+
+def create_fork(target: str, fork_org: str) -> str:
+    """Fork the target into the pool; return the name GitHub replies with.
+
+    GitHub never holds two forks of one parent in one organisation, and
+    answers a repeat request with the existing fork, so the reply, not
+    the target's name, says where the fork is. Forking is asynchronous:
+    the caller polls for a new fork before using it.
+    """
+    try:
+        reply = github.api_write(
+            "POST",
+            f"repos/{target}/forks",
+            {"organization": fork_org, "default_branch_only": True},
+        )
+    except github.GitHubError as exc:
+        raise PublishError(f"could not fork {target} into {fork_org}: {exc}") from exc
+    name = reply.get("full_name")
+    if not isinstance(name, str) or not name.lower().startswith(f"{fork_org.lower()}/"):
+        raise PublishError(f"forking {target} named no fork in {fork_org}: {name!r}")
+    return name
+
+
 def ensure_fork(target: str, fork_org: str, repo_name: str) -> str:
     """Find or create the target's fork in the fork organisation.
 
+    A fork kept from before the target was renamed still carries the
+    old name; it is found by parent and renamed after the target, so
+    everything that reads ``<fork_org>/<repo_name>`` finds it again.
     A repository of that name which is not a fork of the target is a
     failure, never a push destination: the publisher writes only into
     forks it can prove are its own.
@@ -81,16 +129,14 @@ def ensure_fork(target: str, fork_org: str, repo_name: str) -> str:
     except github.GitHubError as exc:
         if not github.is_absent(exc):
             raise PublishError(f"could not read fork {fork}: {exc}") from exc
-        try:
-            github.api_write(
-                "POST",
-                f"repos/{target}/forks",
-                {"organization": fork_org, "default_branch_only": True},
-            )
-        except github.GitHubError as failure:
-            raise PublishError(
-                f"could not fork {target} into {fork_org}: {failure}"
-            ) from failure
+        found = listed_fork(target, fork_org) or create_fork(target, fork_org)
+        if found.lower() != fork.lower():
+            try:
+                github.api_write("PATCH", f"repos/{found}", {"name": repo_name})
+            except github.GitHubError as failure:
+                raise PublishError(
+                    f"could not rename fork {found} to {repo_name}: {failure}"
+                ) from failure
         data = await_fork(fork)
     if not is_fork_of(data, target):
         raise PublishError(f"{fork} exists but is not a fork of {target}")

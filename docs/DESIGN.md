@@ -203,10 +203,19 @@ names agreed, the organisation `AGENTS.md` is its right home.
 Publishing then works as follows, with the §5 signing unchanged:
 
 1. The publisher resolves the fork organisation for the target's
-   owner from the table, and finds or creates the fork there.
-   Creating a fork through the API needs the App installed on the
-   fork organisation with access to all its repositories and
-   Administration: write, plus Contents: read on the source.
+   owner from the table, and finds or creates the fork there. It
+   looks the fork up by the target's name first, then by parent
+   among the target's forks: a fork made before a rename of the
+   target keeps its old name, and the publisher renames it after the
+   target. A `422` because another repository holds that name fails
+   the publish. GitHub answers a fork request for a parent the
+   organisation already forks with the existing fork, and the
+   reply's name, not the target's, is the one renamed or polled.
+   Creating or renaming a fork through the API needs the App
+   installed on the fork organisation with access to all its
+   repositories and Administration: write, plus Contents: read on
+   the source. A fork under an old name reads as missing by name,
+   and the creation token of §8 step 6 is the one that renames it.
 2. It syncs the fork's default branch with the target
    (`merge-upstream`), so the recorded base commit is present. The
    sync fast-forwards over every commit upstream merged since the
@@ -1224,6 +1233,7 @@ conflicts while producer artifacts survive.
 | Agent abstains | Manifest says why | Recorded; publisher comments the reason on the issue (§8 step 8) |
 | Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
+| Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
 | Diff needs a mode change or symlink | Publish refused | Agent leaves the step out and banners the follow-up (§5, §7.3) |
 | Two runs overlap | Duplicate branches | Caller concurrency group for scans; named-issue dispatches lock per run and rely on the §6 open-pull-request check and branch-exists refusal |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
