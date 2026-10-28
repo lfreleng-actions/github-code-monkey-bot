@@ -1369,6 +1369,98 @@ class RunRespondTest(NoNetworkCase):
                 )
             )
 
+    def respond_with_heads(self, heads: list[str]) -> tuple[Any, Any, Any, Any]:
+        """Run respond while successive head reads return ``heads``.
+
+        Returns the reply, update, sleep and head mocks, the stored
+        result being left in ``self.root / "result.json"``.
+        """
+        check = self.write_check(revision_check())
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                )
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(review, "pull_head", side_effect=heads) as head,
+            patch.object(
+                publish.revision_publish.threads_of, "read_thread", return_value=[]
+            ),
+            patch.object(publish.revision_publish.time, "sleep") as sleep,
+            patch.object(publish.revision_publish, "reply", return_value=None) as reply,
+            patch.object(publish.revision_publish, "resolve", return_value=None),
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ) as update,
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        return reply, update, sleep, head
+
+    @unittest.expectedFailure
+    def test_a_lagging_head_read_is_retried(self) -> None:
+        """The pull request still names the pre-round head: read again, then answer.
+
+        GitHub's pull request object lags the ref update, so a read
+        straight after the swap can return the head the round began
+        from. That is not another run's move.
+        """
+        reply, update, sleep, head = self.respond_with_heads([HEAD, NEW_HEAD])
+        self.assertEqual(head.call_count, 2)
+        sleep.assert_called_once_with(publish.revision_publish.LAG_BACKOFF_SECONDS[0])
+        self.assertEqual(reply.call_count, 2)
+        update.assert_called_once()
+        stored = json.loads((self.root / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["responded"]["replied"], 2)
+        self.assertFalse(any("moved" in w for w in stored["warnings"]))
+
+    @unittest.expectedFailure
+    def test_a_head_that_never_catches_up_is_skipped(self) -> None:
+        """Every retry still reads the pre-round head: warn, naming both, and skip."""
+        backoff = publish.revision_publish.LAG_BACKOFF_SECONDS
+        reply, update, sleep, head = self.respond_with_heads(
+            [HEAD] * (len(backoff) + 1)
+        )
+        self.assertEqual(head.call_count, len(backoff) + 1)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], list(backoff))
+        reply.assert_not_called()
+        update.assert_not_called()
+        stored = json.loads((self.root / "result.json").read_text(encoding="utf-8"))
+        warning = next(w for w in stored["warnings"] if "no reply posted" in w)
+        self.assertIn(f"round's tip {NEW_HEAD[:7]}", warning)
+        self.assertIn(f"previous head {HEAD[:7]}", warning)
+
+    @unittest.expectedFailure
+    def test_an_unrelated_head_is_skipped_without_retry(self) -> None:
+        """A head that is neither the tip nor the pre-round head is a genuine move."""
+        other = "f" * 40
+        reply, update, sleep, head = self.respond_with_heads([other])
+        self.assertEqual(head.call_count, 1)
+        sleep.assert_not_called()
+        reply.assert_not_called()
+        update.assert_not_called()
+        stored = json.loads((self.root / "result.json").read_text(encoding="utf-8"))
+        warning = next(w for w in stored["warnings"] if "no reply posted" in w)
+        self.assertIn(f"round's tip {NEW_HEAD[:7]}", warning)
+        self.assertIn(f"to {other[:7]}", warning)
+
     def test_a_failed_reply_is_a_warning_and_the_rest_proceed(self) -> None:
         """One refused write does not stop the others or fail the step."""
         check = self.write_check(revision_check())
