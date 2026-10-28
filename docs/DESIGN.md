@@ -1943,7 +1943,12 @@ With the pull request token, `respond` first reads the pull request's
 head: the compare-and-swap guarded the branch move alone, and another
 run may have advanced the pull request since, so a head other than
 the one this round published, or one it cannot read, leaves every
-write below undone with a warning and the publication standing. It
+write below undone with a warning and the publication standing.
+GitHub's pull request object lags the ref update, so a read that
+still names the head the round began from is a stale read, not a
+move: `respond` reads again after 2, 4 and 8 seconds, and warns, naming
+the round's tip and the previous head, when the read never
+catches up. Any other head skips at once. It
 then posts each reply on its thread
 prefixed with the AI disclosure and ending in a marker that names
 the round and the session,
