@@ -41,6 +41,11 @@ def absent() -> Exception:
     return github.GitHubError("gh: Not Found (HTTP 404)")
 
 
+def past_deadline() -> list[float]:
+    """Clock readings that end a fork poll on its first miss."""
+    return [0.0, refs.FORK_WAIT_SECONDS + 1.0]
+
+
 class NoNetworkCase(unittest.TestCase):
     """Base class failing any test that reaches a real subprocess."""
 
@@ -106,19 +111,22 @@ class EnsureForkTest(NoNetworkCase):
             refs.ensure_fork(TARGET, FORK_ORG, "repo")
         write.assert_not_called()
 
+    @unittest.expectedFailure
     def test_missing_fork_is_created_then_awaited(self) -> None:
-        """A 404 forks the target into the pool and polls until it appears."""
+        """A 404 with no listed fork creates one and polls until it appears."""
         with (
             patch.object(
                 github,
                 "api_object",
                 side_effect=[absent(), absent(), repo_object()],
             ) as read,
-            patch.object(github, "api_write", return_value={}) as write,
+            patch.object(github, "api_list", return_value=[]) as listing,
+            patch.object(github, "api_write", return_value=repo_object()) as write,
             patch.object(refs.time, "sleep") as sleep,
             patch.object(refs.time, "monotonic", side_effect=[0.0, 1.0, 2.0]),
         ):
             self.assertEqual(refs.ensure_fork(TARGET, FORK_ORG, "repo"), FORK)
+        listing.assert_called_once_with(f"repos/{TARGET}/forks?sort=newest")
         write.assert_called_once_with(
             "POST",
             f"repos/{TARGET}/forks",
@@ -127,10 +135,102 @@ class EnsureForkTest(NoNetworkCase):
         self.assertEqual(read.call_count, 3)
         sleep.assert_called_once_with(refs.FORK_POLL_SECONDS)
 
+    @unittest.expectedFailure
+    def test_create_reply_under_an_old_name_is_renamed(self) -> None:
+        """The create reply, not the target's name, says where the fork is."""
+        old = f"{FORK_ORG}/old-repo"
+        renamed = repo_object(full_name=FORK)
+        with (
+            patch.object(github, "api_object", side_effect=[absent(), renamed]) as read,
+            patch.object(github, "api_list", return_value=[]),
+            patch.object(
+                github,
+                "api_write",
+                side_effect=[repo_object(full_name=old), renamed],
+            ) as write,
+            patch.object(refs.time, "sleep"),
+            patch.object(refs.time, "monotonic", return_value=0.0),
+        ):
+            self.assertEqual(refs.ensure_fork(TARGET, FORK_ORG, "repo"), FORK)
+        write.assert_called_with("PATCH", f"repos/{old}", {"name": "repo"})
+        self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
+
+    @unittest.expectedFailure
+    def test_create_reply_outside_the_pool_is_refused(self) -> None:
+        """A create reply naming no fork in the pool is never trusted."""
+        for reply in ({}, repo_object(full_name="someone/repo")):
+            with (
+                self.subTest(reply=reply),
+                patch.object(github, "api_object", side_effect=absent()),
+                patch.object(github, "api_list", return_value=[]),
+                patch.object(github, "api_write", return_value=reply),
+                patch.object(refs.time, "sleep") as sleep,
+                patch.object(refs.time, "monotonic", side_effect=past_deadline()),
+                self.assertRaisesRegex(policy.PublishError, "named no fork"),
+            ):
+                refs.ensure_fork(TARGET, FORK_ORG, "repo")
+            sleep.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_fork_under_an_old_name_is_renamed(self) -> None:
+        """A fork kept from before a target rename is found and renamed."""
+        old = f"{FORK_ORG}/old-repo"
+        listed = [
+            {"full_name": "someone/repo", "owner": {"login": "someone"}},
+            {"full_name": old, "owner": {"login": FORK_ORG.upper()}},
+        ]
+        with (
+            patch.object(
+                github, "api_object", side_effect=[absent(), repo_object()]
+            ) as read,
+            patch.object(github, "api_list", return_value=listed),
+            patch.object(github, "api_write", return_value={}) as write,
+            patch.object(refs.time, "sleep"),
+            patch.object(refs.time, "monotonic", return_value=0.0),
+        ):
+            self.assertEqual(refs.ensure_fork(TARGET, FORK_ORG, "repo"), FORK)
+        write.assert_called_once_with("PATCH", f"repos/{old}", {"name": "repo"})
+        self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
+
+    @unittest.expectedFailure
+    def test_rename_refusal_is_operational(self) -> None:
+        """A 422 because the target's name is taken fails the publish."""
+        listed = [{"full_name": f"{FORK_ORG}/old-repo", "owner": {"login": FORK_ORG}}]
+        with (
+            patch.object(github, "api_object", side_effect=absent()),
+            patch.object(github, "api_list", return_value=listed),
+            patch.object(
+                github,
+                "api_write",
+                side_effect=github.GitHubError("gh: Validation Failed (HTTP 422)"),
+            ),
+            patch.object(refs.time, "sleep") as sleep,
+            self.assertRaisesRegex(policy.PublishError, "could not rename fork"),
+        ):
+            refs.ensure_fork(TARGET, FORK_ORG, "repo")
+        sleep.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_fork_list_failure_is_operational(self) -> None:
+        """A failed fork listing never leads to a fork request."""
+        with (
+            patch.object(github, "api_object", side_effect=absent()),
+            patch.object(
+                github, "api_list", side_effect=github.GitHubError("x (HTTP 500)")
+            ),
+            patch.object(github, "api_write") as write,
+            patch.object(refs.time, "sleep"),
+            patch.object(refs.time, "monotonic", side_effect=past_deadline()),
+            self.assertRaisesRegex(policy.PublishError, "could not list forks"),
+        ):
+            refs.ensure_fork(TARGET, FORK_ORG, "repo")
+        write.assert_not_called()
+
     def test_fork_request_failure_is_operational(self) -> None:
         """A refused fork request is reported without polling."""
         with (
             patch.object(github, "api_object", side_effect=absent()),
+            patch.object(github, "api_list", return_value=[]),
             patch.object(
                 github,
                 "api_write",
@@ -146,7 +246,8 @@ class EnsureForkTest(NoNetworkCase):
         """A fork that never appears before the deadline is an error."""
         with (
             patch.object(github, "api_object", side_effect=absent()),
-            patch.object(github, "api_write", return_value={}),
+            patch.object(github, "api_list", return_value=[]),
+            patch.object(github, "api_write", return_value=repo_object()),
             patch.object(refs.time, "sleep"),
             patch.object(
                 refs.time,
@@ -163,7 +264,8 @@ class EnsureForkTest(NoNetworkCase):
             patch.object(
                 github, "api_object", side_effect=[absent(), repo_object(fork=False)]
             ),
-            patch.object(github, "api_write", return_value={}),
+            patch.object(github, "api_list", return_value=[]),
+            patch.object(github, "api_write", return_value=repo_object()),
             patch.object(refs.time, "sleep"),
             patch.object(refs.time, "monotonic", return_value=0.0),
             self.assertRaisesRegex(policy.PublishError, "not a fork of"),
