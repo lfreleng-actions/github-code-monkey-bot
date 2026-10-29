@@ -110,10 +110,116 @@ jobs:
       - name: 'Install uv'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        # Outside the workspace, as in code-monkey.yaml: setup-uv
+        # starts the interpreter it finds in its working directory.
+        env:
+          UV_NO_CONFIG: '1'
+          UV_SYSTEM_PYTHON: '1'
+          UV_NO_PROJECT: '1'
         with:
+          working-directory: "${{ runner.temp }}"
           enable-cache: false
       - name: 'Run offline regression suite'
         run: uv run --locked python -B -m unittest discover -s tests -v
+
+  # Runs the select job's uv steps exactly as code-monkey.yaml writes
+  # them (the contract tests hold the copies equal) with a .venv and a
+  # .python-version planted in the workspace root, setup-uv's default
+  # working directory, and in the assets checkout, where the pre-flight
+  # runs uv, plus a uv.toml in the root. Each planted interpreter
+  # appends to a marker as it starts and exits 1, because uv passes
+  # over an interpreter that fails without failing the step.
+  uv-workdir:
+    name: 'uv steps ignore planted Python'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 10
+    permissions:
+      contents: read  # Check out the assets as the select job does
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: 'audit'
+      - name: 'Checkout assets'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: 'monkey-assets'
+          persist-credentials: false
+      - name: 'Plant Python and uv settings'
+        run: |
+          exe() {
+            { echo '#!/bin/sh'
+              echo "echo \"ran: \$0\" >> '$RUNNER_TEMP/planted-ran'"
+              echo 'exit 1'; } > "$1"
+            chmod +x "$1"
+          }
+          plant() {
+            mkdir -p "$1/.venv/bin"
+            printf 'home = /usr/bin\nversion = 3.12.0\n' > "$1/.venv/pyvenv.cfg"
+            exe "$1/.venv/bin/python3"
+            exe "$1/.venv/bin/python"
+            exe "$1/planted-python"
+            echo "$1/planted-python" > "$1/.python-version"
+          }
+          plant "$GITHUB_WORKSPACE"
+          plant "$GITHUB_WORKSPACE/monkey-assets"
+          printf '%s\n' 'cache-dir = "/nonexistent/planted-cache"' \
+            'required-version = "==0.0.1"' > "$GITHUB_WORKSPACE/uv.toml"
+      - name: 'Set up uv'
+        id: setup-uv
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        env:
+          UV_NO_CONFIG: '1'
+          UV_SYSTEM_PYTHON: '1'
+          UV_NO_PROJECT: '1'
+        with:
+          working-directory: "${{ runner.temp }}"
+          enable-cache: false
+      - name: 'Install zizmor'
+        run: uv tool install 'zizmor==1.30.1'
+      - name: 'Pre-flight: workflow contracts and audit'
+        run: |
+          # uv run reuses an existing project environment, and runs its
+          # interpreter, in the assets checkout or a uv workspace above
+          # it. Build the environment under RUNNER_TEMP instead, from an
+          # interpreter found there.
+          py="$(cd "$RUNNER_TEMP" &&
+            UV_NO_CONFIG=1 uv python find --system --no-project)"
+          if [ -z "$py" ]; then
+            echo '::error::No Python interpreter found for the pre-flight'
+            exit 1
+          fi
+          cd monkey-assets
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/preflight-venv" \
+            uv run --locked --python "$py" \
+            python -B scripts/preflight.py workflow --root .
+      - name: 'Check outputs and marker'
+        env:
+          UV_VERSION: "${{ steps.setup-uv.outputs.uv-version }}"
+          PYTHON_VERSION: "${{ steps.setup-uv.outputs.python-version }}"
+        run: |
+          if [ -e "$RUNNER_TEMP/planted-ran" ]; then
+            echo '::error::A planted interpreter ran:'
+            cat "$RUNNER_TEMP/planted-ran"
+            exit 1
+          fi
+          installed="$(uv --version | cut -d' ' -f2)"
+          if ! [[ "$UV_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            [ "$UV_VERSION" = 0.0.1 ] || [ "$installed" != "$UV_VERSION" ]; then
+            echo "::error::uv-version '$UV_VERSION', uv on PATH '$installed'"
+            exit 1
+          fi
+          [[ "$PYTHON_VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::python-version output is '$PYTHON_VERSION'"
+            exit 1; }
+          [ "${UV_CACHE_DIR:-}" != /nonexistent/planted-cache ] || {
+            echo '::error::UV_CACHE_DIR came from the planted uv.toml'
+            exit 1; }
+          "$RUNNER_TEMP/preflight-venv/bin/python" --version
+          echo "uv $UV_VERSION, Python $PYTHON_VERSION, no planted file used"
 
   docs:
     name: 'Documentation build'
@@ -138,7 +244,14 @@ jobs:
       - name: 'Install uv'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        # Outside the workspace, as in code-monkey.yaml: setup-uv
+        # starts the interpreter it finds in its working directory.
+        env:
+          UV_NO_CONFIG: '1'
+          UV_SYSTEM_PYTHON: '1'
+          UV_NO_PROJECT: '1'
         with:
+          working-directory: "${{ runner.temp }}"
           enable-cache: false
 
       # Proves the site builds from the pull request head without
