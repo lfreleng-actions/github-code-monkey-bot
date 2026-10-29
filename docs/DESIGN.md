@@ -942,6 +942,8 @@ For each selected issue:
     produced it. A full rerun selects afresh under a new namespace
     and gets its own report; the earlier report keeps the earlier
     sessions' spend, so a run's cost is the sum of its reports.
+    The report job also exposes the pull requests the run opened or
+    revised as the workflow's outputs (§18.6).
 
 ## 9. Inputs
 
@@ -1311,6 +1313,7 @@ scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report
+scripts/report_outputs.py                the run's pull request links (§18.6)
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
 scripts/review_sections.py               its suppressed and unchanged-code counts
 scripts/review_text.py                   what one line of it the classifier reads
@@ -1701,6 +1704,7 @@ publish.py review-await --result result.json --output result.json
 publish.py respond --result result.json --check check.json
     --output result.json
 publish.py report --results DIR --output-md PATH --output-json PATH
+    [--org ORG --github-output PATH]
 ```
 
 `select_issues.py`, `publish.py push`, `open`, `respond`, `comment`,
@@ -1708,6 +1712,35 @@ publish.py report --results DIR --output-md PATH --output-json PATH
 runs offline. A verdict other than
 `proposed` is data, not an error: the scripts exit non-zero for
 operational failures alone.
+
+### 18.6 Workflow outputs (report → caller)
+
+A caller cannot read `report.json` without the run's namespace, so
+the reusable workflow declares two `workflow_call` outputs, fed by
+the report job's `Build report` step through
+`publish.py report --org ORG --github-output PATH`:
+
+| Output | Value |
+| ------ | ----- |
+| `pull_requests` | Single-line JSON array of URLs, in report order |
+| `pull_request_count` | The array's length, as a string |
+
+Results are not yet authenticated (§18.4), so `report_outputs.py`
+treats each field as hostile. A URL counts when the whole value
+matches `^https://github\.com/<org>/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$`,
+`<org>` the run's `org` input, with case folded in ASCII alone, so
+no non-ASCII letter that Unicode folds onto an ASCII one (the
+dotless `ı` in `gıthub.com`) passes; duplicates, compared the same
+way, keep their first place. A dry-run
+result, or one without a `pull_request_url`, contributes nothing.
+The script leaves any other value out and never copies it; it counts
+them in `report.json` (`excluded_pull_request_urls`, beside the
+`pull_requests` array), in the report and as a `::warning::`. Both
+keys stay fixed and neither value can hold a newline. A selection that ran no
+agent gives `[]` and `0`; a run whose report job did not run gives
+empty strings. Like the report, the outputs are informational: they
+name pull requests, and nothing may write to a repository on the
+strength of them.
 
 ## 19. Activity Log and Blockers
 

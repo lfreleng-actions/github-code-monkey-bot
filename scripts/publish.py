@@ -28,7 +28,9 @@ pull request with the target token, then wait for its review of the
 head with the job's own token and record the verdict
 (``copilot_review``).
 
-``report`` merges every ``result.json`` into one table.
+``report`` merges every ``result.json`` into one table; given
+``--org`` and ``--github-output`` it also writes the run's pull
+request links as step outputs (``report_outputs``).
 
 A verdict other than ``proposed`` is data, not an error. The script
 exits non-zero for operational failures alone.
@@ -394,6 +396,10 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--results", type=Path, required=True)
     report.add_argument("--output-md", type=Path, required=True)
     report.add_argument("--output-json", type=Path, required=True)
+    report.add_argument("--org", help="owner whose pull request links to output")
+    report.add_argument(
+        "--github-output", type=Path, help="append the links here ($GITHUB_OUTPUT)"
+    )
     report.set_defaults(handler=reporting.run_report)
     return parser
 

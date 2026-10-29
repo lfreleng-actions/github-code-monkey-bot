@@ -144,6 +144,15 @@ on:
           write on the target organisation; used by the review request
           step alone, which falls back to the App token without it
         required: false
+    outputs:
+      pull_requests:
+        description: >-
+          Compact JSON array of the pull request URLs this run opened or
+          revised, in report order, each a pull request in `org`
+        value: "${{ jobs.report.outputs.pull_requests }}"
+      pull_request_count:
+        description: 'Length of pull_requests, as a string'
+        value: "${{ jobs.report.outputs.pull_request_count }}"
 
 permissions: {}
 
@@ -1529,6 +1538,9 @@ jobs:
     permissions:
       actions: read  # Gather per-issue result artifacts
       contents: read  # Checkout the report script
+    outputs:
+      pull_requests: "${{ steps.report.outputs.pull_requests }}"
+      pull_request_count: "${{ steps.report.outputs.pull_request_count }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.egress_policy == 'block'
@@ -1562,15 +1574,20 @@ jobs:
           pattern: "monkey-result-${{ needs.select.outputs.namespace }}-*"
           path: 'results'
 
+      # The run's pull request links become the workflow's outputs;
+      # the script validates each against the organisation.
       - name: 'Build report'
+        id: report
         env:
           AUTHOR_RESULT: "${{ needs.author.result }}"
           PUBLISH_RESULT: "${{ needs.publish.result }}"
+          ORG: "${{ inputs.org }}"
         run: |
           mkdir -p results artefacts
           python3 monkey-assets/scripts/publish.py report \
             --results results --output-md artefacts/report.md \
-            --output-json artefacts/report.json
+            --output-json artefacts/report.json \
+            --org "$ORG" --github-output "$GITHUB_OUTPUT"
           cat artefacts/report.md >> "$GITHUB_STEP_SUMMARY"
           printf '\nAuthor job: %s; publish job: %s\n' \
             "$AUTHOR_RESULT" "$PUBLISH_RESULT" >> "$GITHUB_STEP_SUMMARY"

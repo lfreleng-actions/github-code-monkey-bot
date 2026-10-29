@@ -1581,7 +1581,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertTrue(is_action(final, UPLOAD))
         self.assertEqual(final["with"]["retention-days"], 90)
 
-    @unittest.expectedFailure
     def test_pull_request_outputs_come_from_the_report(self) -> None:
         """The workflow's outputs are the report script's, validated by org."""
         declared = cast(dict[str, Any], self.triggers["workflow_call"]["outputs"])

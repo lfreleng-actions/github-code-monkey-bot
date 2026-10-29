@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import issue_comment as comments
 import proposal_model as model
 import proposal_policy as policy
+import report_outputs as outputs
 from proposal_policy import PublishError
 
 SCHEMA = 1
@@ -170,6 +172,28 @@ def run_report(args: argparse.Namespace) -> None:
         policy.REVISION_DISCLOSURE,
         "",
     ]
+    org: str | None = getattr(args, "org", None)
+    extra: dict[str, Any] = {}
+    if org is not None:
+        pulls, excluded = outputs.pull_request_urls(results, org)
+        extra = {"pull_requests": pulls, "excluded_pull_request_urls": excluded}
+        if excluded:
+            # The refused values descend from agent output; only the
+            # count is printed.
+            lines += [
+                f"The run's outputs left {excluded} pull request link"
+                f"{'s' if excluded != 1 else ''} out: not a pull request "
+                "in this organisation.",
+                "",
+            ]
+            print(
+                f"::warning::{excluded} pull request link(s) failed validation "
+                "and were left out of the run's outputs"
+            )
+        github_output: Path | None = getattr(args, "github_output", None)
+        if github_output is not None:
+            with github_output.open("a", encoding="utf-8") as handle:
+                handle.write(outputs.output_lines(pulls))
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
     args.output_md.write_text("\n".join(lines), encoding="utf-8")
     args.output_json.write_text(
@@ -181,6 +205,7 @@ def run_report(args: argparse.Namespace) -> None:
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,
+                **extra,
             },
             indent=2,
         )

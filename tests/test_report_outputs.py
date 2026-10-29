@@ -54,7 +54,6 @@ def result(url: Any, **overrides: Any) -> dict[str, Any]:
 class PullRequestUrlsTest(unittest.TestCase):
     """Which result links reach the outputs, and in what order."""
 
-    @unittest.expectedFailure
     def test_valid_links_keep_report_order_without_duplicates(self) -> None:
         """Order is the report's; a repeat, in any case, counts once."""
         first, second = pull("b-repo", 3), pull("a.repo_2", 41)
@@ -72,7 +71,6 @@ class PullRequestUrlsTest(unittest.TestCase):
         self.assertEqual(urls, [first, second])
         self.assertEqual(excluded, 0)
 
-    @unittest.expectedFailure
     def test_owner_compares_case_insensitively(self) -> None:
         """The organisation's spelling in the URL does not matter."""
         url = "https://github.com/LFReleng-Actions/repo/pull/9"
@@ -80,7 +78,6 @@ class PullRequestUrlsTest(unittest.TestCase):
         self.assertEqual(urls, [url])
         self.assertEqual(excluded, 0)
 
-    @unittest.expectedFailure
     def test_dry_run_and_missing_links_are_left_out_quietly(self) -> None:
         """A dry run or a result without a link is no pull request, not a fault."""
         urls, excluded = outputs().pull_request_urls(
@@ -96,7 +93,6 @@ class PullRequestUrlsTest(unittest.TestCase):
         self.assertEqual(urls, [])
         self.assertEqual(excluded, 0)
 
-    @unittest.expectedFailure
     def test_links_failing_the_pattern_are_counted_not_kept(self) -> None:
         """Foreign owners, other pages and smuggled text are all refused."""
         bad = [
@@ -129,7 +125,6 @@ class PullRequestUrlsTest(unittest.TestCase):
 class OutputLinesTest(unittest.TestCase):
     """The ``$GITHUB_OUTPUT`` text: two fixed keys, one line each."""
 
-    @unittest.expectedFailure
     def test_compact_single_line_values(self) -> None:
         """The array is compact JSON and the count a string of its length."""
         text = outputs().output_lines([pull("a", 1), pull("b", 2)])
@@ -142,7 +137,6 @@ class OutputLinesTest(unittest.TestCase):
         self.assertNotIn(" ", value)
         self.assertEqual(lines[1], "pull_request_count=2")
 
-    @unittest.expectedFailure
     def test_no_links(self) -> None:
         """An empty run still writes both keys."""
         self.assertEqual(
@@ -181,7 +175,6 @@ class RunReportOutputsTest(unittest.TestCase):
             reporting.run_report(args)
         return printed.getvalue()
 
-    @unittest.expectedFailure
     def test_outputs_follow_the_report(self) -> None:
         """Links in report order are appended; a refused one is a warning."""
         self.write("a", result(pull("repo", 8), key="a-1"))
