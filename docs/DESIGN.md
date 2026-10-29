@@ -5,13 +5,13 @@ SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Design: Scheduled AI Authoring of Pull Requests
 
-Status: **implemented, awaiting rollout** (§15). The workflow,
-scripts and offline tests exist, the bot fork organisations hold
-the App installation and the publisher writes through them (§4.3);
-no live run
-has yet published a branch. §17 records the decisions taken on
-the first draft's open questions and the three points that rollout,
-not further discussion, will settle.
+Status: **implemented and live** (§15). The workflow, scripts and
+offline tests exist, the bot fork organisations hold the App
+installation and the publisher writes through them (§4.3), live
+`pull-requests` dispatches have raised signed, reviewed pull
+requests, and the weekday schedule runs live and posts its pull
+requests to Slack (§11). §17 records the decisions taken on the
+first draft's open questions and the points rollout settles.
 
 This document reuses the architecture, vocabulary and lessons of
 [`github-issues-triage`](https://github.com/lfreleng-actions/github-issues-triage)
@@ -81,9 +81,10 @@ and Type. This workflow depends on that output:
 - An issue without a Type has not seen triage yet and waits a day.
 
 The two workflows live in separate repositories, which rules out a
-`workflow_run` trigger. The schedule offsets by two hours instead
-(§11). Triage's `excluded-repos.txt` lists repositories that produce
-noise; this workflow keeps its own list with the same format, seeded
+`workflow_run` trigger. The schedule runs at 02:00 UTC instead and
+reads the previous working day's triage (§11). Triage's
+`excluded-repos.txt` lists repositories that produce noise; this
+workflow keeps its own list with the same format, seeded
 from that one.
 
 Inherited from triage without change: the three-job trusted /
@@ -943,7 +944,8 @@ For each selected issue:
     and gets its own report; the earlier report keeps the earlier
     sessions' spend, so a run's cost is the sum of its reports.
     The report job also exposes the pull requests the run opened or
-    revised as the workflow's outputs (§18.6).
+    revised as the workflow's outputs (§18.6), from which the
+    scheduled caller posts a Slack digest (§11).
 
 ## 9. Inputs
 
@@ -988,11 +990,11 @@ outside the stated ranges.
 
 ### 9.2 Dispatch caller (`code-monkey-cron.yaml`)
 
-`schedule: '0 9 * * 1-5'` and `workflow_dispatch` with:
+`schedule: '0 2 * * 1-5'` and `workflow_dispatch` with:
 
 | Input | Type | Default |
 | ----- | ---- | ------- |
-| `dry_run` | boolean | `true` |
+| `dry_run` | boolean | `false` |
 | `model` | choice | Claude Opus 5.5 |
 | `mode` | choice | `pull-requests` |
 | `max_pull_requests` | string | `'10'` |
@@ -1011,8 +1013,13 @@ outside the stated ranges.
 
 The `model` choice shows display names and the caller maps them to
 the identifiers in §10.3. The schedule runs `pull-requests` mode
-with `dry_run: false` once §15 clears it; until then the schedule
-stays dry-run, the path triage took.
+with `dry_run: false`; the caller passes
+`github.event_name == 'workflow_dispatch' && inputs.dry_run`, so a
+dispatch keeps the form's choice, which is live unless the operator
+ticks `dry_run`. The reusable workflow's own `dry_run` (§9.1) keeps
+its default of `true`; the caller alone defaults live. A
+schedule passes no inputs and takes the defaults above: up to ten
+entries, worked in parallel, and at most ten pull requests.
 
 `max_pull_requests` semantics: `1` raises at most one pull request,
 `20` at most twenty, and `0` lifts the cap as far as the matrix
@@ -1181,11 +1188,33 @@ the model PAT (§10.2).
 
 ## 11. Scheduling and Concurrency
 
-- Cron `0 9 * * 1-5`, two hours after triage, which takes under
-  thirty minutes. A `repository_dispatch` from triage's caller would
-  remove the guess at the cost of a cross-repository token; the
-  offset is the first cut and §16 lists the dispatch as a later
-  option.
+- Cron `0 2 * * 1-5`, live. At 02:00 UTC the run's pull requests
+  are ready for review by the start of the European working day. It
+  reads the previous working day's triage, which runs at 07:00 UTC
+  and takes under thirty minutes, so an issue triaged today waits
+  for tomorrow's run. A `repository_dispatch` from triage's caller
+  would tie the two together at the cost of a cross-repository
+  token; §16 lists it as a later option.
+- A scheduled run posts once to Slack. The `notify` job reads the
+  reusable workflow's outputs (§18.6), re-validates each link against
+  the same pattern, and posts a header, one link per line in report
+  order (at most 50 links or 2,500 characters, then `... and N
+  more`), and a link to the run. A run that raised nothing posts
+  a line saying it raised none, so an empty night reads
+  differently from a broken one, and a run with failed jobs that
+  still reported says so under the list. `notify-failure` needs
+  `notify` and posts when a scheduled run failed, or a cancellation
+  stopped it, and the digest did not succeed: the run stopped before its report
+  produced outputs, or the digest job itself failed. It says the
+  nightly run failed and no digest follows; a digest that posted is
+  never repeated.
+  Both jobs run in the `production` environment with no token
+  permissions, harden the runner in block mode with the forwarded
+  allow-list (which admits `slack.com`), and warn and skip when the
+  organisation's `SLACK_BOT_TOKEN` or `SLACK_CHANNEL_ID` is missing.
+  The Slack token reaches their Slack steps alone and never the
+  reusable workflow. Dispatches never post, live or dry; a dispatch
+  is live by default, as the schedule is (§9.2).
 - Caller concurrency group `code-monkey`, `cancel-in-progress:
   false`, for scheduled runs and live dispatches without `issues`:
   one run at a time, and a dispatch during the scheduled run queues
@@ -1350,8 +1379,7 @@ write-good and `aislop` at threshold 100.
 0. A live `branches` or `pull-requests` dispatch writes into a bot
    fork (§4.3) with Actions switched off, so the agent's code runs
    nowhere until a maintainer approves the pull request's workflows
-   on the target. The schedule stays dry-run; dry-run and `select`
-   mode mint no write token.
+   on the target. Dry-run and `select` mode mint no write token.
 1. Land the workflow with the schedule in dry-run and
    `pull-requests` mode. Inspect diffs, messages and abstentions
    for a week of runs.
@@ -1361,8 +1389,9 @@ write-good and `aislop` at threshold 100.
 3. Dispatch `pull-requests` mode live against the same repository.
    Confirm the PR title check, Copilot's automatic review, label and
    provenance block.
-4. Flip the schedule to live. Watch spend from `usage.json` and the
-   ratio of merged to closed bot pull requests.
+4. Flip the schedule to live (done: weekdays at 02:00 UTC, with a
+   Slack digest of each run's pull requests, §11). Watch spend from
+   `usage.json` and the ratio of merged to closed bot pull requests.
 
 Each step is a signed commit and a PR through the normal review
 process. Disabling the workflow in the Actions UI is the kill
@@ -1383,7 +1412,7 @@ switch.
   `lfreleng-actions/.github`; a one-off mode could open its §12 stub
   pull request in every repository, which is itself an issue this
   workflow could work.
-- **Dispatch from triage** in place of the two-hour cron offset
+- **Dispatch from triage** in place of the fixed 02:00 UTC cron
   (§11), once a cross-repository token has an owner.
 - **Private repositories.** A `contents: read` token for the author
   job would be the first credential on that runner and needs its
@@ -1406,7 +1435,7 @@ The questions the first draft left open, and how they closed:
 | Sub-agent tool | `task`; agent-definition tools denied alongside (§7.2) |
 | Skills from the checkout | Off by default; `load_repo_skills` for a repository a maintainer has read (§7.2) |
 | Issue feedback | One comment per outcome via a comment-step token; no labelling, which stays with triage (§8 step 8). GitHub has no permission that stops at comments |
-| Trigger | Offset cron at 09:00 UTC; dispatch from triage is a later option (§11, §16) |
+| Trigger | Live cron at 02:00 UTC on weekdays, reading the previous day's triage, with a Slack digest; dispatch from triage is a later option (§11, §16) |
 | DCO | DCOAPP today, a pre-commit lint soon. The trailer matches the API commit's author identity (§5) |
 | Co-author trailer | Copilot, the assistant, for every supported model prefix in `config/coauthors.json` (§10.3) |
 | Comments in the packet | `OWNER` and `MEMBER` authors, bounded by count and bytes (§6) |
@@ -1740,7 +1769,9 @@ keys stay fixed and neither value can hold a newline. A selection that ran no
 agent gives `[]` and `0`; a run whose report job did not run gives
 empty strings. Like the report, the outputs are informational: they
 name pull requests, and nothing may write to a repository on the
-strength of them.
+strength of them. The scheduled caller's Slack digest (§11) is their
+one consumer; a forged result can at most add a link to another pull
+request in the organisation.
 
 ## 19. Activity Log and Blockers
 

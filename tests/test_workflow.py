@@ -1968,7 +1968,6 @@ class CronCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_schedule_and_concurrency(self) -> None:
         """Weekday 02:00 UTC; scans share a group, dry and named do not."""
         self.assertEqual(self.triggers["schedule"], [{"cron": "0 2 * * 1-5"}])
@@ -1984,7 +1983,6 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
 
-    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
@@ -2051,7 +2049,6 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertRegex(script, r"\*\)[^\n]*exit 1")
 
-    @unittest.expectedFailure
     def test_caller_forwards_credentials_and_pins_assets(self) -> None:
         """Scheduled runs are live; secrets and App id come from org config."""
         job = self.jobs["code-monkey"]
@@ -2117,7 +2114,6 @@ class CronSlackContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_slack_jobs_run_in_production_without_permissions(self) -> None:
         """The environment scopes the Slack secret; the jobs hold no token."""
         for name in SLACK_JOBS:
@@ -2128,7 +2124,6 @@ class CronSlackContracts(WorkflowCase):
                 self.assertEqual(job["runs-on"], "ubuntu-latest")
                 self.assertLessEqual(int(job["timeout-minutes"]), 10)
 
-    @unittest.expectedFailure
     def test_slack_jobs_harden_first_in_block_mode(self) -> None:
         """The loader and harden-runner lead, with the forwarded allow-list."""
         forwarded = self.jobs["code-monkey"]["with"]["egress_allow_config"]
@@ -2157,7 +2152,6 @@ class CronSlackContracts(WorkflowCase):
                     holds = SLACK_TOKEN in dumped(step)
                     self.assertEqual(holds, step.get("name") in SLACK_STEPS)
 
-    @unittest.expectedFailure
     def test_slack_jobs_post_on_schedule_alone(self) -> None:
         """The digest needs the report's outputs; the notice, a failed digest."""
         notify = self.jobs["notify"]
@@ -2175,7 +2169,6 @@ class CronSlackContracts(WorkflowCase):
             " && needs.notify.result != 'success'",
         )
 
-    @unittest.expectedFailure
     def test_slack_posts_skip_without_configuration(self) -> None:
         """A missing token or channel warns; every later step is skipped."""
         for name in SLACK_JOBS:
@@ -2190,7 +2183,6 @@ class CronSlackContracts(WorkflowCase):
                         step["if"], "steps.slack.outputs.configured == 'true'"
                     )
 
-    @unittest.expectedFailure
     def test_messages_carry_header_and_run_link(self) -> None:
         """Header first, run link last, through chat.postMessage."""
         headers = {
@@ -2252,7 +2244,6 @@ class CronSlackContracts(WorkflowCase):
         return dict(line.split("=", 1) for line in lines)
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_digest_revalidates_each_link(self) -> None:
         """Valid links, one per line in order; anything else never reaches Slack."""
         good = [PULL_URL.format("a", 1), PULL_URL.format("b.c", 22)]
@@ -2270,7 +2261,6 @@ class CronSlackContracts(WorkflowCase):
         self.assertEqual(out["text"], "🐒 Code Monkey: 2 pull requests for review")
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_digest_says_when_nothing_was_raised(self) -> None:
         """An empty night reads differently from a broken one."""
         out = self.digest("[]")
@@ -2280,7 +2270,6 @@ class CronSlackContracts(WorkflowCase):
         self.assertIn("Some jobs in this run failed", failed["body"])
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_digest_caps_the_list(self) -> None:
         """At most fifty links, then a count of the rest."""
         pulls = [PULL_URL.format("r", n) for n in range(1, 61)]

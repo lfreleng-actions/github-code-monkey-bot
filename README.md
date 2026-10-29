@@ -65,10 +65,15 @@ reasoning.
 
 ## Schedule and dispatch
 
-`code-monkey-cron.yaml` runs at 09:00 UTC on weekdays, two hours
-after the daily issues triage, and stays in dry-run until the
-rollout in the design document clears it. Organisation
-administrators can dispatch it by hand with a model, a mode
+`code-monkey-cron.yaml` runs live at 02:00 UTC on weekdays, so its
+pull requests are ready for review by the start of the European
+working day, and reads the previous working day's issues triage. It
+raises at most ten pull requests and posts them to Slack, one link
+per line, or says that it raised none; a failed scheduled run posts
+a failure notice instead. Disabling the workflow in the Actions UI
+stops it. Organisation
+administrators can dispatch it by hand, live unless they tick
+`dry_run`, and without a Slack post, with a model, a mode
 (`select`, `branches`, `pull-requests`), issue and runtime caps,
 a category list, and either a repository list to scan or a list of
 issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
