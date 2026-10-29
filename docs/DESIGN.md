@@ -788,7 +788,8 @@ For each selected issue:
    the orphan, selects the issue with `resume` set, and its publisher
    adopts the branch and opens the pull request.
 10. **Request the Copilot review** (`request_review`, on by default)
-    with the pull request token, as one `requestReviewsByLogin`
+    with the review token (§10.4) when the caller passes one, and
+    with the pull request token otherwise, as one `requestReviewsByLogin`
     GraphQL mutation, run once, for the pull request's `node_id`,
     with `botLogins: ["copilot-pull-request-reviewer[bot]"]` (the
     input takes the `[bot]` suffix) and `union: true`, so it adds the
@@ -818,9 +819,11 @@ For each selected issue:
     the workflow requested a review; the issue comment and the report
     (`pending (not requested)`) say so too. The publish goes on, and
     no token gains a permission for it. A request that lands logs the
-    reviewers the reply listed. The App's token cannot add the
-    reviewer (§17); the remedy is a credential that can, held by this
-    step alone.
+    reviewers the reply listed. Either way the log names the
+    credential that asked, `review token` or `App token`, never the
+    token, so a lapsed or revoked review token shows as a refusal
+    under its own name. The App's token cannot add the reviewer
+    (§17 item 4); the review token can, and this step alone holds it.
 11. **Await the Copilot review** with the job's own token, since the
     target is public: poll for a review by
     `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
@@ -876,7 +879,14 @@ For each selected issue:
     head that moved before the wait began, a review of another head,
     a read failure the shared wrapper's retries did not cure, a head
     it could not read at all, and no review within the wait all end
-    as pending, never clean. The record goes into `result.json` as
+    as pending, never clean. When step 10 recorded a refusal
+    (`requested: false`), nobody asked for the review the full wait
+    would poll for, so the wait shrinks to a grace of five minutes'
+    polling on top of the reserve, 15 minutes in all, long enough
+    for a maintainer's own request to bring a review; with none it
+    ends as `pending (not requested)` with a reason naming the
+    shorter wait. A caller's shorter wait stands, and a request that
+    landed keeps the full wait. The record goes into `result.json` as
     `review` (§18.4).
 12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
@@ -965,8 +975,9 @@ For each selected issue:
 | `assets_repository` | string | this repo | Prompt and scripts |
 | `assets_ref` | string | `''` | Resolved to a SHA in select |
 
-Secrets: `copilot_token` (model PAT, §10), `github_app_private_key`
-(select and publish alone).
+Secrets: `copilot_token` (model PAT, §10.2), `github_app_private_key`
+(select and publish alone), `copilot_review_token` (the review
+request step alone, §10.4). All three are optional.
 
 Numeric inputs are strings because reusable-workflow `number`
 inputs cannot carry validation and `fromJSON` handles the
@@ -1143,6 +1154,29 @@ organisation-level variable would suit a mapping that more than one
 workflow shares; triage does not commit, so nothing else reads it
 today. Move it when a second consumer appears.
 
+### 10.4 The review request credential
+
+GitHub adds the Copilot reviewer when a Copilot user asks, not when
+the App does: the App's installation token gets the mutation
+accepted and no reviewer added (§17 item 4). The repository secret
+`COPILOT_REVIEW_TOKEN` is a fine-grained PAT owned by a maintainer
+with a Copilot seat, resource owner `lfreleng-actions`, all
+repositories, with Pull requests: write and the implicit Metadata:
+read. Reviews it requests bill to that maintainer's seat.
+
+The caller passes it as the optional `copilot_review_token`, and the
+publish job's `Request Copilot review` step is the one place that
+reads it: as `GH_TOKEN` when set, with the pull request
+token in its place otherwise, so a caller without the secret keeps
+the App's request. No job-level key, job output, other step or the
+author job references it, and the await step keeps the job's own
+token, since the target is public. `tests/test_workflow.py` pins
+that reach. The step logs the name of the credential it used, never
+its value. The PAT can write to every pull request in the
+organisation, so it widens what that one step could do, not what the
+App holds; its expiry needs the same owner and rotation reminder as
+the model PAT (§10.2).
+
 ## 11. Scheduling and Concurrency
 
 - Cron `0 9 * * 1-5`, two hours after triage, which takes under
@@ -1240,7 +1274,7 @@ conflicts while producer artifacts survive.
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
-| Copilot ignores the App's review request | No review arrives | Verified from the mutation's reply; recorded as a warning, a `::warning` annotation on the run and `pending (not requested)` (§8 steps 10–11); the fallback credential of §17 |
+| Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the mutation's reply shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 
 <!-- markdownlint-enable MD013 -->
@@ -1374,6 +1408,7 @@ The questions the first draft left open, and how they closed:
 | Co-author trailer | Copilot, the assistant, for every supported model prefix in `config/coauthors.json` (§10.3) |
 | Comments in the packet | `OWNER` and `MEMBER` authors, bounded by count and bytes (§6) |
 | Private repositories | Out of scope for v1 (§2, §16) |
+| Who requests the Copilot review | A maintainer's PAT with a Copilot seat, held by the request step alone; reviews bill to that seat (§10.4, item 4 below) |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1401,12 +1436,13 @@ Still to confirm during rollout rather than before it:
    user token brought a review every time. GitHub never refused, so
    the step reported `sent` until it learnt to read the request
    back; it now records the refusal, and the review stays pending.
-   The remedy is still the fallback credential, a fine-grained token
-   with Pull requests: write on the target organisation, or a user
-   with a Copilot seat, held as a secret and used by that one step
-   alone. Nobody has yet decided which account owns it or where
-   GitHub bills its reviews, so it stays a follow-up and a possible
-   redesign rather than widened into any App mint.
+   Decided: the step uses a credential held by a Copilot user, the
+   `COPILOT_REVIEW_TOKEN` secret of §10.4, a maintainer's
+   fine-grained PAT with Pull requests: write, whose seat GitHub
+   bills for the reviews it requests. No App mint widens for it, and
+   without it the step falls back to the App's token and its
+   refusal. A live `pull-requests` run confirms the reply lists
+   `Bot copilot-pull-request-reviewer` and the review arrives.
 
 ## 18. Data Contracts
 
@@ -1659,6 +1695,7 @@ publish.py apply --check check.json --workdir DIR --mode MODE
     --output result.json
 publish.py comment --result result.json [--run-url URL]
 publish.py review-request --result result.json --output result.json
+    [--credential "review token"|"App token"]
 publish.py review-await --result result.json --output result.json
     [--wait-minutes N]
 publish.py respond --result result.json --check check.json

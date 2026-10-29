@@ -212,3 +212,4 @@ jobs:
     secrets:
       copilot_token: "${{ secrets.COPILOT_CLI_TOKEN }}"
       github_app_private_key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
+      copilot_review_token: "${{ secrets.COPILOT_REVIEW_TOKEN }}"

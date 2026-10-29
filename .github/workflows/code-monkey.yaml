@@ -138,6 +138,12 @@ on:
       github_app_private_key:
         description: 'GitHub App private key, used in trusted jobs alone'
         required: false
+      copilot_review_token:
+        description: >-
+          Fine-grained PAT of a user with a Copilot seat, Pull requests
+          write on the target organisation; used by the review request
+          step alone, which falls back to the App token without it
+        required: false
 
 permissions: {}
 
@@ -1360,25 +1366,34 @@ jobs:
             --output artefacts/result.json
 
       # GitHub starts no review by itself for a pull request an App
-      # opens (docs/DESIGN.md section 8), so the publisher asks, with
-      # the one token that may write to the target's pull requests.
-      # Best effort: a refusal is a warning in the result, and the wait
-      # below still runs in case a review starts another way.
+      # opens, and adds no Copilot reviewer when an installation token
+      # asks for one (docs/DESIGN.md sections 8 and 17), so the
+      # publisher asks with a Copilot user's token when the caller
+      # passes one, and with the pull request token otherwise. This is
+      # the one step that sees the review token. Best effort: a refusal
+      # is a warning in the result, and the wait below still runs in
+      # case a review starts another way.
       - name: 'Request Copilot review'
         id: review-request
         if: >-
           !cancelled() && steps.open.outcome == 'success' &&
           inputs.request_review
         env:
-          GH_TOKEN: "${{ steps.pr-token.outputs.token }}"
+          # yamllint disable-line rule:line-length
+          GH_TOKEN: "${{ secrets.copilot_review_token != '' && secrets.copilot_review_token || steps.pr-token.outputs.token }}"
+          # yamllint disable-line rule:line-length
+          REVIEW_CREDENTIAL: "${{ secrets.copilot_review_token != '' && 'review token' || 'App token' }}"
         run: |
           python3 monkey-assets/scripts/publish.py review-request \
-            --result artefacts/result.json --output artefacts/result.json
+            --result artefacts/result.json --output artefacts/result.json \
+            --credential "$REVIEW_CREDENTIAL"
 
       # The target is public, so reading its reviews and review threads
       # needs no App token. The wait is bounded inside the script, with
       # a reserve for the reads a hit needs, and ends as pending, never
-      # clean, when no review of the published head arrives.
+      # clean, when no review of the published head arrives. After a
+      # refused request it waits a short grace instead of the full
+      # wait, for a maintainer's own request.
       - name: 'Await Copilot review'
         id: review
         if: >-
