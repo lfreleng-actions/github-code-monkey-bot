@@ -964,6 +964,64 @@ class HandlersTest(unittest.TestCase):
         self.assertEqual(record["verdict"], "pending")
         self.assertIn("no published head", record["reasons"][0])
 
+    def await_on_a_fake_clock(self, wait_minutes: int) -> Clock:
+        """Run ``review-await`` with no review arriving; return the clock it used."""
+        clock = Clock()
+        real = review.await_review
+
+        def timed(*args: Any, **kwargs: Any) -> Any:
+            return real(*args, clock=clock, sleep=clock.sleep, **kwargs)
+
+        with (
+            patch.object(review, "await_review", side_effect=timed),
+            patch.object(github, "api_object", return_value={"head": {"sha": HEAD}}),
+            patch.object(github, "api_list", return_value=[]),
+        ):
+            review.run_await(
+                argparse.Namespace(
+                    result=self.path, output=self.path, wait_minutes=wait_minutes
+                )
+            )
+        return clock
+
+    @unittest.expectedFailure
+    def test_unrequested_review_gets_a_short_grace(self) -> None:
+        """A refused request waits minutes for a maintainer's, not the full wait."""
+        self.write(review={"requested": False})
+        clock = self.await_on_a_fake_clock(30)
+        grace = review.UNREQUESTED_WAIT_MINUTES
+        self.assertLess(grace, 30)
+        self.assertEqual(clock.now, grace * 60 - review.RESERVE_SECONDS)
+        record = self.stored()["review"]
+        self.assertEqual(record["verdict"], "pending")
+        self.assertIs(record["requested"], False)
+        self.assertIn(f"{grace}-minute wait", record["reasons"][0])
+        self.assertIn("not requested", record["reasons"][-1])
+
+    @unittest.expectedFailure
+    def test_grace_leaves_minutes_to_poll(self) -> None:
+        """The grace outlasts the read reserve, so polling still runs."""
+        polled = review.UNREQUESTED_WAIT_MINUTES * 60 - review.RESERVE_SECONDS
+        self.assertGreaterEqual(polled, 3 * 60)
+        self.assertLess(review.UNREQUESTED_WAIT_MINUTES, review.DEFAULT_WAIT_MINUTES)
+
+    @unittest.expectedFailure
+    def test_grace_never_lengthens_a_shorter_wait(self) -> None:
+        """A caller's wait below the grace stands."""
+        self.write(review={"requested": False})
+        clock = self.await_on_a_fake_clock(review.UNREQUESTED_WAIT_MINUTES - 1)
+        wait = review.UNREQUESTED_WAIT_MINUTES - 1
+        self.assertEqual(clock.now, wait * 60 - review.RESERVE_SECONDS)
+
+    def test_requested_or_unrecorded_review_gets_the_full_wait(self) -> None:
+        """Only a recorded refusal shortens the wait."""
+        for record in ({"requested": True}, {}):
+            with self.subTest(review=record):
+                self.write(review=record)
+                clock = self.await_on_a_fake_clock(30)
+                self.assertEqual(clock.now, 30 * 60 - review.RESERVE_SECONDS)
+                self.assertEqual(len(self.stored()["review"]["reasons"]), 1)
+
     def test_await_records_the_verdict_against_the_head(self) -> None:
         """The record names the verdict, counts, review id and the head it judged."""
         self.write(review={"requested": True})
