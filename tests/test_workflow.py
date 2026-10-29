@@ -1968,9 +1968,10 @@ class CronCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
+    @unittest.expectedFailure
     def test_schedule_and_concurrency(self) -> None:
-        """Weekday 09:00 UTC; scans share a group, dry and named do not."""
-        self.assertEqual(self.triggers["schedule"], [{"cron": "0 9 * * 1-5"}])
+        """Weekday 02:00 UTC; scans share a group, dry and named do not."""
+        self.assertEqual(self.triggers["schedule"], [{"cron": "0 2 * * 1-5"}])
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
             str(concurrency["group"]),
@@ -1983,13 +1984,14 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
 
+    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
-        """The manual form mirrors DESIGN.md section 9.2 with safe defaults."""
+        """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
             dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
         )
         self.assertEqual(inputs["dry_run"]["type"], "boolean")
-        self.assertIs(inputs["dry_run"]["default"], True)
+        self.assertIs(inputs["dry_run"]["default"], False)
 
         model = inputs["model"]
         self.assertEqual(model["type"], "choice")
@@ -2049,15 +2051,16 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertRegex(script, r"\*\)[^\n]*exit 1")
 
+    @unittest.expectedFailure
     def test_caller_forwards_credentials_and_pins_assets(self) -> None:
-        """Scheduled runs stay dry; secrets and App id come from org config."""
+        """Scheduled runs are live; secrets and App id come from org config."""
         job = self.jobs["code-monkey"]
         self.assertEqual(job["uses"], REUSABLE_CALL)
         with_ = cast(dict[str, Any], job["with"])
         self.assert_expression(with_["model"], "needs.options.outputs.model")
         self.assert_expression(
             with_["dry_run"],
-            "github.event_name != 'workflow_dispatch' || inputs.dry_run",
+            "github.event_name == 'workflow_dispatch' && inputs.dry_run",
         )
         self.assertIn(
             "vars.BOT_APP_CLIENT_ID", unwrap(str(with_["github_app_client_id"]))
@@ -2100,6 +2103,193 @@ class CronCallerContracts(WorkflowCase):
     def test_caller_steps_are_pinned(self) -> None:
         """The model job's actions are commit-pinned like the reusable ones."""
         self.assert_pinned_steps()
+
+
+SLACK_ACTION = "slackapi/slack-github-action"
+SLACK_JOBS = ("notify", "notify-failure")
+SLACK_TOKEN = "secrets.SLACK_BOT_TOKEN"
+SLACK_STEPS = ("Check Slack configuration", "Post to Slack")
+PULL_URL = "https://github.com/lfreleng-actions/{}/pull/{}"
+
+
+class CronSlackContracts(WorkflowCase):
+    """The scheduled run's Slack digest and failure notice (issue #73)."""
+
+    WORKFLOW = CRON
+
+    @unittest.expectedFailure
+    def test_slack_jobs_run_in_production_without_permissions(self) -> None:
+        """The environment scopes the Slack secret; the jobs hold no token."""
+        for name in SLACK_JOBS:
+            with self.subTest(job=name):
+                job = self.jobs[name]
+                self.assertEqual(job["environment"], "production")
+                self.assertEqual(job["permissions"], {})
+                self.assertEqual(job["runs-on"], "ubuntu-latest")
+                self.assertLessEqual(int(job["timeout-minutes"]), 10)
+
+    @unittest.expectedFailure
+    def test_slack_jobs_harden_first_in_block_mode(self) -> None:
+        """The loader and harden-runner lead, with the forwarded allow-list."""
+        forwarded = self.jobs["code-monkey"]["with"]["egress_allow_config"]
+        for name in SLACK_JOBS:
+            with self.subTest(job=name):
+                steps = self.steps(name)
+                self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+                self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+                self.assertEqual(steps[0]["with"]["config"], forwarded)
+                self.assertEqual(steps[1]["with"]["egress-policy"], "block")
+                self.assert_expression(
+                    steps[1]["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
+                )
+                self.assertEqual(steps[2]["name"], "Check Slack configuration")
+                self.assertTrue(is_action(steps[-1], SLACK_ACTION))
+
+    def test_slack_token_stays_in_the_slack_steps(self) -> None:
+        """No other job, nor any other step of the Slack jobs, sees the token."""
+        for name, job in self.jobs.items():
+            if name not in SLACK_JOBS:
+                with self.subTest(job=name):
+                    self.assertNotIn("SLACK_BOT_TOKEN", dumped(job))
+                continue
+            for step in cast(list[dict[str, Any]], job["steps"]):
+                with self.subTest(job=name, step=step.get("name")):
+                    holds = SLACK_TOKEN in dumped(step)
+                    self.assertEqual(holds, step.get("name") in SLACK_STEPS)
+
+    @unittest.expectedFailure
+    def test_slack_jobs_post_on_schedule_alone(self) -> None:
+        """The digest needs the report's outputs; the notice, a failed digest."""
+        notify = self.jobs["notify"]
+        self.assertEqual(notify["needs"], ["code-monkey"])
+        self.assert_expression(
+            notify["if"],
+            "github.event_name == 'schedule' && !cancelled()"
+            " && needs.code-monkey.outputs.pull_request_count != ''",
+        )
+        failure = self.jobs["notify-failure"]
+        self.assertEqual(failure["needs"], ["options", "code-monkey", "notify"])
+        self.assert_expression(
+            failure["if"],
+            "github.event_name == 'schedule' && (failure() || cancelled())"
+            " && needs.notify.result != 'success'",
+        )
+
+    @unittest.expectedFailure
+    def test_slack_posts_skip_without_configuration(self) -> None:
+        """A missing token or channel warns; every later step is skipped."""
+        for name in SLACK_JOBS:
+            with self.subTest(job=name):
+                check = self.step(name, "slack")
+                script = str(check["run"])
+                self.assertIn("::warning::", script)
+                self.assertIn("GITHUB_STEP_SUMMARY", script)
+                later = self.steps(name)[self.position(name, "slack") + 1 :]
+                for step in later:
+                    self.assertEqual(
+                        step["if"], "steps.slack.outputs.configured == 'true'"
+                    )
+
+    @unittest.expectedFailure
+    def test_messages_carry_header_and_run_link(self) -> None:
+        """Header first, run link last, through chat.postMessage."""
+        headers = {
+            "notify": "🐒 Code Monkey: pull requests for review",
+            "notify-failure": "🐒 Code Monkey: nightly run failed",
+        }
+        for name, header in headers.items():
+            with self.subTest(job=name):
+                post = cast(dict[str, Any], self.action(name, SLACK_ACTION)["with"])
+                self.assertEqual(post["method"], "chat.postMessage")
+                self.assert_expression(post["token"], SLACK_TOKEN)
+                payload = cast(dict[str, Any], yaml.safe_load(str(post["payload"])))
+                blocks = cast(list[dict[str, Any]], payload["blocks"])
+                self.assertEqual(
+                    [block["type"] for block in blocks],
+                    ["header", "section", "context"],
+                )
+                self.assertEqual(blocks[0]["text"]["text"], header)
+                self.assertEqual(
+                    blocks[2]["elements"][0]["text"],
+                    "<${{ github.server_url }}/${{ github.repository }}"
+                    "/actions/runs/${{ github.run_id }}|View workflow run>",
+                )
+        digest = yaml.safe_load(
+            str(self.action("notify", SLACK_ACTION)["with"]["payload"])
+        )
+        self.assertEqual(digest["text"], "${{ steps.digest.outputs.text }}")
+        self.assertEqual(
+            digest["blocks"][1]["text"]["text"], "${{ steps.digest.outputs.body }}"
+        )
+
+    def digest(self, pulls: str, result: str = "success") -> dict[str, str]:
+        """Run the digest step's script and return what it wrote to its outputs."""
+        step = self.step("notify", "digest")
+        self.assert_expression(
+            step["env"]["PULL_REQUESTS"], "needs.code-monkey.outputs.pull_requests"
+        )
+        self.assert_expression(step["env"]["ORG"], "github.repository_owner")
+        with tempfile.TemporaryDirectory() as work:
+            output = Path(work) / "output"
+            output.touch()
+            env = {
+                "PATH": os.environ["PATH"],
+                # The runner's own locale: folding there is Unicode-aware.
+                "LC_ALL": "C.UTF-8",
+                "ORG": "lfreleng-actions",
+                "PULL_REQUESTS": pulls,
+                "RUN_RESULT": result,
+                "GITHUB_OUTPUT": str(output),
+            }
+            subprocess.run(
+                ["bash", "-c", str(step["run"])],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            lines = output.read_text(encoding="utf-8").splitlines()
+        return dict(line.split("=", 1) for line in lines)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_digest_revalidates_each_link(self) -> None:
+        """Valid links, one per line in order; anything else never reaches Slack."""
+        good = [PULL_URL.format("a", 1), PULL_URL.format("b.c", 22)]
+        bad = [
+            "https://github.com/elsewhere/a/pull/1",
+            PULL_URL.format("a", 1) + "?x=1",
+            "x\n" + PULL_URL.format("a", 3),
+            PULL_URL.format("a", 4) + "\n",
+            "<!channel>",
+            PULL_URL.format("a", 5).replace("github", "g\u0131thub"),
+            PULL_URL.format("\u212a", 6),
+        ]
+        out = self.digest(json.dumps([good[0], *bad, good[1]]))
+        self.assertEqual(out["body"], f"<{good[0]}>\\n<{good[1]}>")
+        self.assertEqual(out["text"], "🐒 Code Monkey: 2 pull requests for review")
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_digest_says_when_nothing_was_raised(self) -> None:
+        """An empty night reads differently from a broken one."""
+        out = self.digest("[]")
+        self.assertEqual(out["body"], "_No pull requests were raised._")
+        self.assertEqual(out["text"], "🐒 Code Monkey: 0 pull requests for review")
+        failed = self.digest("[]", "failure")
+        self.assertIn("Some jobs in this run failed", failed["body"])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_digest_caps_the_list(self) -> None:
+        """At most fifty links, then a count of the rest."""
+        pulls = [PULL_URL.format("r", n) for n in range(1, 61)]
+        out = self.digest(json.dumps(pulls))
+        lines = out["body"].split("\\n")
+        self.assertEqual(len(lines), 51)
+        self.assertEqual(lines[-1], "... and 10 more")
+        self.assertLessEqual(len(out["body"]), 2600)
+        self.assertEqual(out["text"], "🐒 Code Monkey: 60 pull requests for review")
 
 
 # Free-length dispatch inputs. GitHub refuses a concurrency group name
