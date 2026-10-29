@@ -266,7 +266,7 @@ def annotation(text: str) -> str:
 
 
 def reviewer_text(reviewer: review_request.Reviewer) -> str:
-    """One reviewer the request's reply listed, for the job log."""
+    """One reviewer the pull request lists as requested, for the job log."""
     typename, login = reviewer
     return typename if login is None else f"{typename} {login}"
 
