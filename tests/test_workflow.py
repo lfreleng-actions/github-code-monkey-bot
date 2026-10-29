@@ -942,6 +942,66 @@ class ReviewGateContracts(ReusableWorkflowCase):
         ]
         self.assertEqual(order, sorted(order))
 
+    @unittest.expectedFailure
+    def test_request_prefers_the_review_token(self) -> None:
+        """A Copilot user's token asks when the caller holds one; else the App's.
+
+        An installation token is no Copilot user, so GitHub accepts its
+        request without adding the reviewer (DESIGN.md section 17). The
+        step logs which credential it used, never the token.
+        """
+        step = self.step("publish", "review-request")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["GH_TOKEN"],
+            "secrets.copilot_review_token != '' && secrets.copilot_review_token"
+            " || steps.pr-token.outputs.token",
+        )
+        self.assert_expression(
+            env["REVIEW_CREDENTIAL"],
+            "secrets.copilot_review_token != '' && 'review token' || 'App token'",
+        )
+        self.assertIn('--credential "$REVIEW_CREDENTIAL"', flatten(step["run"]))
+
+    @unittest.expectedFailure
+    def test_review_token_reaches_the_request_step_alone(self) -> None:
+        """No other step, no job-level key and no output sees the review token."""
+        holders: list[tuple[str, str]] = []
+        for name, job in self.jobs.items():
+            rest = {key: value for key, value in job.items() if key != "steps"}
+            with self.subTest(job=name):
+                self.assertNotIn("secrets.copilot_review_token", dumped(rest))
+            for step in cast(list[dict[str, Any]], job.get("steps", [])):
+                if "secrets.copilot_review_token" in dumped(step):
+                    holders.append((name, str(step.get("id"))))
+        self.assertEqual(holders, [("publish", "review-request")])
+        step = self.step("publish", "review-request")
+        outside = {key: value for key, value in step.items() if key != "env"}
+        self.assertNotIn("secrets.copilot_review_token", dumped(outside))
+        # The wait keeps the job's own token: the target is public.
+        self.assertEqual(
+            SECRET_REFERENCE.findall(dumped(self.step("publish", "review"))), []
+        )
+        self.assertEqual(
+            Counter(SECRET_REFERENCE.findall(dumped(self.jobs["author"]))),
+            Counter({"secrets.copilot_token": 1}),
+        )
+
+    @unittest.expectedFailure
+    def test_review_token_is_an_optional_secret_the_caller_forwards(self) -> None:
+        """Declared optional, so a caller without it keeps the App's request."""
+        call = cast(dict[str, Any], self.triggers["workflow_call"])
+        secret = cast(dict[str, Any], call["secrets"]["copilot_review_token"])
+        self.assertIs(secret["required"], False)
+        self.assertIn("Pull requests", str(secret["description"]))
+        cron = cast(
+            dict[str | bool, Any], yaml.safe_load(CRON.read_text(encoding="utf-8"))
+        )
+        secrets = cast(dict[str, Any], cron["jobs"]["code-monkey"]["secrets"])
+        self.assert_expression(
+            secrets["copilot_review_token"], "secrets.COPILOT_REVIEW_TOKEN"
+        )
+
     def test_caller_forwards_the_gate_on_by_default(self) -> None:
         """The cron form offers the switch; schedules and dispatches default on."""
         cron = cast(

@@ -833,6 +833,46 @@ class HandlersTest(unittest.TestCase):
         self.assertFalse(any(line.startswith("::") for line in lines))
         self.assertIs(self.stored()["review"]["requested"], True)
 
+    @unittest.expectedFailure
+    def test_log_names_the_credential_never_the_token(self) -> None:
+        """Either outcome logs which credential asked, so a lapsed PAT shows."""
+        for credential, reply, outcome in (
+            ("review token", ADDED, "sent"),
+            ("review token", NOT_ADDED, "refused"),
+            ("App token", NOT_ADDED, "refused"),
+        ):
+            with self.subTest(credential=credential, outcome=outcome):
+                self.write()
+                with (
+                    patch.object(github, "api_object", return_value=PULL),
+                    patch.object(github, "graphql", return_value=reply),
+                    patch.object(github, "api_list", return_value=[]),
+                    patch.object(github, "api_write", return_value={}),
+                    patch("builtins.print") as printed,
+                ):
+                    review.run_request(
+                        argparse.Namespace(
+                            result=self.path, output=self.path, credential=credential
+                        )
+                    )
+                lines = [str(call.args[0]) for call in printed.call_args_list]
+                self.assertEqual(lines[0], f"review request: {outcome}")
+                self.assertEqual(lines[1], f"credential: {credential}")
+
+    @unittest.expectedFailure
+    def test_request_command_takes_a_known_credential_name(self) -> None:
+        """The CLI accepts the two names and defaults to the App's token."""
+        parser = import_module("publish").build_parser()
+        base = ["review-request", "--result", "r.json", "--output", "r.json"]
+        self.assertEqual(parser.parse_args(base).credential, "App token")
+        named = parser.parse_args([*base, "--credential", "review token"])
+        self.assertEqual(named.credential, "review token")
+        with (
+            patch("sys.stderr"),
+            self.assertRaises(SystemExit),
+        ):
+            parser.parse_args([*base, "--credential", "github_pat_x"])
+
     def test_nothing_published_means_nothing_to_request_or_await(self) -> None:
         """Without a pull request, or in a dry run, both commands are no-ops."""
         for overrides in ({"pull_request_url": None}, {"dry_run": True}):
