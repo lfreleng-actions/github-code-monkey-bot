@@ -10,7 +10,8 @@ own reply that GitHub added the reviewer, then polls with the job's
 own token for a review by Copilot whose ``commit_id`` is the head it
 published, reads the unresolved review threads, and classifies the
 pair (``review_verdict``). A review that never arrives within the
-wait is pending, never clean.
+wait is pending, never clean; after a refused request the wait is a
+short grace for a maintainer's own request, not the full wait.
 
 Every wait is bounded before it starts: the shared ``gh`` wrapper
 retries a read three times with a timeout each, so a poll begun too
@@ -21,7 +22,9 @@ stops while enough budget remains for the two reads a hit needs.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
+import math
 import re
 import time
 from collections.abc import Callable
@@ -49,6 +52,11 @@ READ_BUDGET_SECONDS = github.READ_ATTEMPTS * github.TIMEOUT_SECONDS + sum(
 )
 # A hit costs the review listing, the thread count and the head check.
 RESERVE_SECONDS = 3 * READ_BUDGET_SECONDS
+# A refused request leaves nothing to wait for but a maintainer's own
+# request, so the wait polls this long for one, on top of the reserve,
+# instead of the full wait.
+UNREQUESTED_POLL_MINUTES = 5
+UNREQUESTED_WAIT_MINUTES = UNREQUESTED_POLL_MINUTES + math.ceil(RESERVE_SECONDS / 60)
 PULL_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?$")
 THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -305,7 +313,13 @@ def run_request(args: argparse.Namespace) -> None:
 
 
 def run_await(args: argparse.Namespace) -> None:
-    """``publish.py review-await``: wait for the head's review and record it."""
+    """``publish.py review-await``: wait for the head's review and record it.
+
+    When ``review-request`` recorded a refusal, the wait is cut to
+    ``UNREQUESTED_WAIT_MINUTES``: long enough for a maintainer's own
+    request to bring a review, not the full wait for one nobody asked
+    for. A request that landed, or none recorded, keeps the full wait.
+    """
     result = model.load_json(args.result, "result")
     target = published(result)
     if target is None:
@@ -314,6 +328,10 @@ def run_await(args: argparse.Namespace) -> None:
     repository, number = target
     record = cast("dict[str, Any]", result.get("review") or {})
     review_id: int | None = None
+    wait_minutes = int(args.wait_minutes)
+    unrequested = record.get("requested") is False
+    if unrequested:
+        wait_minutes = min(wait_minutes, UNREQUESTED_WAIT_MINUTES)
     # The review must judge what the publisher pushed: the last commit
     # of the replayed, or adopted, chain. The pull request's current
     # head is read to confirm, never to choose.
@@ -335,8 +353,17 @@ def run_await(args: argparse.Namespace) -> None:
                 )
             else:
                 verdict, review_id = await_review(
-                    repository, number, head, wait_minutes=int(args.wait_minutes)
+                    repository, number, head, wait_minutes=wait_minutes
                 )
+                if unrequested and verdict.verdict == "pending":
+                    verdict = dataclasses.replace(
+                        verdict,
+                        reasons=[
+                            *verdict.reasons,
+                            f"review not requested, so the wait was cut to "
+                            f"{wait_minutes} minutes",
+                        ],
+                    )
     record.update(verdict.to_json(review_id=review_id, commit_id=head))
     record.setdefault("requested", False)
     result["review"] = record

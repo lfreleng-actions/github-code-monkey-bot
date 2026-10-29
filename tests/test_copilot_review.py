@@ -984,7 +984,6 @@ class HandlersTest(unittest.TestCase):
             )
         return clock
 
-    @unittest.expectedFailure
     def test_unrequested_review_gets_a_short_grace(self) -> None:
         """A refused request waits minutes for a maintainer's, not the full wait."""
         self.write(review={"requested": False})
@@ -998,14 +997,12 @@ class HandlersTest(unittest.TestCase):
         self.assertIn(f"{grace}-minute wait", record["reasons"][0])
         self.assertIn("not requested", record["reasons"][-1])
 
-    @unittest.expectedFailure
     def test_grace_leaves_minutes_to_poll(self) -> None:
         """The grace outlasts the read reserve, so polling still runs."""
         polled = review.UNREQUESTED_WAIT_MINUTES * 60 - review.RESERVE_SECONDS
         self.assertGreaterEqual(polled, 3 * 60)
         self.assertLess(review.UNREQUESTED_WAIT_MINUTES, review.DEFAULT_WAIT_MINUTES)
 
-    @unittest.expectedFailure
     def test_grace_never_lengthens_a_shorter_wait(self) -> None:
         """A caller's wait below the grace stands."""
         self.write(review={"requested": False})

@@ -879,7 +879,14 @@ For each selected issue:
     head that moved before the wait began, a review of another head,
     a read failure the shared wrapper's retries did not cure, a head
     it could not read at all, and no review within the wait all end
-    as pending, never clean. The record goes into `result.json` as
+    as pending, never clean. When step 10 recorded a refusal
+    (`requested: false`), nobody asked for the review the full wait
+    would poll for, so the wait shrinks to a grace of five minutes'
+    polling on top of the reserve, 15 minutes in all, long enough
+    for a maintainer's own request to bring a review; with none it
+    ends as `pending (not requested)` with a reason naming the
+    shorter wait. A caller's shorter wait stands, and a request that
+    landed keeps the full wait. The record goes into `result.json` as
     `review` (§18.4).
 12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or

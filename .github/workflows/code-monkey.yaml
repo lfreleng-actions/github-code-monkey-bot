@@ -1391,7 +1391,9 @@ jobs:
       # The target is public, so reading its reviews and review threads
       # needs no App token. The wait is bounded inside the script, with
       # a reserve for the reads a hit needs, and ends as pending, never
-      # clean, when no review of the published head arrives.
+      # clean, when no review of the published head arrives. After a
+      # refused request it waits a short grace instead of the full
+      # wait, for a maintainer's own request.
       - name: 'Await Copilot review'
         id: review
         if: >-
