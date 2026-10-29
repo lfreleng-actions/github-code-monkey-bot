@@ -101,11 +101,18 @@ jobs:
     secrets:
       copilot_token: ${{ secrets.COPILOT_CLI_TOKEN }}
       github_app_private_key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      copilot_review_token: ${{ secrets.COPILOT_REVIEW_TOKEN }}
 ```
 
 Live runs need a GitHub App installed on the organisation with the
 permissions in the design document (section 10.1) and a personal
 fine-grained PAT carrying Copilot Requests and no repository grants.
+GitHub adds no Copilot reviewer when the App asks, so a caller that
+wants the review requested passes `copilot_review_token`: a
+fine-grained PAT of a user with a Copilot seat, carrying Pull
+requests: write on the organisation, which bills the reviews to that
+seat (section 10.4). Without it the request falls back to the App's
+token and the review stays `pending (not requested)`.
 
 ## Development
 

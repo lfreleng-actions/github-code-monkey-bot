@@ -375,6 +375,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     request.add_argument("--result", type=Path, required=True)
     request.add_argument("--output", type=Path, required=True)
+    request.add_argument(
+        "--credential", choices=review.CREDENTIALS, default="App token"
+    )
     request.set_defaults(handler=review.run_request)
 
     awaiting = commands.add_parser(

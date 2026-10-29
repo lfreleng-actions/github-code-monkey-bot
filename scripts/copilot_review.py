@@ -37,6 +37,10 @@ from review_request import head_review
 from review_verdict import Verdict
 
 DEFAULT_WAIT_MINUTES = 30
+# The names the request step logs for the token it holds, never the
+# token: a Copilot user's PAT when the caller passes one, else the
+# App's pull request token (DESIGN.md section 10.4).
+CREDENTIALS = ("review token", "App token")
 POLL_SECONDS = 30
 # The worst one read can cost through bot_github.run_gh: every attempt
 # timing out, plus the backoff between attempts.
@@ -262,9 +266,10 @@ def reviewer_text(reviewer: review_request.Reviewer) -> str:
 def run_request(args: argparse.Namespace) -> None:
     """``publish.py review-request``: ask for the review, record the answer.
 
-    The job log carries the outcome and, on a refusal, each warning
-    and one ``::warning`` annotation, so the run shows what the
-    ``result.json`` record holds.
+    The job log carries the outcome, the name of the credential that
+    asked and, on a refusal, each warning and one ``::warning``
+    annotation, so the run shows what the ``result.json`` record
+    holds and a lapsed review token shows as a refusal under its name.
     """
     result = model.load_json(args.result, "result")
     target = published(result)
@@ -289,6 +294,7 @@ def run_request(args: argparse.Namespace) -> None:
     warnings.extend(added)
     write_result(args.output, result)
     print(f"review request: {'sent' if warning is None else 'refused'}")
+    print(f"credential: {args.credential}")
     if warning is None:
         listed = ", ".join(reviewer_text(r) for r in outcome.reviewers) or "none"
         print(f"requested reviewers: {listed}")

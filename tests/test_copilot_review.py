@@ -25,6 +25,7 @@ BODIES = import_module("review_fixtures").BODIES
 HEAD = "a" * 40
 OTHER = "b" * 40
 REPO = "org/repo"
+APP = "App token"
 
 
 def copilot(review_id: int, commit: str, body: str) -> dict[str, Any]:
@@ -567,7 +568,9 @@ class HandlersTest(unittest.TestCase):
                 return_value={"node_id": NODE_ID, "body": "Closes #7"},
             ),
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], True)
         self.assertEqual(stored["warnings"], [])
@@ -581,7 +584,9 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write", return_value={}) as write,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], False)
         self.assertTrue(any("Copilot review" in w for w in stored["warnings"]))
@@ -608,7 +613,9 @@ class HandlersTest(unittest.TestCase):
             patch.object(github, "api_write", return_value={}) as write,
             patch("builtins.print") as printed,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], False)
         self.assertTrue(
@@ -632,7 +639,9 @@ class HandlersTest(unittest.TestCase):
                 return_value={"node_id": NODE_ID, "body": "Closes #7"},
             ),
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         self.assertEqual(sent.call_args.args, (REPO, 41, HEAD))
         # A revision round: the only Copilot review is of the previous
         # head and GitHub added no reviewer, so the request was refused.
@@ -648,7 +657,9 @@ class HandlersTest(unittest.TestCase):
             patch.object(github, "api_write", return_value={}) as write,
             patch("builtins.print") as printed,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], False)
         self.assertIn(request.UNVERIFIED_REQUEST, stored["warnings"])
@@ -668,7 +679,9 @@ class HandlersTest(unittest.TestCase):
                 return_value={"node_id": NODE_ID, "body": "Closes #7"},
             ),
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         gql.assert_called_once()
         self.assertIs(self.stored()["review"]["requested"], True)
         self.write(commits=[])
@@ -682,7 +695,9 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write", return_value={}),
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         gql.assert_called_once()
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], False)
@@ -702,7 +717,9 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write", return_value={}) as write,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         method, endpoint, payload = write.call_args.args
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/pulls/41"))
         self.assertEqual(payload["body"], "Closes #7\n\nbody")
@@ -718,7 +735,9 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write") as write,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         write.assert_not_called()
 
     def test_a_notice_without_its_blank_line_is_left_alone(self) -> None:
@@ -739,7 +758,9 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write") as write,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         write.assert_not_called()
         self.assertTrue(
             any("notice" in w and "left" in w for w in self.stored()["warnings"])
@@ -765,7 +786,9 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write") as write,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         write.assert_not_called()
         self.assertTrue(
             any("notice" in w and "left" in w for w in self.stored()["warnings"])
@@ -782,14 +805,18 @@ class HandlersTest(unittest.TestCase):
             ),
             patch.object(github, "api_write") as write,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         write.assert_not_called()
         self.write()
         with (
             patch.object(github, "graphql", side_effect=github.GitHubError("no")),
             patch.object(github, "api_object", side_effect=github.GitHubError("boom")),
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         warnings = self.stored()["warnings"]
         self.assertEqual(len(warnings), 2)
         self.assertTrue(any("notice" in w for w in warnings))
@@ -805,7 +832,9 @@ class HandlersTest(unittest.TestCase):
             patch.object(github, "api_write", return_value={}),
             patch("builtins.print") as printed,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         lines = [str(call.args[0]) for call in printed.call_args_list]
         self.assertEqual(lines[0], "review request: refused")
         self.assertIn(request.UNVERIFIED_REQUEST, lines)
@@ -825,7 +854,9 @@ class HandlersTest(unittest.TestCase):
             patch.object(github, "api_write", side_effect=AssertionError("no write")),
             patch("builtins.print") as printed,
         ):
-            review.run_request(argparse.Namespace(result=self.path, output=self.path))
+            review.run_request(
+                argparse.Namespace(result=self.path, output=self.path, credential=APP)
+            )
         lines = [str(call.args[0]) for call in printed.call_args_list]
         self.assertEqual(lines[0], "review request: sent")
         self.assertIn("Bot copilot-pull-request-reviewer", "\n".join(lines))
@@ -833,7 +864,6 @@ class HandlersTest(unittest.TestCase):
         self.assertFalse(any(line.startswith("::") for line in lines))
         self.assertIs(self.stored()["review"]["requested"], True)
 
-    @unittest.expectedFailure
     def test_log_names_the_credential_never_the_token(self) -> None:
         """Either outcome logs which credential asked, so a lapsed PAT shows."""
         for credential, reply, outcome in (
@@ -859,7 +889,6 @@ class HandlersTest(unittest.TestCase):
                 self.assertEqual(lines[0], f"review request: {outcome}")
                 self.assertEqual(lines[1], f"credential: {credential}")
 
-    @unittest.expectedFailure
     def test_request_command_takes_a_known_credential_name(self) -> None:
         """The CLI accepts the two names and defaults to the App's token."""
         parser = import_module("publish").build_parser()
@@ -882,7 +911,9 @@ class HandlersTest(unittest.TestCase):
                     github, "run_gh", side_effect=AssertionError("no network")
                 ):
                     review.run_request(
-                        argparse.Namespace(result=self.path, output=self.path)
+                        argparse.Namespace(
+                            result=self.path, output=self.path, credential=APP
+                        )
                     )
                     review.run_await(
                         argparse.Namespace(

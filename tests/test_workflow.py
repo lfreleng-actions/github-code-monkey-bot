@@ -909,12 +909,12 @@ class ReviewGateContracts(ReusableWorkflowCase):
         self.assertIs(inputs["request_review"]["default"], True)
 
     def test_request_uses_the_pull_request_token_after_open(self) -> None:
-        """The request is a write to the target: the pull request token alone."""
+        """The request runs once the pull request is open, falling back to its token."""
         step = self.step("publish", "review-request")
         condition = unwrap(str(step["if"]))
         self.assertIn("steps.open.outcome == 'success'", condition)
         self.assertIn("inputs.request_review", condition)
-        self.assert_expression(step["env"]["GH_TOKEN"], "steps.pr-token.outputs.token")
+        self.assertIn("steps.pr-token.outputs.token", unwrap(step["env"]["GH_TOKEN"]))
         self.assertIn("publish.py review-request", flatten(step["run"]))
         self.assertLess(
             self.position("publish", "open"), self.position("publish", "review-request")
@@ -942,7 +942,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
         ]
         self.assertEqual(order, sorted(order))
 
-    @unittest.expectedFailure
     def test_request_prefers_the_review_token(self) -> None:
         """A Copilot user's token asks when the caller holds one; else the App's.
 
@@ -963,7 +962,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
         )
         self.assertIn('--credential "$REVIEW_CREDENTIAL"', flatten(step["run"]))
 
-    @unittest.expectedFailure
     def test_review_token_reaches_the_request_step_alone(self) -> None:
         """No other step, no job-level key and no output sees the review token."""
         holders: list[tuple[str, str]] = []
@@ -987,7 +985,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
             Counter({"secrets.copilot_token": 1}),
         )
 
-    @unittest.expectedFailure
     def test_review_token_is_an_optional_secret_the_caller_forwards(self) -> None:
         """Declared optional, so a caller without it keeps the App's request."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -1907,7 +1904,10 @@ class InterfaceContracts(ReusableWorkflowCase):
             },
         )
         secrets = cast(dict[str, dict[str, Any]], call["secrets"])
-        self.assertEqual(set(secrets), {"copilot_token", "github_app_private_key"})
+        self.assertEqual(
+            set(secrets),
+            {"copilot_token", "github_app_private_key", "copilot_review_token"},
+        )
         for name, secret in secrets.items():
             with self.subTest(secret=name):
                 self.assertIs(secret["required"], False)
@@ -2048,7 +2048,10 @@ class CronCallerContracts(WorkflowCase):
         self.assertEqual(with_["egress_policy"], "block")
         self.assertRegex(str(with_["egress_allow_config"]), r"^@[0-9a-f]{40}$")
         secrets = cast(dict[str, Any], job["secrets"])
-        self.assertEqual(set(secrets), {"copilot_token", "github_app_private_key"})
+        self.assertEqual(
+            set(secrets),
+            {"copilot_token", "github_app_private_key", "copilot_review_token"},
+        )
         self.assert_expression(secrets["copilot_token"], "secrets.COPILOT_CLI_TOKEN")
         self.assert_expression(
             secrets["github_app_private_key"], "secrets.BOT_APP_PRIVATE_KEY"
