@@ -8,8 +8,8 @@ The publish job's request is best effort (DESIGN.md section 8 step
 ``INFO`` notice at the top of the pull request body, which a later
 request that succeeds takes down again. GitHub can accept the
 request without adding the reviewer, so it counts only once the
-mutation's own reply names the reviewer as a pending request, or a
-review of the head the round published exists.
+pull request's REST read lists the reviewer as a pending request, or
+a review of the head the round published exists.
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ from typing import Any, NamedTuple, cast
 
 import bot_github as github
 
-# GraphQL replies name the bot without the suffix REST adds; the
-# mutation's ``botLogins`` input takes the suffixed form.
+# The mutation's ``botLogins`` input takes the suffixed form.
 REVIEWER_NAME = "copilot-pull-request-reviewer"
 REVIEWER_LOGIN = f"{REVIEWER_NAME}[bot]"
 
@@ -34,32 +33,25 @@ MAX_PR_BODY = 65_536
 
 # One additive request: ``union: true`` adds the bot to the existing
 # reviewers instead of replacing the set, so no user or team is sent.
+# The reply selects nothing the review token may be unable to read:
+# reading ``reviewRequests`` back resolves every pending request, and a
+# ruleset's team request needs organisation Members: read the token
+# lacks, so GitHub applies the mutation and still answers with an error.
 REQUEST_MUTATION = """
 mutation($id: ID!, $bots: [String!]!) {
   requestReviewsByLogin(
     input: {pullRequestId: $id, botLogins: $bots, union: true}
   ) {
-    pullRequest {
-      reviewRequests(first: 100) {
-        nodes {
-          requestedReviewer {
-            __typename
-            ... on Bot { login }
-            ... on User { login }
-          }
-        }
-      }
-    }
+    clientMutationId
   }
 }
 """
 UNVERIFIED_REQUEST = (
     "Copilot review request was accepted but no Copilot reviewer was added"
 )
-UNEXPECTED_REPLY = (
-    "could not confirm the Copilot review request: "
-    "the reply did not list review requests in the expected shape"
-)
+UNEXPECTED_REPLY = "the pull request did not list requested reviewers"
+# REST names the pending Copilot reviewer ``Copilot``, of type Bot.
+REST_REVIEWER_LOGIN = "copilot"
 # What a log line may show of a reviewer: GitHub's own name shapes.
 TYPENAME_RE = re.compile(r"[A-Za-z]{1,40}")
 LOGIN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?")
@@ -74,87 +66,79 @@ class RequestOutcome(NamedTuple):
     reviewers: tuple[Reviewer, ...] = ()
 
 
-def is_copilot(login: object) -> bool:
-    """Whether a login names the Copilot reviewer bot, in either form."""
+def is_copilot(reviewer: Reviewer) -> bool:
+    """Whether a pending reviewer is the Copilot reviewer bot.
+
+    REST lists it as the Bot ``Copilot``; the reviewer's own login,
+    with or without the ``[bot]`` suffix, counts too.
+    """
+    typename, login = reviewer
     if not isinstance(login, str):
         return False
-    return login.lower().removesuffix("[bot]") == REVIEWER_NAME
+    name = login.lower().removesuffix("[bot]")
+    return name == REVIEWER_NAME or (typename == "Bot" and name == REST_REVIEWER_LOGIN)
 
 
-def listed_reviewers(data: dict[str, Any]) -> tuple[Reviewer, ...] | None:
-    """The reviewers the mutation's reply lists, or None for any other shape.
+def pending_reviewers(pull: dict[str, Any]) -> tuple[Reviewer, ...]:
+    """The reviewers a REST pull request read lists as requested.
 
-    A null node or reviewer is skipped; a non-null one that is not an
-    object, a node without the selected ``requestedReviewer``, or a
-    reviewer ``well_formed`` refuses makes the whole reply malformed,
-    so a head review cannot turn it into a success.
-
-    Only the typename and login are kept, and only in the shapes
-    GitHub gives them, since they go to the job log.
+    ``requested_reviewers`` holds users and bots, ``requested_teams``
+    the teams. A ``requested_reviewers`` that is not a list of objects
+    is a malformed reply and raises, so it never reads as "no Copilot".
+    Only the type and login are kept, and only in the shapes GitHub
+    gives them, since they go to the job log.
     """
-    payload = data.get("requestReviewsByLogin")
-    pull = (
-        cast("dict[str, Any]", payload).get("pullRequest")
-        if isinstance(payload, dict)
-        else None
-    )
-    requests = (
-        cast("dict[str, Any]", pull).get("reviewRequests")
-        if isinstance(pull, dict)
-        else None
-    )
-    nodes = (
-        cast("dict[str, Any]", requests).get("nodes")
-        if isinstance(requests, dict)
-        else None
-    )
-    if not isinstance(nodes, list):
-        return None
+    users = pull.get("requested_reviewers")
+    if not isinstance(users, list):
+        raise github.GitHubError(UNEXPECTED_REPLY)
     reviewers: list[Reviewer] = []
-    for node in cast("list[Any]", nodes):
-        # GraphQL may null a node or its reviewer (one the token cannot
-        # see); anything else that is not an object is a malformed reply.
-        if node is None:
-            continue
-        if not isinstance(node, dict):
-            return None
-        entry = cast("dict[str, Any]", node)
-        if "requestedReviewer" not in entry:
-            return None
-        reviewer = entry["requestedReviewer"]
-        if reviewer is None:
-            continue
-        if not isinstance(reviewer, dict):
-            return None
-        fields = cast("dict[str, Any]", reviewer)
-        if not well_formed(fields):
-            return None
-        typename = fields["__typename"]
+    for entry in cast("list[Any]", users):
+        if not isinstance(entry, dict):
+            raise github.GitHubError(UNEXPECTED_REPLY)
+        fields = cast("dict[str, Any]", entry)
+        typename = fields.get("type")
         login = fields.get("login")
         reviewers.append(
             (
-                typename if TYPENAME_RE.fullmatch(typename) else "?",
+                typename
+                if isinstance(typename, str) and TYPENAME_RE.fullmatch(typename)
+                else "?",
                 login if isinstance(login, str) and LOGIN_RE.fullmatch(login) else None,
             )
         )
+    teams = pull.get("requested_teams")
+    if isinstance(teams, list):
+        reviewers.extend(("Team", None) for _ in cast("list[Any]", teams))
     return tuple(reviewers)
 
 
-def well_formed(reviewer: dict[str, Any]) -> bool:
-    """Whether a reviewer carries the fields the mutation selects.
+def verify_request(
+    repository: str, number: int, head_sha: str | None
+) -> tuple[bool, tuple[Reviewer, ...], str | None]:
+    """Whether the request landed, the reviewers pending, and any read failure.
 
-    Every reviewer names its ``__typename``; a Bot or User names its
-    ``login`` too, and no other type selects one. A reviewer missing
-    either, or holding one of the wrong type, is a malformed reply,
-    checked before the display values are sanitised.
+    The request counts when the pull request lists Copilot as a
+    pending reviewer, or when Copilot has already reviewed
+    ``head_sha``, since a fast review clears the pending request. A
+    review of any other commit does not count: on a revision round
+    the previous head's review is always there.
     """
-    typename = reviewer.get("__typename")
-    if not isinstance(typename, str) or not typename:
-        return False
-    login = reviewer.get("login")
-    if typename in {"Bot", "User"}:
-        return isinstance(login, str) and bool(login)
-    return "login" not in reviewer or (isinstance(login, str) and bool(login))
+    failures: list[str] = []
+    reviewers: tuple[Reviewer, ...] = ()
+    try:
+        pull = github.api_object(f"repos/{repository}/pulls/{number}")
+        reviewers = pending_reviewers(pull)
+        if any(is_copilot(reviewer) for reviewer in reviewers):
+            return True, reviewers, None
+    except github.GitHubError as exc:
+        failures.append(github.safe_message(exc))
+    if head_sha is not None:
+        try:
+            if head_review(repository, number, head_sha) is not None:
+                return True, reviewers, None
+        except github.GitHubError as exc:
+            failures.append(github.safe_message(exc))
+    return False, reviewers, "; ".join(failures) or None
 
 
 def request_review(
@@ -165,39 +149,35 @@ def request_review(
     One ``requestReviewsByLogin`` mutation, additive, run once. ``gh
     pr edit --add-reviewer`` is not used: it replaces the whole
     reviewer set from an earlier read, which can drop a CODEOWNERS
-    request, and reports nothing of what GitHub did. The mutation's
-    reply lists the pending requests, so the request counts when it
-    names the Copilot reviewer, or when Copilot has already reviewed
-    ``head_sha``, since a fast review clears the pending request. A
-    review of any other commit does not count: on a revision round
-    the previous head's review is always there. A reply of any other
-    shape is a warning, never a success.
+    request. The outcome is read back through REST, which the review
+    token can read (``verify_request``), whether or not the mutation
+    reported an error: GitHub applies it and still errors when the
+    token cannot resolve part of the reply. A request that cannot be
+    shown to have landed is a warning, never a success; a failed read
+    of the pull request before the mutation sends nothing.
     """
     try:
         pull = github.api_object(f"repos/{repository}/pulls/{number}")
         node_id = github.require_str(pull, "node_id", "pull request")
-        data = github.graphql(
-            REQUEST_MUTATION, {"id": node_id, "bots": [REVIEWER_LOGIN]}
-        )
     except github.GitHubError as exc:
         return RequestOutcome(
             f"could not request a Copilot review: {github.safe_message(exc)}"
         )
-    reviewers = listed_reviewers(data)
-    if reviewers is None:
-        return RequestOutcome(UNEXPECTED_REPLY)
-    if any(is_copilot(login) for _, login in reviewers):
-        return RequestOutcome(None, reviewers)
+    refusal: str | None = None
     try:
-        if (
-            head_sha is not None
-            and head_review(repository, number, head_sha) is not None
-        ):
-            return RequestOutcome(None, reviewers)
+        github.graphql(REQUEST_MUTATION, {"id": node_id, "bots": [REVIEWER_LOGIN]})
     except github.GitHubError as exc:
+        refusal = github.safe_message(exc)
+    landed, reviewers, failure = verify_request(repository, number, head_sha)
+    if landed:
+        return RequestOutcome(None, reviewers)
+    if refusal is not None:
         return RequestOutcome(
-            f"could not confirm the Copilot review request: {github.safe_message(exc)}",
-            reviewers,
+            f"could not request a Copilot review: {refusal}", reviewers
+        )
+    if failure is not None:
+        return RequestOutcome(
+            f"could not confirm the Copilot review request: {failure}", reviewers
         )
     return RequestOutcome(UNVERIFIED_REQUEST, reviewers)
 

@@ -118,7 +118,6 @@ class PullReferenceTest(unittest.TestCase):
 class RequestMutationTest(unittest.TestCase):
     """One additive ``requestReviewsByLogin``, verified through REST."""
 
-    @unittest.expectedFailure
     def test_mutation_is_additive_and_names_the_bot(self) -> None:
         """``union: true``, the suffixed bot login, the node id the pull request read."""
         with (
@@ -153,7 +152,6 @@ class RequestMutationTest(unittest.TestCase):
             (("User", "alice"), ("Bot", "Copilot"), ("Team", None)),
         )
 
-    @unittest.expectedFailure
     def test_mutation_selects_no_reviewer(self) -> None:
         """The reply asks for nothing a team request could make unreadable."""
         for field in ("reviewRequests", "requestedReviewer", "pullRequest {"):
@@ -161,7 +159,6 @@ class RequestMutationTest(unittest.TestCase):
                 self.assertNotIn(field, request.REQUEST_MUTATION)
         self.assertIn("clientMutationId", request.REQUEST_MUTATION)
 
-    @unittest.expectedFailure
     def test_unreadable_reply_with_copilot_pending_is_sent(self) -> None:
         """An applied mutation whose reply the PAT cannot read still counts."""
         with (
@@ -189,7 +186,6 @@ class RequestMutationTest(unittest.TestCase):
             "Resource not accessible by personal access token", outcome.warning
         )
 
-    @unittest.expectedFailure
     def test_reply_without_the_reviewer_and_no_head_review_is_unverified(
         self,
     ) -> None:
@@ -204,7 +200,6 @@ class RequestMutationTest(unittest.TestCase):
         self.assertEqual(outcome.warning, request.UNVERIFIED_REQUEST)
         gql.assert_called_once()
 
-    @unittest.expectedFailure
     def test_reply_without_the_reviewer_but_a_head_review_counts(self) -> None:
         """A fast review of the head clears the pending request."""
         with (
@@ -250,7 +245,6 @@ class RequestMutationTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", outcome.warning)
         self.assertIn("personal access token", outcome.warning)
 
-    @unittest.expectedFailure
     def test_pull_request_of_an_unexpected_shape_is_never_pending(self) -> None:
         """A malformed reviewer list proves nothing; only a head review can."""
         replies: list[dict[str, Any]] = [
@@ -295,7 +289,6 @@ class RequestMutationTest(unittest.TestCase):
         assert outcome.warning is not None
         self.assertIn("could not request a Copilot review", outcome.warning)
 
-    @unittest.expectedFailure
     def test_reviewer_counts_in_each_form(self) -> None:
         """REST's Bot ``Copilot`` and the reviewer's own login all count."""
         for login, kind in (
@@ -318,7 +311,6 @@ class RequestMutationTest(unittest.TestCase):
             ):
                 self.assertIsNone(request.request_review(REPO, 41, HEAD).warning)
 
-    @unittest.expectedFailure
     def test_a_user_named_copilot_does_not_count(self) -> None:
         """Only the Bot ``Copilot`` is the reviewer; a User of that name is not."""
         with (
@@ -334,7 +326,6 @@ class RequestMutationTest(unittest.TestCase):
             outcome = request.request_review(REPO, 41, HEAD)
         self.assertEqual(outcome.warning, request.UNVERIFIED_REQUEST)
 
-    @unittest.expectedFailure
     def test_no_review_counts_without_a_head(self) -> None:
         """With no published head, only the pending request proves the request."""
         with (
@@ -364,7 +355,6 @@ class RequestMutationTest(unittest.TestCase):
         assert outcome.warning is not None
         self.assertIn("could not confirm", outcome.warning)
 
-    @unittest.expectedFailure
     def test_a_failed_verification_read_still_takes_a_head_review(self) -> None:
         """The pull request read fails, but a review of the head proves it."""
         with (
@@ -379,7 +369,6 @@ class RequestMutationTest(unittest.TestCase):
         ):
             self.assertIsNone(request.request_review(REPO, 41, HEAD).warning)
 
-    @unittest.expectedFailure
     def test_reviewers_outside_github_shapes_stay_out_of_the_log(self) -> None:
         """Only GitHub's name shapes are kept from the reply."""
         reply = pull_reply(
@@ -630,7 +619,6 @@ class HandlersTest(unittest.TestCase):
         """The result as written back."""
         return json.loads(self.path.read_text(encoding="utf-8"))
 
-    @unittest.expectedFailure
     def test_request_records_success_and_refusal(self) -> None:
         """The request is recorded; a refusal is a warning, never a failure."""
         self.write()
@@ -674,7 +662,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
 
-    @unittest.expectedFailure
     def test_request_that_added_no_reviewer_is_refused(self) -> None:
         """An accepted request with no reviewer takes the refusal path."""
         self.write()
@@ -702,7 +689,6 @@ class HandlersTest(unittest.TestCase):
         self.assertTrue(body.endswith("Closes #7"))
         printed.assert_any_call("review request: refused")
 
-    @unittest.expectedFailure
     def test_request_is_bound_to_the_published_head(self) -> None:
         """The read-back judges the head the publisher pushed, not any commit."""
         self.write(commits=[OTHER, HEAD])
@@ -745,7 +731,6 @@ class HandlersTest(unittest.TestCase):
         self.assertTrue(body.endswith("Closes #7"))
         printed.assert_any_call("review request: refused")
 
-    @unittest.expectedFailure
     def test_request_without_commits_verifies_by_the_pending_request(self) -> None:
         """No published head: the request is still sent; no review counts."""
         self.write(commits=[])
@@ -781,7 +766,6 @@ class HandlersTest(unittest.TestCase):
         self.assertIs(stored["review"]["requested"], False)
         self.assertIn(request.UNVERIFIED_REQUEST, stored["warnings"])
 
-    @unittest.expectedFailure
     def test_successful_retry_removes_the_refusal_notice(self) -> None:
         """A request that succeeds on a rerun takes its earlier notice down."""
         self.write()
@@ -821,7 +805,6 @@ class HandlersTest(unittest.TestCase):
             )
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_notice_without_its_blank_line_is_left_alone(self) -> None:
         """A maintainer's edit that removed the boundary costs no description.
 
@@ -850,7 +833,6 @@ class HandlersTest(unittest.TestCase):
             any("notice" in w and "left" in w for w in self.stored()["warnings"])
         )
 
-    @unittest.expectedFailure
     def test_a_notice_whose_block_grew_is_left_alone(self) -> None:
         """The cut takes the notice alone; a body merged into it stays whole.
 
@@ -908,7 +890,6 @@ class HandlersTest(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
         self.assertTrue(any("notice" in w for w in warnings))
 
-    @unittest.expectedFailure
     def test_refusal_is_logged_and_annotated(self) -> None:
         """The reason reaches the job log, and the run as one ``::warning``."""
         self.write()
@@ -932,7 +913,6 @@ class HandlersTest(unittest.TestCase):
             [f"::warning title=Copilot review request::{request.UNVERIFIED_REQUEST}"],
         )
 
-    @unittest.expectedFailure
     def test_sent_request_lists_the_reviewers_without_an_annotation(self) -> None:
         """On success the log names the reviewers the pull request lists."""
         self.write()
@@ -954,7 +934,6 @@ class HandlersTest(unittest.TestCase):
         self.assertFalse(any(line.startswith("::") for line in lines))
         self.assertIs(self.stored()["review"]["requested"], True)
 
-    @unittest.expectedFailure
     def test_log_names_the_credential_never_the_token(self) -> None:
         """Either outcome logs which credential asked, so a lapsed PAT shows."""
         for credential, reply, outcome in (
@@ -1110,7 +1089,6 @@ class HandlersTest(unittest.TestCase):
                 self.assertEqual(clock.now, 30 * 60 - review.RESERVE_SECONDS)
                 self.assertEqual(len(self.stored()["review"]["reasons"]), 1)
 
-    @unittest.expectedFailure
     def test_applied_request_with_an_unreadable_reply_is_sent(self) -> None:
         """The PAT's FORBIDDEN on a team request does not hide a landed request.
 
