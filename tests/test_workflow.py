@@ -1581,6 +1581,27 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertTrue(is_action(final, UPLOAD))
         self.assertEqual(final["with"]["retention-days"], 90)
 
+    @unittest.expectedFailure
+    def test_pull_request_outputs_come_from_the_report(self) -> None:
+        """The workflow's outputs are the report script's, validated by org."""
+        declared = cast(dict[str, Any], self.triggers["workflow_call"]["outputs"])
+        self.assertEqual(set(declared), {"pull_requests", "pull_request_count"})
+        for name, body in declared.items():
+            with self.subTest(output=name):
+                self.assert_expression(
+                    str(body["value"]), f"jobs.report.outputs.{name}"
+                )
+                self.assert_expression(
+                    str(self.jobs["report"]["outputs"][name]),
+                    f"steps.report.outputs.{name}",
+                )
+        build = self.step("report", "report")
+        self.assertEqual(build["name"], "Build report")
+        self.assert_expression(build["env"]["ORG"], "inputs.org")
+        script = flatten(str(build["run"]))
+        self.assertIn("publish.py report", script)
+        self.assertIn('--org "$ORG" --github-output "$GITHUB_OUTPUT"', script)
+
 
 class ListInputContracts(ReusableWorkflowCase):
     """Operator lists are split and checked once, before any token exists."""
