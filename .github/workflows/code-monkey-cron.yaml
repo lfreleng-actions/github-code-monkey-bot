@@ -4,24 +4,25 @@
 
 # Scheduled and on-demand entry point for the reusable workflow.
 #
-# The schedule runs two hours after the daily issues triage
-# (github-issues-triage, 07:00 UTC weekdays) so Priority and Type are
-# in place before selection. It stays in dry-run until the rollout
-# in docs/DESIGN.md section 15 clears live operation; flip the
-# `dry_run` expression below at that point. Disabling this workflow
-# in the Actions UI is the kill switch.
+# The schedule is live: it runs at 02:00 UTC on weekdays so its pull
+# requests are ready for review by the start of the European working
+# day, and posts them to Slack. It reads the previous working day's
+# triage (github-issues-triage, 07:00 UTC weekdays), so Priority and
+# Type are in place before selection. A manual dispatch is live too
+# unless its form asks for a dry run, and posts nothing. Disabling
+# this workflow in the Actions UI is the kill switch.
 name: 'Code Monkey ⏰'
 
 # yamllint disable-line rule:truthy
 on:
   schedule:
-    - cron: '0 9 * * 1-5'
+    - cron: '0 2 * * 1-5'
   workflow_dispatch:
     inputs:
       dry_run:
         description: 'Run the agent but publish nothing'
         type: boolean
-        default: true
+        default: false
       model:
         description: 'Model'
         type: choice
@@ -175,9 +176,10 @@ jobs:
     with:
       org: "${{ github.repository_owner }}"
       mode: "${{ inputs.mode || 'pull-requests' }}"
-      # Scheduled runs stay dry-run until the rollout clears them.
+      # A schedule is live; a dispatch keeps the operator's choice,
+      # which is live unless the form asks for a dry run.
       dry_run: >-
-        ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run }}
+        ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
       model: "${{ needs.options.outputs.model }}"
       # A schedule passes no inputs; empty means every category, as
       # the reusable workflow's default does.
@@ -213,3 +215,220 @@ jobs:
       copilot_token: "${{ secrets.COPILOT_CLI_TOKEN }}"
       github_app_private_key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
       copilot_review_token: "${{ secrets.COPILOT_REVIEW_TOKEN }}"
+
+  # Post the scheduled run's pull requests to Slack. Dispatches never
+  # post. The links come from the report, which cannot yet
+  # authenticate its results (docs/DESIGN.md 18.4), so the digest
+  # re-validates each one before it reaches the payload.
+  notify:
+    name: 'Notify Slack'
+    needs: [code-monkey]
+    if: >-
+      ${{ github.event_name == 'schedule' && !cancelled()
+      && needs.code-monkey.outputs.pull_request_count != '' }}
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    permissions: {}
+    environment: 'production'
+    steps:
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8 # v0.14.0
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@ac32415b91e0b6db1166bc451024c472cdbcbd3d'  # v0.16.8
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      - name: 'Check Slack configuration'
+        id: slack
+        env:
+          SLACK_BOT_TOKEN: "${{ secrets.SLACK_BOT_TOKEN }}"
+          SLACK_CHANNEL_ID: "${{ vars.SLACK_CHANNEL_ID }}"
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            missing='SLACK_BOT_TOKEN or SLACK_CHANNEL_ID is not set'
+            echo "::warning::$missing; skipping the Slack notification"
+            echo "Slack notification skipped: $missing." \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Each link is checked as a JSON string literal, so one holding
+      # a newline cannot pass as two lines. The payload below is
+      # inline YAML: the body is one line with literal \n separators.
+      - name: 'Build digest'
+        id: digest
+        if: steps.slack.outputs.configured == 'true'
+        env:
+          ORG: "${{ github.repository_owner }}"
+          PULL_REQUESTS: "${{ needs.code-monkey.outputs.pull_requests }}"
+          RUN_RESULT: "${{ needs.code-monkey.result }}"
+        run: |
+          set -euo pipefail
+          if ! [[ "$ORG" =~ ^[A-Za-z0-9-]+$ ]]; then
+            echo "::error::Unexpected owner name"
+            exit 1
+          fi
+          pattern='^"https://github\.com/'"$ORG"'/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*"$'
+          # nocasematch folds case by the locale: under UTF-8 a dotless
+          # i matches i and gıthub.com would pass. Fold in ASCII alone.
+          export LC_ALL=C
+          if ! items=$(jq -r 'if type == "array" then .[] | @json
+              else error("not an array") end' <<< "$PULL_REQUESTS"); then
+            echo "::warning::The run's pull_requests output is not a JSON array"
+            items=''
+          fi
+          shopt -s nocasematch
+          urls=()
+          refused=0
+          while IFS= read -r item; do
+            [ -n "$item" ] || continue
+            if [[ "$item" =~ $pattern ]]; then
+              urls+=("${item:1:${#item}-2}")
+            else
+              refused=$((refused + 1))
+            fi
+          done <<< "$items"
+          shopt -u nocasematch
+          if [ "$refused" -gt 0 ]; then
+            echo "::warning::$refused pull request link(s) failed validation"
+          fi
+          count=${#urls[@]}
+          body=''
+          shown=0
+          for url in "${urls[@]}"; do
+            line="<$url>"
+            if [ "$shown" -ge 50 ] \
+              || [ $(( ${#body} + ${#line} + 2 )) -gt 2500 ]; then
+              break
+            fi
+            if [ -n "$body" ]; then
+              body="$body\\n"
+            fi
+            body="$body$line"
+            shown=$((shown + 1))
+          done
+          if [ "$shown" -lt "$count" ]; then
+            body="$body\\n... and $((count - shown)) more"
+          fi
+          if [ "$count" -eq 0 ]; then
+            body='_No pull requests were raised._'
+          fi
+          if [ "$RUN_RESULT" != 'success' ]; then
+            failed='_Some jobs in this run failed; see the workflow run._'
+            body="$body\\n\\n$failed"
+          fi
+          noun='pull requests'
+          if [ "$count" -eq 1 ]; then
+            noun='pull request'
+          fi
+          printf 'text=%s\n' "🐒 Code Monkey: $count $noun for review" \
+            >> "$GITHUB_OUTPUT"
+          printf 'body=%s\n' "$body" >> "$GITHUB_OUTPUT"
+
+      - name: 'Post to Slack'
+        if: steps.slack.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: 'chat.postMessage'
+          token: "${{ secrets.SLACK_BOT_TOKEN }}"
+          errors: true
+          payload: |
+            channel: "${{ vars.SLACK_CHANNEL_ID }}"
+            text: "${{ steps.digest.outputs.text }}"
+            blocks:
+              - type: "header"
+                text:
+                  type: "plain_text"
+                  text: "🐒 Code Monkey: pull requests for review"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "${{ steps.digest.outputs.body }}"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}\
+                      /actions/runs/${{ github.run_id }}|View workflow run>"
+
+  # A scheduled run that failed or was cancelled with no digest
+  # posted says so rather than stay silent: the run failed before its
+  # report, or the digest job itself failed. A digest that succeeded
+  # has already noted any failed jobs, so this does not repeat it.
+  notify-failure:
+    name: 'Notify Slack of failure'
+    needs: [options, code-monkey, notify]
+    if: >-
+      ${{ github.event_name == 'schedule' && (failure() || cancelled())
+      && needs.notify.result != 'success' }}
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    permissions: {}
+    environment: 'production'
+    steps:
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8 # v0.14.0
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@ac32415b91e0b6db1166bc451024c472cdbcbd3d'  # v0.16.8
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      - name: 'Check Slack configuration'
+        id: slack
+        env:
+          SLACK_BOT_TOKEN: "${{ secrets.SLACK_BOT_TOKEN }}"
+          SLACK_CHANNEL_ID: "${{ vars.SLACK_CHANNEL_ID }}"
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            missing='SLACK_BOT_TOKEN or SLACK_CHANNEL_ID is not set'
+            echo "::warning::$missing; skipping the Slack notification"
+            echo "Slack notification skipped: $missing." \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 'Post to Slack'
+        if: steps.slack.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          method: 'chat.postMessage'
+          token: "${{ secrets.SLACK_BOT_TOKEN }}"
+          errors: true
+          payload: |
+            channel: "${{ vars.SLACK_CHANNEL_ID }}"
+            text: "🐒 Code Monkey: the nightly run failed"
+            blocks:
+              - type: "header"
+                text:
+                  type: "plain_text"
+                  text: "🐒 Code Monkey: nightly run failed"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "The nightly run failed and no digest follows."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}\
+                      /actions/runs/${{ github.run_id }}|View workflow run>"
