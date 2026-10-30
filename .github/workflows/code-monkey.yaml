@@ -478,10 +478,22 @@ jobs:
       # merged into the workflow fails this run before any token exists.
       # The config check reads the credential shapes from the
       # environment and prints nothing it read.
+      #
+      # setup-uv starts the interpreter 'uv python find' reports for
+      # its working directory and reads uv settings (required-version,
+      # cache-dir) from uv.toml or pyproject.toml there, so it works in
+      # the runner's temporary directory, not the workspace. The env
+      # stops that lookup using a .venv, .python-version or project
+      # file in the directory or a parent.
       - name: 'Set up uv'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        env:
+          UV_NO_CONFIG: '1'
+          UV_SYSTEM_PYTHON: '1'
+          UV_NO_PROJECT: '1'
         with:
+          working-directory: "${{ runner.temp }}"
           enable-cache: false
 
       - name: 'Install zizmor'
@@ -489,8 +501,20 @@ jobs:
 
       - name: 'Pre-flight: workflow contracts and audit'
         run: |
+          # uv run reuses an existing project environment, and runs its
+          # interpreter, in the assets checkout or a uv workspace above
+          # it. Build the environment under RUNNER_TEMP instead, from an
+          # interpreter found there.
+          py="$(cd "$RUNNER_TEMP" &&
+            UV_NO_CONFIG=1 uv python find --system --no-project)"
+          if [ -z "$py" ]; then
+            echo '::error::No Python interpreter found for the pre-flight'
+            exit 1
+          fi
           cd monkey-assets
-          uv run --locked python -B scripts/preflight.py workflow --root .
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/preflight-venv" \
+            uv run --locked --python "$py" \
+            python -B scripts/preflight.py workflow --root .
 
       - name: 'Pre-flight: configuration and credentials'
         env:
@@ -752,10 +776,18 @@ jobs:
           node-version: '22'
           package-manager-cache: false
 
+      # Outside the workspace, as in the select job: setup-uv starts
+      # the interpreter it finds in its working directory, and this
+      # job's workspace holds the target repository.
       - name: 'Set up uv'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        env:
+          UV_NO_CONFIG: '1'
+          UV_SYSTEM_PYTHON: '1'
+          UV_NO_PROJECT: '1'
         with:
+          working-directory: "${{ runner.temp }}"
           enable-cache: false
 
       - name: 'Install agent toolchain'
