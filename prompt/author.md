@@ -61,10 +61,23 @@ part and note it in your manifest reason.
      placeholder the workflow replaces on replay, chosen so the
      `Signed-off-by` trailer `-s` writes fits the commit hooks.
      The workflow has set it; do not change it.
-   - *Replay limits.* The API cannot set an executable bit, create a
-     symlink or change a file's mode, and takes at most 100 file
-     changes per commit. Use at most five commits and keep the total
-     change under 4 MiB. The workflow rejects a commit subject
+   - *Replay limits.* The workflow cannot add or edit an executable
+     file, a symlink or a submodule, or change a file's mode. The
+     publisher rejects any edit to an existing executable file, even
+     one that keeps its mode; deleting one is fine. So leave
+     executable files untouched, put new code in new regular files
+     run through their interpreter (`bash path`, `python3 path`), and
+     create any link or submodule a test needs at run time. When the
+     change cannot avoid editing an executable file, abstain and name
+     the file in your reason. Before you write the manifest, run
+     `git log --raw --format=%h <base_sha>..HEAD`, which shows each
+     commit against its parent, as the publisher checks it: in no
+     commit may a path show a new-side mode of `100755`, `120000` or
+     `160000`, and no path may change mode. A later commit that
+     undoes such a change does not help; rewrite the commit that
+     introduced it. The API takes at most 100
+     file changes per commit. Use at most five commits and keep the
+     total change under 4 MiB. The workflow rejects a commit subject
      longer than the target's `.gitlint` `title-max-length` where it
      sets one, and 50 where it does not, even when the target's own
      gitlint hook allows more. Do not touch `AGENTS.md`, `LICENSE*`,
