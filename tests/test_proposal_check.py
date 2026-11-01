@@ -23,6 +23,8 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+clean_git_env = import_module("git_env").clean_git_env
 checks = import_module("proposal_check")
 model = import_module("proposal_model")
 github = import_module("bot_github")
@@ -294,7 +296,7 @@ class GitCase(unittest.TestCase):
     """Base class isolating git from the developer's own configuration."""
 
     def setUp(self) -> None:
-        """Point git at a private global config and a fixed identity."""
+        """Give git a private config, a fixed identity and no inherited repo."""
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name)
@@ -317,7 +319,7 @@ class GitCase(unittest.TestCase):
             "GIT_AUTHOR_DATE": "2026-09-18T10:00:00Z",
             "GIT_COMMITTER_DATE": "2026-09-18T10:00:00Z",
         }
-        environment = patch.dict(os.environ, env)
+        environment = patch.dict(os.environ, {**clean_git_env(), **env}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
         self.fixture = Fixture(self.root)

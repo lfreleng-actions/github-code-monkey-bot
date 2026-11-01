@@ -87,12 +87,10 @@ class InheritedGitDirTest(unittest.TestCase):
         self.assertEqual(self.snapshot(), self.before)
         self.assertEqual(result.errors + result.failures, [])
 
-    @unittest.expectedFailure
     def test_proposal_check_fixture(self) -> None:
         """A ``GitCase`` fixture builds its repositories where it means to."""
         self.run_case(proposal_tests.RunCheckProposedTest("test_happy_path"))
 
-    @unittest.expectedFailure
     def test_git_bounded_fixture(self) -> None:
         """The bounded git fixture writes its blob to its own repository."""
         self.run_case(
