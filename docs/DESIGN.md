@@ -805,17 +805,37 @@ For each selected issue:
     request, which needs organisation Members: read to resolve. The
     review token lacks it (§10.4), so GitHub applies the mutation and
     still answers `FORBIDDEN`. From the App's installation token
-    GitHub can accept the mutation without adding the reviewer, so,
-    after the mutation, with or without an error, the step reads the
-    pull request back through REST and counts the request as sent
-    when its `requested_reviewers` lists the Bot `Copilot`, or when a
-    Copilot review of the published head already exists, since a fast
-    review clears the pending request. A review of an earlier head
-    proves nothing, since a revision round always has one, and with no
-    published head recorded no review counts. When neither holds, a
-    mutation error is a refusal with GitHub's message; otherwise a
-    failed or malformed read is a refusal that names it, and a
-    missing reviewer is a refusal too. A failed read of the pull
+    GitHub can accept the mutation without adding the reviewer, so
+    the step verifies the request through the issue's events
+    (`issues/{number}/events`, every page), which the token can read.
+    Before the mutation it reads them and notes the newest event id;
+    after the mutation, with or without an error, it counts the
+    request as sent when a `review_requested` event naming the Bot
+    `Copilot` (or the reviewer's own login) has a newer id, so an
+    earlier round's request never counts and no clock comparison
+    enters.
+    A Copilot request already pending when the step starts counts
+    too: its newest request event is a request, not a removal, and
+    is newer than Copilot's newest review. When the step fails to
+    read the reviews before the mutation, it retries this check,
+    against the events it read then, on each read after it: an
+    additive request for a reviewer already pending may add no
+    event. A Copilot review of the published head counts as well,
+    since a fast review clears the
+    pending request. A review of an earlier head proves nothing,
+    since a revision round always has one, and with no published head
+    recorded no review counts. The events lag the request, so the
+    step reads the events and the head review again after 2, 4 and 8
+    seconds, as the revision publisher reads a lagging head, before
+    it calls the request refused. Neither of the obvious reads can
+    serve: REST `requested_reviewers` never lists the Copilot bot
+    as pending (it lists the ruleset's team alone), and GraphQL
+    `reviewRequests` needs the team resolved, which the token cannot
+    do; the step reads the REST list for its log line and nothing
+    else. When no proof
+    holds, a mutation error is a refusal with GitHub's message;
+    otherwise a failed read is a refusal that names it, and a
+    missing request is a refusal too. A failed read of the pull
     request before the mutation sends nothing and is a refusal. The
     request is best effort: a refusal becomes a warning in
     `result.json` with GitHub's answer, a line in the job log and a
@@ -827,7 +847,8 @@ For each selected issue:
     the workflow requested a review; the issue comment and the report
     (`pending (not requested)`) say so too. The publish goes on, and
     no token gains a permission for it. A request that lands logs the
-    reviewers the REST read listed. Either way the log names the
+    reviewers the REST read listed, which never include Copilot.
+    Either way the log names the
     credential that asked, `review token` or `App token`, never the
     token, so a lapsed or revoked review token shows as a refusal
     under its own name. The App's token cannot add the reviewer
@@ -1181,8 +1202,10 @@ repositories, with Pull requests: write and the implicit Metadata:
 read. Reviews it requests bill to that maintainer's seat. It holds
 nothing at organisation level, so it cannot resolve a team reviewer
 in a GraphQL reply, and §8 step 10 verifies the request
-through the pull request's REST `requested_reviewers`, which the
-token can read, rather than through the mutation's reply. Granting
+through the issue's `review_requested` events, which the token can
+read, rather than through the mutation's reply. REST
+`requested_reviewers` cannot serve either: it never lists the
+Copilot bot as pending. Granting
 Members: read would make the reply readable, but widens the token
 beyond the one mutation it exists for.
 
@@ -1318,7 +1341,7 @@ conflicts while producer artifacts survive.
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
-| Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the REST read-back shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
+| Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 
 <!-- markdownlint-enable MD013 -->
@@ -1481,17 +1504,20 @@ Still to confirm during rollout rather than before it:
    user token brought a review every time. GitHub never refused, so
    the step reported `sent` until it learnt to read the request
    back; it now records the refusal, and the review stays pending.
-   The read-back goes through REST `requested_reviewers`, not the
-   mutation's reply: the reply's pending requests include the
-   ruleset's team request, which the review token cannot resolve:
-   GitHub answered every applied request with an error.
+   The read-back goes through the issue's `review_requested`
+   events, not the mutation's reply: the reply's pending requests
+   include the ruleset's team request, which the review token cannot
+   resolve, so GitHub answered every applied request with an error.
+   REST `requested_reviewers` does not serve either: with Copilot
+   pending it lists the team alone, so a read-back through it (#71)
+   recorded every landed request as refused.
    Decided: the step uses a credential held by a Copilot user, the
    `COPILOT_REVIEW_TOKEN` secret of §10.4, a maintainer's
    fine-grained PAT with Pull requests: write, whose seat GitHub
    bills for the reviews it requests. No App mint widens for it, and
    without it the step falls back to the App's token and its
-   refusal. A live `pull-requests` run confirms the log lists
-   `Bot Copilot` and the review arrives.
+   refusal. A live `pull-requests` run confirms the log records
+   `review request: sent` and the review arrives.
 
 ## 18. Data Contracts
 
