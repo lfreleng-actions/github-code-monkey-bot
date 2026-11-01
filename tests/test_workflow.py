@@ -473,7 +473,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
                 self.assertNotIn("cannot set an executable bit", prompt)
                 self.assertNotIn("no executable bits", prompt)
 
-    @unittest.expectedFailure
     def test_prompts_require_the_pull_request_title(self) -> None:
         """Both prompts require ``pr_title`` on every proposal.
 
