@@ -81,11 +81,26 @@ round summary.
      chain through the GitHub API, which signs it, and replaces every
      `*-by` trailer with the real identities; your git identity is a
      placeholder it replaces. The same limits as a first session
-     apply: no executable bits, symlinks or mode changes; at most
-     five commits and 100 file changes per commit; under 4 MiB in
-     total; a subject within the target's `.gitlint`
+     apply: at most five commits and 100 file changes per commit;
+     under 4 MiB in total; a subject within the target's `.gitlint`
      `title-max-length` or 50; hands off `AGENTS.md`, `LICENSE*`,
-     `REUSE.toml` and `.gitlint`.
+     `REUSE.toml` and `.gitlint`. The workflow cannot add or edit
+     an executable file, a symlink or a submodule, or change a
+     file's mode. The publisher rejects any edit to an existing
+     executable file, even one that keeps its mode; deleting one is
+     fine. So leave executable files untouched, put new code in new
+     regular files run through their interpreter (`bash path`,
+     `python3 path`), and create any link or submodule a test needs
+     at run time. When a fix cannot
+     avoid editing an executable file, abstain and name the file in
+     your reason. Before you write the manifest, run
+     `git log --raw --format=%h <base>..HEAD` against the base your
+     chain sits on (`base_sha`, or `rebase_sha` after a rebase),
+     which shows each commit against its parent, as the publisher
+     checks it: in no commit may a path show a new-side mode of
+     `100755`, `120000` or `160000`, and no path may change mode. A
+     later commit that undoes such a change does not help; rewrite
+     the commit that introduced it.
    - *Publication and review.* The workflow moves the pull request's
      branch to your new head when the head is still the one you
      started from, and refuses when it moved; posts your reply on

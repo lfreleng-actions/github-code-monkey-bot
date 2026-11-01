@@ -442,7 +442,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
-    @unittest.expectedFailure
     def test_prompts_state_the_executable_file_rule(self) -> None:
         """Both prompts forbid editing executables and ask for a mode self-check.
 

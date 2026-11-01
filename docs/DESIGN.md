@@ -318,11 +318,19 @@ Consequences the implementation has to handle:
   commits made through it carry no signature, which defeats the
   purpose. An unsigned fallback push would produce an
   unmergeable pull request and more work than it saves, so the
-  publisher **rejects** a bundle whose diff adds or changes an
-  executable file, a symlink, a submodule, or any file mode. The
-  prompt tells the agent to leave those steps out, complete the
-  rest, and open the pull request body with an `INFO` banner listing
-  the follow-up a human has to make (§7.3).
+  publisher **rejects** a bundle in which any commit adds or
+  changes an executable file, a symlink, a submodule, or any file
+  mode; any edit to an existing executable file counts, even one
+  that keeps its mode, and a deletion passes. It checks each commit
+  against its parent, so a later commit that undoes such a change
+  does not save the chain. The prompt states the rule in those
+  terms, tells the agent to leave executable files untouched and to
+  abstain when a change cannot avoid editing one, and to check every
+  commit with `git log --raw` before handing back, rewriting the
+  commit that introduced any finding (§7.3). For other steps the
+  replay cannot take, it tells the agent to leave them out, complete
+  the rest, and open the pull request body with an `INFO` banner
+  listing the follow-up a human has to make.
 - **Renames** become a deletion plus an addition. Git history shows
   the rename through similarity detection as usual.
 - **Sequencing and rollback.** The publisher creates the branch at
@@ -617,9 +625,19 @@ The workflow facts the prompt adds:
    commits and appends the Copilot co-author and the bot's sign-off
    (§5). The local identity is the placeholder of §7.1, which the
    replay replaces.
-2. *Replay limits.* No executable bits, symlinks or mode changes; at
-   most five commits and 100 file changes per commit; under 4 MiB in
-   total; a subject within the target's `.gitlint`
+2. *Replay limits.* No added or edited executable file, symlink or
+   submodule, and no mode change: the publisher refuses any edit to
+   an existing executable file, even one that keeps its mode, and
+   lets a deletion pass. The agent leaves executable files
+   untouched, puts new code in new regular files run through their
+   interpreter, creates any link or submodule a test needs at run
+   time, abstains naming the file when the change cannot avoid
+   editing one, and checks `git log --raw <base>..HEAD` for those
+   modes in every commit before writing the manifest, rewriting the
+   commit that introduced one rather than undoing it in a later
+   commit, since the publisher checks each commit against its
+   parent. At most five commits and 100 file changes per commit;
+   under 4 MiB in total; a subject within the target's `.gitlint`
    `title-max-length`, or 50 where it sets none, as the publisher
    enforces (§8) even where the target's gitlint is looser; hands
    off `AGENTS.md`, `LICENSE*`, `REUSE.toml` and `.gitlint`.
@@ -1312,7 +1330,7 @@ conflicts while producer artifacts survive.
 | Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
-| Diff needs a mode change or symlink | Publish refused | Agent leaves the step out and banners the follow-up (§5, §7.3) |
+| Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | Two runs overlap | Duplicate branches | Caller concurrency group for scans; named-issue dispatches lock per run and rely on the §6 open-pull-request check and branch-exists refusal |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
