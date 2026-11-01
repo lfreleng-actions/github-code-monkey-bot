@@ -105,7 +105,10 @@ part and note it in your manifest reason.
    The workflow handles cleanup.
 7. **Write the manifest last.** Whether you proposed a change or
    abstained, write `manifest.json` to the artefacts directory named
-   in the runtime context, as the final step.
+   in the runtime context, as the final step. Then read
+   `manifest.json` back before you end the session: confirm the file
+   parses as JSON and, when `outcome` is `proposed`, carries a
+   non-empty `pr_title` and `pr_body`.
 
 ## The manifest
 
@@ -118,7 +121,7 @@ part and note it in your manifest reason.
   "base_sha": "<base_sha from the runtime context>",
   "branch": "<branch from the runtime context>",
   "reason": null,
-  "pr_title": "<the commit subject, when there is one commit>",
+  "pr_title": "<required: the PR title; on one commit, its subject>",
   "pr_body": "<markdown; see below>",
   "commands": [
     {"command": "uv run pytest", "exit_code": 0},
@@ -143,6 +146,10 @@ The pull request body:
 The workflow opens the body with the line that closes the issue;
 do not add one.
 
-On a single-commit branch, `pr_title` **must equal** the commit
-subject, character for character. The workflow rejects the proposal
-otherwise.
+`pr_title` and `pr_body` are **required** whenever `outcome` is
+`proposed`, whatever the commit count; the workflow rejects a
+proposal that lacks either. On a single-commit branch, `pr_title`
+**must equal** the commit subject, character for character. The
+workflow rejects the proposal otherwise. On a multi-commit branch,
+`pr_title` is the pull request's title: one subject, in the
+guidance's commit subject form, that covers every commit.

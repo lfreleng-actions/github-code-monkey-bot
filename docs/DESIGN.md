@@ -1654,7 +1654,10 @@ leaves none, the workflow writes one with `"outcome":
 value, or none, rather than read the fields under a contract it
 does not know. `outcome` is `proposed`, `abstain` or
 `author-failed`, and for a revision `handoff` (§20.3); the last three
-need a `reason`. `changes.bundle`
+need a `reason`. A `proposed` manifest must carry a non-empty
+`pr_title` and `pr_body` whatever the commit count, and on a
+single-commit branch the title must equal the commit's subject.
+`changes.bundle`
 sits beside the manifest when the outcome is `proposed`, created by
 the workflow (not the agent) from `base_sha..branch`. A revision's
 manifest may set `base_sha` to the entry's `rebase_sha` instead,

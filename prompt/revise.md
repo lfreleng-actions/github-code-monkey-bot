@@ -116,7 +116,11 @@ round summary.
    directory, or delete scratch files. The workflow handles cleanup.
 7. **Write the manifest last.** Whether you revised or abstained,
    write `manifest.json` to the artefacts directory named in the
-   runtime context, as the final step.
+   runtime context, as the final step. Then read `manifest.json`
+   back before you end the session: confirm the file parses as JSON,
+   carries a non-empty `round_summary` unless `outcome` is
+   `abstain`, and, when `outcome` is `proposed`, carries a non-empty
+   `pr_title` and `pr_body`.
 
 ## The manifest
 
@@ -129,7 +133,7 @@ round summary.
   "base_sha": "<base_sha, or rebase_sha after a rebase>",
   "branch": "<branch from the runtime context>",
   "reason": null,
-  "pr_title": "<the commit subject, when there is one commit>",
+  "pr_title": "<required: the PR title; on one commit, its subject>",
   "pr_body": "<markdown; see below>",
   "round_summary": "<markdown; see below>",
   "responses": [
@@ -171,6 +175,11 @@ still look at. `round_summary` is the comment the workflow posts on
 the issue for this round: which findings you fixed, which you
 disputed and why, whether you rebased, and what remains.
 
-On a single-commit branch, `pr_title` **must equal** the commit
-subject, character for character. The workflow rejects the proposal
-otherwise.
+`pr_title` and `pr_body` are **required** whenever `outcome` is
+`proposed`, whatever the commit count; the workflow rejects a
+proposal that lacks either. On a single-commit branch, `pr_title`
+**must equal** the commit subject, character for character. The
+workflow rejects the proposal otherwise. On a multi-commit branch,
+`pr_title` is the pull request's title: keep the pull request's
+current title, from the packet, unless this round's change warrants
+a new one.

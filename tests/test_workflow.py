@@ -473,6 +473,45 @@ class AuthorJobContracts(ReusableWorkflowCase):
                 self.assertNotIn("cannot set an executable bit", prompt)
                 self.assertNotIn("no executable bits", prompt)
 
+    def test_prompts_require_the_pull_request_title(self) -> None:
+        """Both prompts require ``pr_title`` on every proposal.
+
+        ``check_pull_request_text`` rejects a proposal without a title
+        however many commits it holds, so a template that reads as
+        "only when there is one commit" costs a multi-commit round.
+        """
+        for path in (PROMPT, REVISE_PROMPT):
+            with self.subTest(prompt=path.name):
+                prompt = squash(path.read_text(encoding="utf-8"))
+                self.assertNotIn("when there is one commit", prompt)
+                self.assertIn(
+                    '"pr_title": "<required: the PR title; on one commit, '
+                    'its subject>"',
+                    prompt,
+                )
+                self.assertIn(
+                    "`pr_title` and `pr_body` are **required** whenever "
+                    "`outcome` is `proposed`",
+                    prompt,
+                )
+                self.assertIn("whatever the commit count", prompt)
+                self.assertIn("read `manifest.json` back", prompt)
+        author = squash(PROMPT.read_text(encoding="utf-8"))
+        self.assertIn(
+            "confirm the file parses as JSON and, when `outcome` is "
+            "`proposed`, carries a non-empty `pr_title` and `pr_body`",
+            author,
+        )
+        revise = squash(REVISE_PROMPT.read_text(encoding="utf-8"))
+        self.assertIn(
+            "confirm the file parses as JSON, carries a non-empty "
+            "`round_summary` unless `outcome` is `abstain`, and, when "
+            "`outcome` is `proposed`, carries a non-empty `pr_title` and "
+            "`pr_body`",
+            revise,
+        )
+        self.assertIn("keep the pull request's current title", revise)
+
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
         checkout = self.step("author", "Checkout target repository")
