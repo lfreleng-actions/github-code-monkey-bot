@@ -442,6 +442,38 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
+    @unittest.expectedFailure
+    def test_prompts_state_the_executable_file_rule(self) -> None:
+        """Both prompts forbid editing executables and ask for a mode self-check.
+
+        ``check_change_mode`` rejects a content-only edit to an existing
+        executable file, so a prompt that only forbids setting the bit
+        lets the agent propose a change the publisher must refuse.
+        """
+        for path in (PROMPT, REVISE_PROMPT):
+            with self.subTest(prompt=path.name):
+                prompt = squash(path.read_text(encoding="utf-8"))
+                self.assertIn(
+                    "cannot add or edit an executable file, a symlink or a "
+                    "submodule, or change a file's mode",
+                    prompt,
+                )
+                self.assertIn(
+                    "rejects any edit to an existing executable file, even "
+                    "one that keeps its mode",
+                    prompt,
+                )
+                self.assertIn("leave executable files untouched", prompt)
+                self.assertIn("abstain and name the file", prompt)
+                self.assertIn("git log --raw --format=%h <base", prompt)
+                self.assertIn("each commit against its parent", prompt)
+                self.assertIn("rewrite the commit that introduced it", prompt)
+                self.assertNotIn("git diff --raw", prompt)
+                self.assertIn("`100755`, `120000` or `160000`", prompt)
+                self.assertIn("no path may change mode", prompt)
+                self.assertNotIn("cannot set an executable bit", prompt)
+                self.assertNotIn("no executable bits", prompt)
+
     def test_target_checkout_is_the_recorded_base_commit(self) -> None:
         """The workspace is the selected repository at the selection's SHA."""
         checkout = self.step("author", "Checkout target repository")
