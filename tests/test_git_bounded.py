@@ -16,9 +16,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 bounded = import_module("git_bounded")
 policy = import_module("proposal_policy")
+clean_git_env = import_module("git_env").clean_git_env
 
 
 class BoundedGitTest(unittest.TestCase):
@@ -29,15 +31,18 @@ class BoundedGitTest(unittest.TestCase):
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
         self.repo = Path(holder.name)
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True, env=env)
+        env = {**clean_git_env(), "GIT_CONFIG_GLOBAL": os.devnull}
+        # bounded.git inherits os.environ, so the tests need it clean too.
+        environment = patch.dict(os.environ, env, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True)
         self.big = (
             subprocess.run(
                 ["git", "-C", str(self.repo), "hash-object", "-w", "--stdin"],
                 input=b"x" * 300_000,
                 capture_output=True,
                 check=True,
-                env=env,
             )
             .stdout.decode()
             .strip()

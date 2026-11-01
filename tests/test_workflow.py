@@ -18,13 +18,18 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections import Counter
+from importlib import import_module
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
 import yaml  # pyright: ignore[reportMissingModuleSource]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+clean_git_env = import_module("git_env").clean_git_env
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 REUSABLE = WORKFLOWS / "code-monkey.yaml"
@@ -373,7 +378,12 @@ class AuthorJobContracts(ReusableWorkflowCase):
                 ),
                 encoding="utf-8",
             )
-            subprocess.run(["git", "init", "-q", "workspace"], cwd=work, check=True)
+            subprocess.run(
+                ["git", "init", "-q", "workspace"],
+                cwd=work,
+                check=True,
+                env=clean_git_env(),
+            )
             # The checkout check needs HEAD to equal CHECKOUT_SHA; a
             # fake rev-parse on PATH answers with the fixture SHA.
             fake = work / "bin"
@@ -410,6 +420,7 @@ class AuthorJobContracts(ReusableWorkflowCase):
                 return subprocess.run(
                     ["git", "-C", "workspace", "config", "--local", key],
                     cwd=work,
+                    env=clean_git_env(),
                     capture_output=True,
                     text=True,
                     check=True,
