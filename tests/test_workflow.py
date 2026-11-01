@@ -1484,7 +1484,6 @@ class PreflightContracts(ReusableWorkflowCase):
         run = flatten(self.step("select", "Install zizmor")["run"])
         self.assertRegex(run, r"uv tool install 'zizmor==\d+\.\d+\.\d+'")
 
-    @unittest.expectedFailure
     def test_preflight_uv_run_sees_only_the_assets_checkout(self) -> None:
         """Nothing but the pinned assets lands in the workspace before uv runs.
 
@@ -1504,7 +1503,6 @@ class PreflightContracts(ReusableWorkflowCase):
         run = str(self.step("select", PREFLIGHT)["run"])
         self.assertIn("\ncd monkey-assets\n", run)
 
-    @unittest.expectedFailure
     def test_preflight_environment_is_built_outside_the_workspace(self) -> None:
         """uv run gets an interpreter found in RUNNER_TEMP and an env there.
 
@@ -2515,7 +2513,6 @@ class TestingCallerContracts(WorkflowCase):
         """The regression job's actions are commit-pinned."""
         self.assert_pinned_steps()
 
-    @unittest.expectedFailure
     def test_uv_workdir_job_runs_the_select_uv_steps(self) -> None:
         """Plants go in first, the select job's uv steps run verbatim, the check last."""
         select = load_jobs(REUSABLE)["select"]["steps"]
@@ -2548,7 +2545,6 @@ class TestingCallerContracts(WorkflowCase):
 class SetupUvContracts(unittest.TestCase):
     """setup-uv works outside the workspace in every workflow."""
 
-    @unittest.expectedFailure
     def test_every_setup_uv_step_works_in_runner_temp(self) -> None:
         """setup-uv starts the interpreter it finds in its working directory.
 
