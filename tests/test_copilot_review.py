@@ -28,7 +28,9 @@ REPO = "org/repo"
 APP = "App token"
 
 
-def copilot(review_id: int, commit: str, body: str) -> dict[str, Any]:
+def copilot(
+    review_id: int, commit: str, body: str, submitted: str = "2026-11-01T17:20:00Z"
+) -> dict[str, Any]:
     """A review object as the REST listing returns it."""
     return {
         "id": review_id,
@@ -36,6 +38,7 @@ def copilot(review_id: int, commit: str, body: str) -> dict[str, Any]:
         "commit_id": commit,
         "body": body,
         "state": "COMMENTED",
+        "submitted_at": submitted,
     }
 
 
@@ -56,11 +59,14 @@ def threads_reply(flags: list[bool], *, more: bool = False) -> dict[str, Any]:
 NODE_ID = "PR_kwDOAAAAAA"
 # The mutation selects only ``clientMutationId``; its reply is not read.
 MUTATED = {"requestReviewsByLogin": {"clientMutationId": None}}
-# The pending Copilot reviewer as the REST pull request lists it.
-COPILOT_PENDING = {"login": "Copilot", "type": "Bot"}
+# The Copilot reviewer bot as an issue event names it.
+COPILOT_BOT = {"login": "Copilot", "type": "Bot"}
 ALICE = {"login": "alice", "type": "User"}
 # The token user's PAT error when the reply resolves a team request.
 FORBIDDEN = github.GitHubError("gh: Resource not accessible by personal access token")
+BAD_GATEWAY = github.GitHubError("HTTP 502")
+EVENTS = f"repos/{REPO}/issues/41/events"
+REVIEWS = f"repos/{REPO}/pulls/41/reviews"
 
 
 def pull_reply(
@@ -70,6 +76,7 @@ def pull_reply(
 
     Every organisation pull request carries the ruleset's team request,
     so each reply lists one team unless ``teams`` says otherwise.
+    GitHub never lists a pending Copilot request here.
     """
     return {
         "node_id": NODE_ID,
@@ -79,8 +86,67 @@ def pull_reply(
     }
 
 
-ADDED = pull_reply([ALICE, COPILOT_PENDING])
-NOT_ADDED = pull_reply([ALICE])
+# The pull request as REST returns it, Copilot pending or not.
+PULL = pull_reply([ALICE])
+
+
+def requested(
+    event_id: int,
+    created: str = "2026-11-01T17:15:20Z",
+    *,
+    reviewer: dict[str, Any] = COPILOT_BOT,
+    kind: str = "review_requested",
+) -> dict[str, Any]:
+    """An issue event that requests, or withdraws, a reviewer."""
+    return {
+        "id": event_id,
+        "event": kind,
+        "created_at": created,
+        "requested_reviewer": reviewer,
+    }
+
+
+# An event before the step, and the request the step's mutation adds.
+EARLIER = {"id": 90, "event": "labeled", "created_at": "2026-11-01T17:00:00Z"}
+REQUESTED = requested(100)
+
+
+class Reads:
+    """An ``api_list`` double: the issue's events read by read, and the reviews.
+
+    Each events read takes the next reply; the last one repeats. The
+    reviews answer ``reviews`` first and ``later_reviews``, when given,
+    on every read after. A reply that is an exception is raised instead.
+    """
+
+    def __init__(
+        self,
+        *events: list[dict[str, Any]] | Exception,
+        reviews: Any = (),
+        later_reviews: Any = None,
+    ) -> None:
+        """Queue the events and reviews replies."""
+        self.events = list(events) or [[]]
+        self.reviews = [reviews] if later_reviews is None else [reviews, later_reviews]
+        self.endpoints: list[str] = []
+
+    def __call__(self, endpoint: str) -> list[dict[str, Any]]:
+        """Answer one paginated read."""
+        self.endpoints.append(endpoint)
+        if endpoint == EVENTS:
+            reply = self.events.pop(0) if len(self.events) > 1 else self.events[0]
+        elif endpoint == REVIEWS:
+            reply = self.reviews.pop(0) if len(self.reviews) > 1 else self.reviews[0]
+        else:
+            raise AssertionError(f"unexpected read of {endpoint}")
+        if isinstance(reply, Exception):
+            raise reply
+        return list(reply)
+
+
+def sent() -> Reads:
+    """Reads in which the mutation's request event appears at once."""
+    return Reads([EARLIER], [EARLIER, REQUESTED])
 
 
 class Clock:
@@ -116,23 +182,53 @@ class PullReferenceTest(unittest.TestCase):
 
 
 class RequestMutationTest(unittest.TestCase):
-    """One additive ``requestReviewsByLogin``, verified through REST."""
+    """One additive ``requestReviewsByLogin``, verified by the issue's events."""
+
+    def setUp(self) -> None:
+        """Record the verification backoff instead of waiting it out."""
+        patcher = patch.object(request.time, "sleep")
+        self.sleep = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def outcome(
+        self,
+        reads: Reads,
+        *,
+        pull: dict[str, Any] = PULL,
+        mutation: Exception | None = None,
+        head: str | None = HEAD,
+    ) -> Any:
+        """Request a review against the fake reads; return the outcome."""
+        with (
+            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
+            patch.object(github, "api_object", return_value=pull),
+            patch.object(github, "graphql", side_effect=mutation, return_value=MUTATED),
+            patch.object(github, "api_list", side_effect=reads),
+        ):
+            return request.request_review(REPO, 41, head)
+
+    def slept(self) -> list[float]:
+        """The backoff delays the verification waited."""
+        return [call.args[0] for call in self.sleep.call_args_list]
 
     def test_mutation_is_additive_and_names_the_bot(self) -> None:
         """``union: true``, the suffixed bot login, the node id the pull request read."""
+        reads = sent()
         with (
             patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=ADDED) as pull,
+            patch.object(github, "api_object", return_value=PULL) as pull,
             patch.object(github, "graphql", return_value=MUTATED) as gql,
-            patch.object(github, "api_list", side_effect=AssertionError("no read")),
+            patch.object(github, "api_list", side_effect=reads),
         ):
             outcome = request.request_review(REPO, 41, HEAD)
         self.assertIsNone(outcome.warning)
-        # One read for the node id, one to verify the request landed.
+        # One read for the node id, one for the log's reviewer list.
         self.assertEqual(
             [call.args for call in pull.call_args_list],
             [(f"repos/{REPO}/pulls/41",), (f"repos/{REPO}/pulls/41",)],
         )
+        # The events are read before the mutation and again after it.
+        self.assertEqual(reads.endpoints, [EVENTS, EVENTS])
         gql.assert_called_once()
         query, variables = gql.call_args.args
         self.assertIn("requestReviewsByLogin", query)
@@ -147,10 +243,9 @@ class RequestMutationTest(unittest.TestCase):
         self.assertNotIn("teamSlugs", variables)
         # A mutation is never retried as a read.
         self.assertIsNot(gql.call_args.kwargs.get("read"), True)
-        self.assertEqual(
-            outcome.reviewers,
-            (("User", "alice"), ("Bot", "Copilot"), ("Team", None)),
-        )
+        # REST lists the user and the team, never the pending Copilot.
+        self.assertEqual(outcome.reviewers, (("User", "alice"), ("Team", None)))
+        self.assertEqual(self.slept(), [])
 
     def test_mutation_selects_no_reviewer(self) -> None:
         """The reply asks for nothing a team request could make unreadable."""
@@ -159,130 +254,133 @@ class RequestMutationTest(unittest.TestCase):
                 self.assertNotIn(field, request.REQUEST_MUTATION)
         self.assertIn("clientMutationId", request.REQUEST_MUTATION)
 
-    def test_unreadable_reply_with_copilot_pending_is_sent(self) -> None:
+    def test_event_on_a_retried_read_is_sent(self) -> None:
+        """The events lag the request; a later read that shows it counts."""
+        reads = Reads([EARLIER], [EARLIER], [EARLIER], [EARLIER, REQUESTED])
+        self.assertIsNone(self.outcome(reads).warning)
+        self.assertEqual(self.slept(), [2, 4])
+
+    def test_unreadable_reply_with_the_event_is_sent(self) -> None:
         """An applied mutation whose reply the PAT cannot read still counts."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=ADDED),
-            patch.object(github, "graphql", side_effect=FORBIDDEN),
-            patch.object(github, "api_list", side_effect=AssertionError("no read")),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        self.assertIsNone(outcome.warning)
-        self.assertIn(("Bot", "Copilot"), outcome.reviewers)
+        self.assertIsNone(self.outcome(sent(), mutation=FORBIDDEN).warning)
 
-    def test_unreadable_reply_without_copilot_is_a_refusal(self) -> None:
-        """No Copilot pending and no head review: the mutation's error stands."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
-            patch.object(github, "graphql", side_effect=FORBIDDEN),
-            patch.object(github, "api_list", return_value=[]),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        assert outcome.warning is not None
-        self.assertIn("could not request a Copilot review", outcome.warning)
-        self.assertIn(
-            "Resource not accessible by personal access token", outcome.warning
+    def test_unreadable_reply_without_the_event_is_a_refusal(self) -> None:
+        """No event and no head review: the mutation's error stands."""
+        warning = self.outcome(Reads([EARLIER]), mutation=FORBIDDEN).warning
+        assert warning is not None
+        self.assertIn("could not request a Copilot review", warning)
+        self.assertIn("Resource not accessible by personal access token", warning)
+
+    def test_neither_event_nor_head_review_is_unverified(self) -> None:
+        """Every backoff read shows no request and no review of the head."""
+        reads = Reads([EARLIER], reviews=[copilot(3, OTHER, "x")])
+        self.assertEqual(self.outcome(reads).warning, request.UNVERIFIED_REQUEST)
+        self.assertEqual(self.slept(), list(request.VERIFY_BACKOFF_SECONDS))
+
+    def test_an_earlier_rounds_event_alone_is_a_refusal(self) -> None:
+        """A request older than the pre-mutation read, already answered, is not this one."""
+        earlier = requested(80, "2026-11-01T16:00:00Z")
+        reads = Reads(
+            [earlier, EARLIER],
+            reviews=[copilot(3, OTHER, "x", "2026-11-01T16:05:00Z")],
         )
+        self.assertEqual(self.outcome(reads).warning, request.UNVERIFIED_REQUEST)
 
-    def test_reply_without_the_reviewer_and_no_head_review_is_unverified(
-        self,
-    ) -> None:
-        """REST leaves Copilot out and no review of the head exists."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
-            patch.object(github, "graphql", return_value=MUTATED) as gql,
-            patch.object(github, "api_list", return_value=[copilot(3, OTHER, "x")]),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        self.assertEqual(outcome.warning, request.UNVERIFIED_REQUEST)
-        gql.assert_called_once()
+    def test_a_request_pending_before_the_step_is_sent(self) -> None:
+        """A request no review has answered yet is still pending."""
+        earlier = requested(80, "2026-11-01T16:10:00Z")
+        reads = Reads(
+            [earlier, EARLIER],
+            reviews=[copilot(3, OTHER, "x", "2026-11-01T16:05:00Z")],
+        )
+        self.assertIsNone(self.outcome(reads).warning)
+        self.assertEqual(reads.endpoints, [EVENTS, REVIEWS])
+        # With no Copilot review at all, the request is pending too.
+        self.assertIsNone(self.outcome(Reads([earlier])).warning)
 
-    def test_reply_without_the_reviewer_but_a_head_review_counts(self) -> None:
+    def test_a_pending_check_that_failed_once_is_retried(self) -> None:
+        """A failed reviews read before the mutation is retried on the same events.
+
+        The additive mutation adds no event for a reviewer already
+        pending, so only the retried check can prove the request.
+        """
+        earlier = requested(80, "2026-11-01T16:10:00Z")
+        reads = Reads(
+            [earlier, EARLIER],
+            reviews=BAD_GATEWAY,
+            later_reviews=[copilot(3, OTHER, "x", "2026-11-01T16:05:00Z")],
+        )
+        self.assertIsNone(self.outcome(reads).warning)
+        self.assertEqual(reads.endpoints, [EVENTS, REVIEWS, REVIEWS])
+        self.assertEqual(self.slept(), [])
+        # A retried check that still fails names the failure.
+        reads = Reads([earlier, EARLIER], reviews=BAD_GATEWAY)
+        warning = self.outcome(reads).warning
+        assert warning is not None
+        self.assertIn("could not confirm", warning)
+        self.assertIn("HTTP 502", warning)
+        # A retried check that finds the request answered proves nothing.
+        reads = Reads(
+            [earlier, EARLIER],
+            reviews=BAD_GATEWAY,
+            later_reviews=[copilot(3, OTHER, "x", "2026-11-01T16:20:00Z")],
+        )
+        self.assertEqual(self.outcome(reads).warning, request.UNVERIFIED_REQUEST)
+
+    def test_a_withdrawn_request_is_not_pending(self) -> None:
+        """A removal newer than the request leaves nothing pending."""
+        reads = Reads(
+            [
+                requested(80, "2026-11-01T16:10:00Z"),
+                requested(85, "2026-11-01T16:12:00Z", kind="review_request_removed"),
+            ]
+        )
+        self.assertEqual(self.outcome(reads).warning, request.UNVERIFIED_REQUEST)
+
+    def test_head_review_without_the_event_counts(self) -> None:
         """A fast review of the head clears the pending request."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
-            patch.object(github, "graphql", return_value=MUTATED) as gql,
-            patch.object(github, "api_list", return_value=[copilot(3, HEAD, "x")]),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        self.assertIsNone(outcome.warning)
-        gql.assert_called_once()
+        reads = Reads([EARLIER], reviews=[copilot(3, HEAD, "x")])
+        self.assertIsNone(self.outcome(reads).warning)
 
     def test_mutation_error_is_a_log_safe_warning(self) -> None:
         """A GraphQL error that verification does not overturn is log-safe."""
         failure = github.GitHubError("GraphQL errors: Forbidden::by integration")
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
-            patch.object(github, "graphql", side_effect=failure),
-            patch.object(github, "api_list", return_value=[]),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        assert outcome.warning is not None
-        self.assertIn("could not request a Copilot review", outcome.warning)
-        self.assertNotIn("::", outcome.warning)
+        warning = self.outcome(Reads([]), mutation=failure).warning
+        assert warning is not None
+        self.assertIn("could not request a Copilot review", warning)
+        self.assertNotIn("::", warning)
 
     def test_mutation_error_and_failed_reads_are_a_refusal(self) -> None:
         """When nothing can be read back, the mutation's error is the answer."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(
-                github,
-                "api_object",
-                side_effect=[NOT_ADDED, github.GitHubError("HTTP 502")],
-            ),
-            patch.object(github, "graphql", side_effect=FORBIDDEN),
-            patch.object(
-                github, "api_list", side_effect=github.GitHubError("HTTP 502")
-            ),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        assert outcome.warning is not None
-        self.assertIn("could not request a Copilot review", outcome.warning)
-        self.assertIn("personal access token", outcome.warning)
+        reads = Reads([EARLIER], github.GitHubError("HTTP 502"), reviews=BAD_GATEWAY)
+        warning = self.outcome(reads, mutation=FORBIDDEN).warning
+        assert warning is not None
+        self.assertIn("could not request a Copilot review", warning)
+        self.assertIn("personal access token", warning)
 
-    def test_pull_request_of_an_unexpected_shape_is_never_pending(self) -> None:
-        """A malformed reviewer list proves nothing; only a head review can."""
+    def test_requested_reviewers_decide_nothing(self) -> None:
+        """The REST reviewer list serves the log alone, whatever its shape."""
         replies: list[dict[str, Any]] = [
             {"node_id": NODE_ID},
             {"node_id": NODE_ID, "requested_reviewers": None},
-            {"node_id": NODE_ID, "requested_reviewers": {"login": "Copilot"}},
-            {"node_id": NODE_ID, "requested_reviewers": [None, COPILOT_PENDING]},
-            {"node_id": NODE_ID, "requested_reviewers": ["Copilot"]},
+            {"node_id": NODE_ID, "requested_reviewers": [None, COPILOT_BOT]},
+            {"node_id": NODE_ID, "requested_reviewers": [COPILOT_BOT]},
         ]
         for reply in replies:
-            with (
-                self.subTest(reply=reply),
-                patch.object(
-                    github, "run_gh", side_effect=AssertionError("no gh call")
-                ),
-                patch.object(github, "api_object", return_value=reply),
-                patch.object(github, "graphql", return_value=MUTATED),
-                patch.object(github, "api_list", return_value=[]),
-            ):
-                outcome = request.request_review(REPO, 41, HEAD)
-            assert outcome.warning is not None
-            self.assertIn("could not confirm", outcome.warning)
-            self.assertIn(request.UNEXPECTED_REPLY, outcome.warning)
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=replies[0]),
-            patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(github, "api_list", return_value=[copilot(3, HEAD, "x")]),
-        ):
-            self.assertIsNone(request.request_review(REPO, 41, HEAD).warning)
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    self.outcome(Reads([]), pull=reply).warning,
+                    request.UNVERIFIED_REQUEST,
+                )
+                self.assertIsNone(self.outcome(sent(), pull=reply).warning)
+        listed = self.outcome(sent(), pull=replies[-1]).reviewers
+        self.assertEqual(listed, (("Bot", "Copilot"),))
 
     def test_failed_node_id_read_is_a_refusal(self) -> None:
         """Without the pull request's node id no request is sent."""
         with (
             patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(
-                github, "api_object", side_effect=github.GitHubError("HTTP 502")
-            ),
+            patch.object(github, "api_object", side_effect=BAD_GATEWAY),
             patch.object(github, "graphql", side_effect=AssertionError("no send")),
         ):
             outcome = request.request_review(REPO, 41, HEAD)
@@ -290,84 +388,62 @@ class RequestMutationTest(unittest.TestCase):
         self.assertIn("could not request a Copilot review", outcome.warning)
 
     def test_reviewer_counts_in_each_form(self) -> None:
-        """REST's Bot ``Copilot`` and the reviewer's own login all count."""
-        for login, kind in (
-            ("Copilot", "Bot"),
-            ("copilot-pull-request-reviewer", "Bot"),
-            ("Copilot-Pull-Request-Reviewer[bot]", "Bot"),
+        """The events' Bot ``Copilot`` and the reviewer's own login all count."""
+        for login in (
+            "Copilot",
+            "copilot-pull-request-reviewer",
+            "Copilot-Pull-Request-Reviewer[bot]",
         ):
-            with (
-                self.subTest(login=login),
-                patch.object(
-                    github, "run_gh", side_effect=AssertionError("no gh call")
-                ),
-                patch.object(
-                    github,
-                    "api_object",
-                    return_value=pull_reply([{"login": login, "type": kind}]),
-                ),
-                patch.object(github, "graphql", return_value=MUTATED),
-                patch.object(github, "api_list", side_effect=AssertionError("no read")),
-            ):
-                self.assertIsNone(request.request_review(REPO, 41, HEAD).warning)
+            with self.subTest(login=login):
+                event = requested(100, reviewer={"login": login, "type": "Bot"})
+                outcome = self.outcome(Reads([EARLIER], [EARLIER, event]))
+                self.assertIsNone(outcome.warning)
 
     def test_a_user_named_copilot_does_not_count(self) -> None:
         """Only the Bot ``Copilot`` is the reviewer; a User of that name is not."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(
-                github,
-                "api_object",
-                return_value=pull_reply([{"login": "copilot", "type": "User"}]),
-            ),
-            patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(github, "api_list", return_value=[]),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
+        event = requested(100, reviewer={"login": "copilot", "type": "User"})
+        outcome = self.outcome(Reads([EARLIER], [EARLIER, event]))
         self.assertEqual(outcome.warning, request.UNVERIFIED_REQUEST)
 
     def test_no_review_counts_without_a_head(self) -> None:
-        """With no published head, only the pending request proves the request."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
-            patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(
-                github,
-                "api_list",
-                return_value=[copilot(3, HEAD, "done"), copilot(4, OTHER, "done")],
-            ),
-        ):
-            outcome = request.request_review(REPO, 41, None)
+        """With no published head, only the request event proves the request."""
+        reads = Reads(
+            [EARLIER], reviews=[copilot(3, HEAD, "done"), copilot(4, OTHER, "done")]
+        )
+        outcome = self.outcome(reads, head=None)
         self.assertEqual(outcome.warning, request.UNVERIFIED_REQUEST)
+        self.assertIsNone(self.outcome(sent(), head=None).warning)
 
     def test_a_failed_head_review_read_is_a_warning(self) -> None:
         """A request that cannot be confirmed is never recorded as sent."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
-            patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(
-                github, "api_list", side_effect=github.GitHubError("HTTP 502")
-            ),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
-        assert outcome.warning is not None
-        self.assertIn("could not confirm", outcome.warning)
+        warning = self.outcome(Reads([EARLIER], reviews=BAD_GATEWAY)).warning
+        assert warning is not None
+        self.assertIn("could not confirm", warning)
+
+    def test_a_failed_pre_mutation_read_binds_no_event(self) -> None:
+        """Without the events before the mutation, no event can be this request's."""
+        reads = Reads(BAD_GATEWAY, [EARLIER, REQUESTED])
+        warning = self.outcome(reads).warning
+        assert warning is not None
+        self.assertIn("could not confirm", warning)
+        self.assertIn("HTTP 502", warning)
+        # A review of the head still proves it.
+        reads = Reads(BAD_GATEWAY, reviews=[copilot(3, HEAD, "x")])
+        self.assertIsNone(self.outcome(reads).warning)
 
     def test_a_failed_verification_read_still_takes_a_head_review(self) -> None:
-        """The pull request read fails, but a review of the head proves it."""
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(
-                github,
-                "api_object",
-                side_effect=[NOT_ADDED, github.GitHubError("HTTP 502")],
-            ),
-            patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(github, "api_list", return_value=[copilot(3, HEAD, "x")]),
-        ):
-            self.assertIsNone(request.request_review(REPO, 41, HEAD).warning)
+        """The events read fails after the mutation, but a review of the head proves it."""
+        reads = Reads([EARLIER], BAD_GATEWAY, reviews=[copilot(3, HEAD, "x")])
+        self.assertIsNone(self.outcome(reads).warning)
+
+    def test_a_copilot_review_without_a_time_is_never_pending(self) -> None:
+        """An unreadable review time proves no request pending."""
+        review_reply = copilot(3, OTHER, "x")
+        del review_reply["submitted_at"]
+        reads = Reads([requested(80, "2026-11-01T16:10:00Z")], reviews=[review_reply])
+        warning = self.outcome(reads).warning
+        assert warning is not None
+        self.assertIn(request.UNREADABLE_REVIEW, warning)
 
     def test_reviewers_outside_github_shapes_stay_out_of_the_log(self) -> None:
         """Only GitHub's name shapes are kept from the reply."""
@@ -375,13 +451,7 @@ class RequestMutationTest(unittest.TestCase):
             [{"login": "a::b", "type": "Bot::x"}, {"login": "bob", "type": "User"}],
             teams=0,
         )
-        with (
-            patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=reply),
-            patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(github, "api_list", return_value=[]),
-        ):
-            outcome = request.request_review(REPO, 41, HEAD)
+        outcome = self.outcome(sent(), pull=reply)
         self.assertEqual(outcome.reviewers, (("?", None), ("User", "bob")))
 
 
@@ -596,6 +666,9 @@ class HandlersTest(unittest.TestCase):
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name)
         self.path = self.root / "result.json"
+        patcher = patch.object(request.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def write(self, **overrides: Any) -> None:
         """Write a proposed, published result."""
@@ -624,10 +697,11 @@ class HandlersTest(unittest.TestCase):
         self.write()
         with (
             patch.object(github, "graphql", return_value=MUTATED),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(
                 github,
                 "api_object",
-                return_value=pull_reply([ALICE, COPILOT_PENDING], "Closes #7"),
+                return_value=pull_reply([ALICE], "Closes #7"),
             ),
         ):
             review.run_request(
@@ -711,7 +785,11 @@ class HandlersTest(unittest.TestCase):
         self.write(commits=[HEAD])
         with (
             patch.object(github, "graphql", return_value=MUTATED),
-            patch.object(github, "api_list", return_value=[copilot(3, OTHER, "done")]),
+            patch.object(
+                github,
+                "api_list",
+                side_effect=Reads(reviews=[copilot(3, OTHER, "done")]),
+            ),
             patch.object(
                 github,
                 "api_object",
@@ -736,10 +814,11 @@ class HandlersTest(unittest.TestCase):
         self.write(commits=[])
         with (
             patch.object(github, "graphql", return_value=MUTATED) as gql,
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(
                 github,
                 "api_object",
-                return_value=pull_reply([ALICE, COPILOT_PENDING], "Closes #7"),
+                return_value=pull_reply([ALICE], "Closes #7"),
             ),
         ):
             review.run_request(
@@ -750,7 +829,11 @@ class HandlersTest(unittest.TestCase):
         self.write(commits=[])
         with (
             patch.object(github, "graphql", return_value=MUTATED) as gql,
-            patch.object(github, "api_list", return_value=[copilot(3, HEAD, "done")]),
+            patch.object(
+                github,
+                "api_list",
+                side_effect=Reads(reviews=[copilot(3, HEAD, "done")]),
+            ),
             patch.object(
                 github,
                 "api_object",
@@ -775,10 +858,11 @@ class HandlersTest(unittest.TestCase):
         )
         with (
             patch.object(github, "graphql", return_value=MUTATED),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(
                 github,
                 "api_object",
-                return_value=pull_reply([ALICE, COPILOT_PENDING], noted),
+                return_value=pull_reply([ALICE], noted),
             ),
             patch.object(github, "api_write", return_value={}) as write,
         ):
@@ -793,10 +877,11 @@ class HandlersTest(unittest.TestCase):
         self.write()
         with (
             patch.object(github, "graphql", return_value=MUTATED),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(
                 github,
                 "api_object",
-                return_value=pull_reply([ALICE, COPILOT_PENDING], "Closes #7"),
+                return_value=pull_reply([ALICE], "Closes #7"),
             ),
             patch.object(github, "api_write") as write,
         ):
@@ -818,10 +903,11 @@ class HandlersTest(unittest.TestCase):
         )
         with (
             patch.object(github, "graphql", return_value=MUTATED),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(
                 github,
                 "api_object",
-                return_value=pull_reply([ALICE, COPILOT_PENDING], edited),
+                return_value=pull_reply([ALICE], edited),
             ),
             patch.object(github, "api_write") as write,
         ):
@@ -848,10 +934,11 @@ class HandlersTest(unittest.TestCase):
         )
         with (
             patch.object(github, "graphql", return_value=MUTATED),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(
                 github,
                 "api_object",
-                return_value=pull_reply([ALICE, COPILOT_PENDING], merged),
+                return_value=pull_reply([ALICE], merged),
             ),
             patch.object(github, "api_write") as write,
         ):
@@ -895,7 +982,7 @@ class HandlersTest(unittest.TestCase):
         self.write()
         with (
             patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
+            patch.object(github, "api_object", return_value=PULL),
             patch.object(github, "graphql", return_value=MUTATED),
             patch.object(github, "api_list", return_value=[]),
             patch.object(github, "api_write", return_value={}),
@@ -918,7 +1005,8 @@ class HandlersTest(unittest.TestCase):
         self.write()
         with (
             patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=ADDED),
+            patch.object(github, "api_object", return_value=PULL),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(github, "graphql", return_value=MUTATED),
             patch.object(github, "api_write", side_effect=AssertionError("no write")),
             patch("builtins.print") as printed,
@@ -928,7 +1016,6 @@ class HandlersTest(unittest.TestCase):
             )
         lines = [str(call.args[0]) for call in printed.call_args_list]
         self.assertEqual(lines[0], "review request: sent")
-        self.assertIn("Bot Copilot", "\n".join(lines))
         self.assertIn("Team", "\n".join(lines))
         self.assertIn("User alice", "\n".join(lines))
         self.assertFalse(any(line.startswith("::") for line in lines))
@@ -936,17 +1023,17 @@ class HandlersTest(unittest.TestCase):
 
     def test_log_names_the_credential_never_the_token(self) -> None:
         """Either outcome logs which credential asked, so a lapsed PAT shows."""
-        for credential, reply, outcome in (
-            ("review token", ADDED, "sent"),
-            ("review token", NOT_ADDED, "refused"),
-            ("App token", NOT_ADDED, "refused"),
+        for credential, reads, outcome in (
+            ("review token", sent(), "sent"),
+            ("review token", Reads(), "refused"),
+            ("App token", Reads(), "refused"),
         ):
             with self.subTest(credential=credential, outcome=outcome):
                 self.write()
                 with (
-                    patch.object(github, "api_object", return_value=reply),
+                    patch.object(github, "api_object", return_value=PULL),
                     patch.object(github, "graphql", return_value=MUTATED),
-                    patch.object(github, "api_list", return_value=[]),
+                    patch.object(github, "api_list", side_effect=reads),
                     patch.object(github, "api_write", return_value={}),
                     patch("builtins.print") as printed,
                 ):
@@ -1092,14 +1179,15 @@ class HandlersTest(unittest.TestCase):
     def test_applied_request_with_an_unreadable_reply_is_sent(self) -> None:
         """The PAT's FORBIDDEN on a team request does not hide a landed request.
 
-        The mutation errors, the pull request lists Copilot pending:
+        The mutation errors, the issue's events show the request:
         the request is recorded, no notice goes up and the await keeps
         its full window.
         """
         self.write()
         with (
             patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=ADDED),
+            patch.object(github, "api_object", return_value=PULL),
+            patch.object(github, "api_list", side_effect=sent()),
             patch.object(github, "graphql", side_effect=FORBIDDEN),
             patch.object(github, "api_write", side_effect=AssertionError("no write")),
             patch("builtins.print") as printed,
@@ -1113,7 +1201,7 @@ class HandlersTest(unittest.TestCase):
         self.assertEqual(
             lines[:2], ["review request: sent", "credential: review token"]
         )
-        self.assertIn("Bot Copilot", lines[2])
+        self.assertEqual(lines[2], "requested reviewers: User alice, Team")
         stored = self.stored()
         self.assertIs(stored["review"]["requested"], True)
         self.assertEqual(stored["warnings"], [])
@@ -1121,11 +1209,11 @@ class HandlersTest(unittest.TestCase):
         self.assertEqual(clock.now, 30 * 60 - review.RESERVE_SECONDS)
 
     def test_unreadable_reply_and_no_pending_request_is_refused(self) -> None:
-        """Without Copilot pending or a head review, the mutation's error stands."""
+        """Without the request event or a head review, the mutation's error stands."""
         self.write()
         with (
             patch.object(github, "run_gh", side_effect=AssertionError("no gh call")),
-            patch.object(github, "api_object", return_value=NOT_ADDED),
+            patch.object(github, "api_object", return_value=PULL),
             patch.object(github, "graphql", side_effect=FORBIDDEN),
             patch.object(github, "api_list", return_value=[]),
             patch.object(github, "api_write", return_value={}) as write,
