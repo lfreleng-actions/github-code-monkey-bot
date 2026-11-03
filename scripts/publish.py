@@ -63,6 +63,7 @@ from branch_refs import (
     sync_fork,
 )
 from proposal_policy import PublishError, Rejection
+from stale_branch import ClosedAttempt, create_fresh_branch, restore_closed_attempt
 
 SCHEMA = 1
 
@@ -100,6 +101,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "agent_seconds": check.get("agent_seconds"),
         "task": check.get("task") or "issue",
         "round": check.get("round") or 0,
+        "pull_number": check.get("pull_number") or None,
         "round_summary": check.get("round_summary") or None,
         "collected_at": check.get("collected_at") or None,
     }
@@ -118,6 +120,8 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
     branch = str(check["branch"])
     attempted = False
     created = False
+    reset: ClosedAttempt | None = None
+    progress: list[str] = []
     try:
         ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
         sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
@@ -125,13 +129,14 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
         # a clear answer leaves ``created`` false: the ref may be ours or
         # may have existed before, so rollback leaves it alone.
         attempted = True
-        create_branch(fork, branch, str(check["base_sha"]))
+        reset = create_fresh_branch(check, result, create_branch)
         created = True
-        result["commits"] = replay_commits(args.workdir / "clone", check)
+        result["commits"] = replay_commits(args.workdir / "clone", check, progress)
     except Rejection as exc:
-        # The branch already existed and is never deleted here. It is
-        # this run's own work when it carries the proposal's chain: a
-        # retry after a later step failed. Otherwise it is a conflict.
+        # The branch already existed, not as the closed attempt a named
+        # retry may reset, and is never deleted here. It is this run's
+        # own work when it carries the proposal's chain: a retry after
+        # a later step failed. Otherwise it is a conflict.
         try:
             return reconcile(args, check, result, exc)
         except (PublishError, github.GitHubError) as failure:
@@ -149,6 +154,10 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
                 f"{exc}; branch creation did not confirm, so any branch there is kept",
                 exc,
             )
+        if reset is not None:
+            # Not this run's branch to delete: the closed head goes back.
+            restored = restore_closed_attempt(check, reset, progress)
+            fail(args, result, f"{exc}; {restored}", exc)
         # Roll the branch back so the issue stays eligible, then fail
         # the step: this is the publisher unable to do its job.
         leftover = delete_branch(fork, branch)

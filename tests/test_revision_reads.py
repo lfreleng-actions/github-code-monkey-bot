@@ -446,6 +446,86 @@ class ReviewAndRoundsTest(unittest.TestCase):
         self.assertEqual(history.last_verdict, "handoff")
         self.assertEqual(history.since, "2026-10-03T00:00:00Z")
 
+    def test_history_starts_afresh_with_the_pull_request(self) -> None:
+        """A retry after a capped, closed attempt gets its own round budget.
+
+        The closed pull request reached round 10 and handed off; the
+        retry's pull request opened later, and only its own footers
+        count toward the cap, the watermark and the pause.
+        """
+        closed = [
+            {
+                "user": {"login": BOT},
+                "body": f"r\n\n<!-- code-monkey https://r/{n} handoff round={n} -->",
+                "created_at": f"2026-10-{n + 1:02d}T00:00:00Z",
+            }
+            for n in range(1, 11)
+        ]
+        opened = "2026-10-20T00:00:00Z"
+        retry = [
+            {
+                "user": {"login": BOT},
+                "body": "first\n\n<!-- code-monkey https://r/20 proposed review=findings -->",
+                "created_at": opened,
+            },
+            {
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://r/21 proposed round=1 since=2026-10-21T00:00:00Z -->",
+                "created_at": "2026-10-21T00:10:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=closed + retry):
+            whole = round_reads.round_history(REPO, 7, BOT)
+            scoped = round_reads.round_history(REPO, 7, BOT, opened)
+        self.assertEqual(whole.highest, 10)
+        self.assertEqual(scoped.highest, 1)
+        self.assertLess(scoped.highest, revisions.MAX_ROUNDS)
+        self.assertEqual([r["round"] for r in scoped.summaries], [1])
+        self.assertEqual(scoped.since, "2026-10-21T00:00:00Z")
+        self.assertEqual(scoped.last_verdict, "proposed")
+        with patch.object(reads, "api_page", return_value=closed):
+            fresh = round_reads.round_history(REPO, 7, BOT, opened)
+        self.assertEqual(
+            (fresh.highest, fresh.since, fresh.last_verdict), (0, None, None)
+        )
+
+    def test_late_footer_of_a_closed_attempt_is_not_counted(self) -> None:
+        """A closed pull request's round posting after the retry opened stays out.
+
+        A revision of the closed pull request can finish after the
+        retry's pull request opened; its footer names its own pull
+        request, so it neither spends the retry's budget nor moves its
+        watermark. A footer that names the retry's pull request counts.
+        """
+        opened = "2026-10-20T00:00:00Z"
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "first\n\n<!-- code-monkey https://r/20 proposed -->",
+                "created_at": opened,
+            },
+            {
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://r/21 proposed round=1 pr=9 "
+                "since=2026-10-21T00:00:00Z -->",
+                "created_at": "2026-10-21T00:10:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "late\n\n<!-- code-monkey https://r/19 rejected round=10 "
+                "pr=8 since=2026-10-22T00:00:00Z -->",
+                "created_at": "2026-10-22T00:10:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            scoped = round_reads.round_history(REPO, 7, BOT, opened, 9)
+            closed = round_reads.round_history(REPO, 7, BOT, None, 8)
+        self.assertEqual(scoped.highest, 1)
+        self.assertEqual([r["round"] for r in scoped.summaries], [1])
+        self.assertEqual(scoped.since, "2026-10-21T00:00:00Z")
+        self.assertEqual(scoped.last_verdict, "proposed")
+        self.assertEqual(closed.highest, 10)
+
 
 if __name__ == "__main__":
     unittest.main()

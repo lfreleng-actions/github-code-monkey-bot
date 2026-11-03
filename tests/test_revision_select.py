@@ -211,6 +211,16 @@ class BuildEntryTest(RevisionCase):
         # The reads were asked with the watermark, so they could tell.
         self.assertEqual(self.threads_since[-1], "2026-10-03T00:00:00Z")
 
+    def test_round_history_is_scoped_to_the_pull_request(self) -> None:
+        """Footers count for this pull request alone, so a retry starts afresh."""
+        with patch.object(
+            round_reads, "round_history", side_effect=self.rounds_of
+        ) as history:
+            self.build(explicit=True)
+        history.assert_called_once_with(
+            "org/alpha", 7, BOT["login"], "2026-10-01T00:00:00Z", 41
+        )
+
     def test_round_cap_and_safety(self) -> None:
         """The cap, a foreign pull request and an unusable repository all skip."""
         self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")

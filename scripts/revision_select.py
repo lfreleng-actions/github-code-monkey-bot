@@ -124,7 +124,9 @@ def build_entry(
     if pull is None:
         raise Skip("not an open pull request the bot opened from its fork")
     issue = int(pull["issue"])
-    history = rounds_of.round_history(repository, issue, str(bot["login"]))
+    history = rounds_of.round_history(
+        repository, issue, str(bot["login"]), str(pull["created_at"]), pull_number
+    )
     highest, rounds, since = history.highest, history.summaries, history.since
     if highest >= revisions.MAX_ROUNDS:
         raise Skip(

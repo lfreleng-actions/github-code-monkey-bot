@@ -96,14 +96,25 @@ def candidate(
     }
 
 
-def attempted_issue_one(_repo: str, _fork: str, branch: str) -> str | None:
-    """A ``prior_attempt`` double that reports a pull request for issue 1."""
-    return "pull_request" if branch.endswith("-1") else None
+def attempted_issue_one(_repo: str, _fork: str, branch: str) -> Any:
+    """A ``prior_attempt`` double that reports an open pull request for issue 1."""
+    return (
+        reads.PriorAttempt("pull_request", "open", 9) if branch.endswith("-1") else None
+    )
 
 
-def orphan_issue_one(_repo: str, _fork: str, branch: str) -> str | None:
+def closed_issue_one(_repo: str, _fork: str, branch: str) -> Any:
+    """A ``prior_attempt`` double that reports a closed pull request for issue 1."""
+    return (
+        reads.PriorAttempt("pull_request", "closed", 9)
+        if branch.endswith("-1")
+        else None
+    )
+
+
+def orphan_issue_one(_repo: str, _fork: str, branch: str) -> Any:
     """A ``prior_attempt`` double that reports an orphan fork branch for issue 1."""
-    return "branch" if branch.endswith("-1") else None
+    return reads.PriorAttempt("branch") if branch.endswith("-1") else None
 
 
 def linked_issue_two(_repo: str, number: int) -> bool:
@@ -374,12 +385,47 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertIn("empty", entry["reason"])
 
     def test_prior_attempt_is_named(self) -> None:
-        """An issue with an open bot pull request is skipped with a reason."""
-        patch.object(reads, "prior_attempt", return_value="pull_request").start()
+        """An issue with an open bot pull request is skipped, naming it and its state."""
+        patch.object(
+            reads,
+            "prior_attempt",
+            return_value=reads.PriorAttempt("pull_request", "open", 41),
+        ).start()
         selection, _ = select.build_selection(self.args("org/alpha#3"))
         self.assertEqual(selection["issues"], [])
         (entry,) = selection["skipped_issues"]
-        self.assertIn("pull request", entry["reason"])
+        self.assertIn("pull request #41", entry["reason"])
+        self.assertIn("is open", entry["reason"])
+
+    def test_closed_prior_attempt_does_not_exclude_a_named_issue(self) -> None:
+        """Naming an issue retries it after its bot pull request was closed."""
+        patch.object(
+            reads,
+            "prior_attempt",
+            return_value=reads.PriorAttempt("pull_request", "closed", 161),
+        ).start()
+        selection, _ = select.build_selection(self.args("org/alpha#3"))
+        (entry,) = selection["issues"]
+        self.assertEqual(entry["key"], "alpha-3")
+        self.assertEqual(entry["branch"], "code-monkey/issue-3")
+        self.assertIs(entry["resume"], False)
+        # The one closed pull request whose branch the publisher may reset.
+        self.assertEqual(entry["retry_of"], 161)
+        self.assertEqual(selection["skipped_issues"], [])
+        self.assertEqual(selection["skipped"]["attempted"], 0)
+
+    def test_merged_prior_attempt_still_excludes_a_named_issue(self) -> None:
+        """A merged attempt finished the issue; naming it does not redo the work."""
+        patch.object(
+            reads,
+            "prior_attempt",
+            return_value=reads.PriorAttempt("pull_request", "merged", 150),
+        ).start()
+        selection, _ = select.build_selection(self.args("org/alpha#3"))
+        self.assertEqual(selection["issues"], [])
+        (entry,) = selection["skipped_issues"]
+        self.assertIn("pull request #150", entry["reason"])
+        self.assertIn("was merged", entry["reason"])
 
     def test_issues_and_repositories_exclude_each_other(self) -> None:
         """Naming issues and repositories at once is refused."""
@@ -524,7 +570,11 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 "author_association": "MEMBER",
             },
         ).start()
-        patch.object(reads, "prior_attempt", return_value="pull_request").start()
+        patch.object(
+            reads,
+            "prior_attempt",
+            return_value=reads.PriorAttempt("pull_request", "open", 41),
+        ).start()
         patch.object(
             revision_select, "pull_request_for_branch", return_value=41
         ).start()
@@ -562,7 +612,11 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 "author_association": "MEMBER",
             },
         ).start()
-        patch.object(reads, "prior_attempt", return_value="pull_request").start()
+        patch.object(
+            reads,
+            "prior_attempt",
+            return_value=reads.PriorAttempt("pull_request", "open", 41),
+        ).start()
         patch.object(
             revision_select, "pull_request_for_branch", return_value=41
         ).start()
@@ -1071,6 +1125,41 @@ class ChooseTest(NoSubprocessCase):
         self.assertEqual(skipped["attempted"], 1)
         self.assertEqual(skipped["linked_pr"], 1)
 
+    def test_scan_skips_a_closed_prior_attempt(self) -> None:
+        """A scan leaves an issue whose bot pull request a human closed."""
+        self.prior.side_effect = closed_issue_one
+        ranked = [candidate("a", 1), candidate("b", 2)]
+        skipped = fresh_skipped()
+        chosen = self.choose(ranked, max_pull_requests=0, skipped=skipped)
+        self.assertEqual([c["number"] for c in chosen], [2])
+        self.assertEqual(skipped["attempted"], 1)
+
+    def test_named_choice_retries_a_closed_prior_attempt(self) -> None:
+        """Named issues override a closed attempt but never an open one."""
+        self.prior.side_effect = closed_issue_one
+        skipped = fresh_skipped()
+        chosen = select.choose(
+            [candidate("a", 1)],
+            fork_orgs=FORK_ORGS,
+            max_pull_requests=0,
+            skipped=skipped,
+            named=True,
+        )
+        self.assertEqual([(c["number"], c["resume"]) for c in chosen], [(1, False)])
+        self.assertEqual(skipped["attempted"], 0)
+        self.prior.side_effect = attempted_issue_one
+        skipped_issues: list[dict[str, str]] = []
+        chosen = select.choose(
+            [candidate("a", 1)],
+            fork_orgs=FORK_ORGS,
+            max_pull_requests=0,
+            skipped=skipped,
+            named=True,
+            skipped_issues=skipped_issues,
+        )
+        self.assertEqual(chosen, [])
+        self.assertIn("#9", skipped_issues[0]["reason"])
+
     def test_orphan_fork_branch_is_selected_for_resume(self) -> None:
         """A fork branch with no pull request keeps the issue, flagged to resume."""
         self.prior.side_effect = orphan_issue_one
@@ -1080,6 +1169,7 @@ class ChooseTest(NoSubprocessCase):
         self.assertEqual(
             [(c["number"], c["resume"]) for c in chosen], [(1, True), (2, False)]
         )
+        self.assertEqual([c["retry_of"] for c in chosen], [None, None])
         self.assertEqual(skipped["attempted"], 0)
 
     def test_skipped_repository_stays_available(self) -> None:

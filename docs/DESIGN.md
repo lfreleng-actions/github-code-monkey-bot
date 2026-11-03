@@ -242,12 +242,18 @@ Publishing then works as follows, with the §5 signing unchanged:
    organisation and this token has no access to it, so `true` fails
    with HTTP 422.
 5. A prior attempt (§6) is a pull request whose head repository is
-   the designated fork. A branch in that fork with no pull request
-   is an orphan: a publish that pushed and then failed to open the
-   pull request leaves it on purpose, and the next run selects the
-   issue again, marked `resume`, so the publisher can adopt the
-   branch and finish. A same-named branch in any other fork, or in
-   the target itself, does not count.
+   the designated fork, in one of three states. An open one is live
+   work, a merged one finished the issue, and one closed unmerged is
+   an attempt a human rejected. The lookup reads every page. Where
+   the branch has more than one, an open one speaks for the issue
+   first, then a merged one, then the newest closed one. A scan
+   skips the issue in all three states; a named issue (§6 "Explicit
+   issues") overrides a closed one alone. A branch in that fork with
+   no pull request is an orphan: a publish that pushed and then
+   failed to open the pull request leaves it on purpose, and the next
+   run selects the issue again, marked `resume`, so the publisher can
+   adopt the branch and finish. A same-named branch in any other
+   fork, or in the target itself, does not count.
 
 **Installation.** The publisher has no same-repository path. The
 four organisations exist and each holds an installation of the App
@@ -347,13 +353,38 @@ Consequences the implementation has to handle:
   and so does one whose existence the publisher cannot confirm
   either way. The result records `publish-failed` with the reason
   and whether the branch came off.
-- **An existing branch.** The publisher never deletes a branch it
-  did not create, and adopts one as the run's own earlier work on one
-  condition: the whole chain is what the replay would have made. That
-  means based on the recorded commit with no other history, the same
-  number of commits, and each commit with one parent (the one before
-  it), the tree the offline check recorded, the bot as author, a
-  Verified signature and the checked message. Neither a matching
+- **An existing branch.** The publisher never deletes a branch it did
+  not create. The one existing branch it moves is a closed attempt's,
+  when an operator named its issue again (§6) and not otherwise. The
+  selection then records the closed pull request it admitted the issue
+  past as `retry_of`, which `check.json` carries from the trusted
+  selection; a scan never sets it. The publisher reads every page of
+  pull requests from that branch on the target: the bot opened each, a
+  human closed each unmerged, and the branch still sits at the head of
+  the one `retry_of` names. Nothing there postdates the bot's own
+  work, and the closed pull request keeps those commits. The publisher
+  then moves the branch from that checked head to the base with
+  `updateRefs` and `beforeOid` (the §20.3 compare-and-swap), so a push
+  after the check is never overwritten, and records a warning naming
+  the pull request. A head that moved goes to the adoption test below
+  and is otherwise a conflict; a move that did not apply fails the
+  publication and keeps the branch. A replay that fails after the
+  move does not delete the branch, which this run did not create: the
+  publisher moves it back to the closed attempt's head by the same
+  compare-and-swap, from the head the run left, so a later named run
+  can retry. The publisher reads that head back from the branch,
+  since a commit can land and lose its reply: when the branch holds a
+  leading part of the replay's chain, by the adoption test below, and
+  at least the commits whose reply arrived, its tip is the head;
+  otherwise the head is the last commit whose reply arrived, or the
+  base. A push since the move makes that refuse, and the branch stays
+  untouched. It adopts an existing branch as the run's own earlier
+  work on one condition: the whole chain is what the replay would
+  have made. That means based on the recorded commit with no other
+  history, the same number of commits, and each commit with one
+  parent (the one before it), the tree the offline check recorded,
+  the bot as author, a Verified signature and the checked message.
+  Neither a matching
   final tree nor matching messages is enough on its own: anyone with
   push access, or a stale run, could produce either with other
   content. A pull request counts as the earlier attempt's when
@@ -387,12 +418,13 @@ the exclusion list and is not `.github` (unless
 - has no `no-agent` label (a human opt-out, per issue);
 - has no assignee, unless the caller sets `include_assigned`: an
   assignee means a human has claimed the work;
-- has no pull request, open or closed, from a `code-monkey/*`
-  branch **in the target repository itself** (the workflow already
-  tried, or a human declined the result); a pull request from a fork
-  branch of the same name does not count, since anyone can open one,
-  and the lookup names the target's owner in its `head` filter so
-  that such pull requests cannot push the bot's own off the page;
+- has no pull request, open, closed or merged, from its
+  `code-monkey/issue-<n>` branch **in the designated bot fork**
+  (§4.3: the workflow already tried, or a human declined the
+  result); a pull request from a same-named branch in any other
+  repository does not count, since anyone can open one, and the
+  lookup names the fork organisation in its `head` filter so that
+  such pull requests cannot push the bot's own off the page;
 - has no other open pull request linked to close it.
 
 **Ranking.** Priority `Urgent`, then `High`, `Medium`, `Low`; issues
@@ -474,15 +506,22 @@ remains is what the pipeline cannot work around: a repository the
 author job cannot clone or the publisher cannot fork (archived,
 template, fork, non-public or empty), a closed or absent issue, a
 number that names a pull request, the `no-agent` opt-out, an open
-bot pull request from an earlier attempt, and an open pull request
-linked to close the issue. A named run reads each distinct
-repository on its own and never lists the owner, so an owner at the
-listing ceiling can still have an issue named; a skip never stops
-the issues beside it, while a permission, rate-limit or server
-failure still fails the run. The selection records
-every named issue it skipped with its reason, in `skipped_issues`,
-and the summary lists them, so a maintainer who named five issues
-and sees three in the matrix learns why. Issues and `repositories`
+or merged bot pull request from an earlier attempt, and an open pull
+request linked to close the issue. A bot pull request a human closed
+unmerged does not exclude a named issue: the operator decided to try
+again, and the run works the issue afresh on the same
+`code-monkey/issue-<n>` branch, which the publisher resets from the
+closed attempt's head to the base (§5 "An existing branch"). A merged one
+does: the work landed, and redoing it takes a new issue. An open one
+becomes a revision round where §20.1 allows, and a skip otherwise.
+A named run reads each distinct repository on its own and never
+lists the owner, so an owner at the listing ceiling can still have
+an issue named; a skip never stops the issues beside it, while a
+permission, rate-limit or server failure still fails the run. The
+selection records every named issue it skipped with its reason, in
+`skipped_issues`, naming the earlier pull request and its state
+where one is the cause, and the summary lists them, so a maintainer
+who named five issues and sees three in the matrix learns why. Issues and `repositories`
 exclude each other: the input check fails a run naming both. An
 `issues` list given but naming no issue, such as separators alone,
 is an input error rather than a scan, and fails before selection.
@@ -783,7 +822,8 @@ For each selected issue:
 8. **Push to the fork.** Find or create the fork (§4.3), sync its
    default branch, create `code-monkey/issue-<n>` there at the base
    SHA (an existing branch is a rejection unless it holds this
-   proposal's own chain, §6), then replay commits per §5.
+   proposal's own chain, or is a named retry's closed attempt the
+   publisher resets to the base, §5), then replay commits per §5.
 9. **Open the pull request** (`pull-requests` mode) against the
    default branch with head `<fork-org>:code-monkey/issue-<n>`:
    title from the manifest (equal to the subject on
@@ -1393,6 +1433,8 @@ scripts/proposal_check.py                offline bundle verification
 scripts/proposal_model.py                verdict record and its rendering
 scripts/publish.py                       replay, open PR, reconcile
 scripts/branch_refs.py                   bot branch and its PR on GitHub
+scripts/stale_branch.py                  a closed attempt's branch (§5)
+scripts/branch_chain.py                  a branch read back as replayed work
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report
@@ -1936,7 +1978,9 @@ Three ways in, all through the select job and its read token:
   operator decided.
 - An issue named in `issues` whose earlier attempt is an open bot
   pull request becomes a round on that pull request rather than a
-  skip. With `revise` off the earlier behaviour stands.
+  skip. With `revise` off the earlier behaviour stands. A closed
+  earlier attempt brings no round: the run works the named issue
+  afresh (§6 "Explicit issues"), and a merged one keeps it out.
 - A scan with `revise` on, the default, searches the owner for the
   App's open pull requests and selects those with **work
   outstanding**: an unresolved review thread whose opening comment
@@ -1978,7 +2022,15 @@ overlap may reread a boundary comment and loses none. The latest
 footer is the one with the latest read time, not the latest post: a
 retry of an older round that posts after a newer handoff rewinds
 neither the watermark nor the pause, and two posts of one read order
-by their time. A footer
+by their time. The footers of other pull requests do not count: a
+revision round's footer names its pull request (`pr=`), and one
+naming another belongs to an earlier attempt, from a pull request a
+human closed before an operator named the issue again (§6 "Explicit
+issues"), whenever it posts. A footer naming none, a first
+publication's or one written before footers named their pull
+request, counts from the pull request's opening on. The new pull
+request so starts its own round count, cap, watermark and pause
+afresh. A footer
 whose round published nothing, an abstention, a rejection or a failure,
 counts toward the cap and moves no watermark, since it handled no
 request. At the cap the selector skips the pull request with that
