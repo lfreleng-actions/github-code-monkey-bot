@@ -29,3 +29,15 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+
+  # Copilot CLI and aislop the author job runs, installed with npm ci
+  # from the committed lockfile so the whole tree is pinned by hash.
+  - package-ecosystem: "npm"
+    directory: "/tools/copilot-cli"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "Build(copilot)"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5

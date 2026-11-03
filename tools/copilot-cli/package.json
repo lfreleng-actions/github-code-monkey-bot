@@ -1,0 +1,10 @@
+{
+  "name": "copilot-cli-pin",
+  "private": true,
+  "description": "Pins the Copilot CLI and aislop a bot workflow installs with npm ci",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@github/copilot": "1.0.83",
+    "aislop": "0.14.1"
+  }
+}

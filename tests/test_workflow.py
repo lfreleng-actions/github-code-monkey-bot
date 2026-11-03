@@ -37,6 +37,7 @@ CRON = WORKFLOWS / "code-monkey-cron.yaml"
 TESTING = WORKFLOWS / "testing.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
 REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
+TOOLCHAIN_PIN = WORKFLOWS.parents[1] / "tools" / "copilot-cli"
 
 PLACEHOLDER_NAME = "Code Monkey"
 PLACEHOLDER_EMAIL = "code-monkey@example.invalid"
@@ -658,12 +659,27 @@ class AuthorJobContracts(ReusableWorkflowCase):
             line_number(raw, "cd workspace"), line_number(raw, "copilot \\")
         )
 
-    def test_toolchain_installs_the_pinned_cli(self) -> None:
-        """The CLI version is a single top-level constant the install reads."""
-        env = cast(dict[str, Any], self.workflow["env"])
-        self.assertEqual(env["COPILOT_CLI_VERSION"], "1.0.83")
+    def test_toolchain_installs_from_the_committed_lockfile(self) -> None:
+        """npm ci from the verified assets checkout's lockfile, never a version."""
+        self.assertNotIn("COPILOT_CLI_VERSION", self.workflow.get("env") or {})
         install = self.step("author", "Install agent toolchain")
-        self.assertIn("@github/copilot@$COPILOT_CLI_VERSION", str(install["run"]))
+        env = cast(dict[str, Any], install["env"])
+        self.assertRegex(str(env["PIN_DIR"]), r"^monkey-assets/")
+        script = flatten(str(install["run"]))
+        self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", script)
+        self.assertNotIn("npm install -g", script)
+        self.assertIn("uv tool install 'prek==0.4.10'", script)
+
+    def test_no_workflow_installs_an_npm_package_by_version(self) -> None:
+        """A version pin leaves its dependency tree to resolve live."""
+        for path in sorted(WORKFLOWS.glob("*.yaml")):
+            for job, body in load_jobs(path).items():
+                for step in cast(list[dict[str, Any]], body.get("steps", [])):
+                    with self.subTest(workflow=path.name, job=job):
+                        self.assertNotRegex(
+                            flatten(str(step.get("run", ""))),
+                            r"\bnpm (install|i)\b",
+                        )
 
     def test_bundle_step_always_leaves_a_typed_manifest(self) -> None:
         """A missing manifest becomes `author-failed`; only `proposed` bundles."""
@@ -2619,6 +2635,27 @@ class SetupUvContracts(unittest.TestCase):
                         self.assertEqual(step["env"], SETUP_UV_ENV)
                         self.assertNotIn("python-version", step["with"])
         self.assertGreater(found, 0)
+
+
+class ToolchainPinContracts(unittest.TestCase):
+    """The author toolchain is pinned by a committed npm lockfile."""
+
+    def test_pin_directory_holds_manifest_lockfile_and_npmrc(self) -> None:
+        """npm ci needs all three; the workflow copies exactly these."""
+        for name in ("package.json", "package-lock.json", ".npmrc"):
+            with self.subTest(name=name):
+                self.assertTrue((TOOLCHAIN_PIN / name).is_file())
+
+    def test_manifest_pins_exact_versions_the_lockfile_records(self) -> None:
+        """No range in package.json, and the lockfile matches it."""
+        manifest = json.loads((TOOLCHAIN_PIN / "package.json").read_text())
+        dependencies = cast(dict[str, str], manifest["dependencies"])
+        self.assertEqual(set(dependencies), {"@github/copilot", "aislop"})
+        for name, version in dependencies.items():
+            with self.subTest(name=name):
+                self.assertRegex(version, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+        lock = json.loads((TOOLCHAIN_PIN / "package-lock.json").read_text())
+        self.assertEqual(lock["packages"][""]["dependencies"], dependencies)
 
 
 if __name__ == "__main__":

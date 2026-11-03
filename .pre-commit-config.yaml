@@ -156,6 +156,9 @@ repos:
     rev: 57b21406f092110c18776e39b0bda50d37c945c8  # frozen: v2.4.3
     hooks:
       - id: codespell
+        # npm regenerates the lockfile wholesale; its base64 integrity
+        # hashes hold no prose and can spell a typo by chance.
+        exclude: '^tools/copilot-cli/package-lock\.json$'
 
   # Requires a mirror, primary repo lacks .pre-commit-hooks.yaml
   - repo: https://github.com/DetachHead/basedpyright-prek-mirror

@@ -595,6 +595,14 @@ Pinned `@github/copilot@1.0.83` on Node 22. Triage verified 1.0.80;
 this workflow needs `--usage-output-file`, which 1.0.80 lacks and
 1.0.83 provides with an otherwise identical tool set.
 
+The CLI and `aislop` install with `npm ci` from the lockfile committed
+under `tools/copilot-cli/`, read from the verified assets checkout,
+into `$RUNNER_TEMP/copilot-cli`, outside anything the session reads.
+The lockfile pins the whole dependency tree by integrity hash, so a
+run never resolves a package from the registry and two runs on one
+commit install the same tree. Its `.npmrc` refuses install scripts,
+and Dependabot bumps the pin after a seven-day cooldown.
+
 ```text
 cd workspace && copilot --prompt="$prompt" --model="$MODEL" \
   --mode autopilot --no-ask-user \
@@ -718,9 +726,10 @@ home directory and the checkout, under `continue-on-error`.
 
 ### 7.5 Egress
 
-The author job runs harden-runner in `audit` mode. It needs npm,
-PyPI, GitHub, the Copilot API and whatever hook repositories the
-target's `.pre-commit-config.yaml` pins. A block-mode allow-list
+The author job runs harden-runner in `audit` mode. It needs the npm
+registry for the locked toolchain tarballs, PyPI, GitHub, the
+Copilot API and whatever hook repositories the target's
+`.pre-commit-config.yaml` pins. A block-mode allow-list
 that covers every repository's toolchain is a maintenance load this
 design defers; the audit log records what each session reached.
 
