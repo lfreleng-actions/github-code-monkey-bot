@@ -659,12 +659,29 @@ class AuthorJobContracts(ReusableWorkflowCase):
             line_number(raw, "cd workspace"), line_number(raw, "copilot \\")
         )
 
-    def test_toolchain_installs_the_pinned_cli(self) -> None:
-        """The CLI version is a single top-level constant the install reads."""
-        env = cast(dict[str, Any], self.workflow["env"])
-        self.assertEqual(env["COPILOT_CLI_VERSION"], "1.0.83")
+    @unittest.expectedFailure
+    def test_toolchain_installs_from_the_committed_lockfile(self) -> None:
+        """npm ci from the verified assets checkout's lockfile, never a version."""
+        self.assertNotIn("COPILOT_CLI_VERSION", self.workflow.get("env") or {})
         install = self.step("author", "Install agent toolchain")
-        self.assertIn("@github/copilot@$COPILOT_CLI_VERSION", str(install["run"]))
+        env = cast(dict[str, Any], install["env"])
+        self.assertRegex(str(env["PIN_DIR"]), r"^monkey-assets/")
+        script = flatten(str(install["run"]))
+        self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", script)
+        self.assertNotIn("npm install -g", script)
+        self.assertIn("uv tool install 'prek==0.4.10'", script)
+
+    @unittest.expectedFailure
+    def test_no_workflow_installs_an_npm_package_by_version(self) -> None:
+        """A version pin leaves its dependency tree to resolve live."""
+        for path in sorted(WORKFLOWS.glob("*.yaml")):
+            for job, body in load_jobs(path).items():
+                for step in cast(list[dict[str, Any]], body.get("steps", [])):
+                    with self.subTest(workflow=path.name, job=job):
+                        self.assertNotRegex(
+                            flatten(str(step.get("run", ""))),
+                            r"\bnpm (install|i)\b",
+                        )
 
     def test_bundle_step_always_leaves_a_typed_manifest(self) -> None:
         """A missing manifest becomes `author-failed`; only `proposed` bundles."""
