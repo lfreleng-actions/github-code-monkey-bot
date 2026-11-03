@@ -55,9 +55,9 @@ jobs:
       max_pull_requests: '3'
       # Block mode with the organisation allow-list, as the scheduled
       # caller runs, so a pull request proves the trusted jobs' egress.
-      egress_policy: 'block'
+      harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length
-      egress_allow_config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+      harden_runner_allowlist: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
       assets_repository: >-
         ${{ github.event.pull_request.head.repo.full_name }}
       assets_ref: "${{ github.event.pull_request.head.sha }}"
@@ -82,9 +82,9 @@ jobs:
       max_concurrent_agents: '2'
       repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
-      egress_policy: 'block'
+      harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length
-      egress_allow_config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+      harden_runner_allowlist: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
       assets_repository: "${{ github.repository }}"
       assets_ref: "${{ github.sha }}"
     secrets:

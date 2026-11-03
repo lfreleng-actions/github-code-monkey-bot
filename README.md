@@ -101,7 +101,12 @@ jobs:
       dry_run: true
       repositories: 'test-python-project'
       # Trusted jobs default to block mode; name the allow-list.
-      egress_allow_config: '@<allow-list commit sha>'
+      harden_runner_allowlist: '@<allow-list commit sha>'
+      # Optional: a further allow-list merged with the baseline, and
+      # inline host[:port] endpoints for short-lived fixes.
+      # harden_runner_supplemental_allowlist: 'my-org/my-allow-list@<sha>'
+      # harden_runner_supplemental_unpinned: false
+      # harden_runner_extra_endpoints: 'example.com:443'
       github_app_client_id: ${{ vars.BOT_APP_CLIENT_ID }}
     secrets:
       copilot_token: ${{ secrets.COPILOT_CLI_TOKEN }}
