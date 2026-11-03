@@ -1116,10 +1116,10 @@ class RevisionCheckTest(GitCase):
         )
         self.tip = self.fixture.advance_upstream()
 
-    def run_revision(self) -> Any:
-        """Run the check with a revision selection entry."""
+    def run_revision(self, **extra: Any) -> Any:
+        """Run the check with a revision selection entry, plus ``extra`` fields."""
         selection = self.fixture.selection(
-            **self.fixture.revision_entry(self.tip, self.head)
+            **{**self.fixture.revision_entry(self.tip, self.head), **extra}
         )
         with patch.object(
             checks, "prepare_clone", local_prepare_clone(self.fixture.upstream)
@@ -1158,6 +1158,8 @@ class RevisionCheckTest(GitCase):
         self.assertIn("someone", response["reply"])
         self.assertEqual(check.round_summary, "Fixed the typo the reviewer found.")
         self.assertTrue(check.pr_body.startswith(f"Closes #{ISSUE}\n"))
+        # No failing check on the head, so the round note names none.
+        self.assertNotIn("failing checks", check.pr_body)
         self.assertIn("Round 2", check.pr_body)
 
     def test_each_reply_ends_with_the_round_marker(self) -> None:
@@ -1281,6 +1283,27 @@ class RevisionCheckTest(GitCase):
         self.fixture.revision_manifest()
         check = self.run_revision()
         self.assertEqual(check.collected_at, "2026-09-18T00:00:00Z")
+
+    @unittest.expectedFailure
+    def test_round_note_names_the_failing_checks(self) -> None:
+        """The description says which failing checks the round set out to fix."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        check = self.run_revision(
+            checks=[
+                {"name": "Test local GitHub Action", "conclusion": "failure"},
+                {"name": "<b>@team</b>", "conclusion": "timed_out"},
+            ]
+        )
+        self.assertEqual(
+            check.failing_checks, ["Test local GitHub Action", "<b>@team</b>"]
+        )
+        self.assertIn(
+            "It set out to fix the failing checks: Test local GitHub Action, "
+            "&lt;b&gt;@\u200bteam&lt;/b&gt;.",
+            check.pr_body,
+        )
+        self.assertEqual(check.to_json()["failing_checks"], check.failing_checks)
 
     def test_unanswered_thread_is_a_warning_not_a_rejection(self) -> None:
         """A thread the agent left alone stays open for a human; the check says so."""

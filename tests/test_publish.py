@@ -371,6 +371,24 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("round cap of 10", text)
         self.assertIn("a human must take over", text)
 
+    @unittest.expectedFailure
+    def test_revision_round_comment_names_the_failing_checks(self) -> None:
+        """A round lists the failing checks it set out to fix, made safe."""
+        result = result_json(
+            round=2,
+            round_summary="Fixed the build.",
+            failing_checks=["Lint", "<i>@team</i>"],
+            review=review_record("clean", assessment="approval"),
+        )
+        text = comments.comment_body(result, "") or ""
+        self.assertIn(
+            "Fixed the build. It set out to fix the failing checks: Lint, "
+            "&lt;i&gt;@\u200bteam&lt;/i&gt;. The Copilot review of it is clean.",
+            text,
+        )
+        quiet = comments.comment_body(result_json(round=2, round_summary="s"), "")
+        self.assertNotIn("failing checks", quiet or "")
+
     def test_round_cap_notice_on_every_unfinished_outcome(self) -> None:
         """Whatever ends the tenth round short of clean says a human takes over."""
         unfinished = (

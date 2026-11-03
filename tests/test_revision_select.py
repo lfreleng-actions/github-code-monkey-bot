@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+check_reads = import_module("check_reads")
 reads = import_module("issue_reads")
 repository_reads = import_module("repository_reads")
 revisions = import_module("revision_reads")
@@ -81,6 +82,7 @@ class RevisionCase(unittest.TestCase):
         self.thread_word = False
         self.threads_since: list[str | None] = []
         self.review: dict[str, Any] | None = {"verdict": "clean"}
+        self.checks = check_reads.CheckPacket([], 0, 0)
         self.rounds: tuple[int, list[dict[str, Any]], str | None, str | None] = (
             0,
             [],
@@ -96,6 +98,7 @@ class RevisionCase(unittest.TestCase):
             thread_reads, "unresolved_threads", side_effect=self.threads_of
         ).start()
         patch.object(revisions, "latest_review", side_effect=self.review_of).start()
+        patch.object(check_reads, "failing_checks", side_effect=self.checks_of).start()
         patch.object(round_reads, "round_history", side_effect=self.rounds_of).start()
         patch.object(
             round_reads, "newer_member_comment", side_effect=self.newer_of
@@ -134,6 +137,10 @@ class RevisionCase(unittest.TestCase):
         """The fixture threads as a packet, noting the watermark asked for."""
         self.threads_since.append(args[2] if len(args) > 2 else None)
         return thread_reads.ThreadPacket(self.threads, self.dropped, self.thread_word)
+
+    def checks_of(self, *_args: Any) -> Any:
+        """The fixture failing checks."""
+        return self.checks
 
     def review_of(self, *_args: Any) -> dict[str, Any] | None:
         """The fixture verdict."""
@@ -177,6 +184,45 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
         self.assertNotIn("state", entry)
         self.assertNotIn("assignees", entry)
+
+    @unittest.expectedFailure
+    def test_failing_check_alone_brings_a_round(self) -> None:
+        """A clean head with a failing check is work outstanding for a scan."""
+        named = self.build(explicit=True)
+        self.assertEqual(named["checks"], [])
+        self.assertEqual(named["checks_dropped"], 0)
+        with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
+            self.build(explicit=False)
+        failing: dict[str, Any] = {
+            "name": "Test",
+            "conclusion": "failure",
+            "app": "github-actions",
+            "details_url": "https://github.com/org/alpha/runs/1",
+            "title": "",
+            "summary": "",
+            "annotations": [],
+        }
+        self.checks = check_reads.CheckPacket([failing], 2, 3)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["failing checks"])
+        self.assertEqual(entry["checks"], [failing])
+        self.assertEqual(entry["checks_dropped"], 2)
+
+    @unittest.expectedFailure
+    def test_excluded_failing_checks_bring_no_round(self) -> None:
+        """A failing check on the exclusion list is carried but is not work."""
+        self.checks = check_reads.CheckPacket([{"name": "Excluded"}], 0, 0)
+        with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
+            self.build(explicit=False)
+        self.assertEqual(self.build(explicit=True)["checks"], [{"name": "Excluded"}])
+
+    @unittest.expectedFailure
+    def test_failing_checks_do_not_resume_after_a_handoff(self) -> None:
+        """After a handoff a maintainer's word, not a failing check, resumes."""
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+        self.checks = check_reads.CheckPacket([], 1, 1)
+        with self.assertRaisesRegex(select.Skip, "handed"):
+            self.build(explicit=False)
 
     def test_handoff_pauses_the_scan_until_a_maintainer_speaks(self) -> None:
         """After a handoff, unresolved threads alone bring no round; a comment does."""
