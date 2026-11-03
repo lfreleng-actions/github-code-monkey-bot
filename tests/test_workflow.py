@@ -324,6 +324,44 @@ class TopLevelContracts(ReusableWorkflowCase):
                 )
         self.assertEqual(self.actions("author", BLOCK_ACTION), [])
 
+    @unittest.expectedFailure
+    def test_every_loader_passes_the_supplemental_inputs(self) -> None:
+        """Every loader forwards all five allow-list keys, even when empty.
+
+        A key passed at one site and not another would leave that job
+        blocking endpoints the caller allowed.
+        """
+        expected = {
+            "config": "inputs.harden_runner_allowlist",
+            "supplemental_config": "inputs.harden_runner_supplemental_allowlist",
+            "supplemental_required": (
+                "inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false'"
+            ),
+            "supplemental_unpinned": (
+                "inputs.harden_runner_supplemental_unpinned && 'true' || 'false'"
+            ),
+            "extra_endpoints": "inputs.harden_runner_extra_endpoints",
+        }
+        loaders = [
+            (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
+        ]
+        self.assertEqual(len(loaders), 3)
+        for job, step in loaders:
+            with_ = cast(dict[str, Any], step["with"])
+            self.assertEqual(set(with_) - {"allow_list_summary"}, set(expected))
+            for key, value in expected.items():
+                with self.subTest(job=job, key=key):
+                    self.assert_expression(with_[key], value)
+            with self.subTest(job=job, key="if"):
+                self.assert_expression(
+                    step["if"], "inputs.harden_runner_egress == 'block'"
+                )
+            harden = self.action(job, HARDEN_RUNNER)
+            with self.subTest(job=job, key="egress-policy"):
+                self.assert_expression(
+                    harden["with"]["egress-policy"], "inputs.harden_runner_egress"
+                )
+
 
 class AuthorJobContracts(ReusableWorkflowCase):
     """The untrusted job: no App key, audit egress, evidence before checkout."""
