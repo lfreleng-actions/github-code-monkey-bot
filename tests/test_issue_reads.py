@@ -217,14 +217,14 @@ class PriorAttemptTest(ReadsCase):
     FORK = "lfreleng-bot-forks/repo"
     BRANCH = "code-monkey/issue-3"
 
-    def attempt(self) -> str | None:
+    def attempt(self) -> Any:
         """Run the lookup against the fixture target and fork."""
         return reads.prior_attempt("org/repo", self.FORK, self.BRANCH)
 
     def test_no_pull_request_no_branch(self) -> None:
         """An empty list and a 404 on the fork branch means no prior attempt."""
         with (
-            patch.object(reads, "api_page", return_value=[]),
+            patch.object(github, "api_list", return_value=[]),
             patch.object(
                 github,
                 "api_object",
@@ -237,10 +237,10 @@ class PriorAttemptTest(ReadsCase):
     def test_branch_in_fork_without_pull_request(self) -> None:
         """An orphaned bot branch in the fork is reported for the publisher to resume."""
         with (
-            patch.object(reads, "api_page", return_value=[]),
+            patch.object(github, "api_list", return_value=[]),
             patch.object(github, "api_object", return_value={"name": "x"}) as read,
         ):
-            self.assertEqual(self.attempt(), "branch")
+            self.assertEqual(self.attempt(), reads.PriorAttempt("branch"))
         # The target's own branches are never consulted: a same-named
         # branch there is not this workflow's work.
         self.assertNotIn("repos/org/repo/", read.call_args.args[0])
@@ -248,7 +248,7 @@ class PriorAttemptTest(ReadsCase):
     def test_missing_fork_is_no_attempt(self) -> None:
         """A 404 on the fork repository itself means no fork, so no attempt."""
         with (
-            patch.object(reads, "api_page", return_value=[]),
+            patch.object(github, "api_list", return_value=[]),
             patch.object(
                 github,
                 "api_object",
@@ -260,7 +260,7 @@ class PriorAttemptTest(ReadsCase):
     def test_branch_read_failure_propagates(self) -> None:
         """A 500 is not silently treated as absence."""
         with (
-            patch.object(reads, "api_page", return_value=[]),
+            patch.object(github, "api_list", return_value=[]),
             patch.object(
                 github,
                 "api_object",
@@ -283,12 +283,11 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
             {"number": 3, "head": {"repo": {"full_name": "LFreleng-Bot-Forks/Repo"}}}
         ]
         with (
-            patch.object(reads, "api_page", return_value=own) as page,
+            patch.object(github, "api_list", return_value=own) as page,
             patch.object(github, "api_object") as read,
         ):
-            self.assertEqual(
-                reads.prior_attempt("org/repo", self.FORK, self.BRANCH), "pull_request"
-            )
+            found = reads.prior_attempt("org/repo", self.FORK, self.BRANCH)
+        self.assertEqual(found, reads.PriorAttempt("pull_request", "open", 3))
         read.assert_not_called()
         endpoint = page.call_args.args[0]
         self.assertTrue(endpoint.startswith("repos/org/repo/pulls?"), endpoint)
@@ -302,7 +301,7 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
             {"number": 6, "head": {"repo": {"full_name": "lfreleng-bot-forks/other"}}},
         ]
         with (
-            patch.object(reads, "api_page", return_value=other),
+            patch.object(github, "api_list", return_value=other),
             patch.object(
                 github,
                 "api_object",
@@ -311,6 +310,96 @@ class PriorAttemptOwnerHeadTest(ReadsCase):
         ):
             self.assertIsNone(reads.prior_attempt("org/repo", self.FORK, self.BRANCH))
         read.assert_called_once_with(f"repos/{self.FORK}/branches/{self.BRANCH}")
+
+
+class PriorAttemptStateTest(ReadsCase):
+    """``prior_attempt`` tells open, closed and merged pull requests apart."""
+
+    FORK = PriorAttemptTest.FORK
+    BRANCH = PriorAttemptTest.BRANCH
+
+    @staticmethod
+    def pr(number: int, state: str, merged_at: str | None = None) -> dict[str, Any]:
+        """A pulls API entry from the bot fork."""
+        return {
+            "number": number,
+            "state": state,
+            "merged_at": merged_at,
+            "head": {"repo": {"full_name": "lfreleng-bot-forks/repo"}},
+        }
+
+    def attempt(self, entries: list[dict[str, Any]]) -> Any:
+        """Run the lookup against the given pull requests."""
+        with (
+            patch.object(github, "api_list", return_value=entries),
+            patch.object(github, "api_object") as read,
+        ):
+            found = reads.prior_attempt("org/repo", self.FORK, self.BRANCH)
+        read.assert_not_called()
+        return found
+
+    def test_each_state(self) -> None:
+        """Open, closed unmerged and merged each come back with their number."""
+        cases = {
+            "open": (self.pr(4, "open"), "open"),
+            "closed": (self.pr(4, "closed"), "closed"),
+            "merged": (self.pr(4, "closed", "2026-11-01T00:00:00Z"), "merged"),
+        }
+        for name, (entry, state) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(
+                    self.attempt([entry]),
+                    reads.PriorAttempt("pull_request", state, 4),
+                )
+
+    def test_open_retry_outranks_the_closed_attempt(self) -> None:
+        """A retry's open pull request speaks for the issue, not the closed one."""
+        found = self.attempt([self.pr(161, "closed"), self.pr(170, "open")])
+        self.assertEqual(found, reads.PriorAttempt("pull_request", "open", 170))
+
+    def test_merged_outranks_closed_and_newest_wins(self) -> None:
+        """A merged attempt finished the issue; within a state the newest counts."""
+        merged = self.pr(150, "closed", "2026-11-01T00:00:00Z")
+        found = self.attempt([self.pr(161, "closed"), merged])
+        self.assertEqual(found, reads.PriorAttempt("pull_request", "merged", 150))
+        found = self.attempt([self.pr(150, "closed"), self.pr(161, "closed")])
+        self.assertEqual(found, reads.PriorAttempt("pull_request", "closed", 161))
+
+    def test_blocking_pull_request_beyond_the_first_page(self) -> None:
+        """An older open or merged attempt counts behind a full page of closed ones."""
+        recent = [self.pr(number, "closed") for number in range(300, 200, -1)]
+        for older, state in (
+            (self.pr(7, "open"), "open"),
+            (self.pr(7, "closed", "2026-11-01T00:00:00Z"), "merged"),
+        ):
+            with (
+                self.subTest(state),
+                patch.object(
+                    github, "run_gh", return_value=json.dumps([recent, [older]])
+                ) as run,
+                patch.object(github, "api_object") as read,
+            ):
+                found = reads.prior_attempt("org/repo", self.FORK, self.BRANCH)
+                self.assertEqual(found, reads.PriorAttempt("pull_request", state, 7))
+                self.assertIn("--paginate", run.call_args.args[0])
+                read.assert_not_called()
+
+    def test_unknown_state_counts_as_open(self) -> None:
+        """An unexpected payload keeps the issue out rather than retrying it."""
+        found = self.attempt([{**self.pr(4, "weird")}])
+        self.assertEqual(found, reads.PriorAttempt("pull_request", "open", 4))
+
+    def test_describe_names_the_pull_request_and_state(self) -> None:
+        """The skip reason tells an operator which pull request and its state."""
+        self.assertEqual(
+            reads.PriorAttempt("pull_request", "closed", 161).describe(),
+            "an earlier attempt's pull request #161 from the bot fork "
+            "was closed unmerged",
+        )
+        self.assertIn("is open", reads.PriorAttempt("pull_request", "open").describe())
+        self.assertIn(
+            "was merged", reads.PriorAttempt("pull_request", "merged", 2).describe()
+        )
 
 
 class HasOpenLinkedPrTest(ReadsCase):

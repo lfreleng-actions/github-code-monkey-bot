@@ -301,6 +301,11 @@ def run_comment(args: argparse.Namespace) -> None:
     suffix = f" review={review_token(result)}" if verdict else ""
     if round_of(result):
         suffix += f" round={round_of(result)}"
+    pull_number = result.get("pull_number")
+    if type(pull_number) is int and pull_number > 0:
+        # Scopes the round to its pull request: a late footer from a
+        # closed attempt's round must not count against a retry's.
+        suffix += f" pr={pull_number}"
     collected = result.get("collected_at")
     if isinstance(collected, str) and collected:
         # The watermark for the next round: when this run read the

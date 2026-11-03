@@ -29,6 +29,7 @@ refs = import_module("branch_refs")
 review = import_module("copilot_review")
 comments = import_module("issue_comment")
 reporting = import_module("proposal_report")
+round_reads = import_module("round_reads")
 
 BASE = "a" * 40
 BLOB_ONE = "1" * 40
@@ -2241,6 +2242,37 @@ class RunCommentTest(NoNetworkCase):
                 "<!-- code-monkey https://run proposed review=clean round=3 -->"
             )
         )
+
+    def test_marker_names_the_revised_pull_request(self) -> None:
+        """A revision's marker names its pull request, scoping its round to it."""
+        path = self.write_result(
+            result_json(
+                bot_login=BOT,
+                round=3,
+                pull_number=8,
+                round_summary="s",
+                review=review_record("clean"),
+            )
+        )
+        with (
+            patch.object(reads, "api_page", return_value=[]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/1"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        body = write.call_args.args[2]["body"]
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=clean round=3 pr=8 -->"
+            )
+        )
+        found = round_reads.FOOTER.search(body)
+        assert found is not None
+        self.assertEqual((found.group("round"), found.group("pr")), ("3", "8"))
 
     def test_marker_carries_the_read_time(self) -> None:
         """The footer names when the packet was read, the next round's watermark."""

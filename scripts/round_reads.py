@@ -23,7 +23,8 @@ from thread_reads import MAX_THREAD_BODY
 # it. A marker in the agent's summary text sits mid-body and is text.
 FOOTER = re.compile(
     r"(?:^|\n)<!-- code-monkey \S+ (?P<verdict>\S+)(?: review=\S+)?"
-    r"(?: round=(?P<round>\d+))?(?: since=(?P<since>\S+))? -->\s*\Z"
+    r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
+    r" -->\s*\Z"
 )
 # Pages of issue comments the round history may span before the
 # read fails closed rather than trust a partial count.
@@ -47,11 +48,24 @@ class RoundHistory:
     last_verdict: str | None
 
 
-def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
+def round_history(
+    repository: str,
+    issue: int,
+    bot_login: str,
+    opened_at: str | None = None,
+    pull_number: int | None = None,
+) -> RoundHistory:
     """Read the bot's footers on the issue: rounds, summaries, watermark, last verdict.
 
     The bot's own comments carry the footer; anyone else's do not
-    count, and a marker in the body text is text. The first
+    count, and a marker in the body text is text. ``pull_number`` and
+    ``opened_at``, the pull request's number and creation time, scope
+    the history to that pull request, so a named retry's new pull
+    request starts its own round count, cap and watermark afresh: a
+    footer naming another pull request (``pr=``) belongs to an earlier
+    attempt a human closed, however late it was posted, and a footer
+    naming none, a first publication's or one written before footers
+    named their pull request, counts only from the opening on. The first
     publication's footer carries no round: it sets the watermark and
     counts as round zero. A footer naming when its packet was read
     sets the watermark there, since the comment itself comes later
@@ -83,6 +97,8 @@ def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
             if found is None:
                 continue
             created = entry.get("created_at")
+            if not in_scope(found, created, opened_at, pull_number):
+                continue
             verdict = found.group("verdict")
             # An attempt that published nothing handled no request: it
             # counts toward the cap below, but moves no watermark.
@@ -111,6 +127,16 @@ def round_history(repository: str, issue: int, bot_login: str) -> RoundHistory:
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"
     )
+
+
+def in_scope(
+    found: re.Match[str], created: Any, opened_at: str | None, pull_number: int | None
+) -> bool:
+    """Whether a footer belongs to the pull request ``round_history`` reads."""
+    named = found.group("pr")
+    if named is not None and pull_number is not None:
+        return int(named) == pull_number
+    return not opened_at or (isinstance(created, str) and created >= opened_at)
 
 
 def rounds_so_far(

@@ -287,6 +287,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         max_pull_requests=max_pull_requests,
         skipped=skipped,
         one_per_repository=not explicit_run,
+        named=explicit_run,
         skipped_issues=skipped_issues if explicit_run else None,
         revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
         reviser=rounds.for_issue,

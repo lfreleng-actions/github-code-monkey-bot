@@ -16,7 +16,7 @@ import base64
 import binascii
 import re
 import urllib.parse
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import bot_github as github
 
@@ -46,6 +46,37 @@ class SelectionError(Exception):
 
 class NotAnIssue(github.GitHubError):
     """The number names a pull request, which this pipeline does not work."""
+
+
+class PriorAttempt(NamedTuple):
+    """What an earlier run left for an issue: a pull request or an orphan branch.
+
+    ``kind`` is ``"pull_request"`` or ``"branch"``. A pull request
+    also carries its ``state``, ``"open"``, ``"closed"`` (unmerged) or
+    ``"merged"``, and its number.
+    """
+
+    kind: str
+    state: str | None = None
+    number: int | None = None
+
+    def rank(self) -> tuple[int, int]:
+        """Sort key among one branch's pull requests: by state, newest first."""
+        return (STATE_ORDER[str(self.state)], -(self.number or 0))
+
+    def describe(self) -> str:
+        """The skip reason an operator reads: which pull request, in what state."""
+        named = f" #{self.number}" if self.number is not None else ""
+        state = {"open": "is open", "merged": "was merged"}.get(
+            str(self.state), "was closed unmerged"
+        )
+        return f"an earlier attempt's pull request{named} from the bot fork {state}"
+
+
+# Which pull request speaks for the issue when the fork branch has
+# several: an open one is live work, a merged one finished it, and a
+# closed one is a rejected attempt.
+STATE_ORDER = {"open": 0, "merged": 1, "closed": 2}
 
 
 def api_page(endpoint: str) -> list[dict[str, Any]]:
@@ -177,23 +208,37 @@ def read_priority(repo: str, number: int) -> str | None:
     return None
 
 
-def prior_attempt(repo: str, fork_repository: str, branch: str) -> str | None:
+def pull_state(entry: dict[str, Any]) -> str:
+    """``open``, ``merged`` or ``closed``; an unexpected state counts as open."""
+    if entry.get("state") != "closed":
+        return "open"
+    return "merged" if entry.get("merged_at") else "closed"
+
+
+def prior_attempt(repo: str, fork_repository: str, branch: str) -> PriorAttempt | None:
     """What an earlier run left for this issue: a pull request, a branch, or nothing.
 
     Anyone can open a pull request from a fork branch of the same
     name, so the query names the fork organisation in ``head``: GitHub
     then filters server-side, and other forks' pull requests cannot
-    crowd the bot's own out of the page. Only a head in the designated
-    fork counts. A branch in the fork with no pull request is an
-    orphan: the publisher keeps the branch when opening the pull
-    request fails so a later run can finish the job, and that later
-    run must select the issue again rather than skip it. A same-named
-    branch in the target itself is not this workflow's (DESIGN.md
-    section 4.3), and a 404 on the fork means no fork yet.
+    crowd the bot's own out. Only a head in the designated fork
+    counts. Every page is read, since an older open or merged pull
+    request must not hide behind newer closed ones. Of several, an
+    open pull request wins over a merged one and a merged one over a
+    closed one, the newest first within a state, so a retry after a
+    closed attempt is seen as live work. A
+    branch in the fork with no pull request is an orphan: the
+    publisher keeps the branch when opening the pull request fails so
+    a later run can finish the job, and that later run must select
+    the issue again rather than skip it. A same-named branch in the
+    target itself is not this workflow's (DESIGN.md section 4.3), and
+    a 404 on the fork means no fork yet.
     """
     fork_owner = fork_repository.partition("/")[0]
     head = urllib.parse.quote(f"{fork_owner}:{branch}", safe="")
-    for entry in api_page(f"repos/{repo}/pulls?head={head}&state=all&per_page=100"):
+    found: list[PriorAttempt] = []
+    endpoint = f"repos/{repo}/pulls?head={head}&state=all&per_page=100"
+    for entry in github.api_list(endpoint):
         head_data = entry.get("head")
         head_repo = (
             cast("dict[str, Any]", head_data).get("repo")
@@ -205,15 +250,20 @@ def prior_attempt(repo: str, fork_repository: str, branch: str) -> str | None:
             if isinstance(head_repo, dict)
             else None
         )
-        if isinstance(name, str) and name.lower() == fork_repository.lower():
-            return "pull_request"
+        if not isinstance(name, str) or name.lower() != fork_repository.lower():
+            continue
+        number = entry.get("number")
+        number = number if type(number) is int else None
+        found.append(PriorAttempt("pull_request", pull_state(entry), number))
+    if found:
+        return min(found, key=PriorAttempt.rank)
     try:
         github.api_object(f"repos/{fork_repository}/branches/{branch}")
     except github.GitHubError as exc:
         if github.is_absent(exc):
             return None
         raise
-    return "branch"
+    return PriorAttempt("branch")
 
 
 LINKED_QUERY = """

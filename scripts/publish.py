@@ -100,6 +100,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "agent_seconds": check.get("agent_seconds"),
         "task": check.get("task") or "issue",
         "round": check.get("round") or 0,
+        "pull_number": check.get("pull_number") or None,
         "round_summary": check.get("round_summary") or None,
         "collected_at": check.get("collected_at") or None,
     }

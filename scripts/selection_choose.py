@@ -77,6 +77,7 @@ def choose(
     max_pull_requests: int,
     skipped: dict[str, int],
     one_per_repository: bool = True,
+    named: bool = False,
     skipped_issues: list[dict[str, str]] | None = None,
     revisions: list[tuple[str, Callable[[], dict[str, Any] | None]]] | None = None,
     reviser: Callable[[dict[str, Any], str, str], dict[str, Any] | None] | None = None,
@@ -90,6 +91,8 @@ def choose(
     repository already chosen, costs no reads and can fail none.
     ``reviser`` turns an issue whose earlier attempt is open into a
     revision entry, or returns None to skip it as before.
+    ``named`` marks issues the operator named, which a closed earlier
+    pull request does not keep out.
     ``skipped_issues`` collects a reason per skipped issue when the
     caller named them, so an operator learns why a named issue is
     missing from the matrix.
@@ -138,23 +141,28 @@ def choose(
         except ForkOrgError as exc:
             raise SelectionError(str(exc)) from exc
         fork_repository = f"{fork_org}/{candidate['repo_name']}"
-        # A pull request from the fork branch is an attempt a human has
-        # not processed yet: a round on it when revisions are on, a
-        # skip otherwise. A fork branch with no pull request is an
-        # orphan from a publish that failed after pushing: select the
-        # issue so the publisher can adopt the branch and finish.
+        # An open pull request from the fork branch is an attempt a
+        # human has not processed yet: a round on it when revisions are
+        # on, a skip otherwise. A merged one finished the issue, and a
+        # closed one is an attempt a human rejected: a scan leaves both
+        # alone, while a named issue overrides a closed one, since
+        # naming it is the operator's decision (DESIGN.md section 6),
+        # and the publisher clears the closed attempt's branch. A fork
+        # branch with no pull request is an orphan from a publish that
+        # failed after pushing: select the issue so the publisher can
+        # adopt the branch and finish.
         prior = reads.prior_attempt(repo, fork_repository, branch)
-        if prior == "pull_request":
-            revision = reviser(candidate, fork_org, branch) if reviser else None
-            if revision is None:
-                skip(
-                    candidate,
-                    "attempted",
-                    "an earlier attempt's pull request from the bot fork exists",
-                )
-            elif not budget.admit(revision):
-                skip(candidate, "cap", "over the selection size budget")
-            continue
+        if prior is not None and prior.kind == "pull_request":
+            if prior.state == "open":
+                revision = reviser(candidate, fork_org, branch) if reviser else None
+                if revision is None:
+                    skip(candidate, "attempted", prior.describe())
+                elif not budget.admit(revision):
+                    skip(candidate, "cap", "over the selection size budget")
+                continue
+            if prior.state == "merged" or not named:
+                skip(candidate, "attempted", prior.describe())
+                continue
         if reads.has_open_linked_pr(repo, number):
             skip(candidate, "linked_pr", "an open pull request is linked to close it")
             continue
@@ -169,7 +177,7 @@ def choose(
             "branch": branch,
             "fork_org": fork_org,
             "fork_repository": fork_repository,
-            "resume": prior == "branch",
+            "resume": prior is not None and prior.kind == "branch",
             "comments": comments,
             "comments_dropped": dropped,
             "comments_truncated": truncated,

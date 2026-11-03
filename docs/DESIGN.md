@@ -242,12 +242,18 @@ Publishing then works as follows, with the §5 signing unchanged:
    organisation and this token has no access to it, so `true` fails
    with HTTP 422.
 5. A prior attempt (§6) is a pull request whose head repository is
-   the designated fork. A branch in that fork with no pull request
-   is an orphan: a publish that pushed and then failed to open the
-   pull request leaves it on purpose, and the next run selects the
-   issue again, marked `resume`, so the publisher can adopt the
-   branch and finish. A same-named branch in any other fork, or in
-   the target itself, does not count.
+   the designated fork, in one of three states. An open one is live
+   work, a merged one finished the issue, and one closed unmerged is
+   an attempt a human rejected. The lookup reads every page. Where
+   the branch has more than one, an open one speaks for the issue
+   first, then a merged one, then the newest closed one. A scan
+   skips the issue in all three states; a named issue (§6 "Explicit
+   issues") overrides a closed one alone. A branch in that fork with
+   no pull request is an orphan: a publish that pushed and then
+   failed to open the pull request leaves it on purpose, and the next
+   run selects the issue again, marked `resume`, so the publisher can
+   adopt the branch and finish. A same-named branch in any other
+   fork, or in the target itself, does not count.
 
 **Installation.** The publisher has no same-repository path. The
 four organisations exist and each holds an installation of the App
@@ -387,12 +393,13 @@ the exclusion list and is not `.github` (unless
 - has no `no-agent` label (a human opt-out, per issue);
 - has no assignee, unless the caller sets `include_assigned`: an
   assignee means a human has claimed the work;
-- has no pull request, open or closed, from a `code-monkey/*`
-  branch **in the target repository itself** (the workflow already
-  tried, or a human declined the result); a pull request from a fork
-  branch of the same name does not count, since anyone can open one,
-  and the lookup names the target's owner in its `head` filter so
-  that such pull requests cannot push the bot's own off the page;
+- has no pull request, open, closed or merged, from its
+  `code-monkey/issue-<n>` branch **in the designated bot fork**
+  (§4.3: the workflow already tried, or a human declined the
+  result); a pull request from a same-named branch in any other
+  repository does not count, since anyone can open one, and the
+  lookup names the fork organisation in its `head` filter so that
+  such pull requests cannot push the bot's own off the page;
 - has no other open pull request linked to close it.
 
 **Ranking.** Priority `Urgent`, then `High`, `Medium`, `Low`; issues
@@ -474,15 +481,22 @@ remains is what the pipeline cannot work around: a repository the
 author job cannot clone or the publisher cannot fork (archived,
 template, fork, non-public or empty), a closed or absent issue, a
 number that names a pull request, the `no-agent` opt-out, an open
-bot pull request from an earlier attempt, and an open pull request
-linked to close the issue. A named run reads each distinct
-repository on its own and never lists the owner, so an owner at the
-listing ceiling can still have an issue named; a skip never stops
-the issues beside it, while a permission, rate-limit or server
-failure still fails the run. The selection records
-every named issue it skipped with its reason, in `skipped_issues`,
-and the summary lists them, so a maintainer who named five issues
-and sees three in the matrix learns why. Issues and `repositories`
+or merged bot pull request from an earlier attempt, and an open pull
+request linked to close the issue. A bot pull request a human closed
+unmerged does not exclude a named issue: the operator decided to try
+again, and the run works the issue afresh on the same
+`code-monkey/issue-<n>` branch, from which the publisher clears the
+closed attempt's leftover (§5 "An existing branch"). A merged one
+does: the work landed, and redoing it takes a new issue. An open one
+becomes a revision round where §20.1 allows, and a skip otherwise.
+A named run reads each distinct repository on its own and never
+lists the owner, so an owner at the listing ceiling can still have
+an issue named; a skip never stops the issues beside it, while a
+permission, rate-limit or server failure still fails the run. The
+selection records every named issue it skipped with its reason, in
+`skipped_issues`, naming the earlier pull request and its state
+where one is the cause, and the summary lists them, so a maintainer
+who named five issues and sees three in the matrix learns why. Issues and `repositories`
 exclude each other: the input check fails a run naming both. An
 `issues` list given but naming no issue, such as separators alone,
 is an input error rather than a scan, and fails before selection.
@@ -1936,7 +1950,9 @@ Three ways in, all through the select job and its read token:
   operator decided.
 - An issue named in `issues` whose earlier attempt is an open bot
   pull request becomes a round on that pull request rather than a
-  skip. With `revise` off the earlier behaviour stands.
+  skip. With `revise` off the earlier behaviour stands. A closed
+  earlier attempt brings no round: the run works the named issue
+  afresh (§6 "Explicit issues"), and a merged one keeps it out.
 - A scan with `revise` on, the default, searches the owner for the
   App's open pull requests and selects those with **work
   outstanding**: an unresolved review thread whose opening comment
@@ -1978,7 +1994,15 @@ overlap may reread a boundary comment and loses none. The latest
 footer is the one with the latest read time, not the latest post: a
 retry of an older round that posts after a newer handoff rewinds
 neither the watermark nor the pause, and two posts of one read order
-by their time. A footer
+by their time. The footers of other pull requests do not count: a
+revision round's footer names its pull request (`pr=`), and one
+naming another belongs to an earlier attempt, from a pull request a
+human closed before an operator named the issue again (§6 "Explicit
+issues"), whenever it posts. A footer naming none, a first
+publication's or one written before footers named their pull
+request, counts from the pull request's opening on. The new pull
+request so starts its own round count, cap, watermark and pause
+afresh. A footer
 whose round published nothing, an abstention, a rejection or a failure,
 counts toward the cap and moves no watermark, since it handled no
 request. At the cap the selector skips the pull request with that
