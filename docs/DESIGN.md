@@ -353,13 +353,38 @@ Consequences the implementation has to handle:
   and so does one whose existence the publisher cannot confirm
   either way. The result records `publish-failed` with the reason
   and whether the branch came off.
-- **An existing branch.** The publisher never deletes a branch it
-  did not create, and adopts one as the run's own earlier work on one
-  condition: the whole chain is what the replay would have made. That
-  means based on the recorded commit with no other history, the same
-  number of commits, and each commit with one parent (the one before
-  it), the tree the offline check recorded, the bot as author, a
-  Verified signature and the checked message. Neither a matching
+- **An existing branch.** The publisher never deletes a branch it did
+  not create. The one existing branch it moves is a closed attempt's,
+  when an operator named its issue again (§6) and not otherwise. The
+  selection then records the closed pull request it admitted the issue
+  past as `retry_of`, which `check.json` carries from the trusted
+  selection; a scan never sets it. The publisher reads every page of
+  pull requests from that branch on the target: the bot opened each, a
+  human closed each unmerged, and the branch still sits at the head of
+  the one `retry_of` names. Nothing there postdates the bot's own
+  work, and the closed pull request keeps those commits. The publisher
+  then moves the branch from that checked head to the base with
+  `updateRefs` and `beforeOid` (the §20.3 compare-and-swap), so a push
+  after the check is never overwritten, and records a warning naming
+  the pull request. A head that moved goes to the adoption test below
+  and is otherwise a conflict; a move that did not apply fails the
+  publication and keeps the branch. A replay that fails after the
+  move does not delete the branch, which this run did not create: the
+  publisher moves it back to the closed attempt's head by the same
+  compare-and-swap, from the head the run left, so a later named run
+  can retry. The publisher reads that head back from the branch,
+  since a commit can land and lose its reply: when the branch holds a
+  leading part of the replay's chain, by the adoption test below, and
+  at least the commits whose reply arrived, its tip is the head;
+  otherwise the head is the last commit whose reply arrived, or the
+  base. A push since the move makes that refuse, and the branch stays
+  untouched. It adopts an existing branch as the run's own earlier
+  work on one condition: the whole chain is what the replay would
+  have made. That means based on the recorded commit with no other
+  history, the same number of commits, and each commit with one
+  parent (the one before it), the tree the offline check recorded,
+  the bot as author, a Verified signature and the checked message.
+  Neither a matching
   final tree nor matching messages is enough on its own: anyone with
   push access, or a stale run, could produce either with other
   content. A pull request counts as the earlier attempt's when
@@ -485,8 +510,8 @@ or merged bot pull request from an earlier attempt, and an open pull
 request linked to close the issue. A bot pull request a human closed
 unmerged does not exclude a named issue: the operator decided to try
 again, and the run works the issue afresh on the same
-`code-monkey/issue-<n>` branch, from which the publisher clears the
-closed attempt's leftover (§5 "An existing branch"). A merged one
+`code-monkey/issue-<n>` branch, which the publisher resets from the
+closed attempt's head to the base (§5 "An existing branch"). A merged one
 does: the work landed, and redoing it takes a new issue. An open one
 becomes a revision round where §20.1 allows, and a skip otherwise.
 A named run reads each distinct repository on its own and never
@@ -797,7 +822,8 @@ For each selected issue:
 8. **Push to the fork.** Find or create the fork (§4.3), sync its
    default branch, create `code-monkey/issue-<n>` there at the base
    SHA (an existing branch is a rejection unless it holds this
-   proposal's own chain, §6), then replay commits per §5.
+   proposal's own chain, or is a named retry's closed attempt the
+   publisher resets to the base, §5), then replay commits per §5.
 9. **Open the pull request** (`pull-requests` mode) against the
    default branch with head `<fork-org>:code-monkey/issue-<n>`:
    title from the manifest (equal to the subject on
@@ -1407,6 +1433,8 @@ scripts/proposal_check.py                offline bundle verification
 scripts/proposal_model.py                verdict record and its rendering
 scripts/publish.py                       replay, open PR, reconcile
 scripts/branch_refs.py                   bot branch and its PR on GitHub
+scripts/stale_branch.py                  a closed attempt's branch (§5)
+scripts/branch_chain.py                  a branch read back as replayed work
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/proposal_report.py               merge results into the report

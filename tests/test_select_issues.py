@@ -409,6 +409,8 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertEqual(entry["key"], "alpha-3")
         self.assertEqual(entry["branch"], "code-monkey/issue-3")
         self.assertIs(entry["resume"], False)
+        # The one closed pull request whose branch the publisher may reset.
+        self.assertEqual(entry["retry_of"], 161)
         self.assertEqual(selection["skipped_issues"], [])
         self.assertEqual(selection["skipped"]["attempted"], 0)
 
@@ -1167,6 +1169,7 @@ class ChooseTest(NoSubprocessCase):
         self.assertEqual(
             [(c["number"], c["resume"]) for c in chosen], [(1, True), (2, False)]
         )
+        self.assertEqual([c["retry_of"] for c in chosen], [None, None])
         self.assertEqual(skipped["attempted"], 0)
 
     def test_skipped_repository_stays_available(self) -> None:

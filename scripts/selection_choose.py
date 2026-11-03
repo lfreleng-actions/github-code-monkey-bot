@@ -147,7 +147,7 @@ def choose(
         # closed one is an attempt a human rejected: a scan leaves both
         # alone, while a named issue overrides a closed one, since
         # naming it is the operator's decision (DESIGN.md section 6),
-        # and the publisher clears the closed attempt's branch. A fork
+        # and the publisher resets that closed attempt's branch. A fork
         # branch with no pull request is an orphan from a publish that
         # failed after pushing: select the issue so the publisher can
         # adopt the branch and finish.
@@ -178,6 +178,11 @@ def choose(
             "fork_org": fork_org,
             "fork_repository": fork_repository,
             "resume": prior is not None and prior.kind == "branch",
+            # Set only on the named path past a closed pull request:
+            # the one attempt whose branch the publisher may reset.
+            "retry_of": (
+                prior.number if prior is not None and prior.state == "closed" else None
+            ),
             "comments": comments,
             "comments_dropped": dropped,
             "comments_truncated": truncated,

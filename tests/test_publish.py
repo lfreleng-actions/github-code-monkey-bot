@@ -26,6 +26,7 @@ bounded = import_module("git_bounded")
 policy = import_module("proposal_policy")
 publish = import_module("publish")
 refs = import_module("branch_refs")
+stale = import_module("stale_branch")
 review = import_module("copilot_review")
 comments = import_module("issue_comment")
 reporting = import_module("proposal_report")
@@ -617,6 +618,7 @@ class RunPushTest(NoNetworkCase):
                 publish, "create_branch", side_effect=policy.Rejection("branch exists")
             ),
             patch.object(publish, "existing_pull_request", return_value=pr) as lookup,
+            patch.object(stale, "closed_attempt", return_value=None) as closed,
             patch.object(
                 publish,
                 "branch_matches",
@@ -629,6 +631,9 @@ class RunPushTest(NoNetworkCase):
         replay.assert_not_called()
         delete.assert_not_called()
         self.assertEqual(match.call_args.args[:2], (FORK, BRANCH))
+        # A scan's check carries no retry_of, so no closed attempt is
+        # even looked for: only a named retry may reset a branch.
+        closed.assert_not_called()
         if same_tree:
             lookup.assert_called_once_with(REPOSITORY, BRANCH, BOT, FORK)
         return result
@@ -681,6 +686,7 @@ class RunPushTest(NoNetworkCase):
             patch.object(
                 publish, "create_branch", side_effect=policy.Rejection("branch exists")
             ),
+            patch.object(stale, "closed_attempt", return_value=None),
             patch.object(publish, "branch_matches", return_value=["c" * 40]),
             patch.object(
                 publish,
@@ -695,6 +701,182 @@ class RunPushTest(NoNetworkCase):
         written = self.written_result()
         self.assertEqual(written["verdict"], "publish-failed")
         self.assertIn("existing branch kept", written["reasons"][-1])
+
+    def named_retry(
+        self,
+        closed: Any,
+        *,
+        reset: Any = None,
+        matches: list[str] | None = None,
+        retry_of: int | None = 161,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Push a check meeting an existing branch; return the result and mocks."""
+        path = self.write_check(check_json(retry_of=retry_of))
+        with (
+            patch.object(
+                publish, "create_branch", side_effect=policy.Rejection("branch exists")
+            ) as branch,
+            patch.object(stale, "closed_attempt", return_value=closed) as lookup,
+            patch.object(stale, "reset_branch", side_effect=reset) as moved,
+            patch.object(publish, "delete_branch") as delete,
+            patch.object(publish, "existing_pull_request", return_value=None),
+            patch.object(publish, "replay_commits", return_value=["f" * 40]) as replay,
+            patch.object(publish, "branch_matches", return_value=matches) as match,
+        ):
+            result = publish.run_push(self.push_args(path))
+        branch.assert_called_once_with(FORK, BRANCH, BASE)
+        delete.assert_not_called()
+        mocks = {"lookup": lookup, "reset": moved, "replay": replay, "match": match}
+        return result, mocks
+
+    def test_named_retry_resets_its_closed_attempt_branch(self) -> None:
+        """The authorised closed attempt's branch moves to the base, then replays."""
+        closed = stale.ClosedAttempt(161, "e" * 40)
+        result, mocks = self.named_retry(closed)
+        mocks["lookup"].assert_called_once_with(REPOSITORY, BRANCH, BOT, FORK)
+        mocks["reset"].assert_called_once_with(FORK, BRANCH, "e" * 40, BASE, result)
+        mocks["match"].assert_not_called()
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(result["commits"], ["f" * 40])
+        self.assertEqual(result["branch_url"], FORK_BRANCH_URL)
+        self.assertIn(
+            "reset the branch of closed pull request #161 from eeeeeee to the "
+            "base to retry",
+            result["warnings"],
+        )
+        self.assertTrue(publish.needs_pull_request(result))
+
+    def test_scan_never_resets_a_closed_attempt_branch(self) -> None:
+        """Without the selection's retry_of the branch goes to reconcile as before."""
+        result, mocks = self.named_retry(
+            stale.ClosedAttempt(161, "e" * 40), retry_of=None
+        )
+        mocks["lookup"].assert_not_called()
+        mocks["reset"].assert_not_called()
+        mocks["replay"].assert_not_called()
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertEqual(result["reasons"], ["branch exists"])
+
+    def test_other_closed_attempt_is_not_reset(self) -> None:
+        """A branch left by a pull request the selection did not name stays."""
+        for closed in (None, stale.ClosedAttempt(170, "e" * 40)):
+            with self.subTest(closed=closed):
+                result, mocks = self.named_retry(closed)
+                mocks["reset"].assert_not_called()
+                mocks["replay"].assert_not_called()
+                self.assertEqual(result["verdict"], "rejected")
+
+    def test_moved_branch_is_a_conflict(self) -> None:
+        """A head that moved after the check is refused and reconciled, not forced."""
+        result, mocks = self.named_retry(
+            stale.ClosedAttempt(161, "e" * 40),
+            reset=policy.Rejection("head moved from eeeeeee since selection"),
+        )
+        mocks["replay"].assert_not_called()
+        mocks["match"].assert_called_once()
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertEqual(result["reasons"], ["head moved from eeeeeee since selection"])
+
+    def test_failed_reset_keeps_the_branch(self) -> None:
+        """A move that did not apply fails the publication and deletes nothing."""
+        with self.assertRaisesRegex(policy.PublishError, "branch there is kept"):
+            self.named_retry(
+                stale.ClosedAttempt(161, "e" * 40),
+                reset=policy.PublishError("updateRefs failed: boom"),
+            )
+        self.assertEqual(self.written_result()["verdict"], "publish-failed")
+
+    def test_failed_replay_after_reset_restores_not_deletes(self) -> None:
+        """A replay failing after a reset puts the closed head back, never deletes.
+
+        The move back names the head this run left as beforeOid, so a
+        maintainer's push after the reset is never overwritten either.
+        """
+        closed = stale.ClosedAttempt(161, "e" * 40)
+        path = self.write_check(check_json(retry_of=161))
+
+        def replay(_clone: Path, _check: Any, progress: list[str]) -> list[str]:
+            progress.append("f" * 40)
+            raise policy.PublishError("createCommitOnBranch failed: boom")
+
+        cases: list[tuple[str, object, str | None, str]] = [
+            ("restored", {}, None, "branch restored to closed pull request #161"),
+            (
+                "refused",
+                github.GitHubError("Expected branch to point to ffff"),
+                "9" * 40,
+                f"branch {BRANCH} kept: restoring closed pull request #161",
+            ),
+        ]
+        for outcome, reply, head, note in cases:
+            with (
+                self.subTest(outcome),
+                patch.object(
+                    publish,
+                    "create_branch",
+                    side_effect=policy.Rejection("branch exists"),
+                ),
+                patch.object(stale, "closed_attempt", return_value=closed),
+                patch.object(stale.swap, "repository_id", return_value="R_1"),
+                patch.object(github, "graphql", side_effect=[{}, reply]) as call,
+                patch.object(reads, "branch_head", return_value=head),
+                patch.object(stale.chains, "landed_chain", return_value=["f" * 40]),
+                patch.object(publish, "replay_commits", side_effect=replay),
+                patch.object(publish, "delete_branch") as delete,
+                self.assertRaisesRegex(policy.PublishError, note),
+            ):
+                publish.run_push(self.push_args(path))
+            delete.assert_not_called()
+            back = call.call_args_list[1].args[1]["input"]["refUpdates"][0]
+            self.assertEqual(
+                (back["beforeOid"], back["afterOid"]), ("f" * 40, "e" * 40)
+            )
+            self.assertEqual(self.written_result()["verdict"], "publish-failed")
+
+    def test_lost_replay_reply_is_read_back_before_restoring(self) -> None:
+        """A commit that landed but lost its reply is the head the restore moves from.
+
+        The first commit's reply arrived; the second landed, then the
+        transport failed. The branch, read back, holds both of the
+        proposal's commits, so the move back names the second as
+        beforeOid and applies. A branch holding anything else keeps
+        the recorded head, and the compare-and-swap refuses.
+        """
+        closed = stale.ClosedAttempt(161, "e" * 40)
+        path = self.write_check(check_json(retry_of=161))
+        landed = compare_reply()
+        foreign = json.loads(json.dumps(landed))
+        foreign["commits"][1]["author"]["login"] = "mallory"
+
+        def replay(_clone: Path, _check: Any, progress: list[str]) -> list[str]:
+            progress.append("1" * 40)
+            raise policy.PublishError("createCommitOnBranch failed: unexpected EOF")
+
+        cases: list[tuple[str, dict[str, Any], str]] = [
+            ("landed", {"return_value": landed}, "2" * 40),
+            ("foreign", {"return_value": foreign}, "1" * 40),
+            ("unreadable", {"side_effect": github.GitHubError("gh: 502")}, "1" * 40),
+        ]
+        for name, read, before in cases:
+            with (
+                self.subTest(name),
+                patch.object(
+                    publish,
+                    "create_branch",
+                    side_effect=policy.Rejection("branch exists"),
+                ),
+                patch.object(stale, "closed_attempt", return_value=closed),
+                patch.object(stale.swap, "repository_id", return_value="R_1"),
+                patch.object(github, "graphql", side_effect=[{}, {}]) as call,
+                patch.object(github, "api_object", **read),
+                patch.object(publish, "replay_commits", side_effect=replay),
+                patch.object(publish, "delete_branch") as delete,
+                self.assertRaisesRegex(policy.PublishError, "unexpected EOF"),
+            ):
+                publish.run_push(self.push_args(path))
+            delete.assert_not_called()
+            back = call.call_args_list[1].args[1]["input"]["refUpdates"][0]
+            self.assertEqual((back["beforeOid"], back["afterOid"]), (before, "e" * 40))
 
     def test_ambiguous_create_keeps_the_branch(self) -> None:
         """A create that failed unclearly never leads to a delete."""
@@ -1939,6 +2121,28 @@ class BranchMatchesTest(NoNetworkCase):
             with self.subTest(case=label):
                 self.assertFalse(self.matches(reply))
 
+    def test_leading_part_lands_but_does_not_match(self) -> None:
+        """A replay stopped short is a landed chain, never the whole proposal."""
+        commits = check_json()["commits"]
+        partial = compare_reply(ahead_by=1, commits=compare_reply()["commits"][:1])
+        empty = compare_reply(ahead_by=0, commits=[])
+        for reply, chain in ((partial, ["1" * 40]), (empty, [])):
+            with (
+                self.subTest(chain=chain),
+                patch.object(github, "api_object", return_value=reply),
+            ):
+                landed = stale.chains.landed_chain(
+                    REPOSITORY, BRANCH, BASE, commits, BOT
+                )
+                whole = publish.branch_matches(REPOSITORY, BRANCH, BASE, commits, BOT)
+            self.assertEqual(landed, chain)
+            self.assertIsNone(whole)
+        with patch.object(github, "api_object", return_value=compare_reply()):
+            self.assertEqual(
+                stale.chains.landed_chain(REPOSITORY, BRANCH, BASE, commits, BOT),
+                ["1" * 40, "2" * 40],
+            )
+
 
 class ExistingPullRequestTest(NoNetworkCase):
     """``existing_pull_request`` finds the bot's own open PR from the fork."""
@@ -1971,6 +2175,151 @@ class ExistingPullRequestTest(NoNetworkCase):
             self.assertIsNone(
                 publish.existing_pull_request(REPOSITORY, BRANCH, BOT, FORK)
             )
+
+
+class ClosedAttemptTest(NoNetworkCase):
+    """``closed_attempt`` names only the bot's own closed, unchanged attempt."""
+
+    HEAD = "d" * 40
+
+    def pr(
+        self,
+        number: int,
+        *,
+        state: str = "closed",
+        merged: bool = False,
+        login: str = BOT,
+        head: str = FORK,
+        sha: str = HEAD,
+    ) -> dict[str, Any]:
+        """A pulls API entry."""
+        return {
+            "number": number,
+            "state": state,
+            "merged_at": "2026-11-01T00:00:00Z" if merged else None,
+            "user": {"login": login},
+            "head": {"sha": sha, "repo": {"full_name": head}},
+        }
+
+    def closed(self, entries: list[dict[str, Any]], tip: str = HEAD) -> Any:
+        """Run the lookup with the fork branch at ``tip``."""
+        with (
+            patch.object(github, "api_list", return_value=entries) as page,
+            patch.object(reads, "branch_head", return_value=tip) as head,
+        ):
+            found = stale.closed_attempt(REPOSITORY, BRANCH, BOT, FORK)
+        endpoint = page.call_args.args[0]
+        self.assertIn("state=all", endpoint)
+        self.assertIn("head=lfreleng-bot-forks%3Acode-monkey%2Fissue-7", endpoint)
+        if head.called:
+            head.assert_called_once_with(FORK, BRANCH)
+        return found
+
+    def test_bot_closed_unmerged_and_unchanged(self) -> None:
+        """The bot's closed pull request at the branch tip names the leftover."""
+        self.assertEqual(
+            self.closed([self.pr(161)]), stale.ClosedAttempt(161, self.HEAD)
+        )
+
+    def test_other_heads_are_ignored(self) -> None:
+        """A pull request from another repository's branch does not count."""
+        entries = [self.pr(5, state="open", head=REPOSITORY), self.pr(161)]
+        self.assertEqual(self.closed(entries), stale.ClosedAttempt(161, self.HEAD))
+
+    def test_every_page_is_read(self) -> None:
+        """An open pull request past a full page of closed ones keeps the branch."""
+        recent = [self.pr(n, sha="e" * 40) for n in range(300, 200, -1)]
+        older = self.pr(7, state="open")
+        with (
+            patch.object(
+                github, "run_gh", return_value=json.dumps([recent, [older]])
+            ) as run,
+            patch.object(reads, "branch_head", return_value="e" * 40) as head,
+        ):
+            self.assertIsNone(stale.closed_attempt(REPOSITORY, BRANCH, BOT, FORK))
+        self.assertIn("--paginate", run.call_args.args[0])
+        head.assert_not_called()
+
+    def test_shared_head_names_the_newest_pull_request(self) -> None:
+        """Two closed pull requests at one head name the newer, as selection does."""
+        for entries in (
+            [self.pr(170), self.pr(161)],
+            [self.pr(161), self.pr(170)],
+        ):
+            with self.subTest([e["number"] for e in entries]):
+                self.assertEqual(
+                    self.closed(entries), stale.ClosedAttempt(170, self.HEAD)
+                )
+
+    def test_anything_else_is_not_ours_to_remove(self) -> None:
+        """Open, merged, foreign, moved or absent: the branch stays."""
+        cases = {
+            "open": [self.pr(161, state="open")],
+            "merged": [self.pr(161, merged=True)],
+            "someone else's": [self.pr(161, login="mallory")],
+            "open beside closed": [self.pr(160), self.pr(161, state="open")],
+            "moved since": [self.pr(161, sha="e" * 40)],
+            "no pull request": [],
+        }
+        for name, entries in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(self.closed(entries))
+
+
+class ResetBranchTest(NoNetworkCase):
+    """``reset_branch`` moves the branch only from the head it checked."""
+
+    CHECKED = "e" * 40
+
+    def reset(self, **graphql: Any) -> tuple[dict[str, Any], Any]:
+        """Run the reset with the given GraphQL behaviour; return result and mock."""
+        result: dict[str, Any] = {"warnings": []}
+        with (
+            patch.object(stale.swap, "repository_id", return_value="R_1"),
+            patch.object(github, "graphql", **graphql) as call,
+        ):
+            stale.reset_branch(FORK, BRANCH, self.CHECKED, BASE, result)
+        return result, call
+
+    def test_compare_and_swap_from_the_checked_head(self) -> None:
+        """The move names the checked head as beforeOid and the base as afterOid."""
+        _, call = self.reset(return_value={})
+        update = call.call_args.args[1]["input"]
+        self.assertEqual(update["repositoryId"], "R_1")
+        self.assertEqual(
+            update["refUpdates"],
+            [
+                {
+                    "name": f"refs/heads/{BRANCH}",
+                    "afterOid": BASE,
+                    "beforeOid": self.CHECKED,
+                    "force": True,
+                }
+            ],
+        )
+
+    def test_moved_head_is_refused(self) -> None:
+        """A push after the check makes the swap refuse: a rejection, nothing forced."""
+        refusal = github.GitHubError("Expected branch to point to eeee")
+        with (
+            patch.object(reads, "branch_head", return_value="9" * 40),
+            self.assertRaisesRegex(policy.Rejection, "head moved"),
+        ):
+            self.reset(side_effect=refusal)
+
+    def test_lost_reply_after_the_move_stands(self) -> None:
+        """A reply lost after the move applied reads back at the base."""
+        with patch.object(reads, "branch_head", return_value=BASE):
+            result, _ = self.reset(side_effect=github.GitHubError("unexpected EOF"))
+        self.assertIn("the move stands", result["warnings"][0])
+
+    def test_unapplied_move_is_a_failure(self) -> None:
+        """A branch still at the checked head after an error did not move."""
+        with (
+            patch.object(reads, "branch_head", return_value=self.CHECKED),
+            self.assertRaisesRegex(policy.PublishError, "updateRefs failed"),
+        ):
+            self.reset(side_effect=github.GitHubError("boom"))
 
 
 class ReplayCommitsTest(NoNetworkCase):

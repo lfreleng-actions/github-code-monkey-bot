@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import base64
 import time
-import urllib.parse
 from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import branch_chain as chains
 import issue_reads as reads
 import proposal_check as checks
 import proposal_policy as policy
@@ -255,11 +255,13 @@ def file_changes(clone: Path, commit: dict[str, Any]) -> dict[str, Any]:
     return {"additions": additions, "deletions": deletions}
 
 
-def replay_commits(clone: Path, check: dict[str, Any]) -> list[str]:
-    """Send each commit through createCommitOnBranch on the fork, chaining the head."""
+def replay_commits(
+    clone: Path, check: dict[str, Any], progress: list[str] | None = None
+) -> list[str]:
+    """Replay each commit on the fork, chaining the head; ``progress`` sees each."""
     repository = str(check["fork_repository"])
     head = str(check["base_sha"])
-    created: list[str] = []
+    created: list[str] = progress if progress is not None else []
     for commit in cast("list[dict[str, Any]]", check["commits"]):
         payload = {
             "branch": {
@@ -343,78 +345,8 @@ def branch_matches(
     is not this run's work, whatever its final tree, and yields None.
     The commits come back so the result records the published head.
     """
-    # The bot branch carries a slash; the compare path needs it encoded.
-    encoded = urllib.parse.quote(branch, safe="")
-    compare = github.api_object(f"repos/{repository}/compare/{base_sha}...{encoded}")
-    merge_base = compare.get("merge_base_commit")
-    base = (
-        cast("dict[str, Any]", merge_base).get("sha")
-        if isinstance(merge_base, dict)
-        else None
-    )
-    commits = compare.get("commits")
-    if (
-        base != base_sha
-        or compare.get("behind_by") != 0
-        or compare.get("ahead_by") != len(expected)
-        or not isinstance(commits, list)
-        or len(cast("list[Any]", commits)) != len(expected)
-    ):
-        return None
-    parent = base_sha
-    chain: list[str] = []
-    for actual, wanted in zip(cast("list[Any]", commits), expected, strict=True):
-        if not isinstance(actual, dict):
-            return None
-        data = cast("dict[str, Any]", actual)
-        if not chain_link(data, parent, str(wanted.get("tree", ""))):
-            return None
-        parent = str(data.get("sha"))
-        if not policy.SHA_RE.fullmatch(parent):
-            return None
-        chain.append(parent)
-        author = data.get("author")
-        inner = data.get("commit")
-        if not isinstance(author, dict) or not isinstance(inner, dict):
-            return None
-        commit = cast("dict[str, Any]", inner)
-        verification = commit.get("verification")
-        message = str(commit.get("message") or "")
-        composed = f"{wanted['headline']}\n\n{wanted['body']}"
-        if (
-            cast("dict[str, Any]", author).get("login") != bot_login
-            or not isinstance(verification, dict)
-            or cast("dict[str, Any]", verification).get("verified") is not True
-            or message.rstrip("\n") != composed.rstrip("\n")
-        ):
-            return None
-    return chain
-
-
-def chain_link(data: dict[str, Any], parent: str, tree: str) -> bool:
-    """Whether a compare-API commit has one parent, ``parent``, and ``tree``.
-
-    Replay reproduces each verified commit's tree exactly, so a commit
-    with the same message but other content, or another history, is
-    not this run's work.
-    """
-    parents = data.get("parents")
-    inner = data.get("commit")
-    commit_tree = (
-        cast("dict[str, Any]", inner).get("tree") if isinstance(inner, dict) else None
-    )
-    actual_tree = (
-        cast("dict[str, Any]", commit_tree).get("sha")
-        if isinstance(commit_tree, dict)
-        else None
-    )
-    if not isinstance(parents, list) or len(cast("list[Any]", parents)) != 1:
-        return False
-    only = cast("list[Any]", parents)[0]
-    parent_sha = (
-        cast("dict[str, Any]", only).get("sha") if isinstance(only, dict) else None
-    )
-    return bool(tree) and parent_sha == parent and actual_tree == tree
+    chain = chains.landed_chain(repository, branch, base_sha, expected, bot_login)
+    return chain if chain is not None and len(chain) == len(expected) else None
 
 
 def delete_branch(repository: str, branch: str) -> str | None:

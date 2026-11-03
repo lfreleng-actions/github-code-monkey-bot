@@ -81,6 +81,10 @@ class Check:
     # The run's session: unique per run, the same across its retries,
     # and trusted; the scratch branch and the reply marker are its.
     session: str = ""
+    # A named retry past a closed pull request (DESIGN.md section 6):
+    # that pull request's number, the one whose branch the publisher
+    # may reset. None for every other entry, a scan's included.
+    retry_of: int | None = None
 
     @classmethod
     def from_entry(cls, key: str, entry: dict[str, Any]) -> Check:
@@ -98,6 +102,8 @@ class Check:
         )
         check.collected_at = str(entry.get("collected_at") or "")
         check.session = str(entry.get("session") or "")
+        retry_of = entry.get("retry_of")
+        check.retry_of = retry_of if type(retry_of) is int else None
         if check.task == "revise":
             pull = cast("dict[str, Any]", entry["pull_request"])
             check.rebase_sha = str(entry["rebase_sha"])
@@ -149,6 +155,7 @@ class Check:
             "round_summary": self.round_summary,
             "collected_at": self.collected_at,
             "session": self.session,
+            "retry_of": self.retry_of,
         }
 
 
