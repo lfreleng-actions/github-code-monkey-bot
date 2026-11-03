@@ -162,6 +162,14 @@ def _proposed_comment(
         opening = f"🐒 Round {round_number}: an AI agent revised {where}" + (
             f". {summary}" if summary else ""
         )
+        failing = policy.failing_checks_text(
+            list(cast("list[Any]", result.get("failing_checks") or []))
+        )
+        if failing:
+            opening = (
+                opening.rstrip(".")
+                + f". It set out to fix the failing checks: {failing}"
+            )
         return opening + review_sentence(result)
     opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
     return opening + review_sentence(result)

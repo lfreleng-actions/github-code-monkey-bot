@@ -1284,7 +1284,6 @@ class RevisionCheckTest(GitCase):
         check = self.run_revision()
         self.assertEqual(check.collected_at, "2026-09-18T00:00:00Z")
 
-    @unittest.expectedFailure
     def test_round_note_names_the_failing_checks(self) -> None:
         """The description says which failing checks the round set out to fix."""
         self.fixture.bundle()

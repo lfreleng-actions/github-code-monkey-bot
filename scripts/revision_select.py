@@ -6,8 +6,9 @@
 A revision entry sends a session back to a pull request the bot
 opened, to answer its review and push the same branch forward. It
 carries what the issue entry carries, plus the pull request, its
-unresolved threads, Copilot's verdict on the head, the rounds so
-far and the maintainers' comments on the pull request, all as data.
+unresolved threads, Copilot's verdict on the head, the head's failing
+checks, the rounds so far and the maintainers' comments on the pull
+request, all as data.
 Both bases are recorded: the chain's own, and the default branch's
 head, for a rebase (DESIGN.md section 20).
 """
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import bot_github as github
+import check_reads
 import explicit_issues
 import fork_orgs as forks
 import issue_reads as reads
@@ -53,20 +55,38 @@ class Prefetch:
     details: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class Findings:
+    """What the head's reviewers said: threads, Copilot's verdict and the checks."""
+
+    threads: thread_reads.ThreadPacket
+    verdict: dict[str, Any] | None
+    checks: check_reads.CheckPacket
+
+
+def read_findings(repository: str, pull: dict[str, Any], since: str | None) -> Findings:
+    """The unresolved threads, the head's review and its failing checks."""
+    number, head = int(pull["number"]), str(pull["head_sha"])
+    return Findings(
+        thread_reads.unresolved_threads(repository, number, since),
+        revisions.latest_review(repository, number, head),
+        check_reads.failing_checks(repository, head),
+    )
+
+
 def outstanding(
     pull: dict[str, Any],
-    verdict: dict[str, Any] | None,
-    packet: thread_reads.ThreadPacket,
+    findings: Findings,
     *,
     repository: str,
-    issue: int,
     since: str | None,
 ) -> list[str]:
     """Why the pull request needs a round, by the organisation definition.
 
     Work is outstanding when a thread from Copilot or a maintainer is
-    unresolved, when Copilot's review of the head has findings, or
-    when a maintainer commented on the issue or the pull request
+    unresolved, when Copilot's review of the head has findings, when
+    a check on the head failed, outside the exclusion list, or when a
+    maintainer commented on the issue or the pull request
     after the bot's last round. A maintainer's word on a review thread
     after that round, an opener or a reply, counts as a comment, since
     the issue and pull request comments do not carry it; the thread
@@ -74,12 +94,16 @@ def outstanding(
     head with no review yet is left for the gate to await, and a clean
     head with nothing else is done.
     """
+    packet, verdict = findings.threads, findings.verdict
+    issue = int(pull["issue"])
     reasons: list[str] = []
     total = len(packet.threads) + packet.dropped
     if total:
         reasons.append(f"{total} unresolved review thread(s)")
     if verdict is not None and verdict.get("verdict") == "findings":
         reasons.append("Copilot's review of the head has findings")
+    if findings.checks.outstanding:
+        reasons.append("failing checks")
     for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
         if rounds_of.newer_member_comment(repository, number, since):
             reasons.append(f"a maintainer commented on the {what} since the last round")
@@ -132,22 +156,12 @@ def build_entry(
         raise Skip(
             f"round cap of {revisions.MAX_ROUNDS} reached; a human must take over"
         )
-    packet = thread_reads.unresolved_threads(repository, pull_number, since)
-    verdict = revisions.latest_review(repository, pull_number, str(pull["head_sha"]))
-    if not explicit:
-        reasons = outstanding(
-            pull, verdict, packet, repository=repository, issue=issue, since=since
-        )
-        if not reasons:
-            raise Skip("nothing outstanding")
-        # After a handoff the threads the agent disputed stay open on
-        # purpose; a maintainer's word, not the threads, resumes rounds.
-        if history.last_verdict == "handoff" and not any(
-            "maintainer commented" in reason for reason in reasons
-        ):
-            raise Skip("handed back to a maintainer; awaiting their comment")
-    else:
-        reasons = ["named by the operator"]
+    findings = read_findings(repository, pull, since)
+    reasons = (
+        ["named by the operator"]
+        if explicit
+        else scan_reasons(pull, findings, history, repository=repository)
+    )
     details = (
         issue_packet(repository, issue)
         if prefetched is None
@@ -172,21 +186,40 @@ def build_entry(
         "fork_repository": fork_repository,
         "resume": False,
         "pull_request": {
-            "number": pull["number"],
-            "url": pull["url"],
-            "title": pull["title"],
-            "head_sha": pull["head_sha"],
-            "mergeable": pull["mergeable"],
-            "created_at": pull["created_at"],
+            key: pull[key]
+            for key in ("number", "url", "title", "head_sha", "mergeable", "created_at")
         },
         "round": highest + 1,
         "round_reasons": reasons,
         "rounds": rounds,
-        "threads": packet.threads,
-        "threads_dropped": packet.dropped,
-        "review": verdict,
+        "threads": findings.threads.threads,
+        "threads_dropped": findings.threads.dropped,
+        "review": findings.verdict,
+        "checks": findings.checks.checks,
+        "checks_dropped": findings.checks.dropped,
         **conversation(repository, issue, pull_number, since),
     }
+
+
+def scan_reasons(
+    pull: dict[str, Any],
+    findings: Findings,
+    history: rounds_of.RoundHistory,
+    *,
+    repository: str,
+) -> list[str]:
+    """Why a scan gives the pull request a round, or ``Skip`` when it does not."""
+    reasons = outstanding(pull, findings, repository=repository, since=history.since)
+    if not reasons:
+        raise Skip("nothing outstanding")
+    # After a handoff the threads the agent disputed stay open on
+    # purpose; a maintainer's word, not the threads or the checks,
+    # resumes rounds.
+    if history.last_verdict == "handoff" and not any(
+        "maintainer commented" in reason for reason in reasons
+    ):
+        raise Skip("handed back to a maintainer; awaiting their comment")
+    return reasons
 
 
 def issue_packet(repository: str, issue: int) -> dict[str, Any]:

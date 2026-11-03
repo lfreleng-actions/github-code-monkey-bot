@@ -175,4 +175,6 @@ def round_note(check: Check) -> str:
     if check.task != "revise":
         return ""
     base = "rebased onto the default branch" if check.rebased else "on its base"
-    return f"Round {check.round} of revision, {base}.\n\n"
+    failing = policy.failing_checks_text(list(check.failing_checks))
+    checks = f" It set out to fix the failing checks: {failing}." if failing else ""
+    return f"Round {check.round} of revision, {base}.{checks}\n\n"

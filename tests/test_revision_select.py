@@ -185,7 +185,6 @@ class BuildEntryTest(RevisionCase):
         self.assertNotIn("state", entry)
         self.assertNotIn("assignees", entry)
 
-    @unittest.expectedFailure
     def test_failing_check_alone_brings_a_round(self) -> None:
         """A clean head with a failing check is work outstanding for a scan."""
         named = self.build(explicit=True)
@@ -208,7 +207,6 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual(entry["checks"], [failing])
         self.assertEqual(entry["checks_dropped"], 2)
 
-    @unittest.expectedFailure
     def test_excluded_failing_checks_bring_no_round(self) -> None:
         """A failing check on the exclusion list is carried but is not work."""
         self.checks = check_reads.CheckPacket([{"name": "Excluded"}], 0, 0)
@@ -216,7 +214,6 @@ class BuildEntryTest(RevisionCase):
             self.build(explicit=False)
         self.assertEqual(self.build(explicit=True)["checks"], [{"name": "Excluded"}])
 
-    @unittest.expectedFailure
     def test_failing_checks_do_not_resume_after_a_handoff(self) -> None:
         """After a handoff a maintainer's word, not a failing check, resumes."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")

@@ -371,7 +371,6 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("round cap of 10", text)
         self.assertIn("a human must take over", text)
 
-    @unittest.expectedFailure
     def test_revision_round_comment_names_the_failing_checks(self) -> None:
         """A round lists the failing checks it set out to fix, made safe."""
         result = result_json(

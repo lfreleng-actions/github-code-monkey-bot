@@ -1731,7 +1731,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertIn("inputs.mode != 'select'", condition)
         self.assertIn("inputs.github_app_client_id == ''", condition)
 
-    @unittest.expectedFailure
     def test_read_mint_reads_checks(self) -> None:
         """A revision round reads the head's failing checks (DESIGN.md 20.1).
 

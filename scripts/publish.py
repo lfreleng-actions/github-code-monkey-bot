@@ -103,6 +103,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "round": check.get("round") or 0,
         "pull_number": check.get("pull_number") or None,
         "round_summary": check.get("round_summary") or None,
+        "failing_checks": list(cast("list[Any]", check.get("failing_checks") or [])),
         "collected_at": check.get("collected_at") or None,
     }
 
