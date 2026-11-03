@@ -216,6 +216,25 @@ def comment_safe(text: str) -> str:
     return html.escape(flat, quote=False)
 
 
+# A check name in a round note: the selection bounds the packet, and
+# a note names each run briefly.
+MAX_CHECK_NAME = 100
+
+
+def failing_checks_text(names: list[Any]) -> str:
+    """The failing checks a round set out to fix, as one safe line, or empty.
+
+    Check names come from the workflows of the code under review, so
+    each is flattened and escaped like agent text, and bounded.
+    """
+    safe = [
+        comment_safe(name[:MAX_CHECK_NAME])
+        for name in names
+        if isinstance(name, str) and name.strip()
+    ]
+    return ", ".join(safe)
+
+
 MENTION_RE = re.compile(r"(?<![\w@/.-])@(?=[A-Za-z0-9][A-Za-z0-9-]*(?:/[\w.-]+)?)")
 
 

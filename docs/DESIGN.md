@@ -1178,6 +1178,7 @@ OAuth and webhooks stay off. Its permissions:
 | Issues | write | select, publish | Scan; one comment per outcome (§8 step 10) |
 | Issue fields | read | select | Priority |
 | Issue types | read | select | Type |
+| Checks | read | select | A revision's failing check runs and their annotations (§20.1); no job logs |
 | Contents | write | publish | Fork sync, branch, commits (fork organisations alone) |
 | Pull requests | write | publish | Open PR, label |
 | Workflows | write | publish | Fork sync over upstream workflow changes; commits that touch `.github/workflows/` (fork organisations alone) |
@@ -1206,6 +1207,11 @@ not exist until the run creates it.
 | Contents | write | Sync the fork, branch, commits |
 | Workflows | write | Fork sync; commits under `.github/workflows/` |
 | Administration | write | Create a missing fork |
+
+The App holds no Actions permission and no mint requests one: job
+logs stay out of every trusted job (§20.1). Checks: read is a later
+grant, so the installation must accept the App's permission update
+before a run that requests it, or the select job's mint fails.
 
 The select job mints a token with the read levels alone, org-wide by
 default and scoped to the named repositories plus the guidance
@@ -1471,6 +1477,7 @@ scripts/copilot_review.py                request and await the review
 scripts/review_request.py                the request and its refusal notice
 scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies
+scripts/check_reads.py                   its head's failing checks
 scripts/round_reads.py                   the issue's rounds and new comments
 scripts/revision_select.py               revision candidates and entries
 scripts/revision_scan.py                 the owner-wide scan, ranked
@@ -1687,9 +1694,17 @@ a maintainer's kept before a reviewer's, `replies_dropped`,
 `maintainer_latest` and `maintainer_undated`, read over the whole
 thread before the bound trims the replies), `threads_dropped`,
 `review` (the §8 step 11 record of the head, with the body),
-`pr_comments`, `new_comments` and `new_pr_comments`; an issue entry
-has `task: "issue"` and `checkout_sha` equal to `base_sha`. Beside it
-the select job writes `matrix.json`
+`checks` (the head's failing check runs, as `{name, conclusion,
+app, details_url, title, summary, annotations}`, each annotation
+`{level, path, line, message}` at level `failure` or `warning`;
+empty when none failed), `checks_dropped` (the failing runs, and
+the annotations of carried runs, the bounds left out: at most 30
+runs, 10 annotations each, 2 KiB per title, summary and message,
+32 KiB in all; annotations past the third page of a run count
+unread, whatever their level), `pr_comments`, `new_comments` and
+`new_pr_comments`; an issue entry has `task: "issue"` and
+`checkout_sha` equal to `base_sha`. Beside it the select job writes
+`matrix.json`
 (`{"include": [{key, repository, repo_name, number, base_sha,
 branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
 head_sha, pull_number}]}`), `agents.md` (the guidance bytes whose
@@ -2010,12 +2025,19 @@ Three ways in, all through the select job and its read token:
   App's open pull requests and selects those with **work
   outstanding**: an unresolved review thread whose opening comment
   comes from Copilot or an `OWNER`/`MEMBER`; a Copilot review of the
-  head with findings; or an `OWNER`/`MEMBER` comment on the issue, the
+  head with findings; a check run on the head whose conclusion is
+  `failure`, `timed_out` or `startup_failure`, recorded as `failing
+  checks` among the round's reasons; or an `OWNER`/`MEMBER` comment
+  on the issue, the
   pull request or an unresolved review thread, an opener or a reply,
-  after the bot's latest footer. A head with no
+  after the bot's latest footer. The predicate leaves out, by name, a
+  check the head's own round cannot influence (`check_reads.EXCLUDED`,
+  empty today); the round cap bounds a check that fails for reasons outside
+  the pull request. A head with no
   review yet waits for the gate; a clean head with nothing else needs
-  no round; and after a handoff (§20.3) the disputed threads bring no
-  round on their own, a maintainer's comment does. Revisions come
+  no round; and after a handoff (§20.3) neither the disputed threads
+  nor a failing check brings a round on its own, a maintainer's
+  comment does. Revisions come
   before new issues, ranked by the originating issue's priority and
   then the pull request's age, the scan reading each hit's pull
   request and issue for the rank before the cap, under the same cap and the same
@@ -2077,14 +2099,23 @@ maintainer's word after the watermark whichever thread or reply
 holds it; the threads holding one go first into the bounded packet,
 and within a thread a maintainer's replies outrank a reviewer's for
 the places the bound allows. The entry carries the
-head's review verdict, the maintainers' comments on the pull request,
+head's review verdict; the head's failing checks, read from the
+public check runs API (`filter=latest`, every page, failing closed
+past ten) with the failure and warning annotations of each, bounded as
+the threads are; the maintainers' comments on the pull request,
 the maintainers' comments on the issue and the pull request since the
 last round, newest first within the bounds and one oversized comment
 hiding none behind it, so the instruction that caused the round
 reaches the agent whatever the count of older comments, the earlier
 round
 summaries and the issue packet as before, all as data, bounded as
-the issue comments are. The read mint scopes to the
+the issue comments are. An annotation names the failing step,
+seldom its cause, which sits in the job log. The select
+job reads no log: logs need Actions: read and redirect to a rotating
+storage host outside the select job's egress allow-list, so the job
+records which checks failed and where, and the session, which has
+the checkout and the toolchain, recovers why (§20.2). The read mint
+adds Checks: read for this and scopes to the
 named repositories as for issues.
 
 ### 20.2 The author job
@@ -2099,7 +2130,13 @@ multi-commit branch), keep the chain on `base_sha` unless a
 maintainer asked for a rebase or the pull request is not mergeable,
 and then rebase onto `rebase_sha` and no other commit. The manifest
 (§18.2) adds a reply per thread with whether to resolve it, the pull
-request body and a round summary. The bundle step reads the base the
+request body and a round summary. The prompt describes the failing
+checks as data, never instructions, since their names, summaries and
+annotations come from the code under review, and asks the session to
+reproduce each failing job from the repository's workflow
+definitions, record what it ran in the manifest's `commands`, and
+report a failure it cannot reproduce or attribute to the change in
+the pull request body rather than fix it blind. The bundle step reads the base the
 agent chose, accepting nothing but the two recorded values on the
 command line. The trust boundary of §4 stands: the job holds no
 write credential and the fork is public.
@@ -2111,7 +2148,11 @@ recorded base the manifest names and rejects any other; types each
 reply and binds it to a thread the selection carried, defusing
 mentions and bounding the text; requires the round summary; and
 warns of a thread left unanswered, which stays open for a human. It
-records a rebase, and the description's round line says so. A
+records a rebase, and the description's round line says so; that
+line, and the round's issue comment, also name the failing checks
+the selection carried, escaped and bounded as agent text is, since
+a check's name comes from the code under review. The review gate
+(§8) still waits for Copilot alone, not for CI. A
 manifest outcome of `handoff`, open to a revision alone, says the
 agent changed nothing because it disputes every remaining finding or
 needs a human's decision: the check reads its replies the same way,
@@ -2224,7 +2265,9 @@ credential and never the App key. The publisher gains no permission:
 replies, resolves and the description edit are writes to the
 target's pull requests, which the pull request token already
 covered, and the branch move is a write to the fork, which the fork
-token already covered. The compare-and-swap is the new guard: the
+token already covered. The select job's read mint gains Checks:
+read, for the head's failing checks; no mint gains Actions, so no
+trusted job reads a job log. The compare-and-swap is the new guard: the
 publisher moves an existing branch to the chain it verified alone,
 and from the head the trusted selection recorded alone. The agent's
 replies are text from outside, defused and bounded like its pull

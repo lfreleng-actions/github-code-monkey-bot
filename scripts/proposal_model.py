@@ -74,6 +74,9 @@ class Check:
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
     round_summary: str = ""
+    # The names of the head's failing checks the selection carried:
+    # what the round set out to fix besides the threads.
+    failing_checks: list[str] = field(default_factory=lambda: cast("list[str]", []))
     # When the selection read the issue's comments: the watermark the
     # round footer carries, so a comment posted during the run is new
     # work for the next round.
@@ -115,6 +118,10 @@ class Check:
                 {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
                 for t in cast("list[dict[str, Any]]", entry.get("threads") or [])
             ]
+            check.failing_checks = [
+                str(c["name"])
+                for c in cast("list[dict[str, Any]]", entry.get("checks") or [])
+            ]
         return check
 
     def to_json(self) -> dict[str, Any]:
@@ -153,6 +160,7 @@ class Check:
             "round": self.round,
             "responses": self.responses,
             "round_summary": self.round_summary,
+            "failing_checks": self.failing_checks,
             "collected_at": self.collected_at,
             "session": self.session,
             "retry_of": self.retry_of,

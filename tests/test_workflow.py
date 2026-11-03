@@ -1625,6 +1625,15 @@ class MintProvenanceContracts(ReusableWorkflowCase):
                 )
                 self.assertEqual(owner, expected)
 
+    def test_no_mint_requests_actions(self) -> None:
+        """No App token reads job logs: no mint requests Actions at any level."""
+        for job, step in self.mints():
+            with self.subTest(job=job, mint=step["id"]):
+                with_ = cast(dict[str, Any], step["with"])
+                env = cast(dict[str, Any], step.get("env") or {})
+                self.assertNotIn("permission-actions", with_)
+                self.assertNotIn("INPUT_PERMISSION-ACTIONS", env)
+
     def test_administration_belongs_to_the_creation_mint_alone(self) -> None:
         """Only the mint that forks a missing repository may administer."""
         for job, step in self.mints():
@@ -1721,6 +1730,14 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertIn("!inputs.dry_run", condition)
         self.assertIn("inputs.mode != 'select'", condition)
         self.assertIn("inputs.github_app_client_id == ''", condition)
+
+    def test_read_mint_reads_checks(self) -> None:
+        """A revision round reads the head's failing checks (DESIGN.md 20.1).
+
+        Never the job logs, which need Actions: no mint requests it.
+        """
+        with_ = cast(dict[str, Any], self.step("select", "app-token")["with"])
+        self.assertEqual(with_["permission-checks"], "read")
 
     def test_select_resolves_fork_organisations(self) -> None:
         """Selection carries the committed fork mapping into every entry."""

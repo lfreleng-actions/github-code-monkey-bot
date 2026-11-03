@@ -590,6 +590,9 @@ jobs:
           permission-metadata: 'read'
           permission-contents: 'read'
           permission-pull-requests: 'read'
+          # A revision's failing check runs and their annotations; job
+          # logs need Actions: read, which no mint requests.
+          permission-checks: 'read'
 
       # The slug the mint returns is the one signal that says whose key
       # was wired in; a probe with the token proves it cannot write.
