@@ -37,6 +37,7 @@ CRON = WORKFLOWS / "code-monkey-cron.yaml"
 TESTING = WORKFLOWS / "testing.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
 REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
+TOOLCHAIN_PIN = WORKFLOWS.parents[1] / "tools" / "copilot-cli"
 
 PLACEHOLDER_NAME = "Code Monkey"
 PLACEHOLDER_EMAIL = "code-monkey@example.invalid"
@@ -2619,6 +2620,27 @@ class SetupUvContracts(unittest.TestCase):
                         self.assertEqual(step["env"], SETUP_UV_ENV)
                         self.assertNotIn("python-version", step["with"])
         self.assertGreater(found, 0)
+
+
+class ToolchainPinContracts(unittest.TestCase):
+    """The author toolchain is pinned by a committed npm lockfile."""
+
+    def test_pin_directory_holds_manifest_lockfile_and_npmrc(self) -> None:
+        """npm ci needs all three; the workflow copies exactly these."""
+        for name in ("package.json", "package-lock.json", ".npmrc"):
+            with self.subTest(name=name):
+                self.assertTrue((TOOLCHAIN_PIN / name).is_file())
+
+    def test_manifest_pins_exact_versions_the_lockfile_records(self) -> None:
+        """No range in package.json, and the lockfile matches it."""
+        manifest = json.loads((TOOLCHAIN_PIN / "package.json").read_text())
+        dependencies = cast(dict[str, str], manifest["dependencies"])
+        self.assertEqual(set(dependencies), {"@github/copilot", "aislop"})
+        for name, version in dependencies.items():
+            with self.subTest(name=name):
+                self.assertRegex(version, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+        lock = json.loads((TOOLCHAIN_PIN / "package-lock.json").read_text())
+        self.assertEqual(lock["packages"][""]["dependencies"], dependencies)
 
 
 if __name__ == "__main__":
