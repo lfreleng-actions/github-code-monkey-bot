@@ -732,6 +732,15 @@ caller may pass `audit` to diagnose a blocked endpoint. The cron
 caller's `options` job runs in `block` mode too, loading the same
 coordinate it forwards, without a token or a summary.
 
+Each loader also passes the caller's supplemental allow-list, its
+unpinned flag and any inline extra endpoints, empty by default, so
+no trusted job blocks an endpoint the caller allowed. Naming a
+supplemental list makes it required, so a missing list fails at the
+loader rather than at the first blocked connection. The pre-flight
+pin check covers the baseline alone: a same-organisation
+supplemental may follow its default branch, a rule the action
+enforces.
+
 ## 8. The Publish Job
 
 A trusted matrix job over the same selection, after the whole
@@ -1037,6 +1046,8 @@ For each selected issue:
 
 ### 9.1 Reusable workflow (`code-monkey.yaml`)
 
+<!-- markdownlint-disable MD013 -->
+
 | Input | Type | Default | Notes |
 | ----- | ---- | ------- | ----- |
 | `org` | string | required | Target owner |
@@ -1059,11 +1070,16 @@ For each selected issue:
 | `exclude_repos` | string | `''` | Same form; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
-| `egress_policy` | string | `block` | Trusted jobs; author is always `audit` |
-| `egress_allow_config` | string | `''` | Allow-list action coordinate |
+| `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
+| `harden_runner_allowlist` | string | `''` | Allow-list action coordinate |
+| `harden_runner_supplemental_allowlist` | string | `''` | Merged with the baseline; required when set |
+| `harden_runner_supplemental_unpinned` | boolean | `false` | Same-org supplemental may omit `@ref` |
+| `harden_runner_extra_endpoints` | string | `''` | Inline `host[:port]` tokens merged in |
 | `github_app_client_id` | string | `''` | Empty limits runs to dry-run |
 | `assets_repository` | string | this repo | Prompt and scripts |
 | `assets_ref` | string | `''` | Resolved to a SHA in select |
+
+<!-- markdownlint-enable MD013 -->
 
 Secrets: `copilot_token` (model PAT, §10.2), `github_app_private_key`
 (select and publish alone), `copilot_review_token` (the review

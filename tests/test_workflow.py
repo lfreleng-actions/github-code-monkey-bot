@@ -316,13 +316,50 @@ class TopLevelContracts(ReusableWorkflowCase):
                 loaders = self.actions(job, BLOCK_ACTION)
                 self.assertEqual(len(loaders), 1)
                 self.assert_expression(
-                    loaders[0]["with"]["config"], "inputs.egress_allow_config"
+                    loaders[0]["with"]["config"], "inputs.harden_runner_allowlist"
                 )
                 harden = self.action(job, HARDEN_RUNNER)
                 self.assert_expression(
                     harden["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
                 )
         self.assertEqual(self.actions("author", BLOCK_ACTION), [])
+
+    def test_every_loader_passes_the_supplemental_inputs(self) -> None:
+        """Every loader forwards all five allow-list keys, even when empty.
+
+        A key passed at one site and not another would leave that job
+        blocking endpoints the caller allowed.
+        """
+        expected = {
+            "config": "inputs.harden_runner_allowlist",
+            "supplemental_config": "inputs.harden_runner_supplemental_allowlist",
+            "supplemental_required": (
+                "inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false'"
+            ),
+            "supplemental_unpinned": (
+                "inputs.harden_runner_supplemental_unpinned && 'true' || 'false'"
+            ),
+            "extra_endpoints": "inputs.harden_runner_extra_endpoints",
+        }
+        loaders = [
+            (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
+        ]
+        self.assertEqual(len(loaders), 3)
+        for job, step in loaders:
+            with_ = cast(dict[str, Any], step["with"])
+            self.assertEqual(set(with_) - {"allow_list_summary"}, set(expected))
+            for key, value in expected.items():
+                with self.subTest(job=job, key=key):
+                    self.assert_expression(with_[key], value)
+            with self.subTest(job=job, key="if"):
+                self.assert_expression(
+                    step["if"], "inputs.harden_runner_egress == 'block'"
+                )
+            harden = self.action(job, HARDEN_RUNNER)
+            with self.subTest(job=job, key="egress-policy"):
+                self.assert_expression(
+                    harden["with"]["egress-policy"], "inputs.harden_runner_egress"
+                )
 
 
 class AuthorJobContracts(ReusableWorkflowCase):
@@ -2056,8 +2093,11 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "exclude_repos",
                 "guidance_repository",
                 "guidance_ref",
-                "egress_policy",
-                "egress_allow_config",
+                "harden_runner_egress",
+                "harden_runner_allowlist",
+                "harden_runner_supplemental_allowlist",
+                "harden_runner_supplemental_unpinned",
+                "harden_runner_extra_endpoints",
                 "github_app_client_id",
                 "assets_repository",
                 "assets_ref",
@@ -2205,8 +2245,8 @@ class CronCallerContracts(WorkflowCase):
         self.assert_expression(with_["assets_ref"], "github.sha")
         # Trusted jobs hold App tokens: block mode with the pinned
         # organisation allow-list, never audit, on the live caller.
-        self.assertEqual(with_["egress_policy"], "block")
-        self.assertRegex(str(with_["egress_allow_config"]), r"^@[0-9a-f]{40}$")
+        self.assertEqual(with_["harden_runner_egress"], "block")
+        self.assertRegex(str(with_["harden_runner_allowlist"]), r"^@[0-9a-f]{40}$")
         secrets = cast(dict[str, Any], job["secrets"])
         self.assertEqual(
             set(secrets),
@@ -2230,7 +2270,7 @@ class CronCallerContracts(WorkflowCase):
         self.assertTrue(is_action(steps[0], BLOCK_ACTION))
         self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
         loader = self.action("options", BLOCK_ACTION)
-        forwarded = self.jobs["code-monkey"]["with"]["egress_allow_config"]
+        forwarded = self.jobs["code-monkey"]["with"]["harden_runner_allowlist"]
         self.assertEqual(loader["with"]["config"], forwarded)
         self.assertEqual(loader["with"]["allow_list_summary"], "false")
         harden = cast(dict[str, Any], steps[1]["with"])
@@ -2266,7 +2306,7 @@ class CronSlackContracts(WorkflowCase):
 
     def test_slack_jobs_harden_first_in_block_mode(self) -> None:
         """The loader and harden-runner lead, with the forwarded allow-list."""
-        forwarded = self.jobs["code-monkey"]["with"]["egress_allow_config"]
+        forwarded = self.jobs["code-monkey"]["with"]["harden_runner_allowlist"]
         for name in SLACK_JOBS:
             with self.subTest(job=name):
                 steps = self.steps(name)
