@@ -5,6 +5,6 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@github/copilot": "1.0.83",
-    "aislop": "0.14.1"
+    "aislop": "0.18.1"
   }
 }
