@@ -659,7 +659,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
             line_number(raw, "cd workspace"), line_number(raw, "copilot \\")
         )
 
-    @unittest.expectedFailure
     def test_toolchain_installs_from_the_committed_lockfile(self) -> None:
         """npm ci from the verified assets checkout's lockfile, never a version."""
         self.assertNotIn("COPILOT_CLI_VERSION", self.workflow.get("env") or {})
@@ -671,7 +670,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertNotIn("npm install -g", script)
         self.assertIn("uv tool install 'prek==0.4.10'", script)
 
-    @unittest.expectedFailure
     def test_no_workflow_installs_an_npm_package_by_version(self) -> None:
         """A version pin leaves its dependency tree to resolve live."""
         for path in sorted(WORKFLOWS.glob("*.yaml")):

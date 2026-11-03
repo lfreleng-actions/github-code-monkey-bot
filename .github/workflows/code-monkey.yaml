@@ -203,9 +203,6 @@ concurrency:
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
 
-env:
-  COPILOT_CLI_VERSION: '1.0.83'
-
 jobs:
   select:
     name: 'Select'
@@ -824,8 +821,20 @@ jobs:
           enable-cache: false
 
       - name: 'Install agent toolchain'
-        run: |  # zizmor: ignore[adhoc-packages] exact versions pinned
-          npm install -g "@github/copilot@$COPILOT_CLI_VERSION" 'aislop@0.14.1'
+        env:
+          PIN_DIR: 'monkey-assets/tools/copilot-cli'
+        run: |
+          # npm ci from the committed lockfile rather than installing a
+          # version: the lockfile pins the whole tree by integrity
+          # hash. The pin comes from the verified assets checkout and
+          # installs outside anything the session reads.
+          dest="$RUNNER_TEMP/copilot-cli"
+          mkdir -p "$dest"
+          cp "$PIN_DIR/package.json" "$PIN_DIR/package-lock.json" \
+            "$PIN_DIR/.npmrc" "$dest/"
+          cd "$dest"
+          npm ci --ignore-scripts --no-audit --no-fund
+          echo "$dest/node_modules/.bin" >> "$GITHUB_PATH"
           uv tool install 'prek==0.4.10'
 
       - name: 'Prepare workspace and packet'
