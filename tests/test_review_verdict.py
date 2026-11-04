@@ -1519,6 +1519,71 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertEqual(verdict.verdict, "findings")
 
+    def test_backticked_entry_with_any_path_counts(self) -> None:
+        """A path in code counts whatever it holds: a stated zero hides none."""
+        for path in ("src/café.py", "src/my file.py", "src/c++.py", "src/a*b_.py"):
+            for entry in (
+                f"**`{path}:12`**",
+                f"- **`{path}:12`** note",
+                f"<strong>`{path}:12`</strong>",
+                f"- <strong>`{path}:12`</strong> note",
+                f"__`{path}:12`__",
+                f"___`{path}:12`___",
+                f"**``{path}:12``**",
+            ):
+                for section in (
+                    "\n<details>\n<summary>Suppressed comments (0)</summary>\n\n"
+                    + entry
+                    + "\n* finding\n</details>\n",
+                    "\n### Suppressed comments (0)\n\n" + entry + "\n",
+                ):
+                    with self.subTest(entry=entry, section=section[:12]):
+                        verdict = verdicts.classify(
+                            BODIES["v2-green-clean"] + section, 0
+                        )
+                        self.assertEqual(verdict.suppressed, 1)
+                        self.assertEqual(verdict.verdict, "findings")
+
+    def test_entry_span_that_cannot_be_kept_fails_closed(self) -> None:
+        """A path and line in code that cannot be kept is never blanked silently."""
+        for entry in (
+            "**`src/<b>.py:12`**",
+            "<strong>`a>b.py:1`</strong>",
+            "__`<details>:3`__",
+            "**``src/a`b.py:12``**",
+            "<strong>``a`b.py:1``</strong>",
+            "__``a`b.py:3``__",
+            "**`src/x.py:12 `**",
+            "**`` src/x.py:12 ``**",
+        ):
+            text = (
+                BODIES["v2-green-clean"]
+                + "\n### Suppressed comments (0)\n\n"
+                + entry
+                + "\n"
+            )
+            with self.subTest(entry=entry):
+                verdict = verdicts.classify(text, 0)
+                self.assertEqual(verdict.verdict, "findings")
+                self.assertIn(
+                    "review body holds a code span the classifier does not read",
+                    verdict.reasons,
+                )
+
+    def test_code_span_in_prose_is_still_blanked(self) -> None:
+        """Inline code that is no entry names no assessment and counts nothing."""
+        for prose in (
+            "\nSee `### 🟡 Changes recommended` in the docs.\n",
+            "\nSee `**scripts/x.py:12**` for the form.\n",
+            "\nSee `<details>` and `a > b` here.\n",
+            "\nSee `<!-- x -->` and `<script>` here.\n",
+        ):
+            with self.subTest(prose=prose.strip()[:16]):
+                verdict = verdicts.classify(BODIES["v2-green-clean"] + prose, 0)
+                self.assertEqual(verdict.verdict, "clean")
+                self.assertEqual(verdict.assessment, "approval")
+                self.assertEqual(verdict.suppressed, 0)
+
     def test_link_reference_definition_fails_closed(self) -> None:
         """A reference definition may swallow the lines after it as a title."""
         text = (

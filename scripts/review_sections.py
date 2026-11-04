@@ -25,7 +25,11 @@ MAX_COUNT_DIGITS = 9
 # first; whitespace and emphasis may sit around and between the
 # label's words.
 STRONG_TAGS = re.compile(r"</?strong>", re.I)
-STRONG_ENTRY = re.compile(r"<strong>(`*[^<*`\n]+:\d+`*)</strong>", re.I)
+# A path in code may hold anything but a backtick, as review_text's
+# ENTRY_SPAN keeps it; outside code, no asterisk or tag.
+STRONG_ENTRY = re.compile(
+    r"<strong>((`+)[^`\n<]*:\d+\2|`*[^<*`\n]+:\d+`*)</strong>", re.I
+)
 LABEL_NOISE = r"(?:\s|[*_])"
 SUPPRESSED_HEAD = re.compile(
     # One space after the hashes; the noise reads the rest, so the two
@@ -67,8 +71,10 @@ SUPPRESSED_ENTRY = re.compile(
     # A path may hold underscores, a pair included; the underscore
     # form ends at the pair that follows the line number, whatever
     # comes after it, so long as it is not a third underscore.
-    # Bold, or bold and italic, by asterisks or underscores.
-    r"(?:\*{2,3}`*[^*`\n]+:\d+`*\*{2,3}|_{2,3}`*[^`\n]+?:\d+`*_{2,3}(?!_))",
+    # Bold, or bold and italic, by asterisks or underscores; a path in
+    # code, as review_text's ENTRY_SPAN keeps it, may hold either.
+    r"(?:\*{2,3}(?:(`+)[^`\n]*:\d+\1|`*[^*`\n]+:\d+`*)\*{2,3}"
+    r"|_{2,3}(?:(`+)[^`\n]*:\d+\2|`*[^`\n]+?:\d+`*)_{2,3}(?!_))",
     re.M,
 )
 # Hashes inside a strong tag are text; with the tag stripped they would
