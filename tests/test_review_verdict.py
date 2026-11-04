@@ -1519,7 +1519,6 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.suppressed, 1)
                 self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_backticked_entry_with_any_path_counts(self) -> None:
         """A path in code counts whatever it holds: a stated zero hides none."""
         for path in ("src/café.py", "src/my file.py", "src/c++.py", "src/a*b_.py"):
@@ -1545,7 +1544,6 @@ class UntrustedTextTest(unittest.TestCase):
                         self.assertEqual(verdict.suppressed, 1)
                         self.assertEqual(verdict.verdict, "findings")
 
-    @unittest.expectedFailure
     def test_entry_span_that_cannot_be_kept_fails_closed(self) -> None:
         """A path and line in code that cannot be kept is never blanked silently."""
         for entry in (

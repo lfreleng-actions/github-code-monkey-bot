@@ -21,9 +21,16 @@ import re
 BACKTICKS = re.compile(r"`+")
 # What stands in for a closed span: a letter opens nothing in Markdown.
 SPAN_FILL = "x"
-# A span that is a path and line alone, as a suppressed entry's is:
-# kept when bold wraps it, so the count can read it.
-ENTRY_SPAN = re.compile(r"(`+)[A-Za-z0-9_./-]+:\d+\1")
+# A span that ends in a line number, as a suppressed entry's does:
+# kept whatever its path holds, so the count can read it, unless an
+# angle bracket in it could carry HTML once kept or a backtick in it
+# would end the entry patterns' code early. Such a span fails the
+# body closed rather than be blanked and hide a finding, as does one
+# with spaces before its closing run, which still reads as an entry.
+# A closed span holds no run of its own fence's length, so a shorter
+# one inside it is content; the fence is read whole, in one pass.
+ENTRY_LIKE_SPAN = re.compile(r"(`+)(?!`).*:\d+[ \t]*\1")
+ENTRY_SPAN = re.compile(r"(`+)[^`\n<>]*:\d+\1")
 COMMENT_OPEN = "<!--"
 # <!DOCTYPE, <![CDATA[ and <?xml: raw HTML blocks the classifier
 # does not read, as it does not read comments.
@@ -191,8 +198,11 @@ def tag_left_open(line: str) -> bool:
             return True
 
 
-def mask_spans(line: str) -> tuple[str, bool]:
-    """The line with each closed code span blanked, and whether one is left open.
+def mask_spans(line: str) -> tuple[str, bool, bool]:
+    """The line with each closed code span blanked, and what it could not mask.
+
+    The second value says a span is left open, the third that a span
+    looked like a suppressed entry but could not be kept.
 
     Inline code is prose: whatever a closed span holds is text to the
     reader, so the HTML and comment checks run on the line without
@@ -214,6 +224,7 @@ def mask_spans(line: str) -> tuple[str, bool]:
         latest[length] = index
     parts: list[str] = []
     left_open = False
+    unkept = False
     i = 0
     index = 0
     while index < len(runs):
@@ -231,15 +242,16 @@ def mask_spans(line: str) -> tuple[str, bool]:
             if ENTRY_SPAN.fullmatch(span):
                 # A path and line in code is a suppressed entry as much
                 # as one in text, whatever bold wraps it; the span's
-                # text stays for the count, since it holds no HTML or
-                # Markdown.
+                # text stays for the count, since it holds no HTML, and
+                # the checks after the masking read it as written.
                 parts.append(span)
             else:
+                unkept = unkept or bool(ENTRY_LIKE_SPAN.fullmatch(span))
                 parts.append(SPAN_FILL * (end - opener.start()))
             i = end
             index = closer + 1
     parts.append(line[i:])
-    return "".join(parts), left_open
+    return "".join(parts), left_open, unkept
 
 
 def read_line(line: str) -> tuple[str, set[str]]:
@@ -247,18 +259,20 @@ def read_line(line: str) -> tuple[str, set[str]]:
 
     Inline code is prose, so a comment opener or a tag inside a closed
     span is fine, and the line comes back with its closed spans
-    blanked: a quoted heading or label inside one names no assessment
-    and counts no finding. A span left open on its line may run on to
-    later lines and show or hide anything, and a comment opener
-    outside code may hide anything to its close: either fails the
+    blanked, a suppressed entry's path and line apart: a quoted heading
+    or label inside one names no assessment and counts no finding. A
+    span left open on its line may run on to later lines and show or
+    hide anything, a span that looks like an entry but cannot be kept
+    would hide a finding if blanked, and a comment opener
+    outside code may hide anything to its close: each fails the
     body closed, as do an escaped backtick, a fence run off the line
     start, a link reference definition and any HTML tag the real
     bodies never carry. Parsing these instead is a losing game, since
     each needs another rule, and Copilot writes none of them.
     """
     problems: set[str] = set()
-    masked, left_open = mask_spans(line)
-    if left_open or ESCAPED_BACKTICK in line:
+    masked, left_open, unkept = mask_spans(line)
+    if left_open or unkept or ESCAPED_BACKTICK in line:
         problems.add(UNREADABLE_SPAN)
     if STRAY_FENCE.search(masked) or LINK_REFERENCE.match(masked):
         problems.add(UNREADABLE_MARKDOWN)
