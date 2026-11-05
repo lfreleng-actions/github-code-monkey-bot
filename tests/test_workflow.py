@@ -1165,6 +1165,28 @@ class ReviewGateContracts(ReusableWorkflowCase):
             "github.event_name != 'workflow_dispatch' || inputs.request_review",
         )
 
+    @unittest.expectedFailure
+    def test_probe_reads_mergeability_after_the_review_gate(self) -> None:
+        """The probe follows the wait, precedes the comment and only reads (#104)."""
+        step = self.step("publish", "merge-probe")
+        self.assertEqual(step["name"], "Probe mergeability")
+        condition = unwrap(str(step["if"]))
+        self.assertIn("!cancelled()", condition)
+        self.assertIn("steps.open.outcome == 'success'", condition)
+        self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
+        self.assertEqual(set(step["env"]), {"GH_TOKEN"})
+        self.assertNotIn("secrets.", dumped(step))
+        script = flatten(step["run"])
+        self.assertIn("scripts/merge_state.py", script)
+        self.assertIn("--result artefacts/result.json", script)
+        self.assertIn("--check artefacts/check.json", script)
+        self.assertIn("--output artefacts/result.json", script)
+        order = [
+            self.position("publish", name)
+            for name in ("open", "review", "merge-probe", "comment-token")
+        ]
+        self.assertEqual(order, sorted(order))
+
 
 class PublishJobContracts(ReusableWorkflowCase):
     """The trusted publisher: verify before fetch, App tokens per repository."""
@@ -2493,7 +2515,9 @@ class CronSlackContracts(WorkflowCase):
             digest["blocks"][1]["text"]["text"], "${{ steps.digest.outputs.body }}"
         )
 
-    def digest(self, pulls: str, result: str = "success") -> dict[str, str]:
+    def digest(
+        self, pulls: str, result: str = "success", unmergeable: str | None = None
+    ) -> dict[str, str]:
         """Run the digest step's script and return what it wrote to its outputs."""
         step = self.step("notify", "digest")
         self.assert_expression(
@@ -2512,6 +2536,8 @@ class CronSlackContracts(WorkflowCase):
                 "RUN_RESULT": result,
                 "GITHUB_OUTPUT": str(output),
             }
+            if unmergeable is not None:
+                env["UNMERGEABLE"] = unmergeable
             subprocess.run(
                 ["bash", "-c", str(step["run"])],
                 env=env,
@@ -2558,6 +2584,34 @@ class CronSlackContracts(WorkflowCase):
         self.assertEqual(lines[-1], "... and 10 more")
         self.assertLessEqual(len(out["body"]), 2600)
         self.assertEqual(out["text"], "🐒 Code Monkey: 60 pull requests for review")
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_digest_lists_conflicting_links_apart(self) -> None:
+        """Ready links first; conflicting ones under their own heading (#104)."""
+        step = self.step("notify", "digest")
+        self.assert_expression(
+            step["env"]["UNMERGEABLE"],
+            "needs.code-monkey.outputs.unmergeable_pull_requests",
+        )
+        ready, conflict = PULL_URL.format("a", 1), PULL_URL.format("b", 2)
+        stray = PULL_URL.format("c", 3)
+        out = self.digest(
+            json.dumps([ready, conflict]),
+            unmergeable=json.dumps([conflict.upper().replace("HTTPS", "https"), stray]),
+        )
+        lines = out["body"].split("\\n")
+        self.assertEqual(lines[0], f"<{ready}>")
+        self.assertEqual(lines[1], "")
+        self.assertTrue(lines[2].startswith("_Conflicting with the default branch"))
+        self.assertIn("at the round cap, by a human", lines[2])
+        self.assertEqual(lines[3:], [f"<{conflict}>"])
+        self.assertNotIn(stray, out["body"])
+        self.assertEqual(out["text"], "🐒 Code Monkey: 2 pull requests for review")
+        alone = self.digest(json.dumps([conflict]), unmergeable=json.dumps([conflict]))
+        self.assertTrue(alone["body"].startswith("_Conflicting"))
+        broken = self.digest(json.dumps([ready]), unmergeable="not json")
+        self.assertEqual(broken["body"], f"<{ready}>")
 
 
 # Free-length dispatch inputs. GitHub refuses a concurrency group name

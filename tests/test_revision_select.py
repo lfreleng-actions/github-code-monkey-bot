@@ -662,5 +662,51 @@ class HandbackSelectionTest(RevisionCase):
         self.assertIsNone(entry["antagonistic_review"])
 
 
+class ConflictSelectionTest(RevisionCase):
+    """A head that conflicts with the default branch is work (issue #104)."""
+
+    def settled(self, value: bool | None) -> Any:
+        """Patch the bounded mergeability read to answer ``value``."""
+        merge_state = import_module("merge_state")
+        answer = merge_state.Mergeability(value, None, None)
+        return patch.object(merge_state, "settle", return_value=answer)
+
+    @unittest.expectedFailure
+    def test_conflict_alone_brings_a_round(self) -> None:
+        """A clean, passing head that cannot merge is selected, and says why."""
+        self.pull = pull(mergeable=False)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["conflicts with the default branch"])
+        self.assertIs(entry["pull_request"]["mergeable"], False)
+
+    @unittest.expectedFailure
+    def test_lazy_null_is_read_again(self) -> None:
+        """A null ``mergeable`` is settled before the outstanding test."""
+        self.pull = pull(mergeable=None)
+        with self.settled(False) as settle:
+            entry = self.build(explicit=False)
+        settle.assert_called_once_with("org/alpha", 41, HEAD)
+        self.assertEqual(entry["round_reasons"], ["conflicts with the default branch"])
+        self.assertIs(entry["pull_request"]["mergeable"], False)
+
+    @unittest.expectedFailure
+    def test_unsettled_is_no_work_on_its_own(self) -> None:
+        """A ``mergeable`` that never settles spends no round."""
+        self.pull = pull(mergeable=None)
+        with (
+            self.settled(None),
+            self.assertRaisesRegex(select.Skip, "nothing outstanding"),
+        ):
+            self.build(explicit=False)
+
+    @unittest.expectedFailure
+    def test_a_settled_answer_is_not_read_again(self) -> None:
+        """A boolean from the scan's read needs no second read."""
+        with self.settled(None) as settle:
+            with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
+                self.build(explicit=False)
+        settle.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
