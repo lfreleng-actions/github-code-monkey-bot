@@ -6,9 +6,10 @@
 A revision entry sends a session back to a pull request the bot
 opened, to answer its review and push the same branch forward. It
 carries what the issue entry carries, plus the pull request, its
-unresolved threads, Copilot's verdict on the head, the head's failing
-checks, the rounds so far and the maintainers' comments on the pull
-request, all as data.
+unresolved threads, Copilot's verdict on the head, an antagonistic
+review that handed the head back, the head's failing checks, the
+rounds so far and the maintainers' comments on the pull request, all
+as data.
 Both bases are recorded: the chain's own, and the default branch's
 head, for a rebase (DESIGN.md section 20).
 """
@@ -40,11 +41,14 @@ class Skip(Exception):
 
 @dataclass(frozen=True)
 class Inputs:
-    """What every build shares: the owner, the bot and the fork mapping."""
+    """What every build shares: the owner, the bot, the forks and the reviewers."""
 
     org: str
     bot: dict[str, Any]
     fork_orgs: dict[str, Any]
+    # The antagonistic review Apps whose threads and hand-backs count;
+    # empty turns the source off.
+    reviewers: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -57,21 +61,52 @@ class Prefetch:
 
 @dataclass(frozen=True)
 class Findings:
-    """What the head's reviewers said: threads, Copilot's verdict and the checks."""
+    """What the head's reviewers said: threads, verdicts, a hand-back and checks."""
 
     threads: thread_reads.ThreadPacket
     verdict: dict[str, Any] | None
     checks: check_reads.CheckPacket
+    handback: dict[str, Any] | None = None
 
 
-def read_findings(repository: str, pull: dict[str, Any], since: str | None) -> Findings:
-    """The unresolved threads, the head's review and its failing checks."""
+def read_findings(
+    repository: str,
+    pull: dict[str, Any],
+    since: str | None,
+    reviewers: frozenset[str] = frozenset(),
+) -> Findings:
+    """The unresolved threads, the head's reviews and its failing checks.
+
+    The hand-back is read before the threads and again after every
+    other read. GitHub posts a review together with its inline
+    comments, so the threads read in between hold every finding the
+    first read's hand-back placed on the diff. A hand-back posted
+    between the reads would put its threads in the packet without its
+    body, and a round they start moves the head past the review, so
+    its body findings would never reach a round. The two reads must
+    name the same review, or none; otherwise the read fails, as every
+    revision read does, and the next run reads both together.
+    """
     number, head = int(pull["number"]), str(pull["head_sha"])
-    return Findings(
-        thread_reads.unresolved_threads(repository, number, since),
+    handback = revisions.handback_review(repository, number, head, reviewers)
+    findings = Findings(
+        thread_reads.unresolved_threads(repository, number, since, reviewers),
         revisions.latest_review(repository, number, head),
         check_reads.failing_checks(repository, head),
+        handback,
     )
+    recheck = revisions.handback_review(repository, number, head, reviewers)
+    if review_id_of(recheck) != review_id_of(handback):
+        raise github.GitHubError(
+            f"antagonistic hand-back on {repository}#{number} changed during the"
+            " read; retry so its threads and body are read together"
+        )
+    return findings
+
+
+def review_id_of(handback: dict[str, Any] | None) -> int | None:
+    """The hand-back's review id, or None when there is none."""
+    return None if handback is None else int(handback["review_id"])
 
 
 def outstanding(
@@ -83,13 +118,15 @@ def outstanding(
 ) -> list[str]:
     """Why the pull request needs a round, by the organisation definition.
 
-    Work is outstanding when a thread from Copilot or a maintainer is
-    unresolved, when Copilot's review of the head has findings, when
-    a check on the head failed, outside the exclusion list, or when a
-    maintainer commented on the issue or the pull request
-    after the bot's last round. A maintainer's word on a review thread
-    after that round, an opener or a reply, counts as a comment, since
-    the issue and pull request comments do not carry it; the thread
+    Work is outstanding when a thread from Copilot, a listed App or a
+    maintainer is unresolved, when Copilot's review of the head has
+    findings, when an antagonistic review of the head handed it back
+    after the last round's watermark, when a check on the head
+    failed, outside the exclusion list, or when a maintainer
+    commented on the issue or the pull request after the bot's last
+    round. A maintainer's word on a review thread after that round,
+    an opener or a reply, counts as a comment, since the issue and
+    pull request comments do not carry it; the thread
     reads heard it over every thread, the packet's bounds aside. A
     head with no review yet is left for the gate to await, and a clean
     head with nothing else is done.
@@ -102,6 +139,11 @@ def outstanding(
         reasons.append(f"{total} unresolved review thread(s)")
     if verdict is not None and verdict.get("verdict") == "findings":
         reasons.append("Copilot's review of the head has findings")
+    handback = findings.handback
+    if handback is not None and (
+        since is None or str(handback["submitted_at"]) > since
+    ):
+        reasons.append(f"antagonistic review round {handback['round']} handed back")
     if findings.checks.outstanding:
         reasons.append("failing checks")
     for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
@@ -156,7 +198,7 @@ def build_entry(
         raise Skip(
             f"round cap of {revisions.MAX_ROUNDS} reached; a human must take over"
         )
-    findings = read_findings(repository, pull, since)
+    findings = read_findings(repository, pull, since, inputs.reviewers)
     reasons = (
         ["named by the operator"]
         if explicit
@@ -195,6 +237,7 @@ def build_entry(
         "threads": findings.threads.threads,
         "threads_dropped": findings.threads.dropped,
         "review": findings.verdict,
+        "antagonistic_review": findings.handback,
         "checks": findings.checks.checks,
         "checks_dropped": findings.checks.dropped,
         **conversation(repository, issue, pull_number, since),
@@ -308,12 +351,13 @@ class Rounds:
         explicit: bool,
         skips: tuple[dict[str, int], list[dict[str, str]]],
         allowed: Callable[[str], bool] | None = None,
+        reviewers: frozenset[str] = frozenset(),
     ) -> None:
         """Remember what every build needs; ``skips`` are the counters and the named list."""
         self.org = org
         self.bot = bot
         self.fork_orgs = fork_orgs
-        self.inputs = Inputs(org, bot, fork_orgs)
+        self.inputs = Inputs(org, bot, fork_orgs, reviewers)
         self.enabled = enabled
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
@@ -353,6 +397,7 @@ class Rounds:
             skipped=self.skipped,
             skipped_issues=self.skipped_issues,
             allowed=self.allowed,
+            reviewers=self.inputs.reviewers,
         )
 
     def for_issue(

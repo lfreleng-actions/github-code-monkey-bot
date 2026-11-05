@@ -24,7 +24,7 @@ from thread_reads import MAX_THREAD_BODY
 FOOTER = re.compile(
     r"(?:^|\n)<!-- code-monkey \S+ (?P<verdict>\S+)(?: review=\S+)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
-    r" -->\s*\Z"
+    r"(?: antagonistic=(?P<antagonistic>\d+))? -->\s*\Z"
 )
 # Pages of issue comments the round history may span before the
 # read fails closed rather than trust a partial count.

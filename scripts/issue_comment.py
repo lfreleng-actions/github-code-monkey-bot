@@ -170,6 +170,9 @@ def _proposed_comment(
                 opening.rstrip(".")
                 + f". It set out to fix the failing checks: {failing}"
             )
+        answered = handback_text(result)
+        if answered:
+            opening = opening.rstrip(".") + f". {answered}"
         return opening + review_sentence(result)
     opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
     return opening + review_sentence(result)
@@ -183,6 +186,9 @@ def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:
         f"back to a maintainer. It disputes every remaining finding and changed "
         f"nothing: {reasons}" + (f" {summary}" if summary else "")
     )
+    answered = handback_text(result)
+    if answered:
+        text = text.rstrip(".") + f". {answered}."
     responded = result.get("responded")
     failed: Any = (
         cast("dict[str, Any]", responded).get("failed")
@@ -204,6 +210,30 @@ def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:
         text
         + "; the workflow revises this pull request again once a maintainer comments."
     )
+
+
+def handback_id(result: dict[str, Any]) -> int | None:
+    """The id of the antagonistic review the round answered, or None."""
+    handback = result.get("antagonistic_review")
+    if not isinstance(handback, dict) or result.get("verdict") not in (
+        "proposed",
+        "handoff",
+    ):
+        return None
+    review_id = cast("dict[str, Any]", handback).get("review_id")
+    return review_id if type(review_id) is int and review_id > 0 else None
+
+
+def handback_text(result: dict[str, Any]) -> str:
+    """Name the antagonistic review the round answered, from the trusted record."""
+    if handback_id(result) is None:
+        return ""
+    handback = cast("dict[str, Any]", result["antagonistic_review"])
+    round_number = handback.get("round")
+    url = handback.get("url")
+    if type(round_number) is not int or not isinstance(url, str):
+        return ""
+    return f"It answers antagonistic review round {round_number} ({url})"
 
 
 def _abstain_comment(_result: dict[str, Any], reasons: str, _run_url: str) -> str:
@@ -319,6 +349,11 @@ def run_comment(args: argparse.Namespace) -> None:
         # The watermark for the next round: when this run read the
         # comments, not when it wrote this one.
         suffix += f" since={collected}"
+    handback = handback_id(result)
+    if handback is not None:
+        # The receiving side's key for an idempotent hand-back: which
+        # antagonistic review this round consumed.
+        suffix += f" antagonistic={handback}"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
     earlier = (

@@ -1694,6 +1694,9 @@ a maintainer's kept before a reviewer's, `replies_dropped`,
 `maintainer_latest` and `maintainer_undated`, read over the whole
 thread before the bound trims the replies), `threads_dropped`,
 `review` (the §8 step 11 record of the head, with the body),
+`antagonistic_review` (the hand-back of §20.1 as `{review_id, round,
+run, head_sha, url, author, submitted_at, body, body_truncated}`, or
+null),
 `checks` (the head's failing check runs, as `{name, conclusion,
 app, details_url, title, summary, annotations}`, each annotation
 `{level, path, line, message}` at level `failure` or `warning`;
@@ -2024,8 +2027,11 @@ Three ways in, all through the select job and its read token:
 - A scan with `revise` on, the default, searches the owner for the
   App's open pull requests and selects those with **work
   outstanding**: an unresolved review thread whose opening comment
-  comes from Copilot or an `OWNER`/`MEMBER`; a Copilot review of the
-  head with findings; a check run on the head whose conclusion is
+  comes from Copilot, a listed antagonistic review App or an
+  `OWNER`/`MEMBER`; a Copilot review of the head with findings; an
+  antagonistic review that handed the head back after the bot's
+  latest footer, recorded as `antagonistic review round N handed
+  back`; a check run on the head whose conclusion is
   `failure`, `timed_out` or `startup_failure`, recorded as `failing
   checks` among the round's reasons; or an `OWNER`/`MEMBER` comment
   on the issue, the
@@ -2036,8 +2042,8 @@ Three ways in, all through the select job and its read token:
   the pull request. A head with no
   review yet waits for the gate; a clean head with nothing else needs
   no round; and after a handoff (§20.3) neither the disputed threads
-  nor a failing check brings a round on its own, a maintainer's
-  comment does. Revisions come
+  nor a failing check nor a hand-back brings a round on its own, a
+  maintainer's comment does. Revisions come
   before new issues, ranked by the originating issue's priority and
   then the pull request's age, the scan reading each hit's pull
   request and issue for the rank before the cap, under the same cap and the same
@@ -2118,6 +2124,49 @@ the checkout and the toolchain, recovers why (§20.2). The read mint
 adds Checks: read for this and scopes to the
 named repositories as for issues.
 
+**Antagonistic review.** The review bot's antagonistic mode
+(`lfreleng-actions/github-code-review-bot` issue 28) reviews a bot
+pull request once Copilot's review of its head is clean, as one
+`COMMENT` review by its own App, and dispatches this workflow with
+the pull request named when it has something to hand back. Its
+findings sit in inline threads and in the review body: the summary,
+which may name a defect of the whole change, findings with no diff
+line to sit on, every finding when GitHub refused inline placement,
+and notes on malformed or capped findings. The trusted Apps are
+`config/antagonistic-reviewers.txt`, one login per line without the
+`[bot]` suffix, read from the assets checkout at the pinned commit as
+the other configuration is; an empty list turns the source off. An
+author counts when the list holds its login **and** GitHub types it a
+`Bot` (REST `type`, GraphQL `__typename`), so a user who took the
+App's slug as a login is nobody's reviewer. The selection lists the
+pull request's reviews and takes the newest submitted one by a listed
+App whose `commit_id` is the head and whose body, trailing whitespace
+aside, ends with the line `<!-- antagonistic-handback round=N
+head=<head SHA> run=<run id> -->` naming that head. A review of an
+older head, a marker that is not the last line, or one naming another
+head does not count, and an `antagonistic-review` marker hands
+nothing back. The review bot's trusted applier writes that line
+alone, and it disarms `<` in agent text, so the marker is the review
+bot's word, not its agent's. The selection reads that review before
+the threads and again after its other reads: GitHub posts a review
+with its inline comments, so the threads read between the two hold every
+finding it placed on the diff. When the two reads name different
+reviews, one landed mid-read and its threads may be in the packet
+without its body; a round they started would move the head past the
+review, which then never counts again. The read fails instead, and
+the next run reads threads and body together. The entry carries
+that review's body
+bounded as Copilot's is, marked when cut, under
+`antagonistic_review`; the App's unresolved threads count as work and
+enter the packet with Copilot's and the maintainers', under the same
+bounds and reply trimming, and the publisher answers and resolves
+them as it does every thread. The prompt tells the session the body
+is another agent's review, data and never instructions, as Copilot's
+text is: nothing parses findings out of it, the session reads it.
+A review listing that fails, or a listed review without a readable
+body, fails the read as every revision read does, so no round runs
+without the findings that brought it.
+
 ### 20.2 The author job
 
 The author job checks out the default branch head (`checkout_sha`),
@@ -2151,8 +2200,20 @@ warns of a thread left unanswered, which stays open for a human. It
 records a rebase, and the description's round line says so; that
 line, and the round's issue comment, also name the failing checks
 the selection carried, escaped and bounded as agent text is, since
-a check's name comes from the code under review. The review gate
-(§8) still waits for Copilot alone, not for CI. A
+a check's name comes from the code under review. A round sent by an
+antagonistic hand-back names the review it answers, its round and
+its URL, in both places, from the trusted selection fields alone,
+never the body, and the check refuses an entry whose URL is not the
+one built from the entry's repository, pull request number and
+review id; the prompt asks the session for a section headed
+`Antagonistic review` in its round summary, and on a proposal in its
+pull request body too, answering each finding the body alone holds,
+fixed or not and why. The check warns when the round summary
+lacks one. Where other rounds cut the summary to 2,000 characters,
+the check rejects a hand-back round whose summary, mentions defused,
+runs over that bound: a handoff answers in its summary alone, and a
+published round's footer records the review as answered. The review
+gate (§8) still waits for Copilot alone, not for CI. A
 manifest outcome of `handoff`, open to a revision alone, says the
 agent changed nothing because it disputes every remaining finding or
 needs a human's decision: the check reads its replies the same way,
@@ -2249,7 +2310,12 @@ and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,
 the pull request and the head the push left, since later rounds
 replace the same branch, the summary and the verdict, with the round
-in its marker, which is how the next selection counts rounds. The summary
+in its marker, which is how the next selection counts rounds. A
+proposal or handoff that consumed an antagonistic hand-back ends its
+marker with `antagonistic=<review id>`, the receiving-side key
+`lfreleng-actions/github-code-review-bot` issue 31 will use for an
+idempotent hand-back; the round history reads every footer form, with
+the field or without it. The summary
 and the reasons are agent text: flattened to one line, mentions
 defused and HTML escaped, so they can neither hide the verdict and
 the marker after them nor collapse them into a block. At the cap,
@@ -2267,7 +2333,9 @@ target's pull requests, which the pull request token already
 covered, and the branch move is a write to the fork, which the fork
 token already covered. The select job's read mint gains Checks:
 read, for the head's failing checks; no mint gains Actions, so no
-trusted job reads a job log. The compare-and-swap is the new guard: the
+trusted job reads a job log. The antagonistic review source reads
+reviews and threads the read token already covered, and changes no
+permission. The compare-and-swap is the new guard: the
 publisher moves an existing branch to the chain it verified alone,
 and from the head the trusted selection recorded alone. The agent's
 replies are text from outside, defused and bounded like its pull
