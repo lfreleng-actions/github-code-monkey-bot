@@ -35,6 +35,7 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 REUSABLE = WORKFLOWS / "code-monkey.yaml"
 CRON = WORKFLOWS / "code-monkey-cron.yaml"
 TESTING = WORKFLOWS / "testing.yaml"
+LINTING = WORKFLOWS / "linting.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
 REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
 TOOLCHAIN_PIN = WORKFLOWS.parents[1] / "tools" / "copilot-cli"
@@ -2878,6 +2879,76 @@ class TestingCallerContracts(WorkflowCase):
         check = self.step("uv-workdir", "Check outputs and marker")
         self.assertIn('[ "$PYTHON_VERSION" = unknown ]', str(check["run"]))
         self.assertEqual(check["env"]["PYTHON"], TRUSTED_PYTHON)
+
+
+class LintingCallerContracts(unittest.TestCase):
+    """The hooks pre-commit.ci skips run in Actions, from a pinned reusable.
+
+    pre-commit.ci has no network and stops the whole run at 3 minutes,
+    so ``ci.skip`` lists hooks it cannot run. The linting caller runs
+    that set, less the hooks ``testing.yaml`` already runs, so each one
+    is enforced somewhere.
+    """
+
+    REUSABLE_LINTING = (
+        "lfreleng-actions/generic-workflows/.github/workflows/linting.yaml"
+    )
+    # Hooks only the linting caller runs; testing.yaml runs the rest.
+    ENFORCED = ("gha-workflow-linter", "aislop")
+
+    def load(self) -> tuple[dict[str | bool, Any], dict[str, Any]]:
+        """Return the linting caller and the job that calls the reusable."""
+        workflow = cast(
+            dict[str | bool, Any],
+            yaml.safe_load(LINTING.read_text(encoding="utf-8")),
+        )
+        jobs = cast(dict[str, dict[str, Any]], workflow["jobs"])
+        self.assertEqual(list(jobs), ["linting"])
+        return workflow, jobs["linting"]
+
+    @staticmethod
+    def ci_skip() -> list[str]:
+        """Return the hook ids pre-commit.ci is told to skip."""
+        config = cast(
+            dict[str, Any],
+            yaml.safe_load(PRE_COMMIT_CONFIG.read_text(encoding="utf-8")),
+        )
+        return cast(list[str], config["ci"]["skip"])
+
+    @unittest.expectedFailure
+    def test_reusable_is_pinned_to_a_commit(self) -> None:
+        """A tag or branch would let the reusable change under this repository."""
+        _, job = self.load()
+        self.assertRegex(str(job["uses"]), COMMIT_PIN)
+        self.assertTrue(str(job["uses"]).startswith(self.REUSABLE_LINTING + "@"))
+
+    @unittest.expectedFailure
+    def test_holds_no_write_credential(self) -> None:
+        """Read-only token, no secrets, and never pull_request_target."""
+        workflow, job = self.load()
+        self.assertEqual(workflow["permissions"], {})
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertNotIn("secrets", job)
+        triggers = cast(dict[str, Any], workflow[TRIGGERS])
+        self.assertNotIn("pull_request_target", triggers)
+        self.assertIn("pull_request", triggers)
+
+    @unittest.expectedFailure
+    def test_runs_the_ci_skip_set_less_hooks_testing_runs(self) -> None:
+        """Each hook named here must stay in ci.skip for the caller to run it."""
+        _, job = self.load()
+        with_ = cast(dict[str, Any], job["with"])
+        self.assertIs(with_["ci_skipped"], True)
+        self.assertEqual(with_["harden_runner_egress"], "block")
+        skip = self.ci_skip()
+        excluded = str(with_["skip_hooks"]).split()
+        self.assertEqual(excluded, ["monkey-tests", "actionlint-shellcheck"])
+        for hook in (*self.ENFORCED, *excluded):
+            with self.subTest(hook=hook):
+                self.assertIn(hook, skip)
+        for hook in self.ENFORCED:
+            with self.subTest(hook=hook):
+                self.assertNotIn(hook, excluded)
 
 
 class SetupUvContracts(unittest.TestCase):
