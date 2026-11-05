@@ -1040,7 +1040,11 @@ For each selected issue:
     publisher looks for it on the bot's own comments since the run's
     creation, a time every attempt shares. A retry after a lost reply
     or a later failure then posts nothing twice, and a marker someone
-    else pastes cannot suppress the comment. An operational failure
+    else pastes cannot suppress the comment. A transient `5xx` on the
+    post looks for the marker once more: a comment found counts as
+    posted, with a warning in `result.json`, and none found fails the
+    step with no second post, since a slow first copy may still land.
+    An operational failure
     before any write, the offline check or a token mint, posts
     nothing: the target saw no change, the verdict may be unknown,
     and one publisher fault would otherwise comment on every issue
@@ -2280,7 +2284,13 @@ same token, while the head and title are still this attempt's, and
 after a retitle whose reply GitHub lost, since the record of the old
 title goes down before the write; a
 publication keeps the new title and an unknown swap outcome restores
-nothing, since the branch may hold the new chain. The push reads
+nothing, since the branch may hold the new chain. Either title write
+reads the pull request back once after a transient `5xx`: the title
+in place counts as set, and anything else fails the step, with the
+PATCH never sent again. A resend could replace a title a maintainer
+or another session set meanwhile, while a title that did not land
+costs nothing lasting: a later round or a maintainer sets it.
+Neither step writes a result, so the log alone notes it. The push reads
 the pull request's state and the bot branch before it writes to the
 branch. A pull request closed or merged since selection is a
 rejection, found before the publisher touches the fork: the round
@@ -2358,6 +2368,13 @@ failure after the replies notifies no reviewer twice, while a later
 session at the same round number, one whose predecessor left no
 footer, posts its own; the resolve
 still runs, since one lost after the reply is its own retry.
+A transient `5xx` on a reply reads the thread for its marker once
+and never posts again; the resolve runs once with no read-back; the
+description edit reads the pull request back once, counts the title
+and body in place as written, and otherwise ends with a warning and
+never sends again, since a later round may have written its own
+description meanwhile and a resend would replace it with this older
+one. Each write recovered this way adds a warning to the result.
 and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,
 the pull request and the head the push left, since later rounds

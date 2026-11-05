@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""A revision's title: set before its branch moves, taken back after a failed push.
+"""A revision's title and description writes on its pull request.
 
 The Semantic Pull Request check compares the title with the commit
 subject on the push, so a revision whose subject changed retitles
-first, with the pull request token (DESIGN.md section 20.3).
+first, with the pull request token, and takes it back after a failed
+push (DESIGN.md section 20.3). After the push, ``respond`` replaces
+the title and body with the composed ones.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import bot_github as github
 import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
+import write_recovery as recovery
 from branch_heads import branch_tip
 from branch_swap import already_moved
 
@@ -80,7 +83,7 @@ def run_retitle(args: argparse.Namespace) -> None:
     }
     args.record.parent.mkdir(parents=True, exist_ok=True)
     args.record.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"title": title})
+    set_title(repository, number, title)
     print("retitle: title set")
 
 
@@ -123,7 +126,52 @@ def run_restore_title(args: argparse.Namespace) -> None:
     if current != record["title"]:
         print("restore-title: title changed since; left alone")
         return
-    github.api_write(
-        "PATCH", f"repos/{repository}/pulls/{number}", {"title": record["previous"]}
-    )
+    set_title(repository, number, str(record["previous"]))
     print("restore-title: previous title restored")
+
+
+def set_title(repository: str, number: int, title: str) -> None:
+    """PATCH the pull request's title, looking once after a transient failure.
+
+    After a 5xx the pull request is read back once: the title in place
+    counts as set, and anything else fails the write, which is never
+    sent again. A resend could replace a title a maintainer or another
+    session set meanwhile, while a title that did not land costs
+    nothing lasting: a later round or a maintainer sets it. This step
+    writes no result, so a recovery is noted on stderr alone.
+    """
+    endpoint = f"repos/{repository}/pulls/{number}"
+
+    def write() -> bool:
+        github.api_write("PATCH", endpoint, {"title": title})
+        return True
+
+    def landed() -> bool | None:
+        return True if github.api_object(endpoint).get("title") == title else None
+
+    recovery.recover(write, landed, repeat_safe=False, label="pull request title")
+
+
+def update_pull_request(
+    repository: str, pull_number: int, title: str, body: str
+) -> None:
+    """Replace the pull request's title and body with the composed ones.
+
+    After a transient failure the pull request is read back once: both
+    in place count as written, and anything else fails the write,
+    which is never sent again, for the reason ``set_title`` gives; a
+    later round may have written its own description meanwhile.
+    """
+    endpoint = f"repos/{repository}/pulls/{pull_number}"
+
+    def write() -> bool:
+        github.api_write("PATCH", endpoint, {"title": title, "body": body})
+        return True
+
+    def landed() -> bool | None:
+        pull = github.api_object(endpoint)
+        if pull.get("title") == title and pull.get("body") == body:
+            return True
+        return None
+
+    recovery.recover(write, landed, repeat_safe=False, label="pull request description")

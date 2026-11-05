@@ -23,10 +23,12 @@ import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
 import thread_reads as threads_of
+import write_recovery as recovery
 from branch_heads import branch_tip
 from branch_swap import SwapUnknown, already_moved, move_branch
 from proposal_policy import PublishError, Rejection
 from revision_check import reply_marker
+from revision_title import update_pull_request
 
 # Waits between head reads while the pull request still names the
 # pre-round head: GitHub's pull request object lags the ref update.
@@ -52,17 +54,6 @@ def resolve(repository: str, thread_id: str) -> None:
     """Mark a review thread resolved."""
     del repository  # the node id is global; kept for a uniform signature
     github.graphql(RESOLVE_THREAD, {"id": thread_id})
-
-
-def update_pull_request(
-    repository: str, pull_number: int, title: str, body: str
-) -> None:
-    """Replace the pull request's title and body with the composed ones."""
-    github.api_write(
-        "PATCH",
-        f"repos/{repository}/pulls/{pull_number}",
-        {"title": title, "body": body},
-    )
 
 
 def closed_pull_request(repository: str, number: int) -> str | None:
@@ -252,13 +243,30 @@ def answer_thread(
 
     The resolve runs whether or not the reply was posted now: one lost
     after the reply is its own retry, and resolving a resolved thread
-    changes nothing.
+    changes nothing. It runs once, with no read-back: a rerun resolves
+    again. A reply lost to a transient failure is looked for by its
+    marker and never sent again: the marker's absence does not prove
+    a slow first copy will not land.
     """
     marker = str(response["marker"])
-    if answered(str(response["thread_id"]), str(response["bot_login"]), marker):
+    thread = str(response["thread_id"])
+    bot_login = str(response["bot_login"])
+    if answered(thread, bot_login, marker):
         counts["already"] += 1
     else:
-        reply(repository, number, int(response["comment_id"]), str(response["reply"]))
+
+        def post() -> bool:
+            reply(
+                repository, number, int(response["comment_id"]), str(response["reply"])
+            )
+            return True
+
+        def found() -> bool | None:
+            return True if answered(thread, bot_login, marker) else None
+
+        recovery.recover(
+            post, found, repeat_safe=False, label=f"thread reply on {thread}"
+        )
         counts["replied"] += 1
     if response.get("resolve") is True:
         resolve(repository, str(response["thread_id"]))
@@ -336,6 +344,26 @@ def run_respond(args: argparse.Namespace) -> None:
     if answering and verdict == "proposed" and not published_head(check, result):
         answering = False
     if answering:
+        respond(check, verdict, counts, warnings)
+    result["responded"] = counts
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(f"respond: {counts}")
+    if result.get("verdict") == "publish-failed":
+        raise PublishError(str(cast("list[str]", result["reasons"])[-1]))
+
+
+def respond(
+    check: dict[str, Any],
+    verdict: Any,
+    counts: dict[str, int],
+    warnings: list[str],
+) -> None:
+    """Answer each thread, then update the description of a proposal.
+
+    A write recovered from a transient failure adds a warning.
+    """
+    with recovery.recording(warnings):
         repository = str(check["repository"])
         number = int(check["pull_number"])
         marker = reply_marker(
@@ -364,9 +392,3 @@ def run_respond(args: argparse.Namespace) -> None:
                 warnings.append(
                     f"could not update the description: {github.safe_message(exc)}"
                 )
-    result["responded"] = counts
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"respond: {counts}")
-    if result.get("verdict") == "publish-failed":
-        raise PublishError(str(cast("list[str]", result["reasons"])[-1]))

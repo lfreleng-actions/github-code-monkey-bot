@@ -2037,13 +2037,15 @@ class RunRetitleTest(NoNetworkCase):
             patch.object(review, "pull_head", return_value=HEAD),
             patch.object(
                 github, "api_write", side_effect=github.GitHubError("timed out")
-            ),
+            ) as lost,
             redirect_stdout(io.StringIO()),
             self.assertRaises(SystemExit),
         ):
             publish.main(
                 ["retitle", "--check", str(check), "--record", str(self.record)]
             )
+        # The read-back found the old title: never sent again (issue #100).
+        lost.assert_called_once()
         self.assertTrue(self.record.is_file())
         (self.root / "result.json").unlink(missing_ok=True)
         write = self.restore(None, HEAD, "Fix: New subject")

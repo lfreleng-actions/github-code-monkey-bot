@@ -16,7 +16,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -481,7 +481,6 @@ class TargetRecoveryTest(unittest.TestCase):
             )
         return json.loads(result.read_text(encoding="utf-8")), writes
 
-    @unittest.expectedFailure
     def test_a_reply_that_landed_is_not_posted_again(self) -> None:
         """The marker on the thread after a 502 proves the reply landed."""
         posted: list[str] = []
@@ -521,33 +520,46 @@ class TargetRecoveryTest(unittest.TestCase):
         self.assertEqual(len(posted), 1)
         self.assertEqual(stored["responded"]["failed"], 1)
 
-    @unittest.expectedFailure
-    def test_a_description_edit_is_retried(self) -> None:
-        """The title and body PATCH is idempotent: a 502 goes again."""
-        replies: list[Any] = [bad_gateway(), {}]
+    def description(self, pull: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        """Respond with a description PATCH answering 502, ``pull`` read back.
+
+        Return the result and the number of PATCHes sent.
+        """
 
         def write(method: str, endpoint: str, payload: dict[str, Any]) -> Any:
             if method == "PATCH":
-                reply = replies.pop(0)
-                if isinstance(reply, Exception):
-                    raise reply
-                return reply
+                raise bad_gateway()
             return {}
 
-        stored, writes = self.respond(
-            write,
-            answered_thread,
-            {"title": "Fix: Old", "body": "Old"},
+        stored, writes = self.respond(write, answered_thread, pull)
+        return stored, sum(1 for c in writes.call_args_list if c.args[0] == "PATCH")
+
+    def test_a_description_edit_that_landed_is_recorded(self) -> None:
+        """The title and body in place after a 502: written, no second PATCH."""
+        stored, patches = self.description(
+            {"title": "Fix: New title", "body": "New body"}
         )
-        patches = [c for c in writes.call_args_list if c.args[0] == "PATCH"]
-        self.assertEqual(len(patches), 2)
+        self.assertEqual(patches, 1)
         self.assertTrue(
-            any("pull request description" in w for w in stored["warnings"])
+            any("pull request description landed" in w for w in stored["warnings"])
         )
 
-    @unittest.expectedFailure
-    def test_a_lost_title_restore_is_read_back(self) -> None:
-        """A restore that landed despite a 502 succeeds, with no second PATCH."""
+    def test_a_description_edit_not_landed_is_never_resent(self) -> None:
+        """A newer description may arrive meanwhile: one PATCH, then a warning."""
+        stored, patches = self.description({"title": "Fix: Newer", "body": "Newer"})
+        self.assertEqual(patches, 1)
+        self.assertTrue(
+            any("could not update the description" in w for w in stored["warnings"])
+        )
+
+    def restore(
+        self, reads: list[dict[str, Any]], replies: list[Any], *, fails: bool = False
+    ) -> tuple[Any, str]:
+        """Run ``restore-title`` with a PATCH answering ``replies``.
+
+        ``reads`` are the pull request reads in turn; ``fails`` says
+        the step must exit non-zero. Return the PATCH mock and stderr.
+        """
         record = self.root / "retitle.json"
         record.write_text(
             json.dumps(
@@ -561,27 +573,48 @@ class TargetRecoveryTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        titles = ["Fix: New title", "Fix: Old"]
 
-        def title_read(_: str) -> dict[str, Any]:
-            return {"title": titles.pop(0)}
+        def pull_read(_: str) -> dict[str, Any]:
+            return reads.pop(0)
 
         with (
             patch.object(review, "pull_head", return_value="e" * 40),
-            patch.object(github, "api_object", side_effect=title_read),
-            patch.object(github, "api_write", side_effect=bad_gateway()) as write,
+            patch.object(github, "api_object", side_effect=pull_read),
+            patch.object(github, "api_write", side_effect=replies) as write,
             redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()) as err,
         ):
-            publish.main(
-                [
-                    "restore-title",
-                    "--record",
-                    str(record),
-                    "--result",
-                    str(self.root / "absent.json"),
-                ]
-            )
+            argv = [
+                "restore-title",
+                "--record",
+                str(record),
+                "--result",
+                str(self.root / "absent.json"),
+            ]
+            if fails:
+                with self.assertRaises(SystemExit):
+                    publish.main(argv)
+            else:
+                publish.main(argv)
+        self.assertEqual(reads, [])
+        return write, err.getvalue()
+
+    def test_a_lost_title_restore_is_read_back(self) -> None:
+        """A restore that landed despite a 502 succeeds, with no second PATCH."""
+        write, err = self.restore(
+            [{"title": "Fix: New title"}, {"title": "Fix: Old"}], [bad_gateway()]
+        )
         write.assert_called_once()
+        self.assertIn("landed despite", err)
+
+    def test_a_title_restore_not_landed_is_never_resent(self) -> None:
+        """A maintainer may retitle meanwhile: one PATCH, and the step fails."""
+        unchanged = {"title": "Fix: New title"}
+        write, err = self.restore(
+            [unchanged, unchanged], [bad_gateway(), {}], fails=True
+        )
+        write.assert_called_once()
+        self.assertIn("502", err)
 
     def comment(self, pages: Any) -> tuple[Path, Any]:
         """Run ``comment`` for a proposal whose POST answers 502."""
@@ -616,7 +649,6 @@ class TargetRecoveryTest(unittest.TestCase):
                 pass
         return path, write
 
-    @unittest.expectedFailure
     def test_an_issue_comment_that_landed_is_recorded(self) -> None:
         """The run's marker on the bot's comment after a 502 proves it landed."""
         landed = {
