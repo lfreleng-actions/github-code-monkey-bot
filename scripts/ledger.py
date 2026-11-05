@@ -14,7 +14,9 @@ than one every schedule tick.
 Nothing here lives on the target. Dry runs record their verdicts too,
 so a rollout in dry-run does not repeat the same work every run, but
 a live run ignores dry-run entries: the first live run after the flip
-must still act on what dry runs only reported.
+must still act on what dry runs only reported. Merging keeps the
+newest entry of each mode for a head, so a dry run never erases the
+live assessment a later live run relies on.
 
 An entry names a target as ``repository``, ``number`` and
 ``head_sha``; a bot whose targets are issues rather than pull
@@ -150,19 +152,22 @@ def entry_key(entry: dict[str, Any]) -> tuple[str, int, str]:
 def merge(
     ledgers: list[dict[str, Any]], *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """Combine ledgers, keeping the newest assessment per head within retention.
+    """Combine ledgers, keeping the newest assessment per head and mode.
 
-    Entries older than the artifact retention would have expired with
-    their artifact anyway; pruning them keeps the snowball bounded.
+    Live and dry-run entries are kept apart: a live run ignores a
+    dry-run entry, so a newer dry run must not displace the live
+    assessment that makes the head a skip. Entries older than the
+    artifact retention would have expired with their artifact anyway;
+    pruning them keeps the snowball bounded.
     """
     current = now or datetime.now(UTC)
     cutoff = current - timedelta(days=RETENTION_DAYS)
-    newest: dict[tuple[str, int, str], dict[str, Any]] = {}
+    newest: dict[tuple[tuple[str, int, str], bool], dict[str, Any]] = {}
     for ledger in ledgers:
         for entry in ledger["entries"]:
             if parse_timestamp(entry["assessed_at"]) < cutoff:
                 continue
-            key = entry_key(entry)
+            key = (entry_key(entry), bool(entry["dry_run"]))
             held = newest.get(key)
             if held is None or parse_timestamp(held["assessed_at"]) < parse_timestamp(
                 entry["assessed_at"]
@@ -170,7 +175,11 @@ def merge(
                 newest[key] = entry
     entries = sorted(
         newest.values(),
-        key=lambda item: (str(item["assessed_at"]), entry_key(item)),
+        key=lambda item: (
+            str(item["assessed_at"]),
+            entry_key(item),
+            bool(item["dry_run"]),
+        ),
     )
     return {"schema": SCHEMA, "entries": entries}
 
