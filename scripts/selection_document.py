@@ -55,6 +55,7 @@ def selection_document(
         "max_pull_requests": max_pull_requests,
         "bot": bot,
         "revise": bool(args.revise),
+        "revise_only": bool(args.revise_only),
         "guidance": {
             "repository": args.guidance_repository,
             "path": args.guidance_path,

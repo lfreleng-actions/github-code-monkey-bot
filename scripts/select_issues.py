@@ -7,7 +7,8 @@ Runs in the trusted select job with a read token. Scans the open
 issues of an owner, drops the ones policy excludes, ranks the rest
 by Priority then age, keeps one per repository, and caps the list;
 or, when the caller names issues, works those alone in the order
-given (``explicit_issues``). For each survivor it records the
+given (``explicit_issues``); a revise-only run reads no issue and
+keeps the revision rounds alone. For each survivor it records the
 default-branch SHA the agent will build on, the filtered comments,
 and the branch name the publisher will create. It also fetches the
 organisation's ``AGENTS.md`` at a recorded commit so the author job
@@ -221,6 +222,17 @@ def parse_targets(
         # A round moves a live pull request's head and answers its
         # review; no other mode publishes that.
         raise SelectionError("pull_requests needs pull-requests mode")
+    if args.revise_only:
+        # Revisions alone: a scan of the owner's bot pull requests and
+        # no issue, so nothing may name issues or narrow the scan.
+        if targets or explicit:
+            raise SelectionError(
+                "revise_only cannot be given with issues or repositories"
+            )
+        if args.mode != "pull-requests":
+            raise SelectionError("revise_only needs pull-requests mode")
+        if not args.revise:
+            raise SelectionError("revise_only needs revise")
     return targets, explicit, pulls
 
 
@@ -297,6 +309,8 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         ranked = explicit_targets.candidates(
             args.org, targets, skipped=skipped, skipped_issues=skipped_issues
         )
+    elif args.revise_only:
+        seen, ranked = 0, []
     else:
         seen, ranked = scan_candidates(
             args,
@@ -345,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pull-requests", default="")
     parser.add_argument("--session", default="")
     parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--revise-only", action="store_true")
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)

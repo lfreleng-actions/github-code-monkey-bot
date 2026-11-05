@@ -738,7 +738,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7", "beta-2"])
         self.assertEqual(selection["skipped"]["one_per_repo"], 1)
 
-    @unittest.expectedFailure
     def test_revise_only_selects_rounds_and_no_issue(self) -> None:
         """A revise-only scan reads no issue and keeps the cap and one per repository."""
 
@@ -775,7 +774,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertIs(selection["revise_only"], False)
         self.assertNotIn("Revise-only", outputs.summary_markdown(selection))
 
-    @unittest.expectedFailure
     def test_revise_only_refuses_targets_other_modes_and_no_revise(self) -> None:
         """Revise-only is a pull-requests scan with revisions on, nothing named."""
         refused = (

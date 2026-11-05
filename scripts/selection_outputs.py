@@ -27,6 +27,12 @@ def summary_markdown(selection: dict[str, Any]) -> str:
     ]
     for reason, count in sorted(cast("dict[str, int]", selection["skipped"]).items()):
         lines.append(f"| {reason} | {count} |")
+    if selection.get("revise_only"):
+        lines += [
+            "",
+            "Revise-only: the bot's open pull requests with work outstanding,"
+            " and no new issue.",
+        ]
     named = cast("list[str]", selection.get("explicit_issues") or [])
     if named:
         lines += [

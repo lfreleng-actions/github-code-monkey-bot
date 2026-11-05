@@ -1921,7 +1921,11 @@ class SelectAndReportContracts(ReusableWorkflowCase):
 
     def test_pull_request_outputs_come_from_the_report(self) -> None:
         """The workflow's outputs are the report script's, validated by org."""
-        declared = cast(dict[str, Any], self.triggers["workflow_call"]["outputs"])
+        declared = dict(cast(dict[str, Any], self.triggers["workflow_call"]["outputs"]))
+        # The select job's validated count, so a caller can tell a slot
+        # that selected nothing from one whose selections came to no link.
+        selected = declared.pop("selected_count")
+        self.assert_expression(str(selected["value"]), "jobs.select.outputs.count")
         self.assertEqual(
             set(declared),
             {
@@ -2319,7 +2323,6 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         "GUIDANCE_REPOSITORY": "o/.github",
     }
 
-    @unittest.expectedFailure
     def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
         """A boolean, off by default, passed to select_issues.py as a flag."""
         inputs = cast(
@@ -2337,7 +2340,6 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         self.assert_expression(budget["REVISE_ONLY"], "inputs.revise_only")
         self.assert_expression(budget["REVISE"], "inputs.revise")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_check_inputs_refuses_targets_and_other_modes(self) -> None:
         """Only a pull-requests scan with revisions on may be revise-only."""
@@ -2389,7 +2391,6 @@ class ReviseOnlyCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_second_schedule_sets_revise_only(self) -> None:
         """The 02:00 scan stays; a four-hourly slot revises alone."""
         self.assertEqual(
@@ -2401,7 +2402,6 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         env = cast(dict[str, Any], self.step("notify", "digest")["env"])
         self.assert_expression(env["REVISE_ONLY"], REVISE_ONLY)
 
-    @unittest.expectedFailure
     def test_dispatch_form_offers_revise_only(self) -> None:
         """A boolean, off by default; the form stays inside GitHub's 25."""
         inputs = cast(
@@ -2438,6 +2438,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "issues",
                 "pull_requests",
                 "revise",
+                "revise_only",
                 "max_runtime_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
@@ -2487,6 +2488,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "load_repo_skills": False,
             "request_review": True,
             "revise": True,
+            "revise_only": False,
             "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
@@ -2505,8 +2507,11 @@ class CronCallerContracts(WorkflowCase):
     WORKFLOW = CRON
 
     def test_schedule_and_concurrency(self) -> None:
-        """Weekday 02:00 UTC; scans share a group, dry and named do not."""
-        self.assertEqual(self.triggers["schedule"], [{"cron": "0 2 * * 1-5"}])
+        """Weekday 02:00 UTC and revise-only slots; scans share a group."""
+        self.assertEqual(
+            self.triggers["schedule"],
+            [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],
+        )
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
             str(concurrency["group"]),
@@ -2551,6 +2556,7 @@ class CronCallerContracts(WorkflowCase):
             "repositories": "",
             "issues": "",
             "categories": "all",
+            "revise_only": False,
         }
         for name, default in defaults.items():
             with self.subTest(input=name):
@@ -2715,8 +2721,14 @@ class CronSlackContracts(WorkflowCase):
                 self.assertIn("GITHUB_STEP_SUMMARY", script)
                 later = self.steps(name)[self.position(name, "slack") + 1 :]
                 for step in later:
-                    self.assertEqual(
-                        step["if"], "steps.slack.outputs.configured == 'true'"
+                    # The digest may also hold back a quiet revise-only post.
+                    self.assertIn(
+                        step["if"],
+                        (
+                            "steps.slack.outputs.configured == 'true'",
+                            "steps.slack.outputs.configured == 'true'"
+                            " && steps.digest.outputs.post == 'true'",
+                        ),
                     )
 
     def test_messages_carry_header_and_run_link(self) -> None:
@@ -2890,7 +2902,6 @@ class CronSlackContracts(WorkflowCase):
         self.assertTrue(late["body"].endswith("see the workflow run._"))
         self.assertIn("failing checks; see the run report._", late["body"])
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_revise_only_digest_says_so_and_an_empty_one_stays_quiet(self) -> None:
         """A revise-only slot posts unless it selected and failed nothing (#113)."""

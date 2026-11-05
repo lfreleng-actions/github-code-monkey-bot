@@ -498,6 +498,21 @@ holds the serialised selection under 12 MiB, inside the 16 MiB the
 verifier accepts, since 256 entries at the per-issue body and
 comment caps would otherwise exceed it.
 
+**Two scans.** A full scan, the 02:00 schedule's, revises the bot's
+open pull requests with work outstanding (§20.1) and then works new
+issues by the rules above. A **`revise_only`** scan (§9.1) does the
+first half alone: it reads no issue, so no candidate,
+ranking or category applies, and the revision scan runs under the
+full `max_pull_requests` cap and the one-per-repository rule as it
+does in a full scan. The caller's second schedule runs one every four
+hours on weekdays (§11), so a published pull request's findings,
+failing checks and maintainer comments come back within hours rather
+than at the next 02:00. A `revise_only` scan names nothing: the input
+check refuses it beside `issues` or `repositories`, in a mode other
+than `pull-requests`, or with `revise` off. Beside named
+`pull_requests` it changes nothing, since a named run scans nothing
+and works what it names and nothing else.
+
 **Guidance ref.** `guidance_ref` may name a branch, a tag or a
 commit. The selector resolves it to a commit, following an annotated
 tag, and refuses a ref whose target is anything but a commit, so the
@@ -1172,6 +1187,7 @@ For each selected issue:
 | `issues` | string | `''` | Issues to work instead of scanning (§6) |
 | `pull_requests` | string | `''` | Bot pull requests to revise (§20) |
 | `revise` | boolean | `true` | §20: revise before working new issues |
+| `revise_only` | boolean | `false` | §6: revise, work no new issue |
 | `exclude_repos` | string | `''` | Same form; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
@@ -1197,7 +1213,9 @@ outside the stated ranges.
 
 ### 9.2 Dispatch caller (`code-monkey-cron.yaml`)
 
-`schedule: '0 2 * * 1-5'` and `workflow_dispatch` with:
+Two schedules, `'0 2 * * 1-5'` (the full scan) and
+`'0 6,10,14,18 * * 1-5'` (`revise_only`, §11), and `workflow_dispatch`
+with:
 
 | Input | Type | Default |
 | ----- | ---- | ------- |
@@ -1216,6 +1234,7 @@ outside the stated ranges.
 | `issues` | string | `''` |
 | `pull_requests` | string | `''` |
 | `revise` | boolean | `true` |
+| `revise_only` | boolean | `false` |
 | `categories` | string | `'all'` |
 
 The `model` choice shows display names and the caller maps them to
@@ -1233,9 +1252,18 @@ entries, worked in parallel, and at most ten pull requests.
 limit; anything non-numeric or negative fails the select job.
 `categories` passes straight through: `docs` for a run that fixes
 documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 15 inputs, within
+schedule, passing no inputs, gets. The form holds 17 inputs, within
 GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
+
+`revise_only` is the second schedule or the form's choice: the
+caller passes `github.event.schedule == '0 6,10,14,18 * * 1-5' ||
+inputs.revise_only == true`, since GitHub sets `github.event.schedule`
+to the cron string that fired. The schedule entry and the two
+expressions that test it, in the `code-monkey` job and the Slack
+digest, change together. A `revise_only` dispatch must leave `issues`
+and `repositories` empty, keep `pull-requests` mode and `revise` on;
+the input check refuses it otherwise (§6).
 
 ### 9.3 Mode and dry-run matrix
 
@@ -1409,6 +1437,14 @@ the model PAT (§10.2).
 
 ## 11. Scheduling and Concurrency
 
+- Cron `0 6,10,14,18 * * 1-5`, live, with `revise_only` (§6 "Two
+  scans"): every four hours on weekdays it revises the bot's open pull
+  requests with work outstanding and works no new issue. Each slot
+  costs one select job, which reads the bot's open pull requests, and
+  an agent session for each pull request with work outstanding; a
+  slot with nothing to do ends after selection. This is how a pull
+  request published with a failing check or a review with findings,
+  or one a maintainer commented on, gets its next round the same day.
 - Cron `0 2 * * 1-5`, live. At 02:00 UTC the run's pull requests
   are ready for review by the start of the European working day. It
   reads the previous working day's triage, which runs at 07:00 UTC
@@ -1431,8 +1467,14 @@ the model PAT (§10.2).
   run that raised nothing posts
   a line saying it raised none, so an empty night reads
   differently from a broken one, and a run with failed jobs that
-  still reported says so under the list. `notify-failure` needs
-  `notify` and posts when a scheduled run failed, or a cancellation
+  still reported says so under the list. A `revise_only` run says so
+  in its title and under the list, and stays quiet when the
+  `selected_count` output is `0`, it raised nothing, refused no link
+  and every job succeeded: a slot with nothing to do every four hours
+  should not post. A slot that selected a revision and published no
+  link, its proposal refused offline or its round abstained, posts,
+  as does one whose count is missing or anything but `0`. `notify-failure`
+  needs `notify` and posts when a scheduled run failed, or a cancellation
   stopped it, and the digest did not succeed: the run stopped before its report
   produced outputs, or the digest job itself failed. It says the
   nightly run failed and no digest follows; a digest that posted is
@@ -1467,6 +1509,13 @@ the model PAT (§10.2).
   the overlap to a wasted author session, never a duplicate pull
   request or a lost round.
   A scan keeps the shared group even when `repositories` narrows it.
+  A `revise_only` run, scheduled or dispatched, is a scan and keeps it
+  too, so it queues behind a running full scan and never runs beside
+  it, and the reusable workflow's scan lock below holds it the same
+  way. A `revise_only` slot pending behind a long full scan may be the
+  run GitHub cancels when another arrives, since the group keeps one
+  pending run; that is acceptable, as the next slot comes four hours
+  later.
 - The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
   A dry run locks on `code-monkey-dry-run-<run_id>-<owner>` and a
@@ -1792,10 +1841,12 @@ cross-checked against the trusted `selection.json`.
 the artifact-name suffix. `explicit_issues` holds the named issues
 as `owner/repo#N`, in the order given, and `skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
-dropped; both are empty on a scan. `explicit_pull_requests` and
-`revise` record the §20 inputs. A revision entry adds `task:
-"revise"`, `rebase_sha`, `checkout_sha`, `pull_request` (`number`,
-`url`, `title`, `head_sha`, `mergeable`, `created_at`), `round`,
+dropped; both are empty on a scan. `explicit_pull_requests`,
+`revise` and `revise_only` record the §20 inputs; a `revise_only`
+selection holds revision entries alone and `candidates_seen` is 0.
+A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
+`pull_request` (`number`, `url`, `title`, `head_sha`, `mergeable`,
+`created_at`), `round`,
 `collected_at` (when the selection read the comments; every entry
 carries it), `session` (the run id and the select job's attempt:
 new on a full rerun, which authors anew, kept across a retry of the
@@ -2034,9 +2085,11 @@ operational failures alone.
 ### 18.6 Workflow outputs (report → caller)
 
 A caller cannot read `report.json` without the run's namespace, so
-the reusable workflow declares four `workflow_call` outputs, fed by
-the report job's `Build report` step through
-`publish.py report --org ORG --github-output PATH`:
+the reusable workflow declares five `workflow_call` outputs. Four
+come from the report job's `Build report` step through
+`publish.py report --org ORG --github-output PATH`; `selected_count`
+is the select job's own `count`, the length of the trusted matrix,
+checked there as digits:
 
 | Output | Value |
 | ------ | ----- |
@@ -2044,6 +2097,7 @@ the report job's `Build report` step through
 | `pull_request_count` | The array's length, as a string |
 | `unmergeable_pull_requests` | Those whose head conflicts (§8 step 11) |
 | `failing_check_pull_requests` | Those with failing checks (§8 step 11) |
+| `selected_count` | Entries selected, issues and revisions, as a string |
 
 Results are not yet authenticated (§18.4), so `report_outputs.py`
 treats each field as hostile. A URL counts when the whole value
@@ -2173,7 +2227,11 @@ Three ways in, all through the select job and its read token:
   afresh (§6 "Explicit issues"), and a merged one keeps it out.
 - A scan with `revise` on, the default, searches the owner for the
   App's open pull requests and selects those with **work
-  outstanding**: an unresolved review thread whose opening comment
+  outstanding**, and a `revise_only` scan (§6 "Two scans") does that
+  and nothing else; the caller runs one every four hours on weekdays
+  (§11), so a published pull request's findings and failing checks
+  come back within hours, not at the next 02:00 run. Work
+  outstanding is: an unresolved review thread whose opening comment
   comes from Copilot, a listed antagonistic review App or an
   `OWNER`/`MEMBER`; a Copilot review of the head with findings; an
   antagonistic review that handed the head back after the bot's
