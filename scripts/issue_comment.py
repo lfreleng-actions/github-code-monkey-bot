@@ -14,6 +14,7 @@ import bot_github as github
 import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
+import write_recovery as recovery
 
 REVIEW_VERDICTS = ("clean", "findings", "pending")
 REVIEW_FIELDS = frozenset(
@@ -356,22 +357,29 @@ def run_comment(args: argparse.Namespace) -> None:
         suffix += f" antagonistic={handback}"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
-    earlier = (
-        posted(repository, issue, marker, args.since, bot_login, run_url=args.run_url)
-        if bot_login
-        else None
-    )
+
+    def landed() -> dict[str, Any] | None:
+        # With no bot login to match, posted() is given no window to read.
+        since = args.since if bot_login else ""
+        url = posted(repository, issue, marker, since, bot_login, run_url=args.run_url)
+        return None if url is None else {"html_url": url}
+
+    def write() -> dict[str, Any]:
+        endpoint = f"repos/{repository}/issues/{issue}/comments"
+        return github.api_write("POST", endpoint, {"body": f"{body}\n\n{marker}"})
+
+    earlier = landed()
     if earlier is not None:
         # A retry after the POST succeeded but its reply was lost, or
         # after a later step failed: the outcome is already on record.
         print("outcome already commented")
-        result["comment_url"] = earlier
+        result["comment_url"] = earlier["html_url"]
     else:
-        data = github.api_write(
-            "POST",
-            f"repos/{repository}/issues/{issue}/comments",
-            {"body": f"{body}\n\n{marker}"},
-        )
+        # Found by its marker alone, so a lost POST is never sent again.
+        with recovery.recording(cast("list[str]", result.setdefault("warnings", []))):
+            data = recovery.recover(
+                write, landed, repeat_safe=False, label="issue comment"
+            )
         result["comment_url"] = data.get("html_url")
     args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 

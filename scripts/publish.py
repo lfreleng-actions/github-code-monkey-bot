@@ -53,6 +53,7 @@ import proposal_policy as policy
 import proposal_report as reporting
 import revision_publish
 import revision_title
+import write_recovery as recovery
 from branch_refs import (
     branch_matches,
     create_branch,
@@ -111,67 +112,74 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
 
 
 def run_push(args: argparse.Namespace) -> dict[str, Any]:
-    """Find or create the fork, create the branch there and replay commits."""
+    """Find or create the fork, create the branch there and replay commits.
+
+    A write recovered from a transient failure adds a result warning.
+    """
     check = model.load_json(args.check, "check")
     result = base_result(args, check)
-    if check.get("task") == "revise":
-        return revision_publish.run_push(args, check, result, fail=fail)
-    if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
-        return result
-    target = str(check["repository"])
-    fork = str(check["fork_repository"])
-    branch = str(check["branch"])
-    attempted = False
-    created = False
-    reset: ClosedAttempt | None = None
-    progress: list[str] = []
-    try:
-        ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
-        sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
-        # Inside the rollback boundary, but a create that failed without
-        # a clear answer leaves ``created`` false: the ref may be ours or
-        # may have existed before, so rollback leaves it alone.
-        attempted = True
-        reset = create_fresh_branch(check, result, create_branch)
-        created = True
-        result["commits"] = replay_commits(args.workdir / "clone", check, progress)
-    except Rejection as exc:
-        # The branch already existed, not as the closed attempt a named
-        # retry may reset, and is never deleted here. It is this run's
-        # own work when it carries the proposal's chain: a retry after
-        # a later step failed. Otherwise it is a conflict.
+    with recovery.recording(cast("list[str]", result["warnings"])):
+        if check.get("task") == "revise":
+            return revision_publish.run_push(args, check, result, fail=fail)
+        if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
+            return result
+        target = str(check["repository"])
+        fork = str(check["fork_repository"])
+        branch = str(check["branch"])
+        attempted = False
+        created = False
+        reset: ClosedAttempt | None = None
+        progress: list[str] = []
+        owned: list[bool] = []
         try:
-            return reconcile(args, check, result, exc)
-        except (PublishError, github.GitHubError) as failure:
-            fail(args, result, f"{failure}; existing branch kept", failure)
-    except (PublishError, github.GitHubError) as exc:
-        if not attempted:
-            # The fork was not ready: nothing of ours exists to remove.
-            fail(args, result, str(exc), exc)
-        if not created:
-            # Deleting a branch this run cannot prove it made could take
-            # someone else's work; a stray branch costs a human a look.
+            ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
+            sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
+            # Inside the rollback boundary, but a create without a clear
+            # answer, or found only by reading it back, leaves ``created``
+            # false: the ref may have existed before, so rollback keeps it.
+            attempted = True
+            reset = create_fresh_branch(
+                check, result, lambda f, b, s: owned.append(create_branch(f, b, s))
+            )
+            created = reset is not None or owned == [True]
+            result["commits"] = replay_commits(args.workdir / "clone", check, progress)
+        except Rejection as exc:
+            # The branch already existed, not as the closed attempt a named
+            # retry may reset, and is never deleted here. It is this run's
+            # own work when it carries the proposal's chain: a retry after
+            # a later step failed. Otherwise it is a conflict.
+            try:
+                return reconcile(args, check, result, exc)
+            except (PublishError, github.GitHubError) as failure:
+                fail(args, result, f"{failure}; existing branch kept", failure)
+        except (PublishError, github.GitHubError) as exc:
+            if not attempted:
+                # The fork was not ready: nothing of ours exists to remove.
+                fail(args, result, str(exc), exc)
+            if not created:
+                # Deleting a branch this run cannot prove it made could take
+                # someone else's work; a stray branch costs a human a look.
+                fail(
+                    args,
+                    result,
+                    f"{exc}; branch creation did not confirm, so any branch there is kept",
+                    exc,
+                )
+            if reset is not None:
+                # Not this run's branch to delete: the closed head goes back.
+                restored = restore_closed_attempt(check, reset, progress)
+                fail(args, result, f"{exc}; {restored}", exc)
+            # Roll the branch back so the issue stays eligible, then fail
+            # the step: this is the publisher unable to do its job.
+            leftover = delete_branch(fork, branch)
             fail(
                 args,
                 result,
-                f"{exc}; branch creation did not confirm, so any branch there is kept",
+                str(exc) + (f"; {leftover}" if leftover else "; branch removed"),
                 exc,
             )
-        if reset is not None:
-            # Not this run's branch to delete: the closed head goes back.
-            restored = restore_closed_attempt(check, reset, progress)
-            fail(args, result, f"{exc}; {restored}", exc)
-        # Roll the branch back so the issue stays eligible, then fail
-        # the step: this is the publisher unable to do its job.
-        leftover = delete_branch(fork, branch)
-        fail(
-            args,
-            result,
-            str(exc) + (f"; {leftover}" if leftover else "; branch removed"),
-            exc,
-        )
-    result["branch_url"] = fork_tree_url(check)
-    return result
+        result["branch_url"] = fork_tree_url(check)
+        return result
 
 
 def fail(
