@@ -2768,7 +2768,6 @@ class TestingCallerContracts(WorkflowCase):
         """The regression job's actions are commit-pinned."""
         self.assert_pinned_steps()
 
-    @unittest.expectedFailure
     def test_actionlint_job_runs_the_hook_pre_commit_ci_skips(self) -> None:
         """actionlint-shellcheck outruns pre-commit.ci, so Actions runs it.
 
