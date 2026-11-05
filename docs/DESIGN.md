@@ -2230,10 +2230,12 @@ replies, leaves the threads open, comments the handoff on the issue
 with the agent's reason and round summary, and skips the review
 gate, since the head did not move. The handoff has no swap to refuse
 a moved head, so `respond`, which holds the pull request token where
-the push step holds none for a handoff, reads the pull request's head
-before any reply goes up: one that moved during the session is a
-rejection, since the replies answer code the agent did not see, and
-one it cannot read is a failure, never a handoff taken on trust. The
+the push step holds none for a handoff, reads the pull request's
+state and head before any reply goes up: a pull request closed or
+merged since selection is a rejection with no reply, as on the push;
+a head that moved during the session is a rejection, since the
+replies answer code the agent did not see; and a state or head it
+cannot read is a failure, never a handoff taken on trust. The
 next scan leaves the pull
 request alone until a maintainer comments, on the issue, the pull
 request or one of the disputed threads.
@@ -2242,17 +2244,27 @@ A single-commit revision whose subject changed sets the pull
 request's title before the push, with the pull request token minted
 ahead of it: the Semantic Pull Request check runs on the push and
 compares the title with the subject, so the title must lead
-(organisation `AGENTS.md` §10.1). It writes when the pull request
-still heads at the selected commit, or at this run's own published
-chain on a retry; a head another session moved keeps its title, as
-the swap will refuse that session's branch update. A push that then
+(organisation `AGENTS.md` §10.1). It reads the pull request and the
+bot branch first, since the pull request's head can lag a branch
+deleted or moved since, and writes when the pull request stays open
+and it and the branch both head at the selected commit, or at this
+run's own published chain on a retry. A
+pull request closed or merged since selection, a head another
+session moved, or a branch that reads as gone keeps its title, as
+the push will refuse that round, and none of them fails the step.
+A push that then
 fails with the branch unchanged gives the old title back, with the
 same token, while the head and title are still this attempt's, and
 after a retitle whose reply GitHub lost, since the record of the old
 title goes down before the write; a
 publication keeps the new title and an unknown swap outcome restores
-nothing, since the branch may hold the new chain. The push syncs
-the fork, replays
+nothing, since the branch may hold the new chain. The push reads
+the pull request's state and the bot branch before it writes to the
+branch. A pull request closed or merged since selection is a
+rejection, found before the publisher touches the fork: the round
+stands down with no push, replies or review gate, and its issue
+comment says so, as for any rejection. The push then syncs the
+fork, replays
 the chain onto a temporary branch
 (`code-monkey/issue-<n>-r<round>-<session>`, the session being the
 run id and select attempt, so two named dispatches revising one pull
@@ -2268,7 +2280,15 @@ asks of the branch the proof the new-issue path asks of an existing
 one, the verified chain on the round's base, and adopts the branch
 that passes: a rerun after a swap that succeeded and a later step
 that failed would otherwise replay against a `beforeOid` the swap
-itself retired and refuse the run's own publication. When the swap
+itself retired and refuse the run's own publication. The publisher
+reads a branch that fails the proof once more before any write: a
+head other than the recorded one, or a branch that reads as gone (a
+404), is a rejection with no replay, temporary branch or swap.
+GitHub has answered a stale `beforeOid` with a generic error the
+compare-and-swap refusal below cannot recognise, so this read, not
+the swap, settles a move made before it. A 404 in the adoption proof
+likewise means no chain, never a failure, while any other read error
+still fails the publication. When the swap
 answers with an
 error the publisher reads the branch itself, since GitHub may apply
 the move and then lose the reply: at the new tip the move stands,
@@ -2277,7 +2297,9 @@ failure says the branch holds its old head; elsewhere, the
 compare-and-swap refusal, and that message alone, is the rejection,
 while any other error there, or no answer, is an outcome the result
 names unknown and never calls unchanged, so a human reads the fork
-before the next round. The publisher reads the temporary branch's
+before the next round. After the read above, a move between that
+read and the swap is the one way to end there. The publisher reads
+the temporary branch's
 own creation the same way when its reply is an error or the branch
 already exists: a branch at the base belongs to this attempt and the
 replay goes on; one carrying the round's verified chain holds an

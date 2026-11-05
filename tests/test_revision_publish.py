@@ -184,6 +184,36 @@ class MoveBranchTest(unittest.TestCase):
         self.assertEqual(commits, [NEW])
 
 
+class AlreadyMovedTest(unittest.TestCase):
+    """The adoption test reads a deleted branch as no chain, not a failure."""
+
+    def moved(self, outcome: Any) -> list[str] | None:
+        """Run ``already_moved`` with ``branch_matches`` answering ``outcome``."""
+        data = check(bot_login="code-monkey[bot]")
+        matches = (
+            patch.object(refs, "branch_matches", side_effect=outcome)
+            if isinstance(outcome, Exception)
+            else patch.object(refs, "branch_matches", return_value=outcome)
+        )
+        with matches:
+            return swap.already_moved(data)
+
+    def test_the_chain_on_the_branch_is_adopted(self) -> None:
+        """The verified chain comes back as the publication."""
+        self.assertEqual(self.moved([NEW]), [NEW])
+
+    def test_a_deleted_branch_holds_no_chain(self) -> None:
+        """A 404 on the fork branch means the branch is gone: None."""
+        gone = github.GitHubError("gh: Not Found (HTTP 404)", status=404)
+        self.assertIsNone(self.moved(gone))
+
+    def test_other_read_failures_propagate(self) -> None:
+        """A 502 is not absence and still fails the caller."""
+        bad = github.GitHubError("Bad Gateway (HTTP 502)", status=502)
+        with self.assertRaises(github.GitHubError):
+            self.moved(bad)
+
+
 class ScratchNameTest(unittest.TestCase):
     """The scratch branch is one session's alone."""
 

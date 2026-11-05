@@ -23,7 +23,7 @@ import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
 import thread_reads as threads_of
-from branch_swap import SwapUnknown, already_moved, move_branch
+from branch_swap import SwapUnknown, already_moved, branch_tip, move_branch
 from proposal_policy import PublishError, Rejection
 from revision_check import reply_marker
 
@@ -64,6 +64,34 @@ def update_pull_request(
     )
 
 
+def closed_pull_request(repository: str, number: int) -> str | None:
+    """Why the round stands down when its pull request is no longer open, else None.
+
+    A pull request closed or merged since selection has nothing left
+    for the round to publish to: a rejection, not a failure. A read
+    that fails is the caller's failure.
+    """
+    state = reads.pull_state(github.api_object(f"repos/{repository}/pulls/{number}"))
+    if state == "open":
+        return None
+    return f"pull request #{number} is {state}; nothing to publish"
+
+
+def moved_branch(check: dict[str, Any]) -> str | None:
+    """Why the round stands down when the bot branch left the selected head.
+
+    Read before any write to the branch, so a branch another round
+    moved, or deleted, is refused with no replay, scratch branch or
+    swap. A read that fails is the caller's failure.
+    """
+    expected = str(check["head_sha"])
+    head = branch_tip(str(check["fork_repository"]), str(check["branch"]))
+    if head == expected:
+        return None
+    now = "a deleted branch" if head is None else head[:7]
+    return f"head moved from {expected[:7]} to {now} since selection; nothing forced"
+
+
 def run_push(
     args: argparse.Namespace,
     check: dict[str, Any],
@@ -102,6 +130,9 @@ def run_push(
     target = str(check["repository"])
     fork = str(check["fork_repository"])
     try:
+        closed = closed_pull_request(target, int(check["pull_number"]))
+        if closed is not None:
+            raise Rejection(closed)
         refs.ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
         refs.sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
         published = already_moved(check)
@@ -113,6 +144,12 @@ def run_push(
             result["commits"] = published
             warnings.append("an earlier attempt already moved the branch to this round")
         else:
+            # GitHub may refuse a stale beforeOid with a generic error
+            # the swap cannot tell from a lost reply, so a move made
+            # before this read is refused here, before any write.
+            moved = moved_branch(check)
+            if moved is not None:
+                raise Rejection(moved)
             result["commits"] = move_branch(args.workdir / "clone", check)
     except Rejection as exc:
         result["verdict"] = "rejected"
@@ -146,23 +183,28 @@ def added_warnings(check: dict[str, Any], seen: int) -> list[str]:
 
 
 def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
-    """Whether the handoff may answer: the pull request head is the recorded one.
+    """Whether the handoff may answer: the pull request is open at the recorded head.
 
-    A proposal's swap refuses a moved head by itself; a handoff moves
-    nothing, so the guard is this read, with the pull request token.
-    Replies written against code a maintainer has since replaced
-    answer the wrong head, and the handoff's footer would pause the
-    rounds on a head the agent never weighed: a moved head is a
-    rejection. A head that cannot be read is a failure, not a
-    handoff taken on trust; the result records it before the raise.
+    A proposal's push refuses a closed pull request and a moved head
+    by itself; a handoff pushes nothing, so the guard is this read,
+    with the pull request token. A pull request closed or merged since
+    selection has nothing left to answer, and replies written against
+    code a maintainer has since replaced answer the wrong head, while
+    the handoff's footer would pause the rounds on a head the agent
+    never weighed: either is a rejection. A state or head that cannot
+    be read is a failure, not a handoff taken on trust; the result
+    records it before the raise.
     """
     expected = str(check["head_sha"])
+    repository = str(check["repository"])
+    number = int(check["pull_number"])
     try:
-        head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
+        closed = closed_pull_request(repository, number)
+        head = None if closed is not None else review.pull_head(repository, number)
     except github.GitHubError as exc:
         result["verdict"] = "publish-failed"
         cast("list[str]", result["reasons"]).append(
-            f"could not read the pull request head: {github.safe_message(exc)}"
+            f"could not read the pull request: {github.safe_message(exc)}"
         )
         return False
     if head == expected:
@@ -170,8 +212,9 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     result["verdict"] = "rejected"
     result["pull_request_url"] = None
     cast("list[str]", result["reasons"]).append(
-        f"head moved from {expected[:7]} to {head[:7]} since selection; the "
-        "handoff answers code the agent did not see"
+        closed
+        or f"head moved from {expected[:7]} to {str(head)[:7]} since selection; "
+        "the handoff answers code the agent did not see"
     )
     return False
 
@@ -267,96 +310,6 @@ def published_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
             "left alone"
         )
     return False
-
-
-def run_retitle(args: argparse.Namespace) -> None:
-    """``publish.py retitle``: set a revision's title before its branch moves.
-
-    The Semantic Pull Request check runs on the push and compares the
-    title with the commit subject, so the title must lead the push
-    (AGENTS.md section 10.1). Only a proposed revision whose title
-    differs writes, and only while the pull request heads at the
-    selected commit or at this run's own published chain on a retry;
-    a head another session moved keeps its title. What the write
-    replaced goes to ``--record`` so a push that then fails with the
-    branch unchanged can take the title back.
-    """
-    check = model.load_json(args.check, "check")
-    if check.get("task") != "revise" or check.get("verdict") != "proposed":
-        print("retitle: nothing to do")
-        return
-    repository = str(check["repository"])
-    number = int(check["pull_number"])
-    title = str(check.get("pr_title") or "")
-    head = review.pull_head(repository, number)
-    if head != str(check["head_sha"]):
-        chain = already_moved(check)
-        if chain is None or head != chain[-1]:
-            print(f"retitle: head moved to {head[:7]}; title left alone")
-            return
-    current = github.api_object(f"repos/{repository}/pulls/{number}").get("title")
-    if not title or title == current:
-        print("retitle: title unchanged")
-        return
-    # The record goes down before the write: GitHub may apply the
-    # title and lose the reply, and the restore must still know what
-    # to give back.
-    record = {
-        "repository": repository,
-        "pull_number": number,
-        "head_sha": head,
-        "previous": current if isinstance(current, str) else "",
-        "title": title,
-    }
-    args.record.parent.mkdir(parents=True, exist_ok=True)
-    args.record.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    github.api_write("PATCH", f"repos/{repository}/pulls/{number}", {"title": title})
-    print("retitle: title set")
-
-
-def run_restore_title(args: argparse.Namespace) -> None:
-    """``publish.py restore-title``: take back a title the push did not earn.
-
-    Runs after the push whatever its outcome, and after a retitle that
-    failed, since GitHub may apply the title and lose the reply. A
-    publication keeps the title; a failure that confirmed the branch
-    unchanged, or a push that reached no result, gives the old title
-    back when the new one is in place, provided the
-    head is still the one the retitle saw and the title is still the
-    one it set, so another session's work is never touched. An
-    unknown swap outcome restores nothing, since the branch may hold
-    the new chain.
-    """
-    if not args.record.is_file():
-        print("restore-title: nothing was retitled")
-        return
-    record = model.load_json(args.record, "retitle record")
-    result = model.load_json(args.result, "result") if args.result.is_file() else None
-    if result is not None:
-        verdict = result.get("verdict")
-        reasons = " ".join(
-            str(r) for r in cast("list[Any]", result.get("reasons") or [])
-        )
-        if verdict == "proposed":
-            print("restore-title: published; the title stands")
-            return
-        if verdict == "publish-failed" and "unknown" in reasons:
-            print("restore-title: swap outcome unknown; the title stands")
-            return
-    repository = str(record["repository"])
-    number = int(record["pull_number"])
-    head = review.pull_head(repository, number)
-    if head != str(record["head_sha"]):
-        print(f"restore-title: head moved to {head[:7]}; title left alone")
-        return
-    current = github.api_object(f"repos/{repository}/pulls/{number}").get("title")
-    if current != record["title"]:
-        print("restore-title: title changed since; left alone")
-        return
-    github.api_write(
-        "PATCH", f"repos/{repository}/pulls/{number}", {"title": record["previous"]}
-    )
-    print("restore-title: previous title restored")
 
 
 def run_respond(args: argparse.Namespace) -> None:

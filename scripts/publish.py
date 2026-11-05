@@ -52,6 +52,7 @@ import proposal_model as model
 import proposal_policy as policy
 import proposal_report as reporting
 import revision_publish
+import revision_title
 from branch_refs import (
     branch_matches,
     create_branch,
@@ -360,14 +361,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retitle.add_argument("--check", type=Path, required=True)
     retitle.add_argument("--record", type=Path, required=True)
-    retitle.set_defaults(handler=revision_publish.run_retitle)
+    retitle.set_defaults(handler=revision_title.run_retitle)
 
     restore = commands.add_parser(
         "restore-title", help="take back a title the push did not earn (target token)"
     )
     restore.add_argument("--record", type=Path, required=True)
     restore.add_argument("--result", type=Path, required=True)
-    restore.set_defaults(handler=revision_publish.run_restore_title)
+    restore.set_defaults(handler=revision_title.run_restore_title)
 
     respond = commands.add_parser(
         "respond", help="answer the review threads of a revision (target token)"
