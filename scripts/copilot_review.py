@@ -11,7 +11,8 @@ own token for a review by Copilot whose ``commit_id`` is the head it
 published, reads the unresolved review threads, and classifies the
 pair (``review_verdict``). A review that never arrives within the
 wait is pending, never clean; after a refused request the wait is a
-short grace for a maintainer's own request, not the full wait.
+short grace for a maintainer's own request, not the full wait. The
+rest of the same wait reads the head's checks (``head_checks``).
 
 Every wait is bounded before it starts: the shared ``gh`` wrapper
 retries a read three times with a timeout each, so a poll begun too
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import head_checks
 import proposal_model as model
 import review_request
 import review_verdict as verdicts
@@ -227,6 +229,31 @@ def await_review(
         sleep(min(POLL_SECONDS, remaining - RESERVE_SECONDS))
 
 
+def await_head(
+    repository: str,
+    number: int,
+    head_sha: str,
+    *,
+    wait_minutes: int = DEFAULT_WAIT_MINUTES,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[Verdict, int | None, head_checks.HeadChecks]:
+    """Await the review, then the head's checks, within one deadline set first."""
+    window = head_checks.Window.of(wait_minutes, READ_BUDGET_SECONDS, clock, sleep)
+    verdict, review_id = await_review(
+        repository,
+        number,
+        head_sha,
+        wait_minutes=wait_minutes,
+        clock=clock,
+        sleep=sleep,
+    )
+    found = head_checks.await_checks(
+        repository, head_sha, lambda: pull_head(repository, number), window
+    )
+    return verdict, review_id, found
+
+
 def published(result: dict[str, Any]) -> tuple[str, int] | None:
     """The pull request a result published, or None when there is none to review."""
     url = result.get("pull_request_url")
@@ -336,6 +363,7 @@ def run_await(args: argparse.Namespace) -> None:
     # of the replayed, or adopted, chain. The pull request's current
     # head is read to confirm, never to choose.
     head = published_head(result)
+    found: head_checks.HeadChecks | None = None
     if head is None:
         verdict = verdicts.pending("no published head recorded to bind the review to")
     else:
@@ -352,7 +380,7 @@ def run_await(args: argparse.Namespace) -> None:
                     f"head moved from {head[:7]} to {current[:7]} before the wait"
                 )
             else:
-                verdict, review_id = await_review(
+                verdict, review_id, found = await_head(
                     repository, number, head, wait_minutes=wait_minutes
                 )
                 if unrequested and verdict.verdict == "pending":
@@ -367,5 +395,6 @@ def run_await(args: argparse.Namespace) -> None:
     record.update(verdict.to_json(review_id=review_id, commit_id=head))
     record.setdefault("requested", False)
     result["review"] = record
-    write_result(args.output, result)
     print(f"review: {verdict.verdict}; {'; '.join(verdict.reasons)}")
+    result["checks"] = head_checks.record(found, head, verdict.reasons)
+    write_result(args.output, result)

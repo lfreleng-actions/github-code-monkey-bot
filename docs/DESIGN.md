@@ -1023,6 +1023,28 @@ For each selected issue:
     shorter wait. A caller's shorter wait stands, and a request that
     landed keeps the full wait. The record goes into `result.json` as
     `review` (§18.4).
+    Once the verdict is in, the rest of the same wait reads the
+    head's check runs (`head_checks.py`), with the same token, since
+    the target is public, and no new mint. The publish job gates on
+    Copilot's review and reports CI: a failing check never stops the
+    publication, it records and warns. The read shares the wait's
+    deadline, fixed before the review poll starts, and the reserve
+    for its last reads, so the job's budget does not grow; a review
+    that took the whole wait leaves the checks one read. Runs count
+    when their `head_sha` is the published head. While a run has not
+    completed it polls every 30 seconds, as long as two reads still
+    fit before the deadline. It then reads the failing runs'
+    annotations under the same bound (`check_reads.py`, as the
+    revision round's packet does), and reads the head once more: a
+    push since, or any read that fails, records `unknown`, never
+    passing. The state is `passing`, `failing` (a run concluded
+    `failure`, `timed_out` or `startup_failure`), `running` (a run
+    still unsettled at the deadline, with any failures so far),
+    `none` (no runs at all) or `unknown`. Failing names bounded and
+    escaped reach a `::warning title=Checks::` annotation on the run.
+    The record goes into `result.json` as `checks` (§18.4); the
+    revision scan (§20.1) of a later run acts on the failures, since
+    this round has ended.
     Then the publisher reads whether the pull request can merge
     (`merge_state.py`), with the same
     token, since the target is public, and no write. A head that
@@ -1077,12 +1099,19 @@ For each selected issue:
     it moved during the run, says no CI ran, states the review without
     calling it clean and says the next round rebases it (§20.1); an
     unsettled answer says GitHub did not confirm whether the pull
-    request can merge. A conflict at the round cap leaves work undone:
-    that comment hands over to a human. The marker carries the review
+    request can merge. Failing checks on the head add a sentence
+    naming them, bounded and escaped, as do failures among checks
+    still running when the wait ended; passing, absent or unread
+    checks add nothing. A conflict or a known failing check, settled
+    or still running, at the round cap leaves work undone: that
+    comment hands over to a human. The marker carries the review
     verdict too, for findings the counts and the assessment, and for
     a pending review the workflow could not request
     `pending/not-requested`, then the probe's answer as `mergeable=`
-    `true`, `false` or `unknown` when it ran, so a rerun whose wait ended differently,
+    `true`, `false` or `unknown` when it ran, then the checks' state
+    as `checks=` when the record exists, with a short hash of the
+    failing checks' names when it names any (`checks=running/<hex>`),
+    so a rerun whose wait ended differently or whose failures changed,
     resolved a thread under the same verdict, or requested the review
     a first attempt could not, posts again
     instead of leaving the issue at odds with `result.json`; the
@@ -1101,8 +1130,11 @@ For each selected issue:
     probe's answers (mergeable, conflicting, unconfirmed, not probed),
     lists each conflicting pull request apart with the count of
     commits behind and, at the round cap, that a human must take
-    over, and states, once, how a later round answers review
-    findings. A
+    over, counts the head checks' states (`not read` for a result
+    with no record and no review), lists each pull request with
+    known failing checks, settled or still running, and their names
+    and, at the round cap, that a human must take over, and states,
+    once, how a later round answers review findings. A
     report covers one
     selection, its namespace: a retried entry shows its latest
     attempt's row, but the spend total counts each author session
@@ -1393,7 +1425,10 @@ the model PAT (§10.2).
   CI ran on them and each needs a rebase, by a later round or, at
   the round cap, by a human; that output sorts
   no link but those the first one passed, and one that is not a JSON
-  array sorts none. A run that raised nothing posts
+  array sorts none. The `failing_check_pull_requests` output adds a
+  count under the list, by the same rule, of the links published
+  with failing checks, pointing at the run report for the names. A
+  run that raised nothing posts
   a line saying it raised none, so an empty night reads
   differently from a broken one, and a run with failed jobs that
   still reported says so under the list. `notify-failure` needs
@@ -1501,6 +1536,7 @@ conflicts while producer artifacts survive.
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
+| Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, the report and a count in the Slack digest; the revision scan picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -1545,6 +1581,7 @@ scripts/review_verdict.py                classify a Copilot review (§8 step 11)
 scripts/review_sections.py               its suppressed and unchanged-code counts
 scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
+scripts/head_checks.py                   the published head's checks (§8 step 11)
 scripts/review_request.py                the request and its refusal notice
 scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies
@@ -1917,6 +1954,18 @@ failed), `mergeable_state` (GitHub's short word, or `null`),
 (`null` where a read failed). A conflict means `false` and nothing
 else: the comment, the report and the outputs read `null` as
 unconfirmed.
+On a published pull request with `request_review` on, the wait
+(§8 step 11) adds `checks`: `state` (`passing`, `failing`,
+`running`, `none` or `unknown`), `commit_id` (the head it read),
+`failing` (at most 30 runs and 32 KiB, each with `name`, `conclusion`, `app`,
+`details_url`, `title`, `summary` and bounded `annotations`, as the
+revision packet carries them), `dropped` (failing runs left out),
+`unsettled` (runs not yet completed), `read_at` and `reason` (why
+the state is `unknown`, or `null`). Check names come from the code
+under review: the comment and the report bound and escape them.
+The comment and the report read a `checks` record of the wrong
+shape, or for a commit other than the published head, as `unknown`,
+and a result with a review but no `checks` as `unknown` too.
 The comment and the report read a record with any field missing or
 added, or any other verdict, as `pending`, and a `pending` record
 whose `requested` is `false` as a review the workflow could not
@@ -1981,7 +2030,7 @@ operational failures alone.
 ### 18.6 Workflow outputs (report → caller)
 
 A caller cannot read `report.json` without the run's namespace, so
-the reusable workflow declares three `workflow_call` outputs, fed by
+the reusable workflow declares four `workflow_call` outputs, fed by
 the report job's `Build report` step through
 `publish.py report --org ORG --github-output PATH`:
 
@@ -1990,6 +2039,7 @@ the report job's `Build report` step through
 | `pull_requests` | Single-line JSON array of URLs, in report order |
 | `pull_request_count` | The array's length, as a string |
 | `unmergeable_pull_requests` | Those whose head conflicts (§8 step 11) |
+| `failing_check_pull_requests` | Those with failing checks (§8 step 11) |
 
 Results are not yet authenticated (§18.4), so `report_outputs.py`
 treats each field as hostile. A URL counts when the whole value
@@ -1999,7 +2049,10 @@ no non-ASCII letter that Unicode folds onto an ASCII one (the
 dotless `ı` in `gıthub.com`) passes; duplicates, compared the same
 way, keep their first place. `unmergeable_pull_requests` passes
 the results whose `mergeable` is `false` through the same filter:
-it never names a link `pull_requests` would refuse. A dry-run
+it never names a link `pull_requests` would refuse, and
+`failing_check_pull_requests` does the same for the results whose
+`checks` record shows a known failure: state `failing`, or `running`
+with failures already recorded. A dry-run
 result, or one without a `pull_request_url`, contributes nothing.
 The script leaves any other value out and never copies it; it counts
 them in `report.json` (`excluded_pull_request_urls`, beside the
@@ -2123,7 +2176,10 @@ Three ways in, all through the select job and its read token:
   latest footer, recorded as `antagonistic review round N handed
   back`; a check run on the head whose conclusion is
   `failure`, `timed_out` or `startup_failure`, recorded as `failing
-  checks` among the round's reasons; a head that conflicts with the
+  checks` among the round's reasons (the publish job's `checks`
+  record, §18.4, reports the same failures on the round that
+  published the head, but selection reads them afresh); a head that
+  conflicts with the
   default branch (`mergeable` false), recorded as `conflicts with the
   default branch`, since GitHub runs no CI on it and it would
   otherwise wait unseen; or an `OWNER`/`MEMBER` comment

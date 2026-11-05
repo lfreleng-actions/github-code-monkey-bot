@@ -16,6 +16,8 @@ import json
 import re
 from typing import Any
 
+import review_outcome
+
 
 def pull_request_pattern(org: str) -> re.Pattern[str]:
     """Match a pull request URL in ``org``, compared case-insensitively.
@@ -66,6 +68,22 @@ def unmergeable_urls(results: list[dict[str, Any]], org: str) -> list[str]:
 def unmergeable_lines(urls: list[str]) -> str:
     """The ``$GITHUB_OUTPUT`` line for the conflicting pull requests."""
     return f"unmergeable_pull_requests={json.dumps(urls, separators=(',', ':'))}\n"
+
+
+def failing_check_urls(results: list[dict[str, Any]], org: str) -> list[str]:
+    """The live pull request links published with failing checks on their head.
+
+    Only a ``checks`` record bound to the published head with a known
+    failure counts: ``failing``, or ``running`` with failures already
+    recorded. Running checks without one, unknown or absent checks do not.
+    """
+    failing = [item for item in results if review_outcome.checks_failed(item)]
+    return pull_request_urls(failing, org)[0]
+
+
+def failing_check_lines(urls: list[str]) -> str:
+    """The ``$GITHUB_OUTPUT`` line for the pull requests with failing checks."""
+    return f"failing_check_pull_requests={json.dumps(urls, separators=(',', ':'))}\n"
 
 
 def output_lines(urls: list[str]) -> str:

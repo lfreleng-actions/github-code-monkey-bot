@@ -183,6 +183,12 @@ on:
           with the default branch after publication, so GitHub ran no
           CI on it; the next round rebases each
         value: "${{ jobs.report.outputs.unmergeable_pull_requests }}"
+      failing_check_pull_requests:
+        description: >-
+          Compact JSON array of the pull_requests whose head had failing
+          check runs when the publish job's review wait ended; the
+          publication went ahead, and a revision round reads them
+        value: "${{ jobs.report.outputs.failing_check_pull_requests }}"
 
 permissions: {}
 
@@ -1591,12 +1597,14 @@ jobs:
             --result artefacts/result.json --output artefacts/result.json \
             --credential "$REVIEW_CREDENTIAL"
 
-      # The target is public, so reading its reviews and review threads
-      # needs no App token. The wait is bounded inside the script, with
-      # a reserve for the reads a hit needs, and ends as pending, never
-      # clean, when no review of the published head arrives. After a
-      # refused request it waits a short grace instead of the full
-      # wait, for a maintainer's own request.
+      # The target is public, so reading its reviews, review threads
+      # and check runs needs no App token. The wait is bounded inside
+      # the script, with a reserve for the reads a hit needs, and ends
+      # as pending, never clean, when no review of the published head
+      # arrives. After a refused request it waits a short grace instead
+      # of the full wait, for a maintainer's own request. Once the
+      # verdict is known, the rest of the same wait reads the head's
+      # checks: recorded and warned on, never a reason to fail.
       - name: 'Await Copilot review'
         id: review
         if: >-
@@ -1755,6 +1763,8 @@ jobs:
       pull_request_count: "${{ steps.report.outputs.pull_request_count }}"
       # yamllint disable-line rule:line-length
       unmergeable_pull_requests: "${{ steps.report.outputs.unmergeable_pull_requests }}"
+      # yamllint disable-line rule:line-length
+      failing_check_pull_requests: "${{ steps.report.outputs.failing_check_pull_requests }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'
