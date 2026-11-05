@@ -289,6 +289,27 @@ def failing_checks_named(result: dict[str, Any]) -> str:
     return f"{text} and {more} more" if text and more > 0 else text
 
 
+# The most check runs the selection reads on a head; a larger count
+# is not one it recorded.
+MAX_UNSETTLED = 1_000
+
+
+def unsettled_count(value: Any) -> int:
+    """A count of checks still running at selection, or 0 when it is not one."""
+    return value if type(value) is int and 0 <= value <= MAX_UNSETTLED else 0
+
+
+def unsettled_at_selection(value: Any) -> str:
+    """The round's word on checks the selection found running, or empty.
+
+    The selection-time counterpart of the publish-time sentence in
+    ``checks_sentence``: a round sent while CI had not finished must
+    not read as one sent to a green head.
+    """
+    count = unsettled_count(value)
+    return f"{count} check(s) still running at selection" if count else ""
+
+
 def checks_sentence(result: dict[str, Any]) -> str:
     """What the comment says of the head's CI: failing checks, or nothing.
 

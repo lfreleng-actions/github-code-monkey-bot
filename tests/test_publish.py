@@ -402,7 +402,6 @@ class CommentBodyTest(unittest.TestCase):
         quiet = comments.comment_body(result_json(round=2, round_summary="s"), "")
         self.assertNotIn("failing checks", quiet or "")
 
-    @unittest.expectedFailure
     def test_revision_round_comment_names_checks_still_running(self) -> None:
         """A round says how many checks had not finished when it was selected."""
         result = result_json(

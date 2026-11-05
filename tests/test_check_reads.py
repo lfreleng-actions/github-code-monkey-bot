@@ -143,7 +143,6 @@ class SelectionTest(ChecksCase):
         # A run whose output counts no annotation costs no read.
         self.assertFalse(any("annotations" in e for e in self.endpoints))
 
-    @unittest.expectedFailure
     def test_unfinished_runs_count_as_unsettled_and_nowhere_else(self) -> None:
         """Queued and in-progress runs are unsettled; a success counts nowhere."""
         self.runs = [
@@ -240,7 +239,6 @@ class BoundsTest(ChecksCase):
         self.assertEqual(packet.dropped, 5)
         self.assertEqual(packet.outstanding, 35)
 
-    @unittest.expectedFailure
     def test_unsettled_count_is_whole_whatever_the_bounds_keep(self) -> None:
         """Every unfinished run counts, past the failing-run bound too."""
         self.runs = [run(i, f"r{i:02}") for i in range(35)]

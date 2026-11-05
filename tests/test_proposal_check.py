@@ -1305,7 +1305,6 @@ class RevisionCheckTest(GitCase):
         )
         self.assertEqual(check.to_json()["failing_checks"], check.failing_checks)
 
-    @unittest.expectedFailure
     def test_round_note_names_checks_still_running_at_selection(self) -> None:
         """The description says how many checks had not finished at selection."""
         self.fixture.bundle()

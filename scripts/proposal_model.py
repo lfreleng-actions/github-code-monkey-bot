@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import proposal_policy as policy
+import review_outcome as outcome
 from proposal_policy import Identity, PublishError
 
 SCHEMA = 1
@@ -77,6 +78,9 @@ class Check:
     # The names of the head's failing checks the selection carried:
     # what the round set out to fix besides the threads.
     failing_checks: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # How many of the head's checks the selection found still running:
+    # an empty ``failing_checks`` then proves nothing about CI.
+    checks_unsettled: int = 0
     # Whether the selection found the head conflicting with the default
     # branch: the round exists, in part, to rebase it.
     conflicted: bool = False
@@ -129,6 +133,9 @@ class Check:
                 str(c["name"])
                 for c in cast("list[dict[str, Any]]", entry.get("checks") or [])
             ]
+            check.checks_unsettled = outcome.unsettled_count(
+                entry.get("checks_unsettled")
+            )
             handback = entry.get("antagonistic_review")
             if isinstance(handback, dict):
                 data = cast("dict[str, Any]", handback)
@@ -174,6 +181,7 @@ class Check:
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,
+            "checks_unsettled": self.checks_unsettled,
             "conflicted": self.conflicted,
             "antagonistic_review": self.antagonistic_review,
             "collected_at": self.collected_at,
