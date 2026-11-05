@@ -402,6 +402,37 @@ class CommentBodyTest(unittest.TestCase):
         quiet = comments.comment_body(result_json(round=2, round_summary="s"), "")
         self.assertNotIn("failing checks", quiet or "")
 
+    @unittest.expectedFailure
+    def test_revision_round_comment_names_checks_still_running(self) -> None:
+        """A round says how many checks had not finished when it was selected."""
+        result = result_json(
+            round=2,
+            round_summary="Fixed the thread.",
+            failing_checks=["Lint"],
+            checks_unsettled=3,
+            review=review_record("clean", assessment="approval"),
+        )
+        text = comments.comment_body(result, "") or ""
+        self.assertIn(
+            "It set out to fix the failing checks: Lint. "
+            "3 check(s) still running at selection. The Copilot review",
+            text,
+        )
+        for value in (0, -1, True, "3", 10**9, None):
+            quiet = comments.comment_body(
+                result_json(round=2, round_summary="s", checks_unsettled=value), ""
+            )
+            self.assertNotIn("still running", quiet or "")
+        args = argparse.Namespace(dry_run=False, mode="select")
+        for carried, expected in (({"checks_unsettled": 3}, 3), ({}, 0)):
+            pushed = publish.revision_publish.run_push(
+                args,
+                {"verdict": "proposed", "task": "revise", **carried},
+                {"verdict": "proposed", "warnings": []},
+                fail=publish.fail,
+            )
+            self.assertEqual(pushed["checks_unsettled"], expected)
+
     def test_round_cap_notice_on_every_unfinished_outcome(self) -> None:
         """Whatever ends the tenth round short of clean says a human takes over."""
         unfinished = (

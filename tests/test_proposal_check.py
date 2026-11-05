@@ -29,6 +29,7 @@ checks = import_module("proposal_check")
 model = import_module("proposal_model")
 github = import_module("bot_github")
 policy = import_module("proposal_policy")
+revision_check = import_module("revision_check")
 
 BOT_LOGIN = "code-monkey[bot]"
 BOT_EMAIL = "1+code-monkey[bot]@users.noreply.github.com"
@@ -1303,6 +1304,23 @@ class RevisionCheckTest(GitCase):
             check.pr_body,
         )
         self.assertEqual(check.to_json()["failing_checks"], check.failing_checks)
+
+    @unittest.expectedFailure
+    def test_round_note_names_checks_still_running_at_selection(self) -> None:
+        """The description says how many checks had not finished at selection."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        check = self.run_revision(checks_unsettled=2)
+        self.assertEqual(check.checks_unsettled, 2)
+        self.assertEqual(check.to_json()["checks_unsettled"], 2)
+        self.assertIn("2 check(s) still running at selection.", check.pr_body)
+        (entry,) = self.fixture.selection(
+            **self.fixture.revision_entry(self.tip, self.head)
+        )["issues"]
+        for value in (0, -1, True, "2", 10**9, None):
+            quiet = model.Check.from_entry(KEY, {**entry, "checks_unsettled": value})
+            self.assertEqual(quiet.checks_unsettled, 0)
+            self.assertNotIn("still running", revision_check.round_note(quiet))
 
     def test_unanswered_thread_is_a_warning_not_a_rejection(self) -> None:
         """A thread the agent left alone stays open for a human; the check says so."""

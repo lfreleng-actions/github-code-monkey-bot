@@ -234,6 +234,31 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual(entry["checks"], [failing])
         self.assertEqual(entry["checks_dropped"], 2)
 
+    @unittest.expectedFailure
+    def test_running_checks_alone_skip_as_still_running(self) -> None:
+        """A head whose CI has not finished is not read as a green one."""
+        named = self.build(explicit=True)
+        self.assertEqual(named["checks_unsettled"], 0)
+        with self.assertRaisesRegex(select.Skip, "^nothing outstanding$"):
+            self.build(explicit=False)
+        self.checks = check_reads.CheckPacket([], 0, 0, 2)
+        with self.assertRaisesRegex(select.Skip, "^checks still running$"):
+            self.build(explicit=False)
+        # The operator decided: a named pull request still gets its round.
+        named = self.build(explicit=True)
+        self.assertEqual(named["round_reasons"], ["named by the operator"])
+        self.assertEqual(named["checks_unsettled"], 2)
+
+    @unittest.expectedFailure
+    def test_running_checks_ride_along_with_other_work(self) -> None:
+        """With another reason the round goes ahead and carries the count."""
+        self.threads = [thread()]
+        self.checks = check_reads.CheckPacket([], 0, 0, 3)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
+        self.assertEqual(entry["checks"], [])
+        self.assertEqual(entry["checks_unsettled"], 3)
+
     def test_excluded_failing_checks_bring_no_round(self) -> None:
         """A failing check on the exclusion list is carried but is not work."""
         self.checks = check_reads.CheckPacket([{"name": "Excluded"}], 0, 0)
