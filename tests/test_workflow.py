@@ -70,6 +70,7 @@ SETUP_UV_WITH = {
     "enable-cache": False,
 }
 INSTALL_PYTHON = "Install Python"
+PYTHON_INSTALL_DIR = "${{ runner.temp }}/uv-python"
 UV_PATH = "${{ steps.setup-uv.outputs.uv-path }}"
 TRUSTED_PYTHON = "${{ steps.python.outputs.path }}"
 # uv by name resolves on PATH, which any earlier step can prepend to.
@@ -122,7 +123,10 @@ def load_jobs(path: Path) -> dict[str, dict[str, Any]]:
 
 def runnable(step: dict[str, Any]) -> dict[str, Any]:
     """Keep the keys that decide what a step does, dropping its name and id."""
-    return {key: step.get(key) for key in ("uses", "with", "env", "run")}
+    return {
+        key: step.get(key)
+        for key in ("uses", "with", "env", "run", "working-directory")
+    }
 
 
 # A step names a review and something done about one: a request, a
@@ -2842,6 +2846,33 @@ class TestingCallerContracts(WorkflowCase):
         self.assertIn('[ "$PYTHON_VERSION" = unknown ]', str(check["run"]))
         self.assertEqual(check["env"]["PYTHON"], TRUSTED_PYTHON)
 
+    @unittest.expectedFailure
+    def test_uv_workdir_plants_a_python_install_dir(self) -> None:
+        """Both legs name a workspace install directory holding a bait uv.
+
+        setup-uv puts its Python install directory on PATH ahead of its
+        own uv, so an inherited one would run the bait. The control
+        starts that bait and the workspace .venv interpreter, which the
+        'Install Python' step must never reach from its working directory.
+        """
+        planted = str(self.step("uv-workdir", "Plant Python and uv settings")["run"])
+        for fragment in (
+            'installs="$GITHUB_WORKSPACE/planted-uv-python"',
+            'exe "$installs/uv"',
+            'echo "UV_PYTHON_INSTALL_DIR=$installs"',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, planted)
+        # Written before the leg's case, so both legs carry it.
+        self.assertLess(
+            planted.index('echo "UV_PYTHON_INSTALL_DIR=$installs"'),
+            planted.index('case "$LEG" in'),
+        )
+        control = str(self.step("uv-workdir", "Control: the bait is live")["run"])
+        self.assertIn('("UV_PYTHON_INSTALL_DIR", ("uv",)),', control)
+        self.assertIn('os.path.join(workspace, ".venv", "bin", "python"),', control)
+        self.assertIn('if [ "$want" -lt 6 ]', control)
+
 
 class SetupUvContracts(unittest.TestCase):
     """setup-uv works outside the workspace in every workflow."""
@@ -2891,6 +2922,40 @@ class SetupUvContracts(unittest.TestCase):
                 self.assertEqual(env["UV_PYTHON_ARCH"], "")
                 self.assertNotIn("UV_SYSTEM_PYTHON", env)
                 self.assertNotIn("UV_NO_MODIFY_PATH", env)
+
+    @unittest.expectedFailure
+    def test_every_setup_uv_step_names_its_python_install_dir(self) -> None:
+        """setup-uv puts its Python install directory ahead of its own uv.
+
+        Its 'uv python find' is a bare 'uv', so an install directory an
+        earlier step exported through GITHUB_ENV would run any uv held
+        there before the refused preference applies. The step names the
+        directory 'Install Python' installs into instead.
+        """
+        jobs = setup_uv_jobs()
+        self.assertGreater(len(jobs), 0)
+        for workflow, job, steps in jobs:
+            with self.subTest(workflow=workflow, job=job):
+                (index,) = [i for i, s in enumerate(steps) if is_action(s, SETUP_UV)]
+                env = cast(dict[str, str], steps[index]["env"])
+                self.assertEqual(env.get("UV_PYTHON_INSTALL_DIR"), PYTHON_INSTALL_DIR)
+                install = cast(dict[str, str], steps[index + 1]["env"])
+                self.assertEqual(install["INSTALL_DIR"], PYTHON_INSTALL_DIR)
+
+    @unittest.expectedFailure
+    def test_every_install_python_step_works_in_runner_temp(self) -> None:
+        """uv's interpreter queries start a .venv in their working directory.
+
+        Even under 'env -i', uv starts .venv/bin/python to inspect it
+        before rejecting it as unmanaged, and the workspace is where an
+        earlier step or the checkout can leave one.
+        """
+        jobs = setup_uv_jobs()
+        self.assertGreater(len(jobs), 0)
+        for workflow, job, steps in jobs:
+            with self.subTest(workflow=workflow, job=job):
+                (step,) = [s for s in steps if s.get("name") == INSTALL_PYTHON]
+                self.assertEqual(step.get("working-directory"), SETUP_UV_WORKDIR)
 
     def test_every_uv_job_installs_its_own_python(self) -> None:
         """uv installs and finds a Python under an emptied environment.
