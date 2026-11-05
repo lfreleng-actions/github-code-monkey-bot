@@ -88,7 +88,9 @@ class FakeGitHub:
     puts an unrelated commit on the branch and answers 502.
     ``sync_errors`` are the answers merge-upstream gives before it
     succeeds. ``broken_reads`` makes every branch and commit read
-    answer 502 once the first commit fault has fired.
+    answer 502 once the first commit fault has fired. ``create_lost``
+    applies the branch create and answers 502; ``create_refused``
+    answers 502 and applies nothing.
     """
 
     def __init__(self) -> None:
@@ -98,6 +100,7 @@ class FakeGitHub:
         self.faults: dict[int, str] = {}
         self.sync_errors: list[Exception] = []
         self.create_lost = False
+        self.create_refused = False
         self.broken_reads = False
         self.faulted = False
         self.mutations = 0
@@ -138,6 +141,9 @@ class FakeGitHub:
             return {}
         if (method, endpoint) == ("POST", f"repos/{FORK}/git/refs"):
             self.creates += 1
+            if self.create_refused:
+                self.create_refused = False
+                raise bad_gateway()
             if self.head is not None:
                 raise github.GitHubError("gh: Reference already exists (HTTP 422)")
             self.head = str(payload["sha"])
@@ -264,7 +270,6 @@ class RecoveryCase(unittest.TestCase):
 class ReplayRecoveryTest(RecoveryCase):
     """``createCommitOnBranch`` is a compare-and-swap, retried or read back."""
 
-    @unittest.expectedFailure
     def test_a_502_that_did_not_land_is_sent_again(self) -> None:
         """The head still at expectedHeadOid: the same mutation goes again."""
         self.fake.faults = {2: "refused"}
@@ -279,7 +284,6 @@ class ReplayRecoveryTest(RecoveryCase):
         )
         self.assertTrue(any("commit 2 of 3" in w for w in result["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_502_that_landed_is_adopted_without_a_duplicate(self) -> None:
         """The head moved to this very commit: its oid is taken, nothing resent."""
         self.fake.faults = {2: "lost"}
@@ -314,7 +318,6 @@ class ReplayRecoveryTest(RecoveryCase):
 class RefRecoveryTest(RecoveryCase):
     """The fork sync, the branch create and its delete ride out a 502."""
 
-    @unittest.expectedFailure
     def test_a_502_on_merge_upstream_is_retried(self) -> None:
         """The sync is idempotent: a 502 is retried with the sync's backoff."""
         self.fake.sync_errors = [bad_gateway()]
@@ -331,7 +334,30 @@ class RefRecoveryTest(RecoveryCase):
         self.assertIn("could not sync fork", written["reasons"][-1])
         self.assertEqual(self.fake.creates, 0)
 
-    @unittest.expectedFailure
+    def test_a_502_then_a_tolerated_answer_records_the_incident(self) -> None:
+        """A 502 the sync rode out is recorded, though it ended on a 409."""
+        self.fake.sync_errors = [
+            bad_gateway(),
+            github.GitHubError("gh: Conflict (HTTP 409)"),
+        ]
+        result = self.push()
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(self.fake.syncs, 2)
+        self.assertTrue(
+            any("fork sync" in w and "409" in w for w in result["warnings"])
+        )
+
+    def test_a_branch_found_at_the_base_is_not_deleted_as_ours(self) -> None:
+        """A create read back, not answered, cannot prove the branch is this run's."""
+        self.fake.head = BASE
+        self.fake.create_refused = True
+        self.fake.faults = {1: "moved"}
+        written = self.failed_push()
+        self.assertEqual(self.fake.creates, 1)
+        self.assertEqual(self.fake.deletes, 0)
+        self.assertIsNotNone(self.fake.head)
+        self.assertIn("any branch there is kept", written["reasons"][-1])
+
     def test_a_lost_create_is_read_back(self) -> None:
         """A branch at the base after a 502 on its create is this run's."""
         self.fake.create_lost = True
@@ -341,7 +367,6 @@ class RefRecoveryTest(RecoveryCase):
         self.assertEqual(len(result["commits"]), 3)
         self.assertTrue(any("branch creation" in w for w in result["warnings"]))
 
-    @unittest.expectedFailure
     def test_a_lost_delete_is_read_back(self) -> None:
         """A branch gone after a 502 on its delete was deleted."""
         self.fake.head = BASE
@@ -354,7 +379,6 @@ class RefRecoveryTest(RecoveryCase):
             self.assertIsNone(refs.delete_branch(FORK, BRANCH))
         delete.assert_called_once()
 
-    @unittest.expectedFailure
     def test_a_delete_that_did_not_land_is_sent_again(self) -> None:
         """A DELETE is idempotent: a 502 with the branch still there goes again."""
         self.fake.head = BASE

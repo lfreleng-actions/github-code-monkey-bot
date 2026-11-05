@@ -18,7 +18,8 @@ import bot_github as github
 import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
-from branch_swap import already_moved, branch_tip
+from branch_heads import branch_tip
+from branch_swap import already_moved
 
 
 def run_retitle(args: argparse.Namespace) -> None:

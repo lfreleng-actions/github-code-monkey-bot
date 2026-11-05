@@ -23,7 +23,8 @@ import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
 import thread_reads as threads_of
-from branch_swap import SwapUnknown, already_moved, branch_tip, move_branch
+from branch_heads import branch_tip
+from branch_swap import SwapUnknown, already_moved, move_branch
 from proposal_policy import PublishError, Rejection
 from revision_check import reply_marker
 

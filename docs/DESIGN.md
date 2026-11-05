@@ -361,6 +361,25 @@ Consequences the implementation has to handle:
   and so does one whose existence the publisher cannot confirm
   either way. The result records `publish-failed` with the reason
   and whether the branch came off.
+- **Transient failures.** A `5xx` or a timeout on a branch write is
+  ambiguous: GitHub may have applied it and lost the reply. Each
+  such write goes through `write_with_recovery`, which reads the
+  write back before deciding (issue #100). A commit whose branch
+  still sits at its `expectedHeadOid` did not land and goes again
+  from the same head, since the compare-and-swap refuses a second
+  copy should the first arrive late; a head one commit on, with that
+  commit's parent, tree and message, is the commit landing, taken
+  without a second copy; any other head, a vanished branch, or a
+  read-back that fails, fails the replay as before. The fork sync
+  is idempotent and retries a `5xx` on its own backoff, and records
+  the incident even when the sync then ends on a tolerated `409` or
+  `422`. A create read back as the branch at the base counts as
+  created, but not as this run's, since a branch standing there
+  before reads the same: a later failure keeps it, as for any create
+  without a clear answer. A delete read back as no branch counts as
+  done. A create or delete not found goes again. Every write
+  recovered this way adds a line to the result's `warnings`, so the
+  report shows the incident the run rode out.
 - **An existing branch.** The publisher never deletes a branch it did
   not create. The one existing branch it moves is a closed attempt's,
   when an operator named its issue again (§6) and not otherwise. The
@@ -850,6 +869,9 @@ For each selected issue:
    SHA (an existing branch is a rejection unless it holds this
    proposal's own chain, or is a named retry's closed attempt the
    publisher resets to the base, §5), then replay commits per §5.
+   The sync, the create, each commit and a rollback's delete ride
+   out a transient `5xx`: each reads itself back and goes again when
+   it did not land (§5).
 9. **Open the pull request** (`pull-requests` mode) against the
    default branch with head `<fork-org>:code-monkey/issue-<n>`:
    title from the manifest (equal to the subject on

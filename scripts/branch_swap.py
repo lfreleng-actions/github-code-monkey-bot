@@ -15,7 +15,6 @@ swap itself, is read back from the branch rather than guessed.
 from __future__ import annotations
 
 import re
-import urllib.parse
 from pathlib import Path
 from typing import Any, cast
 
@@ -234,22 +233,3 @@ def already_moved(check: dict[str, Any]) -> list[str] | None:
         if github.is_absent(exc):
             return None
         raise
-
-
-def branch_tip(fork: str, branch: str) -> str | None:
-    """The bot branch's head commit, or None when the branch is gone.
-
-    The heads namespace alone: a tag of the same name is not the
-    branch. A 404 is absence; any other read failure is the caller's.
-    """
-    quoted = urllib.parse.quote(branch, safe="/")
-    try:
-        data = github.api_object(f"repos/{fork}/git/ref/heads/{quoted}")
-    except github.GitHubError as exc:
-        if github.is_absent(exc):
-            return None
-        raise
-    target = data.get("object")
-    if not isinstance(target, dict):
-        raise github.GitHubError(f"branch {branch} has no object")
-    return github.require_sha(cast("dict[str, Any]", target), "sha", "branch head")

@@ -16,9 +16,11 @@ from typing import Any, cast
 
 import bot_github as github
 import branch_chain as chains
+import branch_heads as heads
 import issue_reads as reads
 import proposal_check as checks
 import proposal_policy as policy
+import write_recovery as recovery
 from proposal_policy import PublishError, Rejection
 
 FORK_WAIT_SECONDS = 60
@@ -167,29 +169,62 @@ def sync_fork(fork: str, default_branch: str, base_sha: str) -> None:
 
 
 def merge_upstream(fork: str, default_branch: str) -> github.GitHubError | None:
-    """Sync the fork's branch; return the tolerated error it ended on, if any."""
+    """Sync the fork's branch; return the tolerated error it ended on, if any.
+
+    The sync is idempotent, so a transient 5xx is retried on the same
+    backoff as the 422 (issue #100); one still failing on the last
+    attempt fails the publication.
+    """
+    transient = False
     for attempt in range(SYNC_ATTEMPTS):
         try:
             github.api_write(
                 "POST", f"repos/{fork}/merge-upstream", {"branch": default_branch}
             )
-            return None
         except github.GitHubError as exc:
+            last = attempt == SYNC_ATTEMPTS - 1
+            if github.is_transient(exc) and not last:
+                transient = True
+                time.sleep(SYNC_BACKOFF_SECONDS[attempt])
+                continue
             if exc.status not in SYNC_TOLERATED:
                 raise PublishError(f"could not sync fork {fork}: {exc}") from exc
-            if exc.status == 409 or attempt == SYNC_ATTEMPTS - 1:
+            if exc.status == 409 or last:
+                if transient:
+                    recovery.record(f"fork sync of {fork} met a 5xx, then {exc}")
                 return exc
             time.sleep(SYNC_BACKOFF_SECONDS[attempt])
+        else:
+            if transient:
+                recovery.record(f"fork sync of {fork} met a 5xx, then went through")
+            return None
     return None  # pragma: no cover - the loop returns or raises
 
 
-def create_branch(repository: str, branch: str, base_sha: str) -> None:
-    """Create the bot branch at the base; an existing branch is a rejection."""
-    try:
+def create_branch(repository: str, branch: str, base_sha: str) -> bool:
+    """Create the bot branch at the base; an existing branch is a rejection.
+
+    Returns whether a create call answered success, proving the branch
+    this run's. After a transient failure, a branch read back at the
+    base counts as created but returns False, as one there before the
+    call reads the same; none sends the create again, which GitHub
+    refuses with 422 should a late first copy land in between.
+    """
+
+    def write() -> bool:
         github.api_write(
             "POST",
             f"repos/{repository}/git/refs",
             {"ref": f"refs/heads/{branch}", "sha": base_sha},
+        )
+        return True
+
+    def landed() -> bool | None:
+        return False if heads.branch_tip(repository, branch) == base_sha else None
+
+    try:
+        return recovery.recover(
+            write, landed, repeat_safe=True, label="branch creation"
         )
     except github.GitHubError as exc:
         if exc.status == 422 and "already exists" in str(exc).lower():
@@ -258,11 +293,17 @@ def file_changes(clone: Path, commit: dict[str, Any]) -> dict[str, Any]:
 def replay_commits(
     clone: Path, check: dict[str, Any], progress: list[str] | None = None
 ) -> list[str]:
-    """Replay each commit on the fork, chaining the head; ``progress`` sees each."""
+    """Replay each commit on the fork, chaining the head; ``progress`` sees each.
+
+    A transient failure on a commit reads the branch back
+    (``replayed_head``): the commit found landed is taken with no
+    second copy, and one not landed is sent again from the same head.
+    """
     repository = str(check["fork_repository"])
     head = str(check["base_sha"])
     created: list[str] = progress if progress is not None else []
-    for commit in cast("list[dict[str, Any]]", check["commits"]):
+    commits = cast("list[dict[str, Any]]", check["commits"])
+    for number, commit in enumerate(commits, start=1):
         payload = {
             "branch": {
                 "repositoryNameWithOwner": repository,
@@ -275,19 +316,37 @@ def replay_commits(
             },
             "fileChanges": file_changes(clone, commit),
         }
-        try:
+        headline = str(commit["headline"])
+        message = f"{headline}\n\n{commit['body']}"
+
+        def send(payload: dict[str, Any] = payload) -> str:
             data = github.graphql(COMMIT_MUTATION, {"input": payload})
+            result = data.get("createCommitOnBranch")
+            node = (
+                cast("dict[str, Any]", result).get("commit")
+                if isinstance(result, dict)
+                else None
+            )
+            if not isinstance(node, dict):
+                raise PublishError("createCommitOnBranch returned no commit")
+            return github.require_str(cast("dict[str, Any]", node), "oid", "commit")
+
+        def landed(
+            parent: str = head, tree: str = str(commit["tree"]), message: str = message
+        ) -> str | None:
+            return heads.replayed_head(
+                repository, str(check["branch"]), parent, tree, message
+            )
+
+        try:
+            oid = recovery.recover(
+                send,
+                landed,
+                repeat_safe=True,
+                label=f"commit {number} of {len(commits)}",
+            )
         except github.GitHubError as exc:
             raise PublishError(f"createCommitOnBranch failed: {exc}") from exc
-        result = data.get("createCommitOnBranch")
-        node = (
-            cast("dict[str, Any]", result).get("commit")
-            if isinstance(result, dict)
-            else None
-        )
-        if not isinstance(node, dict):
-            raise PublishError("createCommitOnBranch returned no commit")
-        oid = github.require_str(cast("dict[str, Any]", node), "oid", "commit")
         created.append(oid)
         head = oid
     return created
@@ -357,10 +416,19 @@ def delete_branch(repository: str, branch: str) -> str | None:
     later run. Deletion is best effort: the original failure is what
     the caller reports, and a leftover branch is recorded beside it.
     """
-    try:
+
+    def write() -> bool:
         github.run_gh(
             ["api", "--method", "DELETE", f"repos/{repository}/git/refs/heads/{branch}"]
         )
+        return True
+
+    def landed() -> bool | None:
+        # The DELETE is idempotent: a branch still there is sent again.
+        return True if heads.branch_tip(repository, branch) is None else None
+
+    try:
+        recovery.recover(write, landed, repeat_safe=True, label="branch deletion")
     except github.GitHubError as exc:
         # After an ambiguous create the branch may never have existed;
         # GitHub answers 404 or 422 "Reference does not exist" then.

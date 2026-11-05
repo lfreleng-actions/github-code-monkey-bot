@@ -603,7 +603,7 @@ class RunPushTest(NoNetworkCase):
         """
         path = self.write_check(check_json())
         with (
-            patch.object(publish, "create_branch"),
+            patch.object(publish, "create_branch", return_value=True),
             patch.object(
                 publish,
                 "replay_commits",
@@ -624,7 +624,7 @@ class RunPushTest(NoNetworkCase):
         """When rollback itself fails, the leftover is named in the reason."""
         path = self.write_check(check_json())
         with (
-            patch.object(publish, "create_branch"),
+            patch.object(publish, "create_branch", return_value=True),
             patch.object(
                 publish,
                 "replay_commits",
