@@ -95,6 +95,13 @@ on:
           maintainer comments, before working new issues
         type: boolean
         default: true
+      revise_only:
+        description: >-
+          Revise open bot pull requests with work outstanding and work
+          no new issue; needs pull-requests mode, revise, and no issues
+          or repositories
+        type: boolean
+        default: false
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -189,6 +196,11 @@ on:
           check runs when the publish job's review wait ended; the
           publication went ahead, and a revision round reads them
         value: "${{ jobs.report.outputs.failing_check_pull_requests }}"
+      selected_count:
+        description: >-
+          Entries the select job chose, issues and revisions together,
+          as a string; the select job's own count, not the report's
+        value: "${{ jobs.select.outputs.count }}"
 
 permissions: {}
 
@@ -418,6 +430,8 @@ jobs:
           ISSUES_RAW: "${{ inputs.issues }}"
           REPOSITORIES_RAW: "${{ inputs.repositories }}"
           PULL_REQUESTS_RAW: "${{ inputs.pull_requests }}"
+          REVISE: "${{ inputs.revise }}"
+          REVISE_ONLY: "${{ inputs.revise_only }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -463,6 +477,23 @@ jobs:
             echo '::error::issues and repositories cannot both be given'
             echo '::error::(named pull requests count as issues here)'
             exit 1
+          fi
+          # A revise-only run scans the owner's bot pull requests and
+          # works no issue, so it names none and narrows no scan.
+          if [ "$REVISE_ONLY" = true ]; then
+            if [ -n "$ISSUES_RAW" ] || [ -n "$REPOSITORIES_RAW" ]; then
+              message='revise_only cannot be given with issues or repositories'
+              echo "::error::$message"
+              exit 1
+            fi
+            if [ "$MODE" != pull-requests ]; then
+              echo '::error::revise_only needs pull-requests mode'
+              exit 1
+            fi
+            if [ "$REVISE" != true ]; then
+              echo '::error::revise_only needs revise'
+              exit 1
+            fi
           fi
           repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
           # A scoped token must still reach the guidance repository
@@ -709,6 +740,7 @@ jobs:
           RUN_ATTEMPT: "${{ github.run_attempt }}"
           PULL_REQUESTS: "${{ steps.pulls.outputs.csv }}"
           REVISE: "${{ inputs.revise }}"
+          REVISE_ONLY: "${{ inputs.revise_only }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
@@ -729,6 +761,9 @@ jobs:
           fi
           if [ "$REVISE" != true ]; then
             extra+=(--no-revise)
+          fi
+          if [ "$REVISE_ONLY" = true ]; then
+            extra+=(--revise-only)
           fi
           python3 monkey-assets/scripts/select_issues.py \
             --org "$ORG" --output-dir artefacts \

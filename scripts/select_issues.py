@@ -7,7 +7,8 @@ Runs in the trusted select job with a read token. Scans the open
 issues of an owner, drops the ones policy excludes, ranks the rest
 by Priority then age, keeps one per repository, and caps the list;
 or, when the caller names issues, works those alone in the order
-given (``explicit_issues``). For each survivor it records the
+given (``explicit_issues``); a revise-only run reads no issue and
+keeps the revision rounds alone. For each survivor it records the
 default-branch SHA the agent will build on, the filtered comments,
 and the branch name the publisher will create. It also fetches the
 organisation's ``AGENTS.md`` at a recorded commit so the author job
@@ -21,11 +22,9 @@ See DESIGN.md section 18.1 for the selection schema.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import re
 import sys
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -41,6 +40,7 @@ import selection_outputs as outputs
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 from selection_choose import choose
+from selection_document import Settings, selection_document
 from selection_inputs import (
     load_exclusions,
     load_reviewers,
@@ -48,7 +48,6 @@ from selection_inputs import (
     parse_repositories,
 )
 
-SCHEMA = 1
 PRIORITY_RANK = {"Urgent": 0, "High": 1, "Medium": 2, "Low": 3}
 SKIP_LABELS = frozenset({"question", "breaking-change", "chore", "no-agent"})
 
@@ -208,17 +207,10 @@ def scan_candidates(
     return len(issues), sorted(enriched, key=rank_key)
 
 
-def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
-    """Run the whole selection and return it with the guidance bytes."""
-    # Before any read: a comment posted while the run reads is new
-    # work for the next round, so every entry carries this time. It
-    # sits one second early: the time has second precision and later
-    # reads want a comment strictly after it, so a comment posted in
-    # this same second would otherwise equal it and never count. The
-    # overlap may reread a boundary comment and loses none.
-    collected_at = (datetime.now(UTC) - timedelta(seconds=1)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+def parse_targets(
+    args: argparse.Namespace,
+) -> tuple[list[tuple[str, int]], list[str], list[tuple[str, int]]]:
+    """Parse the named issues, repositories and pull requests, and check they fit."""
     targets = explicit_targets.parse_issues(args.issues, args.org)
     explicit = parse_repositories(args.repositories)
     pulls = explicit_targets.parse_issues(args.pull_requests, args.org)
@@ -230,9 +222,22 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         # A round moves a live pull request's head and answers its
         # review; no other mode publishes that.
         raise SelectionError("pull_requests needs pull-requests mode")
-    exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
-    reviewers = load_reviewers(args.antagonistic_reviewers)
-    max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
+    if args.revise_only:
+        # Revisions alone: a scan of the owner's bot pull requests and
+        # no issue, so nothing may name issues or narrow the scan.
+        if targets or explicit:
+            raise SelectionError(
+                "revise_only cannot be given with issues or repositories"
+            )
+        if args.mode != "pull-requests":
+            raise SelectionError("revise_only needs pull-requests mode")
+        if not args.revise:
+            raise SelectionError("revise_only needs revise")
+    return targets, explicit, pulls
+
+
+def load_policy(args: argparse.Namespace) -> tuple[frozenset[str], dict[str, Any]]:
+    """Read the enabled categories and the fork organisations."""
     try:
         enabled = categories.parse_categories(args.categories)
     except categories.CategoryError as exc:
@@ -241,6 +246,38 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         fork_orgs = forks.load(args.fork_orgs)
     except ForkOrgError as exc:
         raise SelectionError(str(exc)) from exc
+    return enabled, fork_orgs
+
+
+def stamp(chosen: list[dict[str, Any]], session: str, collected_at: str) -> None:
+    """Mark every chosen entry with the read time and the session."""
+    # The session names this selection: the run and its attempt, so
+    # a full rerun that selects anew takes a new one and a publish-only
+    # retry, reading this selection, keeps it. A scratch branch or a
+    # reply marked with it is this selection's alone where two runs
+    # may share a read time.
+    name = re.sub(r"[^0-9A-Za-z-]", "", session) or uuid.uuid4().hex
+    for entry in chosen:
+        entry["collected_at"] = collected_at
+        entry["session"] = name
+
+
+def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
+    """Run the whole selection and return it with the guidance bytes."""
+    # Before any read: a comment posted while the run reads is new
+    # work for the next round, so every entry carries this time. It
+    # sits one second early: the time has second precision and later
+    # reads want a comment strictly after it, so a comment posted in
+    # this same second would otherwise equal it and never count. The
+    # overlap may reread a boundary comment and loses none.
+    collected_at = (datetime.now(UTC) - timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    targets, explicit, pulls = parse_targets(args)
+    exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
+    reviewers = load_reviewers(args.antagonistic_reviewers)
+    max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
+    enabled, fork_orgs = load_policy(args)
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
     bot = reads.bot_identity(args.bot_slug)
@@ -270,11 +307,10 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         # order kept.
         seen = len(targets)
         ranked = explicit_targets.candidates(
-            args.org,
-            targets,
-            skipped=skipped,
-            skipped_issues=skipped_issues,
+            args.org, targets, skipped=skipped, skipped_issues=skipped_issues
         )
+    elif args.revise_only:
+        seen, ranked = 0, []
     else:
         seen, ranked = scan_candidates(
             args,
@@ -295,15 +331,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
         reviser=rounds.for_issue,
     )
-    # The session names this selection: the run and its attempt, so
-    # a full rerun that selects anew takes a new one and a publish-only
-    # retry, reading this selection, keeps it. A scratch branch or a
-    # reply marked with it is this selection's alone where two runs
-    # may share a read time.
-    session = re.sub(r"[^0-9A-Za-z-]", "", args.session) or uuid.uuid4().hex
-    for entry in chosen:
-        entry["collected_at"] = collected_at
-        entry["session"] = session
+    stamp(chosen, args.session, collected_at)
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
     )
@@ -314,64 +342,6 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         outcome=(seen, skipped, skipped_issues, chosen),
     )
     return selection, guidance
-
-
-@dataclass(frozen=True)
-class Settings:
-    """What the run was asked for, as the selection records it."""
-
-    bot: dict[str, Any]
-    enabled: frozenset[str]
-    max_pull_requests: int
-    guidance: bytes
-    commit: str
-
-
-def selection_document(
-    args: argparse.Namespace,
-    settings: Settings,
-    *,
-    lists: tuple[list[str], list[tuple[str, int]], list[tuple[str, int]], set[str]],
-    outcome: tuple[int, dict[str, int], list[dict[str, str]], list[dict[str, Any]]],
-) -> dict[str, Any]:
-    """Assemble selection.json (DESIGN.md section 18.1)."""
-    bot, enabled, max_pull_requests = (
-        settings.bot,
-        settings.enabled,
-        settings.max_pull_requests,
-    )
-    content, commit = settings.guidance, settings.commit
-    explicit, targets, pulls, exclusions = lists
-    seen, skipped, skipped_issues, chosen = outcome
-    return {
-        "schema": SCHEMA,
-        "org": args.org,
-        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "mode": args.mode,
-        "dry_run": bool(args.dry_run),
-        "model": args.model,
-        "categories": sorted(enabled),
-        "max_pull_requests": max_pull_requests,
-        "bot": bot,
-        "revise": bool(args.revise),
-        "guidance": {
-            "repository": args.guidance_repository,
-            "path": args.guidance_path,
-            "ref": args.guidance_ref,
-            "commit": commit,
-            "sha256": hashlib.sha256(content).hexdigest(),
-        },
-        "exclusions": sorted(exclusions) if not (explicit or targets or pulls) else [],
-        "explicit_repositories": explicit,
-        "explicit_issues": [f"{args.org}/{repo}#{number}" for repo, number in targets],
-        "explicit_pull_requests": [
-            f"{args.org}/{repo}#{number}" for repo, number in pulls
-        ],
-        "skipped_issues": skipped_issues,
-        "candidates_seen": seen,
-        "skipped": skipped,
-        "issues": chosen,
-    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -389,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pull-requests", default="")
     parser.add_argument("--session", default="")
     parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--revise-only", action="store_true")
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)

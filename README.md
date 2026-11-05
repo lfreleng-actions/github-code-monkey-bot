@@ -80,7 +80,12 @@ issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
 skips the scan and the triage filters. A list of the bot's open pull
 requests runs a revision round on each; an issue whose earlier
 attempt is still open gets a round too, and scheduled runs revise
-before they take new issues unless `revise` is off.
+before they take new issues unless `revise` is off. A second
+schedule, with `revise_only`, runs every four hours from 06:00 UTC on
+weekdays: it revises the bot's open pull requests with work
+outstanding, takes no new issue, and stays silent in Slack unless it
+selected something or failed. The form's `revise_only` dispatches the
+same.
 
 ## Reusable workflow
 

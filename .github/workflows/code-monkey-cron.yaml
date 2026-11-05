@@ -8,15 +8,21 @@
 # requests are ready for review by the start of the European working
 # day, and posts them to Slack. It reads the previous working day's
 # triage (github-issues-triage, 07:00 UTC weekdays), so Priority and
-# Type are in place before selection. A manual dispatch is live too
-# unless its form asks for a dry run, and posts nothing. Disabling
-# this workflow in the Actions UI is the kill switch.
+# Type are in place before selection. A second schedule, every four
+# hours from 06:00 UTC on weekdays, is revise-only: it revises the
+# bot's open pull requests with work outstanding, takes no new issue,
+# and posts only when it selected something. A manual dispatch is
+# live too unless its form asks for a dry run, and posts nothing.
+# Disabling this workflow in the Actions UI is the kill switch.
 name: 'Code Monkey ⏰'
 
 # yamllint disable-line rule:truthy
 on:
   schedule:
     - cron: '0 2 * * 1-5'
+    # Revise-only; the caller tests github.event.schedule for this
+    # exact string, so change all three together.
+    - cron: '0 6,10,14,18 * * 1-5'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -92,6 +98,12 @@ on:
         description: 'Revise open bot pull requests with work outstanding'
         type: boolean
         default: true
+      revise_only:
+        description: >-
+          Revise open bot pull requests alone, working no new issue;
+          leave issues and repositories empty
+        type: boolean
+        default: false
       categories:
         description: >-
           Issue categories to work: all, or any of bugs, features, docs,
@@ -112,7 +124,11 @@ permissions: {}
 # apart; the reusable workflow's publish locks serialise their writes
 # to any one pull request or issue, and the per-issue pull request
 # check, the branch-exists refusal and the revision's compare-and-swap
-# stop a duplicate.
+# stop a duplicate. A revise-only run, scheduled or dispatched, is a
+# scan and shares `code-monkey`: it queues behind a full scan and never
+# runs beside it. A revise-only slot pending behind a long full scan
+# may be the run a newcomer cancels; the next slot comes four hours
+# later.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
@@ -203,6 +219,10 @@ jobs:
       # A schedule passes no inputs; it revises before working issues.
       revise: >-
         ${{ github.event_name != 'workflow_dispatch' || inputs.revise }}
+      # The revise-only schedule, or the form's choice on a dispatch.
+      revise_only: >-
+        ${{ github.event.schedule == '0 6,10,14,18 * * 1-5'
+            || inputs.revise_only == true }}
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       harden_runner_egress: 'block'
@@ -276,6 +296,10 @@ jobs:
           # yamllint disable-line rule:line-length
           FAILING_CHECKS: "${{ needs.code-monkey.outputs.failing_check_pull_requests }}"
           RUN_RESULT: "${{ needs.code-monkey.result }}"
+          SELECTED: "${{ needs.code-monkey.outputs.selected_count }}"
+          REVISE_ONLY: >-
+            ${{ github.event.schedule == '0 6,10,14,18 * * 1-5'
+                || inputs.revise_only == true }}
         run: |
           set -euo pipefail
           if ! [[ "$ORG" =~ ^[A-Za-z0-9-]+$ ]]; then
@@ -389,12 +413,31 @@ jobs:
           if [ "$count" -eq 1 ]; then
             noun='pull request'
           fi
-          printf 'text=%s\n' "🐒 Code Monkey: $count $noun for review" \
-            >> "$GITHUB_OUTPUT"
-          printf 'body=%s\n' "$body" >> "$GITHUB_OUTPUT"
+          # A revise-only slot runs every four hours; one that selected
+          # nothing, raised nothing, refused nothing and failed nothing
+          # stays quiet. A selected revision that came to no link, its
+          # proposal refused or its round abstained, still posts, as
+          # does a selection count that is missing or not 0.
+          post=true
+          if [ "${REVISE_ONLY:-false}" = true ]; then
+            noun="$noun revised"
+            revised='_Revise-only run: open pull requests revised,'
+            body="$body\\n\\n$revised no new issues worked._"
+            if [ "${SELECTED:-}" = 0 ] && [ "$count" -eq 0 ] \
+              && [ "$refused" -eq 0 ] && [ "$RUN_RESULT" = 'success' ]; then
+              post=false
+            fi
+          fi
+          {
+            printf 'text=%s\n' "🐒 Code Monkey: $count $noun for review"
+            printf 'body=%s\n' "$body"
+            echo "post=$post"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 'Post to Slack'
-        if: steps.slack.outputs.configured == 'true'
+        if: >-
+          steps.slack.outputs.configured == 'true'
+          && steps.digest.outputs.post == 'true'
         # yamllint disable-line rule:line-length
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:

@@ -31,6 +31,7 @@ categories = import_module("issue_categories")
 
 ALL = frozenset(categories.ALL_CATEGORIES)
 outputs = import_module("selection_outputs")
+document = import_module("selection_document")
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -736,6 +737,58 @@ class RevisionIntegrationTest(NoSubprocessCase):
         selection, _ = select.build_selection(self.args("--max-pull-requests", "5"))
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7", "beta-2"])
         self.assertEqual(selection["skipped"]["one_per_repo"], 1)
+
+    def test_revise_only_selects_rounds_and_no_issue(self) -> None:
+        """A revise-only scan reads no issue and keeps the cap and one per repository."""
+
+        def built(entry: dict[str, Any]) -> Any:
+            return entry
+
+        def never() -> dict[str, Any]:
+            raise AssertionError("a round the budget refuses must not be read")
+
+        search = patch.object(reads, "search_open_issues").start()
+        patch.object(
+            revision_select,
+            "scan",
+            return_value=[
+                ("org/alpha", lambda: built(self.revision("alpha", 41, 7))),
+                ("org/alpha", never),
+                ("org/beta", lambda: built(self.revision("beta", 9, 2))),
+                ("org/gamma", never),
+            ],
+        ).start()
+        selection, _ = select.build_selection(
+            self.args("--revise-only", "--max-pull-requests", "2")
+        )
+        search.assert_not_called()
+        self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7", "beta-2"])
+        self.assertEqual({e["task"] for e in selection["issues"]}, {"revise"})
+        self.assertEqual(selection["skipped"]["one_per_repo"], 1)
+        self.assertEqual(selection["skipped"]["cap"], 1)
+        self.assertEqual(selection["candidates_seen"], 0)
+        self.assertIs(selection["revise_only"], True)
+        self.assertIs(selection["revise"], True)
+        self.assertIn("Revise-only", outputs.summary_markdown(selection))
+        selection, _ = select.build_selection(self.args("--max-pull-requests", "2"))
+        self.assertIs(selection["revise_only"], False)
+        self.assertNotIn("Revise-only", outputs.summary_markdown(selection))
+
+    def test_revise_only_refuses_targets_other_modes_and_no_revise(self) -> None:
+        """Revise-only is a pull-requests scan with revisions on, nothing named."""
+        refused = (
+            (self.args("--revise-only", "--issues", "org/alpha#7"), "issues"),
+            (self.args("--revise-only", "--repositories", "alpha"), "repositories"),
+            (self.args_mode("branches", "--revise-only"), "pull-requests mode"),
+            (self.args_mode("select", "--revise-only"), "pull-requests mode"),
+            (self.args("--revise-only", "--no-revise"), "needs revise"),
+        )
+        for args, message in refused:
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(reads.SelectionError, message),
+            ):
+                select.build_selection(args)
 
 
 class ParseMaxPullRequestsTest(unittest.TestCase):
@@ -1463,7 +1516,7 @@ class MainTest(NoSubprocessCase):
                 (out / "excluded-repos.txt").read_text(encoding="utf-8"), "gamma\n"
             )
         self.assertIn("Selected 1 issue(s) from 3 open", stderr.getvalue())
-        self.assertEqual(selection["schema"], select.SCHEMA)
+        self.assertEqual(selection["schema"], document.SCHEMA)
         self.assertTrue(selection["dry_run"])
         self.assertEqual(selection["bot"]["login"], "b[bot]")
         self.assertEqual(selection["guidance"]["commit"], SHA_A)

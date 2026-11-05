@@ -1921,7 +1921,11 @@ class SelectAndReportContracts(ReusableWorkflowCase):
 
     def test_pull_request_outputs_come_from_the_report(self) -> None:
         """The workflow's outputs are the report script's, validated by org."""
-        declared = cast(dict[str, Any], self.triggers["workflow_call"]["outputs"])
+        declared = dict(cast(dict[str, Any], self.triggers["workflow_call"]["outputs"]))
+        # The select job's validated count, so a caller can tell a slot
+        # that selected nothing from one whose selections came to no link.
+        selected = declared.pop("selected_count")
+        self.assert_expression(str(selected["value"]), "jobs.select.outputs.count")
         self.assertEqual(
             set(declared),
             {
@@ -2290,6 +2294,131 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
                 self.assertIn(message, output)
 
 
+REVISE_ONLY_CRON = "0 6,10,14,18 * * 1-5"
+REVISE_ONLY = (
+    f"github.event.schedule == '{REVISE_ONLY_CRON}' || inputs.revise_only == true"
+)
+
+
+class ReviseOnlyContracts(ReusableWorkflowCase):
+    """A revise-only run revises open bot pull requests and works no issue (#113)."""
+
+    BUDGET_ENV: ClassVar[dict[str, str]] = {
+        "MODE": "pull-requests",
+        "MAX_PRS": "10",
+        "MAX_RUNTIME": "60",
+        "MAX_AGENTS": "1",
+        "MODEL": "auto",
+        "REPOSITORIES": "",
+        "REPOSITORIES_RAW": "",
+        "REPOSITORY_COUNT": "0",
+        "ISSUE_REPOSITORIES": "",
+        "ISSUES_RAW": "",
+        "ISSUE_COUNT": "0",
+        "PULL_REQUESTS_RAW": "",
+        "PULL_COUNT": "0",
+        "REVISE": "true",
+        "REVISE_ONLY": "true",
+        "ORG": "o",
+        "GUIDANCE_REPOSITORY": "o/.github",
+    }
+
+    def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
+        """A boolean, off by default, passed to select_issues.py as a flag."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["revise_only"]["type"], "boolean")
+        self.assertIs(inputs["revise_only"]["default"], False)
+        select = self.step("select", "Select issues")
+        env = cast(dict[str, Any], select["env"])
+        self.assert_expression(env["REVISE_ONLY"], "inputs.revise_only")
+        run = flatten(select["run"])
+        self.assertIn('if [ "$REVISE_ONLY" = true ]; then', run)
+        self.assertIn("extra+=(--revise-only)", run)
+        budget = cast(dict[str, Any], self.step("select", "budget")["env"])
+        self.assert_expression(budget["REVISE_ONLY"], "inputs.revise_only")
+        self.assert_expression(budget["REVISE"], "inputs.revise")
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_check_inputs_refuses_targets_and_other_modes(self) -> None:
+        """Only a pull-requests scan with revisions on may be revise-only."""
+        budget = self.step("select", "budget")
+        cases: tuple[tuple[dict[str, str], str | None], ...] = (
+            ({}, None),
+            ({"REVISE_ONLY": "false", "ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"}, None),
+            ({"PULL_REQUESTS_RAW": "a#2", "PULL_COUNT": "1"}, None),
+            (
+                {"ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"},
+                "revise_only cannot be given with issues or repositories",
+            ),
+            (
+                {"REPOSITORIES_RAW": "a", "REPOSITORY_COUNT": "1"},
+                "revise_only cannot be given with issues or repositories",
+            ),
+            ({"MODE": "branches"}, "revise_only needs pull-requests mode"),
+            ({"MODE": "select"}, "revise_only needs pull-requests mode"),
+            ({"REVISE": "false"}, "revise_only needs revise"),
+        )
+        for overrides, error in cases:
+            with (
+                self.subTest(**overrides),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        "PATH": os.environ["PATH"],
+                        **self.BUDGET_ENV,
+                        **overrides,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if error is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn(f"::error::{error}", proc.stdout)
+                    self.assertFalse(output.exists())
+
+
+class ReviseOnlyCallerContracts(WorkflowCase):
+    """The caller's revise-only schedule, form input and lock (#113)."""
+
+    WORKFLOW = CRON
+
+    def test_second_schedule_sets_revise_only(self) -> None:
+        """The 02:00 scan stays; a four-hourly slot revises alone."""
+        self.assertEqual(
+            self.triggers["schedule"],
+            [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],
+        )
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(with_["revise_only"], REVISE_ONLY)
+        env = cast(dict[str, Any], self.step("notify", "digest")["env"])
+        self.assert_expression(env["REVISE_ONLY"], REVISE_ONLY)
+
+    def test_dispatch_form_offers_revise_only(self) -> None:
+        """A boolean, off by default; the form stays inside GitHub's 25."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["revise_only"]["type"], "boolean")
+        self.assertIs(inputs["revise_only"]["default"], False)
+        self.assertEqual(len(inputs), 17)
+
+    def test_revise_only_runs_share_the_scan_group(self) -> None:
+        """A revise-only run queues behind a full scan, never beside it."""
+        group = unwrap(str(cast(dict[str, Any], self.workflow["concurrency"])["group"]))
+        self.assertNotIn("revise_only", group)
+        self.assertNotIn("schedule", group)
+        self.assertTrue(group.endswith("|| 'code-monkey'"))
+
+
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
@@ -2309,6 +2438,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "issues",
                 "pull_requests",
                 "revise",
+                "revise_only",
                 "max_runtime_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
@@ -2358,6 +2488,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "load_repo_skills": False,
             "request_review": True,
             "revise": True,
+            "revise_only": False,
             "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
@@ -2376,8 +2507,11 @@ class CronCallerContracts(WorkflowCase):
     WORKFLOW = CRON
 
     def test_schedule_and_concurrency(self) -> None:
-        """Weekday 02:00 UTC; scans share a group, dry and named do not."""
-        self.assertEqual(self.triggers["schedule"], [{"cron": "0 2 * * 1-5"}])
+        """Weekday 02:00 UTC and revise-only slots; scans share a group."""
+        self.assertEqual(
+            self.triggers["schedule"],
+            [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],
+        )
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
             str(concurrency["group"]),
@@ -2422,6 +2556,7 @@ class CronCallerContracts(WorkflowCase):
             "repositories": "",
             "issues": "",
             "categories": "all",
+            "revise_only": False,
         }
         for name, default in defaults.items():
             with self.subTest(input=name):
@@ -2586,8 +2721,14 @@ class CronSlackContracts(WorkflowCase):
                 self.assertIn("GITHUB_STEP_SUMMARY", script)
                 later = self.steps(name)[self.position(name, "slack") + 1 :]
                 for step in later:
-                    self.assertEqual(
-                        step["if"], "steps.slack.outputs.configured == 'true'"
+                    # The digest may also hold back a quiet revise-only post.
+                    self.assertIn(
+                        step["if"],
+                        (
+                            "steps.slack.outputs.configured == 'true'",
+                            "steps.slack.outputs.configured == 'true'"
+                            " && steps.digest.outputs.post == 'true'",
+                        ),
                     )
 
     def test_messages_carry_header_and_run_link(self) -> None:
@@ -2627,6 +2768,8 @@ class CronSlackContracts(WorkflowCase):
         result: str = "success",
         unmergeable: str | None = None,
         failing: str | None = None,
+        revise_only: str | None = None,
+        selected: str | None = None,
     ) -> dict[str, str]:
         """Run the digest step's script and return what it wrote to its outputs."""
         step = self.step("notify", "digest")
@@ -2650,6 +2793,10 @@ class CronSlackContracts(WorkflowCase):
                 env["UNMERGEABLE"] = unmergeable
             if failing is not None:
                 env["FAILING_CHECKS"] = failing
+            if revise_only is not None:
+                env["REVISE_ONLY"] = revise_only
+            if selected is not None:
+                env["SELECTED"] = selected
             subprocess.run(
                 ["bash", "-c", str(step["run"])],
                 env=env,
@@ -2754,6 +2901,50 @@ class CronSlackContracts(WorkflowCase):
         late = self.digest(json.dumps([one]), "failure", failing=json.dumps([one]))
         self.assertTrue(late["body"].endswith("see the workflow run._"))
         self.assertIn("failing checks; see the run report._", late["body"])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_revise_only_digest_says_so_and_an_empty_one_stays_quiet(self) -> None:
+        """A revise-only slot posts unless it selected and failed nothing (#113)."""
+        self.assert_expression(
+            self.step("notify", "digest")["env"]["SELECTED"],
+            "needs.code-monkey.outputs.selected_count",
+        )
+        post = self.action("notify", SLACK_ACTION)
+        self.assertEqual(
+            post["if"],
+            "steps.slack.outputs.configured == 'true'"
+            " && steps.digest.outputs.post == 'true'",
+        )
+        one = PULL_URL.format("a", 1)
+        nightly = self.digest("[]", selected="0")
+        self.assertEqual(nightly["post"], "true")
+        self.assertNotIn("Revise-only", nightly["body"])
+        revised = self.digest(json.dumps([one]), revise_only="true", selected="1")
+        self.assertEqual(revised["post"], "true")
+        self.assertEqual(
+            revised["body"].split("\\n")[-1],
+            "_Revise-only run: open pull requests revised, no new issues worked._",
+        )
+        self.assertIn("revised", revised["text"])
+        quiet = self.digest("[]", revise_only="true", selected="0")
+        self.assertEqual(quiet["post"], "false")
+        failed = self.digest("[]", "failure", revise_only="true", selected="0")
+        self.assertEqual(failed["post"], "true")
+        self.assertIn("Some jobs in this run failed", failed["body"])
+        refused = self.digest(
+            json.dumps(["https://github.com/elsewhere/a/pull/1"]),
+            revise_only="true",
+            selected="1",
+        )
+        self.assertEqual(refused["post"], "true")
+        # A selected revision that published no link, its proposal
+        # refused offline or its round abstained, is not an empty slot;
+        # nor is a count that is missing or not a number.
+        for selected in ("1", "", "0x", None):
+            with self.subTest(selected=selected):
+                lost = self.digest("[]", revise_only="true", selected=selected)
+                self.assertEqual(lost["post"], "true")
+                self.assertIn("0 pull requests revised", lost["text"])
 
 
 # Free-length dispatch inputs. GitHub refuses a concurrency group name
