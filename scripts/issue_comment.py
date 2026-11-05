@@ -43,10 +43,19 @@ def outcome_text(opening: str, result: dict[str, Any]) -> str:
 
 
 MAX_ROUNDS = 10
-CAP_NOTICE = (
-    f" This was the round cap of {MAX_ROUNDS}: the workflow selects this"
-    " pull request no further, and a human must take over."
-)
+
+
+def cap_of(result: dict[str, Any]) -> int:
+    """The round cap the selection ran with; the default when unrecorded."""
+    value = result.get("max_rounds")
+    return value if type(value) is int and value > 0 else MAX_ROUNDS
+
+
+def cap_notice(result: dict[str, Any]) -> str:
+    return (
+        f" This was the round cap of {cap_of(result)}: the workflow selects"
+        " this pull request no further, and a human must take over."
+    )
 
 
 def round_of(result: dict[str, Any]) -> int:
@@ -62,7 +71,7 @@ def capped(result: dict[str, Any]) -> bool:
     so every tenth-round outcome but a clean proposal that can merge
     with no known failing check needs a human; that one is finished.
     """
-    if round_of(result) < MAX_ROUNDS:
+    if round_of(result) < cap_of(result):
         return False
     return (
         result.get("verdict") != "proposed"
@@ -230,7 +239,7 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
         reasons = reasons[: policy.MAX_COMMENT_REASON - 1] + "…"
     text = template(result, reasons, run_url)
     if text is not None and capped(result):
-        text += CAP_NOTICE
+        text += cap_notice(result)
     return text
 
 

@@ -47,9 +47,10 @@ class Inputs:
     org: str
     bot: dict[str, Any]
     fork_orgs: dict[str, Any]
-    # The antagonistic review Apps whose threads and hand-backs count;
-    # empty turns the source off.
+    # The antagonistic review Apps whose threads and hand-backs count
+    # (empty: none), and the rounds a pull request may receive.
     reviewers: frozenset[str] = frozenset()
+    max_rounds: int = revisions.MAX_ROUNDS
 
 
 @dataclass(frozen=True)
@@ -205,10 +206,8 @@ def build_entry(
         repository, issue, str(bot["login"]), str(pull["created_at"]), pull_number
     )
     highest, rounds, since = history.highest, history.summaries, history.since
-    if highest >= revisions.MAX_ROUNDS:
-        raise Skip(
-            f"round cap of {revisions.MAX_ROUNDS} reached; a human must take over"
-        )
+    if highest >= inputs.max_rounds:
+        raise Skip(f"round cap of {inputs.max_rounds} reached; a human must take over")
     findings = read_findings(repository, pull, since, inputs.reviewers)
     reasons = (
         ["named by the operator"]
@@ -242,7 +241,7 @@ def build_entry(
             key: pull[key]
             for key in ("number", "url", "title", "head_sha", "mergeable", "created_at")
         },
-        "round": highest + 1,
+        **{"round": highest + 1, "max_rounds": inputs.max_rounds},
         "round_reasons": reasons,
         "rounds": rounds,
         "threads": findings.threads.threads,
@@ -365,12 +364,13 @@ class Rounds:
         skips: tuple[dict[str, int], list[dict[str, str]]],
         allowed: Callable[[str], bool] | None = None,
         reviewers: frozenset[str] = frozenset(),
+        max_rounds: int = revisions.MAX_ROUNDS,
     ) -> None:
         """Remember what every build needs; ``skips`` are the counters and the named list."""
         self.org = org
         self.bot = bot
         self.fork_orgs = fork_orgs
-        self.inputs = Inputs(org, bot, fork_orgs, reviewers)
+        self.inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds)
         self.enabled = enabled
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
@@ -411,6 +411,7 @@ class Rounds:
             skipped_issues=self.skipped_issues,
             allowed=self.allowed,
             reviewers=self.inputs.reviewers,
+            max_rounds=self.inputs.max_rounds,
         )
 
     def for_issue(

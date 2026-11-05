@@ -45,6 +45,7 @@ from selection_inputs import (
     load_exclusions,
     load_reviewers,
     parse_max_pull_requests,
+    parse_max_rounds,
     parse_repositories,
 )
 
@@ -277,6 +278,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
     reviewers = load_reviewers(args.antagonistic_reviewers)
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
+    max_rounds = parse_max_rounds(args.max_rounds)
     enabled, fork_orgs = load_policy(args)
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
@@ -301,6 +303,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         skips=(skipped, skipped_issues),
         allowed=allowed,
         reviewers=reviewers,
+        max_rounds=max_rounds,
     )
     if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given
@@ -367,6 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-dotgithub", action="store_true")
     parser.add_argument("--include-assigned", action="store_true")
     parser.add_argument("--max-pull-requests", default="10")
+    parser.add_argument("--max-rounds", default="10")
     parser.add_argument("--categories", default="all")
     parser.add_argument("--guidance-repository", required=True)
     parser.add_argument("--guidance-ref", default="main")

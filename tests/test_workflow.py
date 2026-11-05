@@ -2049,6 +2049,7 @@ class ListInputContracts(ReusableWorkflowCase):
             "MODE": "pull-requests",
             "MAX_PRS": "1",
             "MAX_RUNTIME": "60",
+            "MAX_ROUNDS": "10",
             "MAX_AGENTS": "1",
             "MODEL": "auto",
             "REPOSITORIES": "",
@@ -2098,6 +2099,7 @@ class ListInputContracts(ReusableWorkflowCase):
             "MODE": "pull-requests",
             "MAX_PRS": "1",
             "MAX_RUNTIME": "60",
+            "MAX_ROUNDS": "10",
             "MAX_AGENTS": "1",
             "MODEL": "auto",
             "REPOSITORIES": "",
@@ -2307,6 +2309,7 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         "MODE": "pull-requests",
         "MAX_PRS": "10",
         "MAX_RUNTIME": "60",
+        "MAX_ROUNDS": "10",
         "MAX_AGENTS": "1",
         "MODEL": "auto",
         "REPOSITORIES": "",
@@ -2409,7 +2412,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 17)
+        self.assertEqual(len(inputs), 18)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -2440,6 +2443,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "revise",
                 "revise_only",
                 "max_runtime_minutes",
+                "max_rounds",
                 "max_concurrent_agents",
                 "allow_subagents",
                 "include_dotgithub",
@@ -2481,6 +2485,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "max_pull_requests": "10",
             "categories": "all",
             "max_runtime_minutes": "180",
+            "max_rounds": "10",
             "max_concurrent_agents": "10",
             "allow_subagents": True,
             "include_dotgithub": False,
@@ -2548,6 +2553,7 @@ class CronCallerContracts(WorkflowCase):
         defaults: dict[str, object] = {
             "max_pull_requests": "10",
             "max_runtime_minutes": "180",
+            "max_rounds": "10",
             "max_concurrent_agents": "10",
             "allow_subagents": True,
             "include_dotgithub": False,
