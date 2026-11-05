@@ -1,0 +1,39 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Runs the hooks pre-commit.ci is told to skip ('ci.skip' in
+# .pre-commit-config.yaml), so each one is enforced somewhere. Based on
+# examples/linting/github.yaml in lfreleng-actions/generic-workflows.
+name: 'Linting 🧹'
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  push:
+    branches: ['main']
+
+permissions: {}
+
+# A literal group, not github.workflow, which another workflow of the
+# same name would share. Queue rather than cancel, so a burst of events
+# cannot leave a cancelled check run beside a passing one.
+concurrency:
+  group: 'linting-${{ github.ref }}'
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  linting:
+    name: 'Linting'
+    permissions:
+      contents: read
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/generic-workflows/.github/workflows/linting.yaml@2442f8a20bb9f023e57d9396f9de4278b5e84785  # v0.7.0
+    with:
+      ci_skipped: true
+      # testing.yaml runs these two: monkey-tests in its regression
+      # job and actionlint-shellcheck in its actionlint job.
+      skip_hooks: 'monkey-tests actionlint-shellcheck'
+      harden_runner_egress: 'block'

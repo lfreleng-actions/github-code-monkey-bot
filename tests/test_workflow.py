@@ -2915,14 +2915,12 @@ class LintingCallerContracts(unittest.TestCase):
         )
         return cast(list[str], config["ci"]["skip"])
 
-    @unittest.expectedFailure
     def test_reusable_is_pinned_to_a_commit(self) -> None:
         """A tag or branch would let the reusable change under this repository."""
         _, job = self.load()
         self.assertRegex(str(job["uses"]), COMMIT_PIN)
         self.assertTrue(str(job["uses"]).startswith(self.REUSABLE_LINTING + "@"))
 
-    @unittest.expectedFailure
     def test_holds_no_write_credential(self) -> None:
         """Read-only token, no secrets, and never pull_request_target."""
         workflow, job = self.load()
@@ -2933,7 +2931,6 @@ class LintingCallerContracts(unittest.TestCase):
         self.assertNotIn("pull_request_target", triggers)
         self.assertIn("pull_request", triggers)
 
-    @unittest.expectedFailure
     def test_runs_the_ci_skip_set_less_hooks_testing_runs(self) -> None:
         """Each hook named here must stay in ci.skip for the caller to run it."""
         _, job = self.load()
