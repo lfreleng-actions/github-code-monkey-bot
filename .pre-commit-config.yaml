@@ -7,7 +7,9 @@ ci:
   # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter.
   # aislop also runs engines that can call the network at scan time
   # (dependency audits), so it cannot run in the sandbox either.
-  skip: [gha-workflow-linter, aislop]
+  # actionlint-shellcheck outruns pre-commit.ci's 180-second limit on
+  # these workflow files; the 'actionlint' job in testing.yaml runs it.
+  skip: [gha-workflow-linter, aislop, actionlint-shellcheck]
   autofix_commit_msg: |
     Chore: Pre-commit autofixes
 

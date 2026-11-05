@@ -1509,7 +1509,7 @@ conflicts while producer artifacts survive.
 ```text
 .github/workflows/code-monkey.yaml       reusable workflow
 .github/workflows/code-monkey-cron.yaml  schedule and dispatch caller
-.github/workflows/testing.yaml           PR plumbing and offline tests
+.github/workflows/testing.yaml           PR plumbing, offline tests, actionlint
 prompt/author.md                         agent task (§7.3)
 AGENTS.md                                organisation stub (§12 there)
 config/excluded-repos.txt                repositories to skip
@@ -1571,7 +1571,10 @@ read a prior run's ledger.
 The template's linting configuration stays as the repository's
 gate: `prek` hooks including gitleaks, gitlint, ruff, mypy,
 basedpyright, actionlint, gha-workflow-linter, reuse, markdownlint,
-write-good and `aislop` at threshold 100.
+write-good and `aislop` at threshold 100. pre-commit.ci skips the
+hooks it cannot finish: `gha-workflow-linter` and `aislop` need the
+network, and actionlint runs past its 180-second limit, so the
+`actionlint` job in `testing.yaml` runs that hook instead.
 
 ## 15. Rollout
 

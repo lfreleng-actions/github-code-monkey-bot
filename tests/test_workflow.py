@@ -38,6 +38,7 @@ TESTING = WORKFLOWS / "testing.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
 REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
 TOOLCHAIN_PIN = WORKFLOWS.parents[1] / "tools" / "copilot-cli"
+PRE_COMMIT_CONFIG = WORKFLOWS.parents[1] / ".pre-commit-config.yaml"
 
 PLACEHOLDER_NAME = "Code Monkey"
 PLACEHOLDER_EMAIL = "code-monkey@example.invalid"
@@ -2766,6 +2767,42 @@ class TestingCallerContracts(WorkflowCase):
     def test_caller_steps_are_pinned(self) -> None:
         """The regression job's actions are commit-pinned."""
         self.assert_pinned_steps()
+
+    def test_actionlint_job_runs_the_hook_pre_commit_ci_skips(self) -> None:
+        """actionlint-shellcheck outruns pre-commit.ci, so Actions runs it.
+
+        pre-commit.ci stops a run at 180 seconds; skipping the hook there
+        keeps its coverage only while this job runs the same hook, at the
+        rev and arguments the configuration pins, over every file.
+        """
+        config = cast(
+            dict[str, Any],
+            yaml.safe_load(PRE_COMMIT_CONFIG.read_text(encoding="utf-8")),
+        )
+        hooks = [
+            hook["id"]
+            for repo in cast(list[dict[str, Any]], config["repos"])
+            for hook in cast(list[dict[str, Any]], repo["hooks"])
+        ]
+        self.assertIn("actionlint-shellcheck", hooks)
+        self.assertIn("actionlint-shellcheck", config["ci"]["skip"])
+        job = self.jobs["actionlint"]
+        self.assertNotIn("if", job)
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        install = self.step("actionlint", "Install prek")
+        self.assertRegex(
+            flatten(str(install["run"])),
+            r"^\"\$UV\" tool install --python \"\$PYTHON\" 'prek==\d+\.\d+\.\d+'$",
+        )
+        lint = self.step("actionlint", "Run actionlint with ShellCheck")
+        self.assertEqual(
+            flatten(str(lint["run"])),
+            '"$RUNNER_TEMP/uv-tool-bin/prek" run actionlint-shellcheck --all-files',
+        )
+        self.assertEqual(
+            self.position("actionlint", "Run actionlint with ShellCheck"),
+            len(self.steps("actionlint")) - 1,
+        )
 
     def test_uv_workdir_job_runs_the_select_uv_steps(self) -> None:
         """Plants go in first, the select job's uv steps run verbatim, the check last."""

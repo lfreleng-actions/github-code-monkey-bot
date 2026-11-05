@@ -172,6 +172,91 @@ jobs:
           "$UV" run --locked --python "$PYTHON" \
             python -B -m unittest discover -s tests -v
 
+  # pre-commit.ci skips the actionlint-shellcheck hook because it runs
+  # past that service's 180-second limit. This job runs the same hook,
+  # at the rev and arguments .pre-commit-config.yaml pins, so the
+  # workflow files keep their actionlint and ShellCheck coverage.
+  actionlint:
+    name: 'actionlint with ShellCheck'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 15
+    permissions:
+      contents: read  # Lint checked-out workflows without write credentials
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: 'audit'
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Guarded as in code-monkey.yaml, which says why: setup-uv works
+      # outside the workspace with its interpreter lookup disabled, and
+      # uv runs only the Python 'Install Python' installs.
+      - name: 'Set up uv'
+        id: setup-uv
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          working-directory: "${{ runner.temp }}"
+          tool-bin-dir: "${{ runner.temp }}/uv-tool-bin"
+          # Its post-step 'uv cache prune' would hit the invalid
+          # preference below.
+          enable-cache: false
+        env:
+          UV_NO_CONFIG: '1'
+          UV_NO_PROJECT: '1'
+          # setup-uv's only uv call here is "uv python find", whose
+          # result it executes; an invalid preference makes uv refuse
+          # its arguments before any lookup.
+          UV_PYTHON_PREFERENCE: 'lookup-disabled'
+          # Inherited, it makes setup-uv probe uv, which the line above
+          # fails.
+          UV_PYTHON_ARCH: ''
+      - name: 'Install Python'
+        id: python
+        shell: bash
+        env:
+          UV: "${{ steps.setup-uv.outputs.uv-path }}"
+          INSTALL_DIR: "${{ runner.temp }}/uv-python"
+        run: |
+          clean=(UV_NO_CONFIG=1 UV_NO_PROJECT=1
+            "UV_PYTHON_INSTALL_DIR=$INSTALL_DIR"
+            "UV_CACHE_DIR=$RUNNER_TEMP/uv-cache")
+          for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy \
+              https_proxy all_proxy no_proxy SSL_CERT_FILE SSL_CERT_DIR \
+              UV_NATIVE_TLS; do
+            if [ -n "${!name+set}" ]; then clean+=("$name=${!name}"); fi
+          done
+          env -i "${clean[@]}" "$UV" python install --quiet --no-bin 3.13
+          # 'python find' starts any .venv interpreter in the working
+          # directory or above it; 'python list' reads the install's
+          # metadata instead.
+          listed=$(env -i "${clean[@]}" "$UV" python list --only-installed \
+            --managed-python --output-format json 3.13)
+          py=
+          if [[ "$listed" =~ \"path\":\"([^\"]+)\" ]]; then
+            py="${BASH_REMATCH[1]}"
+          fi
+          case "$py" in
+            "$INSTALL_DIR"/*) ;;
+            *) echo "::error::uv found Python outside its install directory"
+               exit 1 ;;
+          esac
+          echo "path=$py" >> "$GITHUB_OUTPUT"
+      - name: 'Install prek'
+        env:
+          UV: "${{ steps.setup-uv.outputs.uv-path }}"
+          PYTHON: "${{ steps.python.outputs.path }}"
+        run: |
+          "$UV" tool install --python "$PYTHON" 'prek==0.4.10'
+      - name: 'Run actionlint with ShellCheck'
+        run: |
+          "$RUNNER_TEMP/uv-tool-bin/prek" run actionlint-shellcheck --all-files
+
   # Runs the select job's uv steps exactly as code-monkey.yaml writes
   # them (the contract tests hold the copies equal) against planted
   # interpreters. Files: a .venv and a .python-version in the workspace
