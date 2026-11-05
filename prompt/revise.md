@@ -76,7 +76,9 @@ round summary.
      re-resolving conflicts, and set `base_sha` in the manifest to
      `rebase_sha`. The workflow accepts a chain on either and no
      other commit, and rejects a rebase onto anything else. Say in
-     the round summary which you did and why.
+     the round summary which you did and why. When `round_reasons`
+     includes `conflicts with the default branch`, the round exists
+     because of that conflict: rebase even when no maintainer asked.
    - *Signing and replay.* Commit with `git commit -s` and no `-S`:
      this runner has no signing key. The workflow replays your whole
      chain through the GitHub API, which signs it, and replaces every

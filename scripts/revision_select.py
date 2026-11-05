@@ -25,6 +25,7 @@ import check_reads
 import explicit_issues
 import fork_orgs as forks
 import issue_reads as reads
+import merge_state
 import repository_reads as repositories
 import revision_reads as revisions
 import round_reads as rounds_of
@@ -122,14 +123,16 @@ def outstanding(
     maintainer is unresolved, when Copilot's review of the head has
     findings, when an antagonistic review of the head handed it back
     after the last round's watermark, when a check on the head
-    failed, outside the exclusion list, or when a maintainer
+    failed, outside the exclusion list, when the head conflicts with
+    the default branch, so no CI ran on it, or when a maintainer
     commented on the issue or the pull request after the bot's last
     round. A maintainer's word on a review thread after that round,
     an opener or a reply, counts as a comment, since the issue and
     pull request comments do not carry it; the thread
     reads heard it over every thread, the packet's bounds aside. A
     head with no review yet is left for the gate to await, and a clean
-    head with nothing else is done.
+    head with nothing else is done. A ``mergeable`` that never settled
+    is no work on its own, so a GitHub hiccup cannot spend rounds.
     """
     packet, verdict = findings.threads, findings.verdict
     issue = int(pull["issue"])
@@ -146,6 +149,8 @@ def outstanding(
         reasons.append(f"antagonistic review round {handback['round']} handed back")
     if findings.checks.outstanding:
         reasons.append("failing checks")
+    if pull.get("mergeable") is False:
+        reasons.append("conflicts with the default branch")
     for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
         if rounds_of.newer_member_comment(repository, number, since):
             reasons.append(f"a maintainer commented on the {what} since the last round")
@@ -189,6 +194,11 @@ def build_entry(
     )
     if pull is None:
         raise Skip("not an open pull request the bot opened from its fork")
+    if pull.get("mergeable") is None:
+        # GitHub computes it lazily; read again so a conflict counts.
+        settled = merge_state.settle(repository, pull_number, str(pull["head_sha"]))
+        pull = {**pull}
+        pull["mergeable"] = settled.mergeable
     issue = int(pull["issue"])
     history = rounds_of.round_history(
         repository, issue, str(bot["login"]), str(pull["created_at"]), pull_number

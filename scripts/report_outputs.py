@@ -53,6 +53,21 @@ def pull_request_urls(results: list[dict[str, Any]], org: str) -> tuple[list[str
     return urls, excluded
 
 
+def unmergeable_urls(results: list[dict[str, Any]], org: str) -> list[str]:
+    """The live pull request links whose head the probe found conflicting.
+
+    Only ``mergeable`` false counts: a probe that never settled is not
+    reported as a conflict.
+    """
+    conflicting = [item for item in results if item.get("mergeable") is False]
+    return pull_request_urls(conflicting, org)[0]
+
+
+def unmergeable_lines(urls: list[str]) -> str:
+    """The ``$GITHUB_OUTPUT`` line for the conflicting pull requests."""
+    return f"unmergeable_pull_requests={json.dumps(urls, separators=(',', ':'))}\n"
+
+
 def output_lines(urls: list[str]) -> str:
     """``$GITHUB_OUTPUT`` lines: fixed keys, values that hold no newline."""
     # json.dumps escapes every control character, so the array is one line.

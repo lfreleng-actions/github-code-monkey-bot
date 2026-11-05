@@ -1165,7 +1165,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
             "github.event_name != 'workflow_dispatch' || inputs.request_review",
         )
 
-    @unittest.expectedFailure
     def test_probe_reads_mergeability_after_the_review_gate(self) -> None:
         """The probe follows the wait, precedes the comment and only reads (#104)."""
         step = self.step("publish", "merge-probe")
@@ -1466,8 +1465,9 @@ class PublishJobContracts(ReusableWorkflowCase):
         for step in (push, opened, comment):
             self.assertNotIn("github.token", dumped(step))
         # The native token reads alone in the job: this run's artifacts,
-        # whether a public fork exists, and the public target's reviews;
-        # the job grants it actions: read and nothing more.
+        # whether a public fork exists, and the public target's reviews
+        # and mergeability; the job grants it actions: read and nothing
+        # more.
         users = [
             step.get("name")
             for step in self.steps("publish")
@@ -1479,6 +1479,7 @@ class PublishJobContracts(ReusableWorkflowCase):
                 "Fetch and accept bounded proposal",
                 "Check fork exists",
                 "Await Copilot review",
+                "Probe mergeability",
             ],
         )
         self.assertEqual(
@@ -1824,7 +1825,10 @@ class SelectAndReportContracts(ReusableWorkflowCase):
     def test_pull_request_outputs_come_from_the_report(self) -> None:
         """The workflow's outputs are the report script's, validated by org."""
         declared = cast(dict[str, Any], self.triggers["workflow_call"]["outputs"])
-        self.assertEqual(set(declared), {"pull_requests", "pull_request_count"})
+        self.assertEqual(
+            set(declared),
+            {"pull_requests", "pull_request_count", "unmergeable_pull_requests"},
+        )
         for name, body in declared.items():
             with self.subTest(output=name):
                 self.assert_expression(
@@ -2586,7 +2590,6 @@ class CronSlackContracts(WorkflowCase):
         self.assertEqual(out["text"], "🐒 Code Monkey: 60 pull requests for review")
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_digest_lists_conflicting_links_apart(self) -> None:
         """Ready links first; conflicting ones under their own heading (#104)."""
         step = self.step("notify", "digest")

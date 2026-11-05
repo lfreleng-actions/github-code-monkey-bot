@@ -177,6 +177,12 @@ on:
       pull_request_count:
         description: 'Length of pull_requests, as a string'
         value: "${{ jobs.report.outputs.pull_request_count }}"
+      unmergeable_pull_requests:
+        description: >-
+          Compact JSON array of the pull_requests whose head conflicts
+          with the default branch after publication, so GitHub ran no
+          CI on it; the next round rebases each
+        value: "${{ jobs.report.outputs.unmergeable_pull_requests }}"
 
 permissions: {}
 
@@ -1507,6 +1513,24 @@ jobs:
             --result artefacts/result.json --output artefacts/result.json \
             --wait-minutes 30
 
+      # A head that conflicts with the default branch gets no
+      # pull_request CI, so its checks look missing, not failed. After
+      # the review gate, read until GitHub settles whether it can
+      # merge, bounded at about a minute, and how far it is behind;
+      # the comment and the next selection read the answer. The target
+      # is public: the job's own token reads it, and no mint grants
+      # anything new (docs/DESIGN.md section 8).
+      - name: 'Probe mergeability'
+        id: merge-probe
+        if: >-
+          !cancelled() && steps.open.outcome == 'success'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          python3 monkey-assets/scripts/merge_state.py \
+            --result artefacts/result.json --check artefacts/check.json \
+            --output artefacts/result.json
+
       # Runs after a failed push or open as well, so a publish failure
       # and its rollback reach the issue; never after cancellation.
       - name: 'Mint issue comment token'
@@ -1633,6 +1657,8 @@ jobs:
     outputs:
       pull_requests: "${{ steps.report.outputs.pull_requests }}"
       pull_request_count: "${{ steps.report.outputs.pull_request_count }}"
+      # yamllint disable-line rule:line-length
+      unmergeable_pull_requests: "${{ steps.report.outputs.unmergeable_pull_requests }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'

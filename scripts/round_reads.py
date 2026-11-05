@@ -23,6 +23,7 @@ from thread_reads import MAX_THREAD_BODY
 # it. A marker in the agent's summary text sits mid-body and is text.
 FOOTER = re.compile(
     r"(?:^|\n)<!-- code-monkey \S+ (?P<verdict>\S+)(?: review=\S+)?"
+    r"(?: mergeable=(?:true|false|unknown))?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
     r"(?: antagonistic=(?P<antagonistic>\d+))? -->\s*\Z"
 )

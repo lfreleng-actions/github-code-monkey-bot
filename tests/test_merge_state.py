@@ -138,7 +138,6 @@ def revision_entry(mergeable: Any) -> dict[str, Any]:
 class SettleTest(unittest.TestCase):
     """GitHub computes ``mergeable`` lazily; the read waits, bounded."""
 
-    @unittest.expectedFailure
     def test_null_then_false_settles_as_false(self) -> None:
         """Two null answers, then a conflict: three reads and two waits."""
         waits: list[float] = []
@@ -153,7 +152,6 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(waits, [2, 4])
         self.assertEqual(read.call_args.args[0], f"repos/{REPOSITORY}/pulls/8")
 
-    @unittest.expectedFailure
     def test_never_settled_is_unknown_with_a_warning(self) -> None:
         """Null throughout is None after a bounded number of reads."""
         module = merge_state()
@@ -168,7 +166,6 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(len(waits), reads_allowed - 1)
         self.assertLessEqual(sum(waits), 90)
 
-    @unittest.expectedFailure
     def test_a_failed_read_is_unknown_never_mergeable(self) -> None:
         """A GitHub error is None with a warning; it is never read as true."""
         with patch.object(
@@ -178,7 +175,6 @@ class SettleTest(unittest.TestCase):
         self.assertIsNone(settled.mergeable)
         self.assertIn("could not read", settled.warning or "")
 
-    @unittest.expectedFailure
     def test_unexpected_state_text_is_not_recorded(self) -> None:
         """Only a short lowercase word reaches the result as ``mergeable_state``."""
         with patch.object(
@@ -194,7 +190,6 @@ class SettleTest(unittest.TestCase):
         self.assertIs(settled.mergeable, True)
         self.assertIsNone(settled.state)
 
-    @unittest.expectedFailure
     def test_an_answer_for_another_head_is_read_again(self) -> None:
         """A stale read naming an older head is not this head's answer."""
         waits: list[float] = []
@@ -206,7 +201,6 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(read.call_count, 2)
         self.assertEqual(waits, [2])
 
-    @unittest.expectedFailure
     def test_a_head_that_never_appears_is_unknown(self) -> None:
         """Booleans for another head throughout are None with a warning."""
         module = merge_state()
@@ -256,7 +250,6 @@ class ProbeTest(unittest.TestCase):
             merge_state().probe(data, entry, sleep=no_wait)
         return paths
 
-    @unittest.expectedFailure
     def test_conflict_with_a_moved_base(self) -> None:
         """A conflict, how far behind, and that the base moved during the run."""
         data = result()
@@ -269,7 +262,6 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(data["warnings"], [])
         self.assertIn(f"repos/{REPOSITORY}/compare/{MOVED}...{HEAD}", paths)
 
-    @unittest.expectedFailure
     def test_revision_compares_with_its_rebase_head(self) -> None:
         """A revision's selected base is ``rebase_sha``, not the old merge base."""
         data = result(round=2)
@@ -279,7 +271,6 @@ class ProbeTest(unittest.TestCase):
         self.assertIs(data["base_moved_during_run"], False)
         self.assertEqual(data["base_behind_by"], 0)
 
-    @unittest.expectedFailure
     def test_failed_reads_leave_warnings_and_unknowns(self) -> None:
         """No read failure stops the job or reads as mergeable."""
         data = result()
@@ -289,7 +280,6 @@ class ProbeTest(unittest.TestCase):
         self.assertIsNone(data["base_behind_by"])
         self.assertEqual(len(data["warnings"]), 2)
 
-    @unittest.expectedFailure
     def test_no_published_head_reads_no_mergeability(self) -> None:
         """Without a head to match, the probe records unknown, never a guess."""
         data = result(commits=[])
@@ -300,7 +290,6 @@ class ProbeTest(unittest.TestCase):
         self.assertNotIn(f"repos/{REPOSITORY}/pulls/8", paths)
         self.assertIn("no published head", data["warnings"][0])
 
-    @unittest.expectedFailure
     def test_nothing_published_is_not_probed(self) -> None:
         """A dry run, a branch alone or a non-proposal reads nothing."""
         for data in (
@@ -312,7 +301,6 @@ class ProbeTest(unittest.TestCase):
                 self.assertEqual(self.probe([], data, check()), [])
                 self.assertNotIn("mergeable", data)
 
-    @unittest.expectedFailure
     def test_cli_rewrites_the_result(self) -> None:
         """``merge_state.py`` reads both files and writes the result back."""
         with tempfile.TemporaryDirectory() as work:
@@ -345,7 +333,6 @@ class ProbeTest(unittest.TestCase):
 class CommentTest(unittest.TestCase):
     """The issue comment leads with a conflict and never calls it clean."""
 
-    @unittest.expectedFailure
     def test_conflict_leads_and_is_not_clean(self) -> None:
         """A clean review of a conflicting head is not the closing word."""
         data = result(
@@ -362,7 +349,6 @@ class CommentTest(unittest.TestCase):
         self.assertTrue(text.rstrip().endswith("The next round rebases it."))
         self.assertLess(text.index("conflicts"), text.index("raised no findings"))
 
-    @unittest.expectedFailure
     def test_unknown_says_unconfirmed(self) -> None:
         """A probe that never settled is said plainly, never as mergeable."""
         text = comments.comment_body(result(mergeable=None), "") or ""
@@ -376,14 +362,12 @@ class CommentTest(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertIn("The Copilot review of it is clean.", after or "")
 
-    @unittest.expectedFailure
     def test_unsafe_branch_name_is_generic(self) -> None:
         """A default branch name that could break the comment is not quoted."""
         data = result(mergeable=False, default_branch="a`b <!-- x")
         text = comments.comment_body(data, "") or ""
         self.assertIn("conflicts with the default branch, so", text)
 
-    @unittest.expectedFailure
     def test_conflict_at_the_cap_is_not_finished(self) -> None:
         """A tenth round that leaves a conflict hands over, not 'rebases it'."""
         data = result(round=10, round_summary="s", mergeable=False)
@@ -392,7 +376,6 @@ class CommentTest(unittest.TestCase):
         self.assertIn("a human must take over", text)
         self.assertNotIn("The next round rebases it.", text)
 
-    @unittest.expectedFailure
     def test_marker_records_the_probe_and_still_counts_the_round(self) -> None:
         """The footer gains ``mergeable=`` and the round reader still parses it."""
         posted: dict[str, Any] = {}
@@ -445,7 +428,6 @@ class ReportTest(unittest.TestCase):
         directory.mkdir(parents=True)
         (directory / "result.json").write_text(json.dumps(data), encoding="utf-8")
 
-    @unittest.expectedFailure
     def test_report_counts_and_lists_conflicts(self) -> None:
         """Totals by merge state, a conflict list, and the output line."""
         conflicting = "https://github.com/lfreleng-actions/beta/pull/9"
@@ -490,7 +472,6 @@ class ReportTest(unittest.TestCase):
         lines = github_output.read_text(encoding="utf-8").splitlines()
         self.assertIn(f'unmergeable_pull_requests=["{conflicting}"]', lines)
 
-    @unittest.expectedFailure
     def test_a_conflict_at_the_cap_is_handed_to_a_human(self) -> None:
         """No promise of a later round for a pull request at the round cap."""
         lines = reporting.conflict_lines(
@@ -503,7 +484,6 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(len(capped), 1)
         self.assertIn("a human must take over", capped[0])
 
-    @unittest.expectedFailure
     def test_only_a_settled_conflict_is_unmergeable(self) -> None:
         """An unknown is not listed, and a link outside the org never is."""
         found = outputs().unmergeable_urls(
@@ -520,7 +500,6 @@ class ReportTest(unittest.TestCase):
 class RoundNoteTest(unittest.TestCase):
     """The pull request description says the round set out to resolve a conflict."""
 
-    @unittest.expectedFailure
     def test_conflicted_round_says_so(self) -> None:
         """Selected conflicting, the note names it; mergeable, it does not."""
         conflicted = model.Check.from_entry("alpha-7", revision_entry(False))
@@ -536,7 +515,6 @@ class RoundNoteTest(unittest.TestCase):
                 self.assertIs(quiet.conflicted, False)
                 self.assertNotIn("conflict", revision_check.round_note(quiet))
 
-    @unittest.expectedFailure
     def test_revise_prompt_rebases_a_conflicting_head(self) -> None:
         """The revise prompt names the reason and asks for the rebase."""
         prompt = (ROOT / "prompt" / "revise.md").read_text(encoding="utf-8")

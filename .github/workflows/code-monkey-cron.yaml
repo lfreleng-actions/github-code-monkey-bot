@@ -271,6 +271,8 @@ jobs:
         env:
           ORG: "${{ github.repository_owner }}"
           PULL_REQUESTS: "${{ needs.code-monkey.outputs.pull_requests }}"
+          # yamllint disable-line rule:line-length
+          UNMERGEABLE: "${{ needs.code-monkey.outputs.unmergeable_pull_requests }}"
           RUN_RESULT: "${{ needs.code-monkey.result }}"
         run: |
           set -euo pipefail
@@ -302,20 +304,53 @@ jobs:
           if [ "$refused" -gt 0 ]; then
             echo "::warning::$refused pull request link(s) failed validation"
           fi
+          # A conflicting head is listed apart from the ready ones; only
+          # a link already validated above can be named a conflict.
+          if ! conflicts=$(jq -r 'if type == "array" then .[] | @json
+              else error("not an array") end' <<< "${UNMERGEABLE:-[]}"); then
+            echo "::warning::The run's unmergeable output is not a JSON array"
+            conflicts=''
+          fi
+          ready=()
+          conflicting=()
+          for url in "${urls[@]}"; do
+            if grep -qixF -- "\"$url\"" <<< "$conflicts"; then
+              conflicting+=("$url")
+            else
+              ready+=("$url")
+            fi
+          done
+          heading='_Conflicting with the default branch, so no CI ran;'
+          heading="$heading each needs a rebase, by a later round or,"
+          heading="$heading at the round cap, by a human:_"
           count=${#urls[@]}
           body=''
           shown=0
-          for url in "${urls[@]}"; do
-            line="<$url>"
+          lines=()
+          for url in "${ready[@]}"; do
+            lines+=("<$url>")
+          done
+          if [ "${#conflicting[@]}" -gt 0 ]; then
+            if [ "${#ready[@]}" -gt 0 ]; then
+              lines+=('')
+            fi
+            lines+=("$heading")
+            for url in "${conflicting[@]}"; do
+              lines+=("<$url>")
+            done
+          fi
+          for line in "${lines[@]}"; do
             if [ "$shown" -ge 50 ] \
               || [ $(( ${#body} + ${#line} + 2 )) -gt 2500 ]; then
               break
             fi
-            if [ -n "$body" ]; then
+            if [ -n "$body" ] || [ -z "$line" ]; then
               body="$body\\n"
             fi
             body="$body$line"
-            shown=$((shown + 1))
+            if [[ "$line" == '<'* ]]; then
+              shown=$((shown + 1))
+            fi
           done
           if [ "$shown" -lt "$count" ]; then
             body="$body\\n... and $((count - shown)) more"

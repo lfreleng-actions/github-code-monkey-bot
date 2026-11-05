@@ -127,3 +127,67 @@ def review_token(result: dict[str, Any]) -> str:
         f"findings/{record.get('unresolved_threads')}/{record.get('suppressed')}"
         f"/{record.get('previously_missed')}/{record.get('assessment')}"
     )
+
+
+# A default branch name longer than this is named generically.
+MAX_BRANCH_NAME = 100
+
+
+def merge_token(result: dict[str, Any]) -> str | None:
+    """The probe's answer as one marker word, or None when no probe ran.
+
+    Anything but a boolean reads as ``unknown``: never as mergeable.
+    """
+    if "mergeable" not in result:
+        return None
+    value = result.get("mergeable")
+    if value is True:
+        return "true"
+    return "false" if value is False else "unknown"
+
+
+def branch_text(result: dict[str, Any]) -> str:
+    """The default branch the probe compared with, in code, or a generic name."""
+    name = result.get("default_branch")
+    if not isinstance(name, str) or not name or len(name) > MAX_BRANCH_NAME:
+        return "the default branch"
+    safe = policy.comment_safe(name)
+    if safe != name or "`" in name:
+        return "the default branch"
+    return f"`{name}`"
+
+
+def merge_sentence(result: dict[str, Any]) -> str:
+    """What the comment says first about a head that may not merge, or nothing."""
+    token = merge_token(result)
+    branch = branch_text(result)
+    if token == "false":
+        moved = (
+            ", which moved while this run worked"
+            if result.get("base_moved_during_run") is True
+            else ""
+        )
+        return (
+            f" The pull request conflicts with {branch}{moved}, so its CI has not run."
+        )
+    if token == "unknown":
+        return (
+            f" GitHub did not confirm whether the pull request can merge with "
+            f"{branch}, so its CI may not have run."
+        )
+    return ""
+
+
+def review_after_merge(result: dict[str, Any]) -> str:
+    """The review sentence as a sentence of its own, after the merge state.
+
+    A conflicting head is never called clean: Copilot's verdict is not
+    the closing word on a head that cannot merge.
+    """
+    sentence = review_sentence(result)
+    if not sentence:
+        return ""
+    if merge_token(result) == "false" and review_verdict(result) == "clean":
+        return " Copilot's review of it raised no findings."
+    body = sentence[2:]
+    return f" {body[:1].upper()}{body[1:]}"

@@ -15,7 +15,27 @@ import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
 import write_recovery as recovery
-from review_outcome import review_sentence, review_token, review_verdict
+from review_outcome import (
+    merge_sentence,
+    merge_token,
+    review_after_merge,
+    review_sentence,
+    review_token,
+    review_verdict,
+)
+
+
+def outcome_text(opening: str, result: dict[str, Any]) -> str:
+    """The opening, then the merge state when it is in doubt, then the review."""
+    token = merge_token(result)
+    if token in (None, "true"):
+        return opening + review_sentence(result)
+    text = opening.rstrip(".") + "." + merge_sentence(result)
+    text += review_after_merge(result)
+    if token == "false" and not capped(result):
+        text += " The next round rebases it."
+    return text
+
 
 MAX_ROUNDS = 10
 CAP_NOTICE = (
@@ -34,12 +54,16 @@ def capped(result: dict[str, Any]) -> bool:
     """Whether the round leaves the pull request at the cap with work undone.
 
     The selector skips a pull request at the cap whatever its state,
-    so every tenth-round outcome but a clean proposal needs a human;
-    a clean one is finished.
+    so every tenth-round outcome but a clean proposal that can merge
+    needs a human; a clean one that can merge is finished.
     """
     if round_of(result) < MAX_ROUNDS:
         return False
-    return result.get("verdict") != "proposed" or review_verdict(result) != "clean"
+    return (
+        result.get("verdict") != "proposed"
+        or review_verdict(result) != "clean"
+        or result.get("mergeable") is False
+    )
 
 
 def published_head(result: dict[str, Any]) -> str:
@@ -82,9 +106,9 @@ def _proposed_comment(
         answered = handback_text(result)
         if answered:
             opening = opening.rstrip(".") + f". {answered}"
-        return opening + review_sentence(result)
+        return outcome_text(opening, result)
     opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
-    return opening + review_sentence(result)
+    return outcome_text(opening, result)
 
 
 def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:
@@ -224,6 +248,9 @@ def run_comment(args: argparse.Namespace) -> None:
     # leaving the issue at odds with result.json.
     verdict = review_verdict(result)
     suffix = f" review={review_token(result)}" if verdict else ""
+    merge = merge_token(result)
+    if merge is not None:
+        suffix += f" mergeable={merge}"
     if round_of(result):
         suffix += f" round={round_of(result)}"
     pull_number = result.get("pull_number")
