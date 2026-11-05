@@ -1502,6 +1502,7 @@ scripts/stale_branch.py                  a closed attempt's branch (§5)
 scripts/branch_chain.py                  a branch read back as replayed work
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
+scripts/review_outcome.py                its review sentence and marker token
 scripts/proposal_report.py               merge results into the report
 scripts/report_outputs.py                the run's pull request links (§18.6)
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
