@@ -1023,6 +1023,25 @@ For each selected issue:
     shorter wait. A caller's shorter wait stands, and a request that
     landed keeps the full wait. The record goes into `result.json` as
     `review` (§18.4).
+    Then the publisher reads whether the pull request can merge
+    (`merge_state.py`), with the same
+    token, since the target is public, and no write. A head that
+    conflicts with the default branch gets no `pull_request` CI,
+    since GitHub cannot build its merge ref, so its checks look
+    missing rather than failed and the review alone would call it
+    ready. The probe runs after the wait, since the base can move
+    during it. GitHub computes `mergeable` in the background and
+    answers `null` while it does, so the read goes again after 2, 4,
+    8, 16 and 32 seconds, about a minute in all. An answer counts
+    when the pull request names the published head; the probe treats
+    a stale read, or a push since, like a `null`. An answer
+    still `null` or for another head, or a read that fails, records
+    `null` with a warning: unknown, never mergeable. The probe also reads the default
+    branch's head, records whether it moved from the head the
+    selection read (`rebase_sha` for a revision, `base_sha` for an
+    issue) and, from GitHub's compare, the count of commits the
+    published head lacks of it. A read that fails leaves its field `null` with
+    a warning and stops nothing.
 12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
     provenance rejection, which check failed and the run URL. The
@@ -1053,10 +1072,17 @@ For each selected issue:
     fork saw a branch and its rollback. On a published pull request
     the line states the review's verdict: clean; findings, with the
     counts and the assessment and the statement that a maintainer
-    must act on them; or pending. The marker carries the review
+    must act on them; or pending. A head the probe found conflicting
+    leads with that instead: it names the default branch and whether
+    it moved during the run, says no CI ran, states the review without
+    calling it clean and says the next round rebases it (§20.1); an
+    unsettled answer says GitHub did not confirm whether the pull
+    request can merge. A conflict at the round cap leaves work undone:
+    that comment hands over to a human. The marker carries the review
     verdict too, for findings the counts and the assessment, and for
     a pending review the workflow could not request
-    `pending/not-requested`, so a rerun whose wait ended differently,
+    `pending/not-requested`, then the probe's answer as `mergeable=`
+    `true`, `false` or `unknown` when it ran, so a rerun whose wait ended differently,
     resolved a thread under the same verdict, or requested the review
     a first attempt could not, posts again
     instead of leaving the issue at odds with `result.json`; the
@@ -1071,8 +1097,12 @@ For each selected issue:
     report job gathers every `result.json` by artifact-name pattern
     and renders one table: issue, verdict, output URL, Copilot
     review verdict, premium requests consumed (from `usage.json`),
-    detail. Below the totals it counts the review verdicts and
-    states, once, how a later round answers review findings. A
+    detail. Below the totals it counts the review verdicts and the
+    probe's answers (mergeable, conflicting, unconfirmed, not probed),
+    lists each conflicting pull request apart with the count of
+    commits behind and, at the round cap, that a human must take
+    over, and states, once, how a later round answers review
+    findings. A
     report covers one
     selection, its namespace: a retried entry shows its latest
     attempt's row, but the spend total counts each author session
@@ -1358,7 +1388,12 @@ the model PAT (§10.2).
   reusable workflow's outputs (§18.6), re-validates each link against
   the same pattern, and posts a header, one link per line in report
   order (at most 50 links or 2,500 characters, then `... and N
-  more`), and a link to the run. A run that raised nothing posts
+  more`), and a link to the run. Links the `unmergeable_pull_requests`
+  output names follow the others under their own heading, since no
+  CI ran on them and each needs a rebase, by a later round or, at
+  the round cap, by a human; that output sorts
+  no link but those the first one passed, and one that is not a JSON
+  array sorts none. A run that raised nothing posts
   a line saying it raised none, so an empty night reads
   differently from a broken one, and a run with failed jobs that
   still reported says so under the list. `notify-failure` needs
@@ -1503,6 +1538,7 @@ scripts/branch_chain.py                  a branch read back as replayed work
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
 scripts/review_outcome.py                its review sentence and marker token
+scripts/merge_state.py                   whether a pull request can merge
 scripts/proposal_report.py               merge results into the report
 scripts/report_outputs.py                the run's pull request links (§18.6)
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
@@ -1868,6 +1904,13 @@ a published pull request when `request_review` is on: `requested`
 says whether the request landed (§8 step 10), `verdict` is `clean`,
 `findings` or `pending`, `assessment` is `approval`, `closer-look`,
 `changes` or `null`, and `commit_id` is the head the review judged.
+On a published pull request the probe (§8 step 11) adds `mergeable`
+(`true`, `false`, or `null` when GitHub never settled or a read
+failed), `mergeable_state` (GitHub's short word, or `null`),
+`default_branch`, `base_moved_during_run` and `base_behind_by`
+(`null` where a read failed). A conflict means `false` and nothing
+else: the comment, the report and the outputs read `null` as
+unconfirmed.
 The comment and the report read a record with any field missing or
 added, or any other verdict, as `pending`, and a `pending` record
 whose `requested` is `false` as a review the workflow could not
@@ -1918,10 +1961,13 @@ publish.py respond --result result.json --check check.json
     --output result.json
 publish.py report --results DIR --output-md PATH --output-json PATH
     [--org ORG --github-output PATH]
+merge_state.py --result result.json --check check.json
+    --output result.json
 ```
 
-`select_issues.py`, `publish.py push`, `open`, `respond`, `comment`,
-`review-request` and `review-await` read `GH_TOKEN`. Everything else
+`select_issues.py`, `merge_state.py`, `publish.py push`, `open`,
+`respond`, `comment`, `review-request` and `review-await` read
+`GH_TOKEN`. Everything else
 runs offline. A verdict other than
 `proposed` is data, not an error: the scripts exit non-zero for
 operational failures alone.
@@ -1929,7 +1975,7 @@ operational failures alone.
 ### 18.6 Workflow outputs (report → caller)
 
 A caller cannot read `report.json` without the run's namespace, so
-the reusable workflow declares two `workflow_call` outputs, fed by
+the reusable workflow declares three `workflow_call` outputs, fed by
 the report job's `Build report` step through
 `publish.py report --org ORG --github-output PATH`:
 
@@ -1937,6 +1983,7 @@ the report job's `Build report` step through
 | ------ | ----- |
 | `pull_requests` | Single-line JSON array of URLs, in report order |
 | `pull_request_count` | The array's length, as a string |
+| `unmergeable_pull_requests` | Those whose head conflicts (§8 step 11) |
 
 Results are not yet authenticated (§18.4), so `report_outputs.py`
 treats each field as hostile. A URL counts when the whole value
@@ -1944,11 +1991,13 @@ matches `^https://github\.com/<org>/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$`,
 `<org>` the run's `org` input, with case folded in ASCII alone, so
 no non-ASCII letter that Unicode folds onto an ASCII one (the
 dotless `ı` in `gıthub.com`) passes; duplicates, compared the same
-way, keep their first place. A dry-run
+way, keep their first place. `unmergeable_pull_requests` passes
+the results whose `mergeable` is `false` through the same filter:
+it never names a link `pull_requests` would refuse. A dry-run
 result, or one without a `pull_request_url`, contributes nothing.
 The script leaves any other value out and never copies it; it counts
 them in `report.json` (`excluded_pull_request_urls`, beside the
-`pull_requests` array), in the report and as a `::warning::`. Both
+`pull_requests` array), in the report and as a `::warning::`. The
 keys stay fixed and neither value can hold a newline. A selection that ran no
 agent gives `[]` and `0`; a run whose report job did not run gives
 empty strings. Like the report, the outputs are informational: they
@@ -2068,13 +2117,20 @@ Three ways in, all through the select job and its read token:
   latest footer, recorded as `antagonistic review round N handed
   back`; a check run on the head whose conclusion is
   `failure`, `timed_out` or `startup_failure`, recorded as `failing
-  checks` among the round's reasons; or an `OWNER`/`MEMBER` comment
+  checks` among the round's reasons; a head that conflicts with the
+  default branch (`mergeable` false), recorded as `conflicts with the
+  default branch`, since GitHub runs no CI on it and it would
+  otherwise wait unseen; or an `OWNER`/`MEMBER` comment
   on the issue, the
   pull request or an unresolved review thread, an opener or a reply,
   after the bot's latest footer. The predicate leaves out, by name, a
   check the head's own round cannot influence (`check_reads.EXCLUDED`,
   empty today); the round cap bounds a check that fails for reasons outside
-  the pull request. A head with no
+  the pull request. GitHub computes `mergeable` in the background,
+  so the selection reads a `null` again on the §8 step 11 backoff,
+  for the head it selected, before the test, which
+  adds up to a minute per such candidate; one that never settles is
+  no work on its own, so a GitHub hiccup spends no round. A head with no
   review yet waits for the gate; a clean head with nothing else needs
   no round; and after a handoff (§20.3) neither the disputed threads
   nor a failing check nor a hand-back brings a round on its own, a
@@ -2212,7 +2268,10 @@ what deserves a fix, commit by the guidance's review-round rules
 (amend a single commit; one dedicated feedback commit on a
 multi-commit branch), keep the chain on `base_sha` unless a
 maintainer asked for a rebase or the pull request is not mergeable,
-and then rebase onto `rebase_sha` and no other commit. The manifest
+and then rebase onto `rebase_sha` and no other commit. A round whose
+reasons include `conflicts with the default branch` exists for the
+conflict, so the prompt asks for the rebase even when no maintainer
+did. The manifest
 (§18.2) adds a reply per thread with whether to resolve it, the pull
 request body and a round summary. The prompt describes the failing
 checks as data, never instructions, since their names, summaries and
@@ -2232,7 +2291,11 @@ recorded base the manifest names and rejects any other; types each
 reply and binds it to a thread the selection carried, defusing
 mentions and bounding the text; requires the round summary; and
 warns of a thread left unanswered, which stays open for a human. It
-records a rebase, and the description's round line says so; that
+records a rebase, and the description's round line says so, and
+says when the round set out to resolve a conflict the selection saw;
+the probe runs after the check writes that line, so a conflict that
+arises during the round reaches the comment, the report and the
+next selection, not the description. That
 line, and the round's issue comment, also name the failing checks
 the selection carried, escaped and bounded as agent text is, since
 a check's name comes from the code under review. A round sent by an
