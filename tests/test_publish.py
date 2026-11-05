@@ -166,6 +166,16 @@ class NoNetworkCase(unittest.TestCase):
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name)
 
+    def target_at_selection(self) -> None:
+        """A revision's pull request reads as open and its branch at the selected head.
+
+        The push reads both before it writes; a test that stubs the
+        move itself still passes those reads.
+        """
+        guard = patch.object(github, "api_object", side_effect=target_reads())
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def write_check(self, data: dict[str, Any]) -> Path:
         """Write a check.json and return its path."""
         path = self.root / "check.json"
@@ -920,8 +930,176 @@ class RunPushTest(NoNetworkCase):
             publish.run_push(self.push_args(path))
 
 
+def target_reads(pull: dict[str, Any] | None = None, head: Any = HEAD) -> Any:
+    """A fake ``api_object`` for a revision push: the pull request, branch and fork.
+
+    ``head`` is the bot branch's head, or the error its read raises.
+    """
+
+    def read(endpoint: str) -> dict[str, Any]:
+        if endpoint.startswith(f"repos/{FORK}/git/ref/heads/"):
+            if isinstance(head, Exception):
+                raise head
+            return {"object": {"type": "commit", "sha": head}}
+        if endpoint == f"repos/{FORK}":
+            return {"node_id": "R_1"}
+        if endpoint == f"repos/{REPOSITORY}/pulls/41":
+            return dict(pull or {"state": "open"})
+        raise AssertionError(f"unexpected read {endpoint}")
+
+    return read
+
+
+MERGED_PULL = {"state": "closed", "merged_at": "2026-11-05T02:20:00Z"}
+CLOSED_PULL = {"state": "closed", "merged_at": None}
+GONE = github.GitHubError("gh: Not Found (HTTP 404)", status=404)
+
+
 class RunPushRevisionTest(NoNetworkCase):
     """A revision replays onto a temporary branch, then moves the bot branch."""
+
+    def setUp(self) -> None:
+        """The pull request reads as open and the branch at the selected head."""
+        super().setUp()
+        self.target_at_selection()
+
+    def push_untouched(
+        self, pull: dict[str, Any], head: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Push with the pull request reading as ``pull`` and the branch as ``head``.
+
+        Returns the result and the write mocks, none of which may run.
+        """
+        path = self.write_check(revision_check())
+        with (
+            patch.object(github, "api_object", side_effect=target_reads(pull, head)),
+            patch.object(refs, "ensure_fork") as fork,
+            patch.object(refs, "sync_fork") as sync,
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(refs, "create_branch") as create,
+            patch.object(refs, "replay_commits") as replay,
+            patch.object(github, "graphql") as gql,
+            patch.object(refs, "delete_branch", return_value=None) as delete,
+        ):
+            result = publish.run_push(self.push_args(path))
+        return result, {
+            "fork": fork,
+            "sync": sync,
+            "create": create,
+            "replay": replay,
+            "graphql": gql,
+            "delete": delete,
+        }
+
+    @unittest.expectedFailure
+    def test_a_branch_moved_since_selection_is_refused_before_any_write(self) -> None:
+        """Another round moved the branch: rejected, no replay, scratch or swap."""
+        result, writes = self.push_untouched({"state": "open"}, "b" * 40)
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn(
+            "head moved from eeeeeee to bbbbbbb since selection; nothing forced",
+            result["reasons"],
+        )
+        self.assertIsNone(result["pull_request_url"])
+        for name in ("create", "replay", "graphql", "delete"):
+            writes[name].assert_not_called()
+
+    @unittest.expectedFailure
+    def test_a_deleted_branch_is_refused_before_any_write(self) -> None:
+        """A 404 on the branch is the branch gone, a rejection, not a failure."""
+        result, writes = self.push_untouched({"state": "open"}, GONE)
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertTrue(
+            any(r.startswith("head moved from eeeeeee") for r in result["reasons"])
+        )
+        for name in ("create", "replay", "graphql"):
+            writes[name].assert_not_called()
+
+    @unittest.expectedFailure
+    def test_a_merged_pull_request_is_a_rejection(self) -> None:
+        """Merged, its branch deleted: rejected, nothing written, nothing raised."""
+        result, writes = self.push_untouched(MERGED_PULL, GONE)
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn(
+            "pull request #41 is merged; nothing to publish", result["reasons"]
+        )
+        self.assertIsNone(result["pull_request_url"])
+        for mock in writes.values():
+            mock.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_a_closed_pull_request_is_a_rejection(self) -> None:
+        """Closed unmerged, its branch still there: rejected, nothing written."""
+        result, writes = self.push_untouched(CLOSED_PULL, HEAD)
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn(
+            "pull request #41 is closed; nothing to publish", result["reasons"]
+        )
+        for mock in writes.values():
+            mock.assert_not_called()
+
+    def test_the_branch_at_the_selected_head_is_swapped(self) -> None:
+        """The pre-read matches: replay, swap from the recorded head, cleanup."""
+        path = self.write_check(revision_check())
+
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(refs, "create_branch") as create,
+            patch.object(refs, "replay_commits", return_value=[NEW_HEAD]),
+            patch.object(github, "graphql", return_value={}) as gql,
+            patch.object(refs, "delete_branch", return_value=None),
+        ):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(result["commits"], [NEW_HEAD])
+        create.assert_called_once()
+        update = gql.call_args.args[1]["input"]["refUpdates"][0]
+        self.assertEqual(update["beforeOid"], HEAD)
+        self.assertEqual(update["afterOid"], NEW_HEAD)
+
+    @unittest.expectedFailure
+    def test_a_failed_head_read_still_fails_the_job(self) -> None:
+        """A 502 on the pre-read is not absence: the job fails, nothing moves."""
+        path = self.write_check(revision_check())
+        bad = github.GitHubError("Bad Gateway (HTTP 502)", status=502)
+        with (
+            patch.object(github, "api_object", side_effect=target_reads(head=bad)),
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(publish.revision_publish, "move_branch") as move,
+            self.assertRaises(policy.PublishError),
+        ):
+            publish.run_push(self.push_args(path))
+        move.assert_not_called()
+        self.assertEqual(self.written_result()["verdict"], "publish-failed")
+
+    def test_a_move_after_the_pre_read_stays_unknown(self) -> None:
+        """A generic swap error with the branch at neither head is for a human."""
+        path = self.write_check(revision_check())
+
+        generic = github.GitHubError("gh: Something went wrong while executing")
+        with (
+            patch.object(reads, "branch_head", return_value="b" * 40),
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(refs, "create_branch"),
+            patch.object(refs, "replay_commits", return_value=[NEW_HEAD]),
+            patch.object(github, "graphql", side_effect=generic),
+            patch.object(refs, "delete_branch", return_value=None),
+            self.assertRaises(policy.PublishError) as raised,
+        ):
+            publish.run_push(self.push_args(path))
+        self.assertIsInstance(
+            raised.exception.__cause__, publish.revision_publish.SwapUnknown
+        )
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertTrue(any("unknown" in r for r in written["reasons"]))
+        self.assertFalse(any("unchanged" in r for r in written["reasons"]))
 
     def test_revision_moves_the_branch_and_records_the_pull_request(self) -> None:
         """Sync, temporary branch, replay, compare-and-swap, cleanup; the PR is known."""
@@ -1031,8 +1209,13 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(result["commits"], [])
         self.assertFalse(publish.needs_pull_request(result))
 
-    def respond_handoff(self, head: Any) -> dict[str, Any]:
-        """Run ``respond`` on a handoff; the pull request head then reads as ``head``."""
+    def respond_handoff(
+        self, head: Any, pull: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Run ``respond`` on a handoff; the pull request reads as ``pull`` at ``head``.
+
+        ``pull`` is the pull request's state, open when not given.
+        """
         check = self.write_check(
             revision_check(
                 verdict="handoff",
@@ -1072,6 +1255,9 @@ class HandoffTest(NoNetworkCase):
             patch.object(publish.revision_publish, "reply", return_value=None) as reply,
             patch.object(publish.revision_publish, "resolve"),
             lookup as read,
+            patch.object(
+                github, "api_object", return_value=dict(pull or {"state": "open"})
+            ),
             redirect_stdout(io.StringIO()),
         ):
             try:
@@ -1091,7 +1277,10 @@ class HandoffTest(NoNetworkCase):
                 error: BaseException | None = exc
             else:
                 error = None
-        read.assert_called_once_with(REPOSITORY, 41)
+        # A pull request no longer open stands the round down before
+        # its head is read.
+        if (pull or {}).get("state", "open") == "open":
+            read.assert_called_once_with(REPOSITORY, 41)
         stored = json.loads(result.read_text(encoding="utf-8"))
         stored["_replied"] = reply.call_count
         stored["_error"] = error
@@ -1118,6 +1307,30 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(stored["verdict"], "publish-failed")
         self.assertEqual(stored["_replied"], 0)
         self.assertIsInstance(stored["_error"], SystemExit)
+
+    @unittest.expectedFailure
+    def test_a_handoff_on_a_merged_pull_request_is_refused(self) -> None:
+        """Merged at the selected head: rejected, no reply, nothing raised."""
+        stored = self.respond_handoff(HEAD, MERGED_PULL)
+        self.assertEqual(stored["verdict"], "rejected")
+        self.assertIn(
+            "pull request #41 is merged; nothing to publish", stored["reasons"]
+        )
+        self.assertIsNone(stored["pull_request_url"])
+        self.assertEqual(stored["_replied"], 0)
+        self.assertIsNone(stored["_error"])
+
+    @unittest.expectedFailure
+    def test_a_handoff_on_a_closed_pull_request_is_refused(self) -> None:
+        """Closed unmerged at the selected head: rejected, no reply."""
+        stored = self.respond_handoff(HEAD, CLOSED_PULL)
+        self.assertEqual(stored["verdict"], "rejected")
+        self.assertIn(
+            "pull request #41 is closed; nothing to publish", stored["reasons"]
+        )
+        self.assertIsNone(stored["pull_request_url"])
+        self.assertEqual(stored["_replied"], 0)
+        self.assertIsNone(stored["_error"])
 
     def test_respond_posts_replies_for_a_handoff(self) -> None:
         """Replies reach the threads, nothing is resolved, the body is left alone."""
@@ -1156,6 +1369,7 @@ class HandoffTest(NoNetworkCase):
             patch.object(publish.revision_publish, "resolve") as resolve,
             patch.object(publish.revision_publish, "update_pull_request") as update,
             patch.object(review, "pull_head", return_value=HEAD),
+            patch.object(github, "api_object", return_value={"state": "open"}),
             redirect_stdout(io.StringIO()),
         ):
             publish.main(
@@ -1715,11 +1929,15 @@ class RunRetitleTest(NoNetworkCase):
         head: str = HEAD,
         chain: list[str] | None = None,
     ) -> Any:
-        """Run retitle against a pull request titled ``current`` at ``head``."""
+        """Run retitle against a pull request titled ``current`` at ``head``.
+
+        The fork branch reads at ``head`` too.
+        """
         check = self.write_check(check_data)
         self.record = self.root / "retitle.json"
+        pull = {"state": "open", "title": current}
         with (
-            patch.object(github, "api_object", return_value={"title": current}),
+            patch.object(github, "api_object", side_effect=target_reads(pull, head)),
             patch.object(review, "pull_head", return_value=head),
             patch.object(refs, "branch_matches", return_value=chain),
             patch.object(github, "api_write", return_value={}) as write,
@@ -1817,8 +2035,9 @@ class RunRetitleTest(NoNetworkCase):
         """
         check = self.write_check(revision_check(pr_title="Fix: New subject"))
         self.record = self.root / "retitle.json"
+        pull = {"state": "open", "title": "Fix: Old"}
         with (
-            patch.object(github, "api_object", return_value={"title": "Fix: Old"}),
+            patch.object(github, "api_object", side_effect=target_reads(pull)),
             patch.object(review, "pull_head", return_value=HEAD),
             patch.object(
                 github, "api_write", side_effect=github.GitHubError("timed out")
@@ -1857,6 +2076,85 @@ class RunRetitleTest(NoNetworkCase):
             chain=["c" * 40, NEW_HEAD],
         )
         write.assert_called_once()
+
+    def retitle_gone(
+        self, pull: dict[str, Any], head: str, tip: Any = GONE
+    ) -> tuple[Any, str]:
+        """Retitle with the pull request as ``pull`` at ``head``.
+
+        The fork branch reads as ``tip``: by default deleted, else the
+        commit it holds or the error its read raises.
+        """
+        check = self.write_check(revision_check(pr_title="Fix: New subject"))
+        self.record = self.root / "retitle.json"
+        out = io.StringIO()
+        with (
+            patch.object(github, "api_object", side_effect=target_reads(pull, tip)),
+            patch.object(review, "pull_head", return_value=head),
+            patch.object(refs, "branch_matches", side_effect=GONE),
+            patch.object(github, "api_write", return_value={}) as write,
+            redirect_stdout(out),
+        ):
+            publish.main(
+                ["retitle", "--check", str(check), "--record", str(self.record)]
+            )
+        return write, out.getvalue()
+
+    @unittest.expectedFailure
+    def test_a_merged_pull_request_keeps_its_title(self) -> None:
+        """Merged, its branch deleted: the title is left alone and nothing raises."""
+        write, out = self.retitle_gone(dict(MERGED_PULL, title="Fix: Old"), "f" * 40)
+        write.assert_not_called()
+        self.assertIn("retitle: pull request #41 is merged; title left alone", out)
+        self.assertFalse(self.record.is_file())
+
+    @unittest.expectedFailure
+    def test_a_closed_pull_request_keeps_its_title(self) -> None:
+        """Closed at the selected head: nothing to retitle for."""
+        write, out = self.retitle_gone(dict(CLOSED_PULL, title="Fix: Old"), HEAD)
+        write.assert_not_called()
+        self.assertIn("retitle: pull request #41 is closed; title left alone", out)
+
+    @unittest.expectedFailure
+    def test_a_deleted_branch_keeps_the_title(self) -> None:
+        """An open pull request whose branch reads 404: left alone, no failure."""
+        write, out = self.retitle_gone({"state": "open", "title": "Fix: Old"}, "f" * 40)
+        write.assert_not_called()
+        self.assertIn("title left alone", out)
+
+    @unittest.expectedFailure
+    def test_a_deleted_branch_at_the_selected_head_keeps_the_title(self) -> None:
+        """The pull request still reports the selected head; its branch reads 404.
+
+        The pull request's head can lag a deleted branch, and the push
+        will refuse the round, so the title must not move either.
+        """
+        write, out = self.retitle_gone({"state": "open", "title": "Fix: Old"}, HEAD)
+        write.assert_not_called()
+        self.assertIn(
+            "retitle: branch code-monkey/issue-7 is gone; title left alone", out
+        )
+        self.assertFalse(self.record.is_file())
+
+    @unittest.expectedFailure
+    def test_a_branch_ahead_of_the_pull_request_keeps_the_title(self) -> None:
+        """The branch moved while the pull request still reports the selected head."""
+        write, out = self.retitle_gone(
+            {"state": "open", "title": "Fix: Old"}, HEAD, tip="b" * 40
+        )
+        write.assert_not_called()
+        self.assertIn("retitle: branch moved to bbbbbbb; title left alone", out)
+
+    @unittest.expectedFailure
+    def test_a_failed_branch_read_fails_the_retitle(self) -> None:
+        """A 502 on the branch read is not absence: the step fails, nothing written."""
+        with self.assertRaises(SystemExit):
+            self.retitle_gone(
+                {"state": "open", "title": "Fix: Old"},
+                HEAD,
+                tip=github.GitHubError("gh: Bad Gateway (HTTP 502)", status=502),
+            )
+        self.assertFalse(self.record.is_file())
 
     def test_a_changed_subject_retitles_before_the_push(self) -> None:
         """The Semantic Pull Request check runs on the push; the title must lead it."""
