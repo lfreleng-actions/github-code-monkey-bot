@@ -548,6 +548,10 @@ jobs:
           # Inherited, it makes setup-uv probe uv, which the line above
           # fails.
           UV_PYTHON_ARCH: ''
+          # setup-uv puts this directory on PATH ahead of its own uv
+          # before its bare 'uv python find', so an inherited one could
+          # hold the uv that runs. It is the one 'Install Python' fills.
+          UV_PYTHON_INSTALL_DIR: "${{ runner.temp }}/uv-python"
 
       # uv installs and finds its own Python under an emptied
       # environment, so nothing an earlier step exported picks it; every
@@ -555,6 +559,9 @@ jobs:
       - name: 'Install Python'
         id: python
         shell: bash
+        # uv starts a .venv interpreter in its working directory to
+        # inspect it, even under env -i.
+        working-directory: "${{ runner.temp }}"
         env:
           UV: "${{ steps.setup-uv.outputs.uv-path }}"
           INSTALL_DIR: "${{ runner.temp }}/uv-python"
@@ -573,10 +580,22 @@ jobs:
           # metadata instead.
           listed=$(env -i "${clean[@]}" "$UV" python list --only-installed \
             --managed-python --output-format json 3.13)
+          # The first entry's "path", past its other keys and the
+          # objects nested in them.
+          first='^\[\{([^{}"]|"[^"]*"|\{[^{}]*\})*"path":"([^"]+)"'
           py=
-          if [[ "$listed" =~ \"path\":\"([^\"]+)\" ]]; then
-            py="${BASH_REMATCH[1]}"
+          if [[ "$listed" =~ $first ]]; then
+            py="${BASH_REMATCH[2]}"
           fi
+          # uv lists an install below the working directory relative to
+          # it, so resolve it there, and refuse '..' before the check.
+          case "$py" in
+            /*) ;;
+            ?*) py="$PWD/$py" ;;
+          esac
+          case "$py/" in
+            */../*) py= ;;
+          esac
           case "$py" in
             "$INSTALL_DIR"/*) ;;
             *) echo "::error::uv found Python outside its install directory"
@@ -894,12 +913,19 @@ jobs:
           # Inherited, it makes setup-uv probe uv, which the line above
           # fails.
           UV_PYTHON_ARCH: ''
+          # setup-uv puts this directory on PATH ahead of its own uv
+          # before its bare 'uv python find', so an inherited one could
+          # hold the uv that runs. It is the one 'Install Python' fills.
+          UV_PYTHON_INSTALL_DIR: "${{ runner.temp }}/uv-python"
 
       # As in the select job: uv installs and finds its own Python
       # under an emptied environment, for uv tool install below.
       - name: 'Install Python'
         id: python
         shell: bash
+        # uv starts a .venv interpreter in its working directory to
+        # inspect it, even under env -i.
+        working-directory: "${{ runner.temp }}"
         env:
           UV: "${{ steps.setup-uv.outputs.uv-path }}"
           INSTALL_DIR: "${{ runner.temp }}/uv-python"
@@ -918,10 +944,22 @@ jobs:
           # metadata instead.
           listed=$(env -i "${clean[@]}" "$UV" python list --only-installed \
             --managed-python --output-format json 3.13)
+          # The first entry's "path", past its other keys and the
+          # objects nested in them.
+          first='^\[\{([^{}"]|"[^"]*"|\{[^{}]*\})*"path":"([^"]+)"'
           py=
-          if [[ "$listed" =~ \"path\":\"([^\"]+)\" ]]; then
-            py="${BASH_REMATCH[1]}"
+          if [[ "$listed" =~ $first ]]; then
+            py="${BASH_REMATCH[2]}"
           fi
+          # uv lists an install below the working directory relative to
+          # it, so resolve it there, and refuse '..' before the check.
+          case "$py" in
+            /*) ;;
+            ?*) py="$PWD/$py" ;;
+          esac
+          case "$py/" in
+            */../*) py= ;;
+          esac
           case "$py" in
             "$INSTALL_DIR"/*) ;;
             *) echo "::error::uv found Python outside its install directory"
