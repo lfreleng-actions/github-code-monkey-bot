@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
 import unittest
+import unittest.mock
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -82,6 +84,21 @@ class RunGhTest(unittest.TestCase):
         sleep.assert_not_called()
         self.assertTrue(github.is_absent(caught.exception))
 
+    def test_read_with_a_status_ignores_timeout_wording(self) -> None:
+        """A 422 read whose reply mentions a timeout is not retried."""
+        reply = completed(
+            stderr="gh: Validation Failed: query timed out (HTTP 422)", code=1
+        )
+        with (
+            patch.object(github.subprocess, "run", return_value=reply) as run,
+            patch.object(github.time, "sleep") as sleep,
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.run_gh(["api", "repos/o/r"])
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+        self.assertEqual(caught.exception.status, 422)
+
     def test_bare_server_error_is_retried(self) -> None:
         """A 502 without a JSON message is as transient as one with it."""
         replies = [completed(stderr="gh: HTTP 502", code=1), completed("ok")]
@@ -127,6 +144,306 @@ class RunGhTest(unittest.TestCase):
             github.run_gh(["api", "repos/o/r"])
 
 
+class WriteWithRecoveryTest(unittest.TestCase):
+    """A write is retried only after a look shows it did not land."""
+
+    BAD_GATEWAY = "gh: Bad Gateway (HTTP 502)"
+
+    def fake(self, outcomes: list[Any]) -> tuple[Any, list[int]]:
+        """A write that raises or returns each outcome in turn, counting calls."""
+        calls: list[int] = []
+
+        def write() -> Any:
+            calls.append(1)
+            outcome = outcomes[len(calls) - 1]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        return write, calls
+
+    def test_success_needs_no_look(self) -> None:
+        """A write that answers is returned; landed is never consulted."""
+        write, calls = self.fake([{"oid": "a"}])
+        landed = unittest.mock.Mock(return_value=None)
+        with patch.object(github.time, "sleep") as sleep:
+            self.assertEqual(
+                github.write_with_recovery(write, landed, repeat_safe=True),
+                {"oid": "a"},
+            )
+        self.assertEqual(len(calls), 1)
+        landed.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_landed_write_is_not_repeated(self) -> None:
+        """A 502 on a write that took effect returns the read-back result."""
+        write, calls = self.fake([github.GitHubError(self.BAD_GATEWAY)])
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            got = github.write_with_recovery(
+                write, lambda: {"oid": "b"}, label="commit", repeat_safe=True
+            )
+        self.assertEqual(got, {"oid": "b"})
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+        self.assertIn("commit: landed despite", err.getvalue())
+
+    def test_write_that_did_not_land_is_retried(self) -> None:
+        """Not landed: wait, write again, and return its answer."""
+        write, calls = self.fake([github.GitHubError(self.BAD_GATEWAY), "ok"])
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            self.assertEqual(
+                github.write_with_recovery(write, lambda: None, repeat_safe=True), "ok"
+            )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [github.WRITE_RETRY_DELAYS_SECONDS[0]],
+        )
+        self.assertIn("attempt 1 of 4 did not land", err.getvalue())
+
+    def test_last_failure_is_checked_then_raised(self) -> None:
+        """Every attempt fails and none landed: the last error surfaces."""
+        failures = [
+            github.GitHubError(f"gh: Unavailable {n} (HTTP 503)")
+            for n in range(github.WRITE_ATTEMPTS)
+        ]
+        write, calls = self.fake(failures)
+        landed = unittest.mock.Mock(return_value=None)
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            patch("sys.stderr", new_callable=io.StringIO),
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.write_with_recovery(write, landed, repeat_safe=True)
+        self.assertIs(caught.exception, failures[-1])
+        self.assertEqual(len(calls), github.WRITE_ATTEMPTS)
+        self.assertEqual(landed.call_count, github.WRITE_ATTEMPTS)
+        self.assertEqual(
+            tuple(call.args[0] for call in sleep.call_args_list),
+            github.WRITE_RETRY_DELAYS_SECONDS,
+        )
+
+    def test_last_attempt_that_landed_is_returned(self) -> None:
+        """The final failure may have landed too, so it is looked at."""
+        failures = [github.GitHubError(self.BAD_GATEWAY)] * github.WRITE_ATTEMPTS
+        write, _ = self.fake(failures)
+        looks = iter([None] * (github.WRITE_ATTEMPTS - 1) + ["landed"])
+        with (
+            patch.object(github.time, "sleep"),
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            self.assertEqual(
+                github.write_with_recovery(
+                    write, lambda: next(looks), repeat_safe=True
+                ),
+                "landed",
+            )
+
+    def test_only_none_means_not_landed(self) -> None:
+        """An empty read-back result is a result, not a miss."""
+
+        def empty() -> dict[str, Any]:
+            return {}
+
+        write, calls = self.fake([github.GitHubError(self.BAD_GATEWAY)])
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            self.assertEqual(
+                github.write_with_recovery(write, empty, repeat_safe=True), {}
+            )
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
+    def test_failed_look_is_never_read_as_not_landed(self) -> None:
+        """When landed cannot tell, the write fails with both errors."""
+        write, calls = self.fake([github.GitHubError(self.BAD_GATEWAY)])
+
+        def landed() -> Any:
+            raise github.GitHubError("gh: Server Error (HTTP 500)")
+
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.write_with_recovery(write, landed, label="review", repeat_safe=True)
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+        message = str(caught.exception)
+        self.assertIn("could not tell whether the review landed", message)
+        self.assertIn("HTTP 502", message)
+        self.assertIn("HTTP 500", message)
+        self.assertEqual(caught.exception.status, 502)
+
+    def test_timeout_keeps_no_status_when_the_look_fails(self) -> None:
+        """A look's 404 must not make a timed-out write read as absent."""
+        timeout = github.GitHubError(
+            f"gh timed out after {github.TIMEOUT_SECONDS} seconds"
+        )
+        write, _ = self.fake([timeout])
+
+        def landed() -> Any:
+            raise github.GitHubError("gh: Not Found (HTTP 404)")
+
+        with (
+            patch.object(github.time, "sleep"),
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.write_with_recovery(write, landed, repeat_safe=True)
+        self.assertIsNone(caught.exception.status)
+        self.assertFalse(github.is_absent(caught.exception))
+        self.assertIn("HTTP 404", str(caught.exception))
+
+    def test_non_transient_failure_raises_without_a_look(self) -> None:
+        """A 422 is an answer: no look, no retry."""
+        failure = github.GitHubError("gh: Validation Failed (HTTP 422)")
+        write, calls = self.fake([failure])
+        landed = unittest.mock.Mock(return_value="x")
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.write_with_recovery(write, landed, repeat_safe=True)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(len(calls), 1)
+        landed.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_status_outranks_timeout_wording(self) -> None:
+        """A 422 whose detail says "timed out" is rejected, not retried."""
+        rejected = github.GitHubError(
+            "gh: Validation Failed: the check timed out (HTTP 422)"
+        )
+        write, calls = self.fake([rejected])
+        landed = unittest.mock.Mock(return_value="x")
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.write_with_recovery(write, landed, repeat_safe=True)
+        self.assertIs(caught.exception, rejected)
+        self.assertEqual(len(calls), 1)
+        landed.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_timeout_counts_as_transient(self) -> None:
+        """A gh timeout is as ambiguous as a 5xx."""
+        timeout = github.GitHubError(
+            f"gh timed out after {github.TIMEOUT_SECONDS} seconds"
+        )
+        write, calls = self.fake([timeout, "ok"])
+        with (
+            patch.object(github.time, "sleep"),
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            self.assertEqual(
+                github.write_with_recovery(write, lambda: None, repeat_safe=True), "ok"
+            )
+        self.assertEqual(len(calls), 2)
+
+    def test_attempts_outside_the_budget_are_refused(self) -> None:
+        """Zero tries, or more than the delays allow, is a caller error."""
+        for attempts in (0, github.WRITE_ATTEMPTS + 1):
+            with self.assertRaises(ValueError):
+                github.write_with_recovery(
+                    lambda: "x", lambda: None, attempts=attempts, repeat_safe=True
+                )
+
+    def test_fewer_attempts_shorten_the_retries(self) -> None:
+        """attempts=1 checks once and does not write again."""
+        write, calls = self.fake([github.GitHubError(self.BAD_GATEWAY)])
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            self.assertRaises(github.GitHubError),
+        ):
+            github.write_with_recovery(
+                write, lambda: None, attempts=1, repeat_safe=True
+            )
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
+    def test_repeat_safe_is_required(self) -> None:
+        """Every caller states whether its write may be sent again."""
+        call: Any = github.write_with_recovery
+        with self.assertRaises(TypeError):
+            call(lambda: "x", lambda: None)
+
+    def test_marker_only_write_is_looked_at_but_not_repeated(self) -> None:
+        """Not repeat-safe: a 502 that landed is recovered by the look."""
+        write, calls = self.fake([github.GitHubError(self.BAD_GATEWAY)])
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            got = github.write_with_recovery(write, lambda: "review", repeat_safe=False)
+        self.assertEqual(got, "review")
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
+    def test_marker_only_write_that_did_not_land_is_not_sent_again(self) -> None:
+        """Not repeat-safe and not found: fail, since it may land late."""
+        failure = github.GitHubError(
+            f"gh timed out after {github.TIMEOUT_SECONDS} seconds"
+        )
+        write, calls = self.fake([failure, "never"])
+        landed = unittest.mock.Mock(return_value=None)
+        with (
+            patch.object(github.time, "sleep") as sleep,
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.write_with_recovery(write, landed, repeat_safe=False)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(len(calls), 1)
+        landed.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_marker_only_write_refuses_more_attempts(self) -> None:
+        """Asking to repeat a write that is not repeat-safe is a caller error."""
+        with self.assertRaises(ValueError):
+            github.write_with_recovery(
+                lambda: "x", lambda: None, repeat_safe=False, attempts=2
+            )
+
+    def test_log_cannot_carry_a_workflow_command(self) -> None:
+        """GitHub's error text is escaped before it reaches the log."""
+        write, _ = self.fake(
+            [github.GitHubError("::error::forged\ngh: Bad Gateway (HTTP 502)")]
+        )
+        with (
+            patch.object(github.time, "sleep"),
+            patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            github.write_with_recovery(write, lambda: "ok", repeat_safe=True)
+        self.assertNotIn("::error::", err.getvalue())
+
+    def test_api_write_is_still_sent_once_per_attempt(self) -> None:
+        """Through the real wrapper: run_gh adds no retries of its own."""
+        replies = [completed(stderr=self.BAD_GATEWAY, code=1), completed('{"id": 7}')]
+        with (
+            patch.object(github.subprocess, "run", side_effect=replies) as run,
+            patch.object(github.time, "sleep") as sleep,
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            got = github.write_with_recovery(
+                lambda: github.api_write("POST", "repos/o/r/git/refs", {"ref": "x"}),
+                lambda: None,
+                repeat_safe=True,
+            )
+        self.assertEqual(got, {"id": 7})
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [github.WRITE_RETRY_DELAYS_SECONDS[0]],
+        )
+
+
 class GitHubErrorTest(unittest.TestCase):
     """``GitHubError`` reads the status gh prints."""
 
@@ -156,6 +473,78 @@ class GitHubErrorTest(unittest.TestCase):
         """A caller that knows the status passes it rather than a token."""
         failure = github.GitHubError("gh exit 1 (HTTP 503), then gave up", 503)
         self.assertEqual(failure.status, 503)
+
+
+VALIDATION_REPLY = json.dumps(
+    {
+        "message": "Validation Failed",
+        "errors": [
+            {"resource": "PullRequest", "field": "head", "code": "invalid"},
+            {"message": "No commits between main and topic"},
+        ],
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "422",
+    }
+)
+
+
+class ErrorDetailTest(unittest.TestCase):
+    """A failed call keeps the detail GitHub returned with it."""
+
+    def test_validation_errors_reach_the_message(self) -> None:
+        """The ``errors`` entries follow gh's line; the status survives."""
+        reply = completed(
+            stdout=VALIDATION_REPLY,
+            stderr="gh: Validation Failed (HTTP 422)",
+            code=1,
+        )
+        with (
+            patch.object(github.subprocess, "run", return_value=reply),
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.run_gh(["api", "--method", "POST", "repos/o/r/pulls"], input="{}")
+        message = str(caught.exception)
+        self.assertTrue(message.startswith("gh: Validation Failed (HTTP 422)"))
+        self.assertIn("PullRequest.head invalid", message)
+        self.assertIn("No commits between main and topic", message)
+        self.assertEqual(caught.exception.status, 422)
+
+    def test_detail_is_one_bounded_line(self) -> None:
+        """Many or long entries collapse to one line within the cap."""
+        noisy = json.dumps(
+            {"errors": [{"message": "x\n" * 400}, *([{"code": "y"}] * 50)]}
+        )
+        detail = github.error_detail(noisy)
+        self.assertNotIn("\n", detail)
+        self.assertLessEqual(len(detail), github.MAX_ERROR_DETAIL)
+
+    def test_reply_text_cannot_supply_the_status(self) -> None:
+        """A status inside the reply never overrides the one gh printed."""
+        forged = json.dumps({"errors": [{"message": "gone (HTTP 404)"}]})
+        reply = completed(stdout=forged, stderr="gh: Bad Gateway (HTTP 502)", code=1)
+        with (
+            patch.object(github.subprocess, "run", return_value=reply),
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.run_gh(["api", "--method", "POST", "repos/o/r/x"], input="{}")
+        self.assertEqual(caught.exception.status, 502)
+        self.assertIn("gone", str(caught.exception))
+
+    def test_replies_without_entries_add_nothing(self) -> None:
+        """No ``errors`` array, or a body that is not JSON, adds no detail."""
+        for body in ("", "<xml/>", '{"message": "Not Found"}', '{"errors": "x"}'):
+            with self.subTest(body=body):
+                self.assertEqual(github.error_detail(body), "")
+        reply = completed(
+            stdout='{"message": "Not Found"}', stderr="gh: Not Found (HTTP 404)", code=1
+        )
+        with (
+            patch.object(github.subprocess, "run", return_value=reply),
+            self.assertRaises(github.GitHubError) as caught,
+        ):
+            github.run_gh(["api", "repos/o/r"])
+        self.assertEqual(str(caught.exception), "gh: Not Found (HTTP 404)")
+        self.assertEqual(caught.exception.status, 404)
 
 
 class RepliesTest(unittest.TestCase):
