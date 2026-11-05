@@ -58,9 +58,12 @@ jobs:
       harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length
       harden_runner_allowlist: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
-      assets_repository: >-
-        ${{ github.event.pull_request.head.repo.full_name }}
-      assets_ref: "${{ github.event.pull_request.head.sha }}"
+      # The merge commit, which the local uses: above reads the
+      # workflow from. The pull request head would pair this workflow
+      # with scripts from another commit, and fail whenever main has
+      # changed the interface between them since the branch was cut.
+      assets_repository: "${{ github.repository }}"
+      assets_ref: "${{ github.sha }}"
 
   # A full dry-run: the agent works the selected issues and the
   # publisher verifies the result without writing anything.

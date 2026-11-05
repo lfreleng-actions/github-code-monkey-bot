@@ -149,12 +149,20 @@ The calling workflow supplies both the App key and the
 `assets_repository`/`assets_ref` coordinate that the trusted jobs
 execute. The design trusts the caller with both: a caller able to
 point the assets at hostile code could as well edit its own workflow
-to run that code with the same key. Both callers here pin the assets
-to their own `github.sha`, and `issues-triage` makes the same
+to run that code with the same key. Every caller here pins the assets
+to its own `github.sha`, and `issues-triage` makes the same
 assumption.
 
 The pull request plumbing job executes the pull request's own
-scripts with the native token alone. GitHub gives a fork's
+scripts with the native token alone. It proves the trusted jobs'
+block-mode egress, that the invocation namespace keeps two calls'
+artifacts apart, and that the workflow and its scripts work as one
+commit. A local `uses:` reads the workflow from the merge commit
+(`github.sha`), so the job checks the assets out from that commit in
+the base repository too. Taking them from the pull request head
+would pair the workflow and the scripts from different commits, and
+fail every branch cut before `main` changed the interface between
+them. GitHub gives a fork's
 `pull_request` run a `GITHUB_TOKEN` without write scopes and no
 secrets, and here that token can read nothing beyond public issues and contents,
 expires with the job, and runs under block-mode egress. That is the
