@@ -809,6 +809,18 @@ class ParseMaxPullRequestsTest(unittest.TestCase):
                 inputs.parse_max_pull_requests(bad)
 
 
+class ParseMaxRoundsTest(unittest.TestCase):
+    """``parse_max_rounds`` accepts positive integers only."""
+
+    def test_positive(self) -> None:
+        self.assertEqual(inputs.parse_max_rounds(" 12 "), 12)
+
+    def test_rejects_invalid(self) -> None:
+        for bad in ("0", "-1", "ten", "", "1.5"):
+            with self.subTest(bad=bad), self.assertRaises(reads.SelectionError):
+                inputs.parse_max_rounds(bad)
+
+
 class LoadExclusionsTest(unittest.TestCase):
     """``load_exclusions`` prefers the override and parses the file."""
 

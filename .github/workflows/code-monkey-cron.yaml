@@ -54,6 +54,10 @@ on:
         description: 'Minutes each agent may run'
         type: string
         default: '180'
+      max_rounds:
+        description: 'Revision rounds a pull request may receive (1-50)'
+        type: string
+        default: '10'
       max_concurrent_agents:
         description: 'Agents at once (1-30)'
         type: string
@@ -202,6 +206,7 @@ jobs:
       categories: "${{ inputs.categories || 'all' }}"
       max_pull_requests: "${{ inputs.max_pull_requests || '10' }}"
       max_runtime_minutes: "${{ inputs.max_runtime_minutes || '180' }}"
+      max_rounds: "${{ inputs.max_rounds || '10' }}"
       max_concurrent_agents: "${{ inputs.max_concurrent_agents || '10' }}"
       allow_subagents: >-
         ${{ github.event_name != 'workflow_dispatch'

@@ -317,8 +317,16 @@ class BuildEntryTest(RevisionCase):
     def test_round_cap_and_safety(self) -> None:
         """The cap, a foreign pull request and an unusable repository all skip."""
         self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")
-        with self.assertRaisesRegex(select.Skip, "round cap"):
+        with self.assertRaisesRegex(select.Skip, "round cap of 10"):
             self.build(explicit=True)
+        # An operator may raise the cap for a run; the entry records it.
+        raised = select.Inputs("org", BOT, FORK_ORGS, max_rounds=12)
+        entry = select.build_entry(raised, "alpha", 41, explicit=True)
+        self.assertEqual((entry["round"], entry["max_rounds"]), (11, 12))
+        self.rounds = (12, [], "t", "proposed")
+        with self.assertRaisesRegex(select.Skip, "round cap of 12"):
+            select.build_entry(raised, "alpha", 41, explicit=True)
+        self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")
         self.rounds = (3, [], "t", "proposed")
         self.pull = None
         with self.assertRaisesRegex(select.Skip, "not an open pull request"):
@@ -441,6 +449,59 @@ class ScanTest(RevisionCase):
         entries = [entry for _, build in builders if (entry := build()) is not None]
         self.assertEqual(calls, [40, 41, 9])
         self.assertEqual([e["pull_request"]["number"] for e in entries], [40, 41])
+
+    def test_scan_applies_the_configured_cap(self) -> None:
+        """A scan's builds use the run's cap, not the default."""
+        hits = [
+            {
+                "repository": "org/alpha",
+                "number": 41,
+                "created_at": "2026-10-02T00:00:00Z",
+            }
+        ]
+        self.threads = [thread()]
+        self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")
+        skipped = {"revision": 0}
+        named: list[dict[str, str]] = []
+        with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
+            builders = select.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped=skipped,
+                skipped_issues=named,
+                max_rounds=12,
+            )
+            entry = builders[0][1]()
+            self.assertIsNotNone(entry)
+            assert entry is not None
+            self.assertEqual((entry["round"], entry["max_rounds"]), (11, 12))
+            # The default cap stops the same pull request.
+            builders = select.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped=skipped,
+                skipped_issues=named,
+            )
+            self.assertIsNone(builders[0][1]())
+        self.assertIn("round cap of 10", named[-1]["reason"])
+        # Rounds hands its cap to the scan.
+        rounds = select.Rounds(
+            "org",
+            bot=BOT,
+            fork_orgs=FORK_ORGS,
+            enabled=True,
+            explicit=False,
+            skips=(skipped, named),
+            max_rounds=12,
+        )
+        with (
+            patch.object(revisions, "search_bot_pull_requests", return_value=hits),
+            patch.object(select, "scan", wraps=select.scan) as scanned,
+        ):
+            rounds.scan()
+        self.assertEqual(scanned.call_args.kwargs["max_rounds"], 12)
 
     def test_scan_ranks_by_the_issues_priority_then_age(self) -> None:
         """An urgent issue's round comes before an older low one's (issue #19)."""

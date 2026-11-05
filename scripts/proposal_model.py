@@ -68,6 +68,8 @@ class Check:
     pull_number: int = 0
     pull_request_url: str = ""
     round: int = 0
+    # The round cap the selection ran with (0: the default).
+    max_rounds: int = 0
     threads: list[dict[str, Any]] = field(
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
@@ -124,6 +126,7 @@ class Check:
             check.pull_number = int(pull["number"])
             check.pull_request_url = str(pull["url"])
             check.round = int(entry["round"])
+            check.max_rounds = int(entry.get("max_rounds") or 0)
             check.conflicted = pull.get("mergeable") is False
             check.threads = [
                 {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
@@ -178,6 +181,7 @@ class Check:
             "pull_number": self.pull_number,
             "pull_request_url": self.pull_request_url,
             "round": self.round,
+            "max_rounds": self.max_rounds,
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,

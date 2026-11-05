@@ -384,6 +384,21 @@ class CommentBodyTest(unittest.TestCase):
         text = comments.comment_body(capped, "") or ""
         self.assertIn("round cap of 10", text)
         self.assertIn("a human must take over", text)
+        # A selection run with a higher cap moves the notice with it.
+        raised = result_json(
+            round=10,
+            max_rounds=12,
+            round_summary="s",
+            review=review_record("findings", assessment="changes"),
+        )
+        self.assertNotIn("round cap", comments.comment_body(raised, "") or "")
+        last = result_json(
+            round=12,
+            max_rounds=12,
+            round_summary="s",
+            review=review_record("findings", assessment="changes"),
+        )
+        self.assertIn("round cap of 12", comments.comment_body(last, "") or "")
 
     def test_revision_round_comment_names_the_failing_checks(self) -> None:
         """A round lists the failing checks it set out to fix, made safe."""

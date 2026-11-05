@@ -47,6 +47,12 @@ on:
         description: 'Wall-clock budget for each agent session'
         type: string
         default: '180'
+      max_rounds:
+        description: >-
+          Revision rounds a pull request may receive before a human
+          must take over
+        type: string
+        default: '10'
       max_concurrent_agents:
         description: 'Agents running at once (1-30)'
         type: string
@@ -414,6 +420,7 @@ jobs:
           MODE: "${{ inputs.mode }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
           MAX_RUNTIME: "${{ inputs.max_runtime_minutes }}"
+          MAX_ROUNDS: "${{ inputs.max_rounds }}"
           MAX_AGENTS: "${{ inputs.max_concurrent_agents }}"
           MODEL: "${{ inputs.model }}"
           # Already split, checked and comma-joined, as the App token
@@ -446,6 +453,8 @@ jobs:
             exit 1; }
           [[ "$MAX_RUNTIME" =~ ^[1-9][0-9]*$ ]] && [ "$MAX_RUNTIME" -le 330 ] ||
             { echo '::error::max_runtime_minutes must be 1-330'; exit 1; }
+          [[ "$MAX_ROUNDS" =~ ^[1-9][0-9]*$ ]] && [ "$MAX_ROUNDS" -le 50 ] ||
+            { echo '::error::max_rounds must be 1-50'; exit 1; }
           [[ "$MAX_AGENTS" =~ ^[1-9][0-9]*$ ]] && [ "$MAX_AGENTS" -le 30 ] || {
             echo '::error::max_concurrent_agents must be 1-30'; exit 1; }
           [[ "$MODEL" =~ ^[a-z0-9.-]+$ ]] || {
@@ -745,6 +754,7 @@ jobs:
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
+          MAX_ROUNDS: "${{ inputs.max_rounds }}"
           CATEGORIES: "${{ inputs.categories }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -778,6 +788,7 @@ jobs:
             --antagonistic-reviewers \
             monkey-assets/config/antagonistic-reviewers.txt \
             --max-pull-requests "$MAX_PRS" \
+            --max-rounds "$MAX_ROUNDS" \
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \

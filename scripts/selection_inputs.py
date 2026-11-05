@@ -67,6 +67,13 @@ def load_reviewers(file: Path | None) -> frozenset[str]:
     return frozenset(logins)
 
 
+def parse_max_rounds(text: str) -> int:
+    """Accept a positive integer: the revision rounds a pull request may get."""
+    if not re.fullmatch(r"[1-9]\d*", text.strip()):
+        raise SelectionError(f"max_rounds must be a positive integer, got {text!r}")
+    return int(text)
+
+
 def parse_max_pull_requests(text: str) -> int:
     """Accept a non-negative integer; zero lifts the cap."""
     if not re.fullmatch(r"\d+", text.strip()):

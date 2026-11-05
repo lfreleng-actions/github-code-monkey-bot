@@ -74,7 +74,8 @@ a failure notice instead. Disabling the workflow in the Actions UI
 stops it. Organisation
 administrators can dispatch it by hand, live unless they tick
 `dry_run`, and without a Slack post, with a model, a mode
-(`select`, `branches`, `pull-requests`), issue and runtime caps,
+(`select`, `branches`, `pull-requests`), issue, runtime and round
+caps (`max_rounds` lifts the ten-round limit for one run),
 a category list, and either a repository list to scan or a list of
 issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
 skips the scan and the triage filters. A list of the bot's open pull
