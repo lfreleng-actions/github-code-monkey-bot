@@ -10,6 +10,8 @@ report reads every ``result.json`` field as hostile (docs/DESIGN.md
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, cast
 
 import proposal_policy as policy
@@ -191,3 +193,119 @@ def review_after_merge(result: dict[str, Any]) -> str:
         return " Copilot's review of it raised no findings."
     body = sentence[2:]
     return f" {body[:1].upper()}{body[1:]}"
+
+
+CHECK_STATES = ("passing", "failing", "running", "none", "unknown")
+CHECK_FIELDS = frozenset(
+    {"state", "commit_id", "failing", "dropped", "unsettled", "read_at", "reason"}
+)
+# Failing checks the comment names; the record and the report keep the rest.
+MAX_NAMED_CHECKS = 10
+# Hex digits of the failing checks' hash in the comment marker.
+CHECKS_HASH_LENGTH = 12
+
+
+def published_commit(result: dict[str, Any]) -> str | None:
+    """The last commit the result records as published, or None."""
+    commits = result.get("commits")
+    if not isinstance(commits, list) or not commits:
+        return None
+    last = cast("list[Any]", commits)[-1]
+    return last if isinstance(last, str) and last else None
+
+
+def checks_state(result: dict[str, Any]) -> str | None:
+    """The head's checks as the result records them, or None when none were awaited.
+
+    Bound to the published head as the review is: a record of another
+    head, of an unrecognised shape, or missing from a result whose
+    review was awaited, as an older result's is, reads as ``unknown``.
+    """
+    record = result.get("checks")
+    if record is None:
+        return None if review_verdict(result) is None else "unknown"
+    if not isinstance(record, dict):
+        return "unknown"
+    data = cast("dict[str, Any]", record)
+    if frozenset(data) != CHECK_FIELDS or data.get("state") not in CHECK_STATES:
+        return "unknown"
+    head = published_commit(result)
+    if head is None or data.get("commit_id") != head:
+        return "unknown"
+    return str(data["state"])
+
+
+def failing_check_names(result: dict[str, Any]) -> list[str]:
+    """The failing check names the record keeps, unescaped; empty when unread."""
+    if checks_state(result) not in ("failing", "running"):
+        return []
+    entries = cast("dict[str, Any]", result["checks"]).get("failing")
+    if not isinstance(entries, list):
+        return []
+    names: list[str] = []
+    for entry in cast("list[Any]", entries):
+        name = (
+            cast("dict[str, Any]", entry).get("name")
+            if isinstance(entry, dict)
+            else None
+        )
+        if isinstance(name, str) and name.strip():
+            names.append(name)
+    return names
+
+
+def checks_token(result: dict[str, Any]) -> str | None:
+    """The checks state as one marker word, or None when no read was recorded.
+
+    As ``merge_token`` does for the probe, a result without the record
+    adds nothing, so markers posted before it existed still match.
+    When the record names failing checks, the word carries a short
+    hash of them, ``<state>/<hex>``: a retry whose state held but
+    whose failures changed is a new outcome and posts again.
+    """
+    if "checks" not in result:
+        return None
+    state = checks_state(result)
+    names = failing_check_names(result)
+    if not names:
+        return state
+    encoded = json.dumps(sorted(names)).encode("utf-8")
+    return f"{state}/{hashlib.sha256(encoded).hexdigest()[:CHECKS_HASH_LENGTH]}"
+
+
+def checks_failed(result: dict[str, Any]) -> bool:
+    """Whether the record shows a failing check on the head, settled or not."""
+    state = checks_state(result)
+    return state == "failing" or (
+        state == "running" and bool(failing_check_names(result))
+    )
+
+
+def failing_checks_named(result: dict[str, Any]) -> str:
+    """The failing checks as one comment-safe list, bounded, or empty."""
+    names = failing_check_names(result)
+    text = policy.failing_checks_text(list(names[:MAX_NAMED_CHECKS]))
+    more = len(names) - MAX_NAMED_CHECKS
+    return f"{text} and {more} more" if text and more > 0 else text
+
+
+def checks_sentence(result: dict[str, Any]) -> str:
+    """What the comment says of the head's CI: failing checks, or nothing.
+
+    The publish job reports CI and gates on nothing but the review, so
+    a passing, absent or unread result adds no words.
+    """
+    state = checks_state(result)
+    named = failing_checks_named(result)
+    if state == "failing":
+        return (
+            f" Checks failed on its head: {named}."
+            if named
+            else " Checks failed on its head."
+        )
+    if state == "running" and named:
+        return (
+            f" Checks were still running on its head when the wait ended, and"
+            f" some had failed: {named}."
+        )
+    return ""

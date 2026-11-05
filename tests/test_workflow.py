@@ -1207,6 +1207,14 @@ class ReviewGateContracts(ReusableWorkflowCase):
             "github.event_name != 'workflow_dispatch' || inputs.request_review",
         )
 
+    def test_wait_reads_the_checks_with_the_native_token_alone(self) -> None:
+        """The checks share the wait's step and token; no secret reaches it (#110)."""
+        step = self.step("publish", "review")
+        self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
+        self.assertEqual(set(step["env"]), {"GH_TOKEN"})
+        self.assertNotIn("secrets.", dumped(step))
+        self.assertNotIn("continue-on-error", step)
+
     def test_probe_reads_mergeability_after_the_review_gate(self) -> None:
         """The probe follows the wait, precedes the comment and only reads (#104)."""
         step = self.step("publish", "merge-probe")
@@ -1507,9 +1515,9 @@ class PublishJobContracts(ReusableWorkflowCase):
         for step in (push, opened, comment):
             self.assertNotIn("github.token", dumped(step))
         # The native token reads alone in the job: this run's artifacts,
-        # whether a public fork exists, and the public target's reviews
-        # and mergeability; the job grants it actions: read and nothing
-        # more.
+        # whether a public fork exists, and the public target's reviews,
+        # check runs and mergeability; the job grants it actions: read
+        # and nothing more.
         users = [
             step.get("name")
             for step in self.steps("publish")
@@ -1692,6 +1700,44 @@ class MintProvenanceContracts(ReusableWorkflowCase):
                 )
                 self.assertEqual(owner, expected)
 
+    def test_no_mint_gains_a_permission(self) -> None:
+        """Reading the head's checks adds no App permission anywhere (#110)."""
+        granted = {
+            str(step["id"]): {
+                key: value
+                for key, value in cast(dict[str, Any], step["with"]).items()
+                if key.startswith("permission-")
+            }
+            for _, step in self.mints()
+        }
+        fork = {
+            "permission-contents": "write",
+            "permission-metadata": "read",
+            "permission-workflows": "write",
+        }
+        self.assertEqual(
+            granted,
+            {
+                "app-token": {
+                    "permission-issues": "read",
+                    "permission-metadata": "read",
+                    "permission-contents": "read",
+                    "permission-pull-requests": "read",
+                    "permission-checks": "read",
+                },
+                "fork-token": fork,
+                "fork-create-token": {**fork, "permission-administration": "write"},
+                "pr-token": {
+                    "permission-pull-requests": "write",
+                    "permission-metadata": "read",
+                },
+                "comment-token": {
+                    "permission-issues": "write",
+                    "permission-metadata": "read",
+                },
+            },
+        )
+
     def test_no_mint_requests_actions(self) -> None:
         """No App token reads job logs: no mint requests Actions at any level."""
         for job, step in self.mints():
@@ -1871,7 +1917,12 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         declared = cast(dict[str, Any], self.triggers["workflow_call"]["outputs"])
         self.assertEqual(
             set(declared),
-            {"pull_requests", "pull_request_count", "unmergeable_pull_requests"},
+            {
+                "pull_requests",
+                "pull_request_count",
+                "unmergeable_pull_requests",
+                "failing_check_pull_requests",
+            },
         )
         for name, body in declared.items():
             with self.subTest(output=name):
@@ -2564,7 +2615,11 @@ class CronSlackContracts(WorkflowCase):
         )
 
     def digest(
-        self, pulls: str, result: str = "success", unmergeable: str | None = None
+        self,
+        pulls: str,
+        result: str = "success",
+        unmergeable: str | None = None,
+        failing: str | None = None,
     ) -> dict[str, str]:
         """Run the digest step's script and return what it wrote to its outputs."""
         step = self.step("notify", "digest")
@@ -2586,6 +2641,8 @@ class CronSlackContracts(WorkflowCase):
             }
             if unmergeable is not None:
                 env["UNMERGEABLE"] = unmergeable
+            if failing is not None:
+                env["FAILING_CHECKS"] = failing
             subprocess.run(
                 ["bash", "-c", str(step["run"])],
                 env=env,
@@ -2659,6 +2716,37 @@ class CronSlackContracts(WorkflowCase):
         self.assertTrue(alone["body"].startswith("_Conflicting"))
         broken = self.digest(json.dumps([ready]), unmergeable="not json")
         self.assertEqual(broken["body"], f"<{ready}>")
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_digest_counts_pull_requests_with_failing_checks(self) -> None:
+        """A count of the run's own links with red checks, never a stray (#110)."""
+        step = self.step("notify", "digest")
+        self.assert_expression(
+            step["env"]["FAILING_CHECKS"],
+            "needs.code-monkey.outputs.failing_check_pull_requests",
+        )
+        one, two = PULL_URL.format("a", 1), PULL_URL.format("b", 2)
+        stray = PULL_URL.format("c", 3)
+        out = self.digest(
+            json.dumps([one, two]),
+            failing=json.dumps([two.upper().replace("HTTPS", "https"), stray]),
+        )
+        lines = out["body"].split("\\n")
+        self.assertEqual(lines[:2], [f"<{one}>", f"<{two}>"])
+        self.assertEqual(
+            lines[2:],
+            ["", "_1 pull request published with failing checks; see the run report._"],
+        )
+        self.assertNotIn(stray, out["body"])
+        both = self.digest(json.dumps([one, two]), failing=json.dumps([one, two]))
+        self.assertIn("_2 pull requests published with failing checks;", both["body"])
+        for failing in (None, "[]", "not json"):
+            with self.subTest(failing=failing):
+                quiet = self.digest(json.dumps([one]), failing=failing)
+                self.assertEqual(quiet["body"], f"<{one}>")
+        late = self.digest(json.dumps([one]), "failure", failing=json.dumps([one]))
+        self.assertTrue(late["body"].endswith("see the workflow run._"))
+        self.assertIn("failing checks; see the run report._", late["body"])
 
 
 # Free-length dispatch inputs. GitHub refuses a concurrency group name

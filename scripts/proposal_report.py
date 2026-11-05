@@ -127,6 +127,43 @@ def conflict_lines(results: list[dict[str, Any]]) -> list[str]:
     return [*lines, ""]
 
 
+CHECK_COLUMNS = (*review_outcome.CHECK_STATES, "not read")
+# Failing check names a report line lists; the record keeps the rest.
+MAX_LISTED_CHECKS = 10
+
+
+def failing_check_lines(results: list[dict[str, Any]]) -> list[str]:
+    """The pull requests published with failing checks, each with the names.
+
+    A head whose wait ended with some checks still running counts when
+    it already had failures, as the comment and the round cap treat it.
+    Check names come from the code under review: each is bounded and
+    escaped as the comment's are, then the line is one cell's worth of
+    text, as every result field is.
+    """
+    failing = [item for item in results if review_outcome.checks_failed(item)]
+    if not failing:
+        return []
+    lines = [
+        "Pull requests published with failing checks on their head: the "
+        "publish job reports CI and does not gate on it, so a revision "
+        "round or a human must fix them.",
+        "",
+    ]
+    for item in failing:
+        label = cell(f"{item.get('repository')}#{item.get('issue')}")
+        url = cell(item.get("pull_request_url") or "—")
+        names = review_outcome.failing_check_names(item)
+        listed = policy.failing_checks_text(list(names[:MAX_LISTED_CHECKS]))
+        if len(names) > MAX_LISTED_CHECKS:
+            listed += f" and {len(names) - MAX_LISTED_CHECKS} more"
+        detail = f": {cell(listed)}" if listed else ""
+        if comments.capped(item):
+            detail += "; round cap reached, a human must take over"
+        lines.append(f"- {label}: {url}{detail}")
+    return [*lines, ""]
+
+
 def attempt_of(item: dict[str, Any]) -> int:
     """The run attempt a result came from; results without one count as 0."""
     value = item.get("run_attempt")
@@ -192,9 +229,11 @@ def write_outputs(
         return {}
     pulls, excluded = outputs.pull_request_urls(results, org)
     unmergeable = outputs.unmergeable_urls(results, org)
+    failing = outputs.failing_check_urls(results, org)
     extra: dict[str, Any] = {
         "pull_requests": pulls,
         "unmergeable_pull_requests": unmergeable,
+        "failing_check_pull_requests": failing,
         "excluded_pull_request_urls": excluded,
     }
     if excluded:
@@ -215,6 +254,7 @@ def write_outputs(
         with github_output.open("a", encoding="utf-8") as handle:
             handle.write(outputs.output_lines(pulls))
             handle.write(outputs.unmergeable_lines(unmergeable))
+            handle.write(outputs.failing_check_lines(failing))
     return extra
 
 
@@ -230,11 +270,13 @@ def run_report(args: argparse.Namespace) -> None:
     totals: dict[str, int] = dict.fromkeys(policy.VERDICTS, 0)
     review_totals: dict[str, int] = dict.fromkeys(REVIEW_COLUMNS, 0)
     merge_totals: dict[str, int] = dict.fromkeys(MERGE_COLUMNS, 0)
+    check_totals: dict[str, int] = dict.fromkeys(CHECK_COLUMNS, 0)
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
         review_totals[review_outcome.review_verdict(item) or "none"] += 1
         merge_totals[review_outcome.merge_token(item) or "none"] += 1
+        check_totals[review_outcome.checks_state(item) or "not read"] += 1
         lines.append(report_row(item))
     spend = total_spend(every, results)
     for problem in unreadable:
@@ -259,7 +301,12 @@ def run_report(args: argparse.Namespace) -> None:
         )
         + ".",
         "",
+        "Head checks: "
+        + ", ".join(f"{name} {check_totals[name]}" for name in CHECK_COLUMNS)
+        + ".",
+        "",
         *conflict_lines(results),
+        *failing_check_lines(results),
         policy.REVISION_DISCLOSURE,
         "",
     ]
@@ -273,6 +320,7 @@ def run_report(args: argparse.Namespace) -> None:
                 "totals": totals,
                 "review_totals": review_totals,
                 "merge_totals": merge_totals,
+                "check_totals": check_totals,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,

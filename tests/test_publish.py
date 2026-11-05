@@ -32,6 +32,7 @@ comments = import_module("issue_comment")
 review_outcome = import_module("review_outcome")
 reporting = import_module("proposal_report")
 round_reads = import_module("round_reads")
+outputs = import_module("report_outputs")
 
 BASE = "a" * 40
 BLOB_ONE = "1" * 40
@@ -3605,6 +3606,377 @@ class CliTest(NoNetworkCase):
             json.loads(output.read_text(encoding="utf-8"))["verdict"], "abstain"
         )
         self.assertIn("`abstain`", summary.read_text(encoding="utf-8"))
+
+
+def checks_record(state: str, *names: str, **overrides: Any) -> dict[str, Any]:
+    """The ``checks`` record result.json carries (DESIGN.md 18.4)."""
+    record: dict[str, Any] = {
+        "state": state,
+        "commit_id": "e" * 40,
+        "failing": [
+            {
+                "name": name,
+                "conclusion": "failure",
+                "app": "github-actions",
+                "details_url": "",
+                "title": "",
+                "summary": "",
+                "annotations": [],
+            }
+            for name in names
+        ],
+        "dropped": 0,
+        "unsettled": 0,
+        "read_at": "2026-11-05T02:23:27Z",
+        "reason": None,
+    }
+    record.update(overrides)
+    return record
+
+
+HOSTILE_CHECK = "Select\n## <!-- x --> @org/team | ::error::"
+
+
+class HeadChecksTest(unittest.TestCase):
+    """The head's checks in the comment, the marker and the report (#110)."""
+
+    def test_state_is_bound_to_the_published_head(self) -> None:
+        """Another head's record, a strange shape or none at all read as unknown."""
+        clean = review_record("clean", assessment="approval")
+        cases: list[tuple[dict[str, Any], str | None]] = [
+            (result_json(), None),
+            (result_json(review=clean), "unknown"),
+            (result_json(review=clean, checks=checks_record("passing")), "passing"),
+            (
+                result_json(
+                    review=clean, checks=checks_record("passing", commit_id="f" * 40)
+                ),
+                "unknown",
+            ),
+            (result_json(review=clean, checks=checks_record("green")), "unknown"),
+            (
+                result_json(review=clean, checks={**checks_record("passing"), "x": 1}),
+                "unknown",
+            ),
+            (result_json(review=clean, checks="failing"), "unknown"),
+        ]
+        for data, expected in cases:
+            with self.subTest(checks=data.get("checks")):
+                self.assertEqual(review_outcome.checks_state(data), expected)
+
+    def test_comment_names_the_failing_checks_safely(self) -> None:
+        """A hostile check name is flattened, escaped and defused."""
+        data = result_json(
+            review=review_record("clean", assessment="approval"),
+            checks=checks_record("failing", HOSTILE_CHECK, "Test"),
+        )
+        text = comments.comment_body(data, "") or ""
+        self.assertIn("The Copilot review of it is clean.", text)
+        self.assertIn(" Checks failed on its head: Select ## &lt;!-- x --&gt;", text)
+        self.assertIn(", Test.", text)
+        self.assertNotIn("\n", text)
+        self.assertNotIn("<!--", text)
+        self.assertIn("@\u200borg/team", text)
+
+    def test_comment_bounds_the_names_it_lists(self) -> None:
+        """Past the limit, the comment counts the rest."""
+        names = [f"job {n}" for n in range(review_outcome.MAX_NAMED_CHECKS + 3)]
+        data = result_json(
+            review=review_record("clean"), checks=checks_record("failing", *names)
+        )
+        text = comments.comment_body(data, "") or ""
+        self.assertIn("job 9 and 3 more.", text)
+        self.assertNotIn("job 10", text)
+
+    def test_comment_is_silent_on_passing_or_unread_checks(self) -> None:
+        """CI that passed, never ran or went unread adds no words."""
+        for record in (
+            checks_record("passing"),
+            checks_record("none"),
+            checks_record("unknown", reason="x"),
+            checks_record("running", unsettled=2),
+            None,
+        ):
+            with self.subTest(record=record):
+                data = result_json(review=review_record("clean"))
+                if record is not None:
+                    data["checks"] = record
+                text = comments.comment_body(data, "") or ""
+                self.assertNotIn("Checks", text)
+
+    def test_running_checks_name_the_failures_so_far(self) -> None:
+        """A wait that ended mid-run still names what had failed."""
+        data = result_json(
+            review=review_record("clean"),
+            checks=checks_record("running", "Lint", unsettled=1),
+        )
+        text = comments.comment_body(data, "") or ""
+        self.assertIn("still running on its head", text)
+        self.assertIn("some had failed: Lint.", text)
+
+    def test_marker_records_the_checks_and_the_round_still_parses(self) -> None:
+        """The footer gains ``checks=`` only when the record exists."""
+        posted: dict[str, Any] = {}
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / "result.json"
+            data = result_json(
+                bot_login=BOT,
+                round=3,
+                round_summary="s",
+                review=review_record("clean"),
+                mergeable=True,
+                checks=checks_record("failing", "Lint"),
+            )
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            def write(_method: str, _path: str, payload: dict[str, Any]) -> Any:
+                posted.update(payload)
+                return {"html_url": "https://x/c/1"}
+
+            with (
+                patch.object(reads, "api_page", return_value=[]),
+                patch.object(github, "api_write", side_effect=write),
+                redirect_stdout(io.StringIO()),
+            ):
+                comments.run_comment(
+                    argparse.Namespace(result=path, run_url="https://run", since="t")
+                )
+        body = str(posted["body"])
+        token = review_outcome.checks_token(data)
+        assert token is not None
+        self.assertRegex(token, r"\Afailing/[0-9a-f]{12}\Z")
+        self.assertTrue(
+            body.endswith(
+                "<!-- code-monkey https://run proposed review=clean mergeable=true "
+                f"checks={token} round=3 -->"
+            )
+        )
+        found = round_reads.FOOTER.search(body)
+        assert found is not None
+        self.assertEqual(found.group("round"), "3")
+
+    def test_marker_word_follows_the_failing_checks(self) -> None:
+        """Only a change in the failing set changes the word, not its order."""
+        clean = review_record("clean")
+
+        def token(record: dict[str, Any]) -> str | None:
+            return review_outcome.checks_token(result_json(review=clean, checks=record))
+
+        self.assertEqual(token(checks_record("passing")), "passing")
+        self.assertEqual(token(checks_record("running", unsettled=2)), "running")
+        self.assertEqual(token(checks_record("failing")), "failing")
+        self.assertEqual(
+            token(checks_record("failing", "Lint", "Test")),
+            token(checks_record("failing", "Test", "Lint")),
+        )
+        self.assertNotEqual(
+            token(checks_record("running", "Test", unsettled=1)),
+            token(checks_record("running", "Test", "Lint", unsettled=1)),
+        )
+        hostile = token(checks_record("failing", HOSTILE_CHECK))
+        assert hostile is not None
+        self.assertRegex(hostile, r"\Afailing/[0-9a-f]{12}\Z")
+
+    def test_retry_whose_failures_changed_posts_again(self) -> None:
+        """Checks still running, now with one more failure: a new outcome."""
+        before = result_json(
+            bot_login=BOT,
+            review=review_record("clean"),
+            checks=checks_record("running", "Test", unsettled=2),
+        )
+        after = result_json(
+            bot_login=BOT,
+            review=review_record("clean"),
+            checks=checks_record("running", "Test", "Lint", unsettled=1),
+        )
+        token = review_outcome.checks_token(before)
+        earlier = {
+            "id": 9,
+            "user": {"login": BOT},
+            "body": (
+                "text\n\n<!-- code-monkey https://run proposed review=clean "
+                f"checks={token} -->"
+            ),
+            "html_url": "https://x/c/9",
+        }
+        for data, posts in ((before, False), (after, True)):
+            with (
+                self.subTest(posts=posts),
+                tempfile.TemporaryDirectory() as work,
+            ):
+                path = Path(work) / "result.json"
+                path.write_text(json.dumps(data), encoding="utf-8")
+                with (
+                    patch.object(reads, "api_page", return_value=[earlier]),
+                    patch.object(
+                        github, "api_write", return_value={"html_url": "https://x/c/10"}
+                    ) as write,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    comments.run_comment(
+                        argparse.Namespace(
+                            result=path, run_url="https://run", since="t"
+                        )
+                    )
+                self.assertEqual(write.called, posts)
+                if posts:
+                    body = str(write.call_args.args[2]["body"])
+                    self.assertIn("some had failed: Test, Lint.", body)
+                    self.assertNotIn(f"checks={token} ", body)
+
+    def test_footer_reads_markers_with_and_without_the_hash(self) -> None:
+        """Markers posted before the hash existed still parse."""
+        for word in ("", " checks=failing", " checks=running/0123456789ab"):
+            with self.subTest(word=word):
+                body = f"x\n<!-- code-monkey https://run proposed{word} round=4 -->"
+                found = round_reads.FOOTER.search(body)
+                assert found is not None
+                self.assertEqual(found.group("round"), "4")
+
+    def test_report_counts_and_lists_failing_checks(self) -> None:
+        """Totals for every state; failing pull requests listed, names escaped."""
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            results = root / "results"
+            items = {
+                "a-1": result_json(
+                    key="a-1",
+                    review=review_record("clean"),
+                    checks=checks_record("failing", HOSTILE_CHECK),
+                ),
+                "b-2": result_json(
+                    key="b-2",
+                    review=review_record("clean"),
+                    checks=checks_record("passing"),
+                ),
+                "c-3": result_json(key="c-3", review=review_record("pending")),
+                "d-4": result_json(key="d-4", verdict="abstain"),
+            }
+            for key, data in items.items():
+                directory = results / key
+                directory.mkdir(parents=True)
+                (directory / "result.json").write_text(
+                    json.dumps(data), encoding="utf-8"
+                )
+            md, out = root / "report.md", root / "report.json"
+            reporting.run_report(
+                argparse.Namespace(results=results, output_md=md, output_json=out)
+            )
+            text = md.read_text(encoding="utf-8")
+            report = json.loads(out.read_text(encoding="utf-8"))
+        self.assertIn(
+            "Head checks: passing 1, failing 1, running 0, none 0, unknown 1, "
+            "not read 1.",
+            text,
+        )
+        self.assertEqual(report["check_totals"]["unknown"], 1)
+        listed = [line for line in text.splitlines() if line.startswith("- ")]
+        self.assertEqual(len(listed), 1)
+        self.assertIn("owner/repo#7", listed[0])
+        self.assertIn(
+            "Select ## &lt;!-- x --&gt; @\u200borg/team \\| : :error: :", listed[0]
+        )
+        self.assertNotIn("<!--", text)
+        self.assertNotIn("::", text.split("Head checks:")[1])
+
+    def test_known_failing_checks_at_the_cap_hand_over(self) -> None:
+        """A clean, mergeable tenth round with red CI is not finished."""
+        clean = review_record("clean", assessment="approval")
+        cases: list[tuple[dict[str, Any], bool]] = [
+            (checks_record("failing", "Lint"), True),
+            (checks_record("failing"), True),
+            (checks_record("running", "Lint", unsettled=1), True),
+            (checks_record("running", unsettled=1), False),
+            (checks_record("passing"), False),
+            (checks_record("none"), False),
+            (checks_record("unknown", reason="x"), False),
+        ]
+        for record, expected in cases:
+            with self.subTest(record=record):
+                data = result_json(
+                    round=10,
+                    round_summary="s",
+                    review=clean,
+                    mergeable=True,
+                    checks=record,
+                )
+                self.assertEqual(comments.capped(data), expected)
+                text = comments.comment_body(data, "") or ""
+                self.assertEqual("a human must take over" in text, expected)
+        below = result_json(
+            round=9,
+            round_summary="s",
+            review=clean,
+            checks=checks_record("failing", "Lint"),
+        )
+        self.assertFalse(comments.capped(below))
+
+    def test_report_marks_failing_checks_at_the_cap(self) -> None:
+        """The failing-checks list says a human takes over at the cap."""
+        data = result_json(
+            round=10,
+            round_summary="s",
+            review=review_record("clean"),
+            checks=checks_record("failing", "Lint"),
+        )
+        lines = reporting.failing_check_lines([data])
+        listed = [line for line in lines if line.startswith("- ")]
+        self.assertEqual(len(listed), 1)
+        self.assertIn("Lint; round cap reached, a human must take over", listed[0])
+        below = reporting.failing_check_lines([{**data, "round": 9}])
+        self.assertNotIn("round cap", "\n".join(below))
+
+    def test_report_lists_known_failures_among_running_checks(self) -> None:
+        """A wait that ended with a failure and an unfinished check lists it."""
+        running = result_json(
+            round=10,
+            round_summary="s",
+            review=review_record("clean"),
+            mergeable=True,
+            checks=checks_record("running", "Lint", unsettled=1),
+        )
+        listed = [
+            line
+            for line in reporting.failing_check_lines([running])
+            if line.startswith("- ")
+        ]
+        self.assertEqual(len(listed), 1)
+        self.assertIn("Lint; round cap reached, a human must take over", listed[0])
+        unsettled = {**running, "checks": checks_record("running", unsettled=1)}
+        self.assertEqual(reporting.failing_check_lines([unsettled]), [])
+
+    def test_outputs_name_only_failing_heads(self) -> None:
+        """The digest lists heads with known failures, through the org filter."""
+        url = f"https://github.com/{REPOSITORY}/pull/8"
+        running = f"https://github.com/{REPOSITORY}/pull/9"
+        results = [
+            result_json(review=review_record("clean"), checks=checks_record("failing")),
+            result_json(
+                review=review_record("clean"),
+                checks=checks_record("running", "x", unsettled=1),
+                pull_request_url=running,
+            ),
+            result_json(
+                review=review_record("clean"),
+                checks=checks_record("running", unsettled=1),
+                pull_request_url=f"https://github.com/{REPOSITORY}/pull/10",
+            ),
+            result_json(
+                review=review_record("clean"),
+                checks=checks_record("running", "x", unsettled=1),
+                pull_request_url="https://evil.example/pull/2",
+            ),
+            result_json(
+                review=review_record("clean"),
+                checks=checks_record("failing"),
+                pull_request_url="https://evil.example/pull/1",
+            ),
+        ]
+        self.assertEqual(outputs.failing_check_urls(results, "owner"), [url, running])
+        self.assertEqual(
+            outputs.failing_check_lines([url]),
+            f'failing_check_pull_requests=["{url}"]\n',
+        )
 
 
 if __name__ == "__main__":

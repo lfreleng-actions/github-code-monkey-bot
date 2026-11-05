@@ -16,6 +16,9 @@ import proposal_model as model
 import proposal_policy as policy
 import write_recovery as recovery
 from review_outcome import (
+    checks_failed,
+    checks_sentence,
+    checks_token,
     merge_sentence,
     merge_token,
     review_after_merge,
@@ -26,12 +29,13 @@ from review_outcome import (
 
 
 def outcome_text(opening: str, result: dict[str, Any]) -> str:
-    """The opening, then the merge state when it is in doubt, then the review."""
+    """The opening, the merge state when it is in doubt, the review, then CI."""
     token = merge_token(result)
     if token in (None, "true"):
-        return opening + review_sentence(result)
+        return opening + review_sentence(result) + checks_sentence(result)
     text = opening.rstrip(".") + "." + merge_sentence(result)
     text += review_after_merge(result)
+    text += checks_sentence(result)
     if token == "false" and not capped(result):
         text += " The next round rebases it."
     return text
@@ -55,7 +59,7 @@ def capped(result: dict[str, Any]) -> bool:
 
     The selector skips a pull request at the cap whatever its state,
     so every tenth-round outcome but a clean proposal that can merge
-    needs a human; a clean one that can merge is finished.
+    with no known failing check needs a human; that one is finished.
     """
     if round_of(result) < MAX_ROUNDS:
         return False
@@ -63,6 +67,7 @@ def capped(result: dict[str, Any]) -> bool:
         result.get("verdict") != "proposed"
         or review_verdict(result) != "clean"
         or result.get("mergeable") is False
+        or checks_failed(result)
     )
 
 
@@ -251,6 +256,9 @@ def run_comment(args: argparse.Namespace) -> None:
     merge = merge_token(result)
     if merge is not None:
         suffix += f" mergeable={merge}"
+    checked = checks_token(result)
+    if checked is not None:
+        suffix += f" checks={checked}"
     if round_of(result):
         suffix += f" round={round_of(result)}"
     pull_number = result.get("pull_number")

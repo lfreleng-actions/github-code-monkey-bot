@@ -190,6 +190,7 @@ class RunReportOutputsTest(unittest.TestCase):
                 f'pull_requests=["{pull("repo", 8)}","{pull("other", 3)}"]',
                 "pull_request_count=2",
                 "unmergeable_pull_requests=[]",
+                "failing_check_pull_requests=[]",
             ],
         )
         report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))

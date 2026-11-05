@@ -273,6 +273,8 @@ jobs:
           PULL_REQUESTS: "${{ needs.code-monkey.outputs.pull_requests }}"
           # yamllint disable-line rule:line-length
           UNMERGEABLE: "${{ needs.code-monkey.outputs.unmergeable_pull_requests }}"
+          # yamllint disable-line rule:line-length
+          FAILING_CHECKS: "${{ needs.code-monkey.outputs.failing_check_pull_requests }}"
           RUN_RESULT: "${{ needs.code-monkey.result }}"
         run: |
           set -euo pipefail
@@ -357,6 +359,27 @@ jobs:
           fi
           if [ "$count" -eq 0 ]; then
             body='_No pull requests were raised._'
+          fi
+          # Counted, not listed: only a link validated above counts, and
+          # the run report names the checks.
+          if ! failing=$(jq -r 'if type == "array" then .[] | @json
+              else error("not an array") end' <<< "${FAILING_CHECKS:-[]}"); then
+            echo "::warning::The failing checks output is not a JSON array"
+            failing=''
+          fi
+          red=0
+          for url in "${urls[@]}"; do
+            if grep -qixF -- "\"$url\"" <<< "$failing"; then
+              red=$((red + 1))
+            fi
+          done
+          if [ "$red" -gt 0 ]; then
+            noun='pull requests'
+            if [ "$red" -eq 1 ]; then
+              noun='pull request'
+            fi
+            body="$body\\n\\n_$red $noun published with failing checks;"
+            body="$body see the run report._"
           fi
           if [ "$RUN_RESULT" != 'success' ]; then
             failed='_Some jobs in this run failed; see the workflow run._'
