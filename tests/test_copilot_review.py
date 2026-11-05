@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 github = import_module("bot_github")
 review = import_module("copilot_review")
+checks = import_module("check_reads")
+reads = import_module("issue_reads")
 request = import_module("review_request")
 BODIES = import_module("review_fixtures").BODIES
 
@@ -657,6 +659,222 @@ class AwaitReviewTest(unittest.TestCase):
         self.assertLess(review.RESERVE_SECONDS, review.DEFAULT_WAIT_MINUTES * 60 / 2)
 
 
+def check_run(
+    identity: int,
+    name: str,
+    *,
+    status: str = "completed",
+    conclusion: str | None = "success",
+    head: str = HEAD,
+) -> dict[str, Any]:
+    """A check run as the REST listing returns it."""
+    return {
+        "id": identity,
+        "name": name,
+        "head_sha": head,
+        "status": status,
+        "conclusion": conclusion if status == "completed" else None,
+        "app": {"slug": "github-actions"},
+        "details_url": f"https://github.com/{REPO}/actions/runs/1/job/{identity}",
+        "output": {"title": f"{name} title", "summary": "s", "annotations_count": 0},
+    }
+
+
+class FakeHead:
+    """The pull request, its review and its check runs, on a fake clock.
+
+    ``runs`` answers each check run listing in turn, the last one
+    repeating; an exception is raised instead. ``heads`` answers each
+    head read the same way. ``cost`` is how long every read takes.
+    """
+
+    def __init__(
+        self,
+        clock: Clock,
+        *runs: list[dict[str, Any]] | Exception,
+        reviews: list[dict[str, Any]] | None = None,
+        heads: tuple[str, ...] = (HEAD,),
+        cost: float = 0.0,
+    ) -> None:
+        """Queue the replies."""
+        self.clock = clock
+        self.runs = list(runs) or [[]]
+        self.reviews = [] if reviews is None else reviews
+        self.heads = list(heads)
+        self.cost = cost
+        self.listings = 0
+
+    def api_object(self, endpoint: str) -> dict[str, Any]:
+        """A head read or a check run listing."""
+        self.clock.now += self.cost
+        if endpoint == f"repos/{REPO}/pulls/41":
+            sha = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
+            return {"head": {"sha": sha}}
+        if f"/commits/{HEAD}/check-runs" in endpoint:
+            self.listings += 1
+            reply = self.runs.pop(0) if len(self.runs) > 1 else self.runs[0]
+            if isinstance(reply, Exception):
+                raise reply
+            return {"total_count": len(reply), "check_runs": reply}
+        raise AssertionError(f"unexpected read of {endpoint}")
+
+    def api_list(self, endpoint: str) -> list[dict[str, Any]]:
+        """The review listing."""
+        self.clock.now += self.cost
+        if endpoint != REVIEWS:
+            raise AssertionError(f"unexpected read of {endpoint}")
+        return list(self.reviews)
+
+    def graphql(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        """One page of review threads, none unresolved."""
+        self.clock.now += self.cost
+        return threads_reply([])
+
+    def run(self, wait: int = 20) -> tuple[Any, int | None, Any]:
+        """Await the head's review and checks against the fakes."""
+        with (
+            patch.object(github, "api_object", side_effect=self.api_object),
+            patch.object(github, "api_list", side_effect=self.api_list),
+            patch.object(github, "graphql", side_effect=self.graphql),
+            patch.object(reads, "api_page", side_effect=AssertionError("no notes")),
+        ):
+            return review.await_head(
+                REPO,
+                41,
+                HEAD,
+                wait_minutes=wait,
+                clock=self.clock,
+                sleep=self.clock.sleep,
+            )
+
+
+CLEAN = [copilot(7, HEAD, BODIES["v2-green-clean"])]
+
+
+class AwaitChecksTest(unittest.TestCase):
+    """The head's checks, read in what is left of the review wait (#110)."""
+
+    def test_checks_that_pass_before_the_deadline(self) -> None:
+        """Runs still going are polled until every one has finished."""
+        clock = Clock()
+        going = [check_run(1, "lint", status="in_progress"), check_run(2, "test")]
+        done = [check_run(1, "lint"), check_run(2, "test", conclusion="skipped")]
+        fake = FakeHead(clock, going, going, done, reviews=CLEAN)
+        verdict, _, found = fake.run()
+        self.assertEqual(verdict.verdict, "clean")
+        self.assertEqual(found.state, "passing")
+        self.assertEqual((found.failing, found.unsettled), ([], 0))
+        self.assertEqual(fake.listings, 3)
+        self.assertEqual(clock.sleeps, [review.POLL_SECONDS] * 2)
+        self.assertIsNone(found.reason)
+
+    def test_failing_checks_are_named_and_bounded(self) -> None:
+        """Failing runs are recorded by name, cut to the packet's bounds."""
+        clock = Clock()
+        runs = [
+            check_run(n, f"job {n:02}", conclusion="failure")
+            for n in range(checks.MAX_CHECKS + 5)
+        ]
+        runs.append(check_run(99, "x" * (checks.MAX_TEXT + 50), conclusion="timed_out"))
+        runs.append(check_run(100, "ok"))
+        found = FakeHead(clock, runs, reviews=CLEAN).run()[2]
+        self.assertEqual(found.state, "failing")
+        self.assertEqual(len(found.failing), checks.MAX_CHECKS)
+        self.assertEqual(found.failing[0]["name"], "job 00")
+        self.assertEqual(found.failing[0]["conclusion"], "failure")
+        self.assertEqual(
+            set(found.failing[0]),
+            {
+                "name",
+                "conclusion",
+                "app",
+                "details_url",
+                "title",
+                "summary",
+                "annotations",
+            },
+        )
+        self.assertGreaterEqual(found.dropped, 6)
+        for entry in found.failing:
+            self.assertLessEqual(len(entry["name"].encode()), checks.MAX_TEXT)
+
+    def test_a_head_without_check_runs_is_none(self) -> None:
+        """No run at all on the head is ``none``, not passing."""
+        found = FakeHead(Clock(), [], reviews=CLEAN).run()[2]
+        self.assertEqual(found.state, "none")
+
+    def test_only_runs_on_the_published_head_count(self) -> None:
+        """A run naming another commit is not this head's."""
+        stray = check_run(1, "old", conclusion="failure", head=OTHER)
+        found = FakeHead(Clock(), [stray, check_run(2, "ok")], reviews=CLEAN).run()[2]
+        self.assertEqual(found.state, "passing")
+        self.assertEqual(found.failing, [])
+
+    def test_runs_still_going_at_the_deadline_are_running(self) -> None:
+        """The deadline ends the poll; the unfinished runs are counted."""
+        clock = Clock()
+        runs = [
+            check_run(1, "slow", status="queued"),
+            check_run(2, "slower", status="in_progress"),
+            check_run(3, "broke", conclusion="failure"),
+        ]
+        found = FakeHead(clock, runs, reviews=CLEAN).run(wait=20)[2]
+        self.assertEqual(found.state, "running")
+        self.assertEqual(found.unsettled, 2)
+        self.assertEqual([e["name"] for e in found.failing], ["broke"])
+        self.assertLessEqual(clock.now, 20 * 60)
+
+    def test_a_read_error_is_unknown(self) -> None:
+        """A listing the wrapper's retries did not cure proves nothing."""
+        failure = github.GitHubError("gh: Server Error (HTTP 502)")
+        found = FakeHead(Clock(), failure, reviews=CLEAN).run()[2]
+        self.assertEqual(found.state, "unknown")
+        self.assertIn("could not read the head's check runs", str(found.reason))
+
+    def test_a_head_that_moves_is_unknown(self) -> None:
+        """A push during the wait makes the runs another head's."""
+        fake = FakeHead(
+            Clock(), [check_run(1, "ok")], reviews=CLEAN, heads=(HEAD, OTHER)
+        )
+        verdict, _, found = fake.run()
+        self.assertEqual(verdict.verdict, "clean")
+        self.assertEqual(found.state, "unknown")
+        self.assertIn("head moved", str(found.reason))
+
+    def test_no_review_leaves_the_reserve_for_the_checks(self) -> None:
+        """A review wait that ran to its reserve still reads the checks."""
+        clock = Clock()
+        fake = FakeHead(clock, [check_run(1, "lint", status="in_progress")])
+        verdict, _, found = fake.run(wait=20)
+        self.assertEqual(verdict.verdict, "pending")
+        self.assertEqual(found.state, "running")
+        self.assertGreaterEqual(fake.listings, 1)
+        self.assertLessEqual(clock.now, 20 * 60)
+
+    def test_the_wait_never_grows(self) -> None:
+        """Worst-case reads included, review and checks share one bound."""
+        for reviews in ([], CLEAN):
+            for cost in (0.0, 1.0, review.READ_BUDGET_SECONDS):
+                with self.subTest(review=bool(reviews), cost=cost):
+                    clock = Clock()
+                    going = [check_run(1, "slow", status="in_progress")]
+                    FakeHead(clock, going, reviews=reviews, cost=cost).run(wait=20)
+                    self.assertLessEqual(clock.now, 20 * 60)
+
+    def test_a_read_that_would_not_fit_is_not_started(self) -> None:
+        """With no room for a listing and the head's confirmation, nothing is read."""
+        clock = Clock()
+        window = review.head_checks.Window(
+            2 * review.READ_BUDGET_SECONDS - 1,
+            review.READ_BUDGET_SECONDS,
+            clock,
+            clock.sleep,
+        )
+        found = review.head_checks.await_checks(REPO, HEAD, lambda: HEAD, window)
+        self.assertEqual(found.state, "unknown")
+        self.assertIn("no time left", str(found.reason))
+
+
 class HandlersTest(unittest.TestCase):
     """The publish.py commands that wrap the request and the wait."""
 
@@ -1124,13 +1342,13 @@ class HandlersTest(unittest.TestCase):
     def await_on_a_fake_clock(self, wait_minutes: int) -> Clock:
         """Run ``review-await`` with no review arriving; return the clock it used."""
         clock = Clock()
-        real = review.await_review
+        real = review.await_head
 
         def timed(*args: Any, **kwargs: Any) -> Any:
             return real(*args, clock=clock, sleep=clock.sleep, **kwargs)
 
         with (
-            patch.object(review, "await_review", side_effect=timed),
+            patch.object(review, "await_head", side_effect=timed),
             patch.object(github, "api_object", return_value={"head": {"sha": HEAD}}),
             patch.object(github, "api_list", return_value=[]),
         ):
@@ -1248,6 +1466,80 @@ class HandlersTest(unittest.TestCase):
         self.assertEqual(record["review_id"], 9)
         self.assertEqual(record["commit_id"], HEAD)
         self.assertIs(record["requested"], True)
+
+    def test_await_records_the_checks_and_warns_on_a_failure(self) -> None:
+        """The checks record names the head; a failure is a warning, not a stop."""
+        self.write(review={"requested": True})
+        hostile = "lint\n::error::spoof %0A @team"
+        runs = [check_run(1, hostile, conclusion="failure"), check_run(2, "ok")]
+        fake = FakeHead(Clock(), runs, reviews=CLEAN)
+        with (
+            patch.object(github, "api_object", side_effect=fake.api_object),
+            patch.object(github, "api_list", side_effect=fake.api_list),
+            patch.object(github, "graphql", side_effect=fake.graphql),
+            patch("builtins.print") as printed,
+        ):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        record = self.stored()["checks"]
+        self.assertEqual(
+            set(record),
+            {
+                "state",
+                "commit_id",
+                "failing",
+                "dropped",
+                "unsettled",
+                "read_at",
+                "reason",
+            },
+        )
+        self.assertEqual(record["state"], "failing")
+        self.assertEqual(record["commit_id"], HEAD)
+        self.assertEqual(record["failing"][0]["name"], hostile)
+        self.assertRegex(record["read_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(self.stored()["review"]["verdict"], "clean")
+        lines = [str(call.args[0]) for call in printed.call_args_list]
+        warning = [line for line in lines if line.startswith("::warning")]
+        self.assertEqual(len(warning), 1)
+        self.assertTrue(warning[0].startswith("::warning title=Checks::"))
+        data = warning[0].removeprefix("::warning title=Checks::")
+        self.assertNotIn("\n", data)
+        self.assertNotIn("::", data)
+        self.assertIn("%250A", data)
+
+    def test_passing_checks_raise_no_warning(self) -> None:
+        """Only failing runs earn the annotation."""
+        self.write(review={"requested": True})
+        fake = FakeHead(Clock(), [check_run(1, "ok")], reviews=CLEAN)
+        with (
+            patch.object(github, "api_object", side_effect=fake.api_object),
+            patch.object(github, "api_list", side_effect=fake.api_list),
+            patch.object(github, "graphql", side_effect=fake.graphql),
+            patch("builtins.print") as printed,
+        ):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        self.assertEqual(self.stored()["checks"]["state"], "passing")
+        lines = [str(call.args[0]) for call in printed.call_args_list]
+        self.assertFalse(any(line.startswith("::warning") for line in lines))
+
+    def test_a_wait_that_never_started_records_unknown_checks(self) -> None:
+        """A head that moved before the wait reads no checks at all."""
+        self.write(review={"requested": True})
+        with (
+            patch.object(github, "api_object", return_value={"head": {"sha": OTHER}}),
+            patch.object(github, "api_list", side_effect=AssertionError("no wait")),
+        ):
+            review.run_await(
+                argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
+            )
+        record = self.stored()["checks"]
+        self.assertEqual(record["state"], "unknown")
+        self.assertEqual(record["commit_id"], HEAD)
+        self.assertIn("head moved", record["reason"])
 
 
 if __name__ == "__main__":

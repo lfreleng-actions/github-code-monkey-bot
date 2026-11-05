@@ -14,6 +14,7 @@ as the threads are.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -39,6 +40,10 @@ ANNOTATIONS_PER_PAGE = 100
 MAX_ANNOTATION_PAGES = 3
 
 
+class OutOfTime(Exception):
+    """The next read would not fit the caller's wait."""
+
+
 @dataclass(frozen=True)
 class CheckPacket:
     """The failing runs the packet carries, and what the whole set said."""
@@ -57,8 +62,22 @@ def failing_checks(repository: str, head_sha: str) -> CheckPacket:
     failing runs that bring a round is whole whatever the packet
     keeps.
     """
+    return failing_of(repository, check_runs(repository, head_sha))
+
+
+def failing_of(
+    repository: str,
+    runs: list[dict[str, Any]],
+    *,
+    fits: Callable[[], bool] | None = None,
+) -> CheckPacket:
+    """The failing runs among ``runs`` with their annotations, bounded.
+
+    With ``fits``, an annotation page that would not fit the caller's
+    wait is not read: its annotations count as dropped.
+    """
     failing = sorted(
-        (run for run in check_runs(repository, head_sha) if is_failing(run)),
+        (run for run in runs if is_failing(run)),
         key=lambda run: (str(run.get("name") or ""), run_id(run) or 0),
     )
     outstanding = sum(1 for run in failing if run.get("name") not in EXCLUDED)
@@ -66,7 +85,7 @@ def failing_checks(repository: str, head_sha: str) -> CheckPacket:
     dropped = max(0, len(failing) - MAX_CHECKS)
     total = 0
     for run in failing[:MAX_CHECKS]:
-        annotations, unread = run_annotations(repository, run)
+        annotations, unread = run_annotations(repository, run, fits=fits)
         entry = check_entry(run, annotations[:MAX_ANNOTATIONS])
         while total + entry_size(entry) > MAX_CHECK_BYTES and entry["annotations"]:
             entry["annotations"].pop()
@@ -81,10 +100,21 @@ def failing_checks(repository: str, head_sha: str) -> CheckPacket:
     return CheckPacket(kept, dropped, outstanding)
 
 
-def check_runs(repository: str, head_sha: str) -> list[dict[str, Any]]:
-    """Every latest check run on the commit, page by page."""
+def check_runs(
+    repository: str,
+    head_sha: str,
+    *,
+    fits: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Every latest check run on the commit, page by page.
+
+    With ``fits``, a page that would not fit the caller's wait raises
+    ``OutOfTime`` rather than return a partial list.
+    """
     runs: list[dict[str, Any]] = []
     for page in range(1, MAX_RUN_PAGES + 1):
+        if fits is not None and not fits():
+            raise OutOfTime("could not read every check run within the wait")
         data = github.api_object(
             f"repos/{repository}/commits/{head_sha}/check-runs"
             f"?filter=latest&per_page={RUNS_PER_PAGE}&page={page}"
@@ -111,6 +141,11 @@ def is_failing(run: dict[str, Any]) -> bool:
     return run.get("status") == "completed" and run.get("conclusion") in FAILING
 
 
+def is_unsettled(run: dict[str, Any]) -> bool:
+    """Whether a run has yet to finish: queued, in progress or waiting."""
+    return run.get("status") != "completed"
+
+
 def run_id(run: dict[str, Any]) -> int | None:
     """The run's numeric id, or None when the reply lacks one."""
     value = run.get("id")
@@ -124,12 +159,17 @@ def output_of(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_annotations(
-    repository: str, run: dict[str, Any]
+    repository: str,
+    run: dict[str, Any],
+    *,
+    fits: Callable[[], bool] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """The run's failure and warning annotations, and how many went unread.
 
     A run whose output counts no annotation costs no read. Past the
-    page bound the rest are unread and counted, whatever their level.
+    page bound, or once ``fits`` says a page would not fit the
+    caller's wait, the rest are unread and counted, whatever their
+    level.
     """
     identity = run_id(run)
     count = output_of(run).get("annotations_count")
@@ -138,6 +178,8 @@ def run_annotations(
     found: list[dict[str, Any]] = []
     read = 0
     for page in range(1, MAX_ANNOTATION_PAGES + 1):
+        if fits is not None and not fits():
+            break
         batch = reads.api_page(
             f"repos/{repository}/check-runs/{identity}/annotations"
             f"?per_page={ANNOTATIONS_PER_PAGE}&page={page}"
