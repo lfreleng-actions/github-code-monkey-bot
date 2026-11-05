@@ -29,6 +29,7 @@ refs = import_module("branch_refs")
 stale = import_module("stale_branch")
 review = import_module("copilot_review")
 comments = import_module("issue_comment")
+review_outcome = import_module("review_outcome")
 reporting = import_module("proposal_report")
 round_reads = import_module("round_reads")
 
@@ -332,14 +333,16 @@ class CommentBodyTest(unittest.TestCase):
 
     def test_unrequested_review_is_not_reported_as_late(self) -> None:
         """A refused request is told apart from a review that never came."""
-        sentence = comments.review_sentence(
+        sentence = review_outcome.review_sentence(
             result_json(review=review_record("pending", requested=False))
         )
         self.assertIn("could not request a Copilot review", sentence)
         self.assertIn("a maintainer should request one", sentence)
         self.assertNotIn("within the wait", sentence)
         # A request that landed and drew no review keeps the old sentence.
-        late = comments.review_sentence(result_json(review=review_record("pending")))
+        late = review_outcome.review_sentence(
+            result_json(review=review_record("pending"))
+        )
         self.assertIn("within the wait", late)
 
     def test_revision_round_comment_names_the_published_head(self) -> None:

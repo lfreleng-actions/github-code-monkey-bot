@@ -14,10 +14,11 @@ import issue_comment as comments
 import proposal_model as model
 import proposal_policy as policy
 import report_outputs as outputs
+import review_outcome
 from proposal_policy import PublishError
 
 SCHEMA = 1
-REVIEW_COLUMNS = (*comments.REVIEW_VERDICTS, "none")
+REVIEW_COLUMNS = (*review_outcome.REVIEW_VERDICTS, "none")
 
 
 def cell(value: Any, limit: int = 300) -> str:
@@ -70,10 +71,10 @@ def review_cell(item: dict[str, Any]) -> str:
     A count of the wrong shape stays out of the table; the verdict
     alone is shown then.
     """
-    verdict = comments.review_verdict(item)
+    verdict = review_outcome.review_verdict(item)
     if verdict is None:
         return "—"
-    if verdict == "pending" and comments.review_unrequested(item):
+    if verdict == "pending" and review_outcome.review_unrequested(item):
         return "pending (not requested)"
     if verdict != "findings":
         return verdict
@@ -89,6 +90,41 @@ def review_cell(item: dict[str, Any]) -> str:
     if type(missed) is int and missed > 0:
         parts.append(f"{missed} previously missed")
     return f"findings ({', '.join(parts)})" if parts else "findings"
+
+
+MERGE_COLUMNS = ("true", "false", "unknown", "none")
+MERGE_NAMES = {
+    "true": "mergeable",
+    "false": "conflicting",
+    "unknown": "unconfirmed",
+    "none": "not probed",
+}
+
+
+def conflict_lines(results: list[dict[str, Any]]) -> list[str]:
+    """The pull requests whose head conflicts, listed apart from the ready ones."""
+    conflicting = [item for item in results if item.get("mergeable") is False]
+    if not conflicting:
+        return []
+    lines = [
+        "Pull requests that conflict with their default branch: GitHub ran no "
+        "CI on them, so they are not ready whatever their review says. Each "
+        "needs a rebase: a later round makes it, or a human at the round cap.",
+        "",
+    ]
+    for item in conflicting:
+        label = cell(f"{item.get('repository')}#{item.get('issue')}")
+        url = cell(item.get("pull_request_url") or "—")
+        behind = item.get("base_behind_by")
+        detail = (
+            f", {behind} commit{'s' if behind != 1 else ''} behind"
+            if type(behind) is int
+            else ""
+        )
+        if comments.capped(item):
+            detail += "; round cap reached, a human must take over"
+        lines.append(f"- {label}: {url}{detail}")
+    return [*lines, ""]
 
 
 def attempt_of(item: dict[str, Any]) -> int:
@@ -118,13 +154,15 @@ def total_spend(every: list[dict[str, Any]], shown: list[dict[str, Any]]) -> flo
     return sum(sessions.values()) + unattributed
 
 
-def run_report(args: argparse.Namespace) -> None:
-    """Merge every result.json into one table."""
+def load_results(
+    root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Every result under ``root``, the latest per key, and the unreadable ones."""
     unreadable: list[str] = []
     every: list[dict[str, Any]] = []
     latest: dict[str, dict[str, Any]] = {}
     unkeyed: list[dict[str, Any]] = []
-    for path in sorted(args.results.rglob("result.json")):
+    for path in sorted(root.rglob("result.json")):
         try:
             item = model.load_json(path, str(path))
         except PublishError as exc:
@@ -138,7 +176,51 @@ def run_report(args: argparse.Namespace) -> None:
             # A retried publish entry uploads a result per attempt; the
             # latest one describes the issue, so count it once.
             latest[key] = item
-    results = [latest[key] for key in sorted(latest)] + unkeyed
+    return every, [latest[key] for key in sorted(latest)] + unkeyed, unreadable
+
+
+def write_outputs(
+    args: argparse.Namespace, results: list[dict[str, Any]], lines: list[str]
+) -> dict[str, Any]:
+    """The pull request links as outputs, when an org is named (DESIGN.md 18.6).
+
+    Returns the fields ``report.json`` gains and adds any warning to
+    ``lines``.
+    """
+    org: str | None = getattr(args, "org", None)
+    if org is None:
+        return {}
+    pulls, excluded = outputs.pull_request_urls(results, org)
+    unmergeable = outputs.unmergeable_urls(results, org)
+    extra: dict[str, Any] = {
+        "pull_requests": pulls,
+        "unmergeable_pull_requests": unmergeable,
+        "excluded_pull_request_urls": excluded,
+    }
+    if excluded:
+        # The refused values descend from agent output; only the
+        # count is printed.
+        lines += [
+            f"The run's outputs left {excluded} pull request link"
+            f"{'s' if excluded != 1 else ''} out: not a pull request "
+            "in this organisation.",
+            "",
+        ]
+        print(
+            f"::warning::{excluded} pull request link(s) failed validation "
+            "and were left out of the run's outputs"
+        )
+    github_output: Path | None = getattr(args, "github_output", None)
+    if github_output is not None:
+        with github_output.open("a", encoding="utf-8") as handle:
+            handle.write(outputs.output_lines(pulls))
+            handle.write(outputs.unmergeable_lines(unmergeable))
+    return extra
+
+
+def run_report(args: argparse.Namespace) -> None:
+    """Merge every result.json into one table."""
+    every, results, unreadable = load_results(args.results)
     lines = [
         "## Code monkey results",
         "",
@@ -147,10 +229,12 @@ def run_report(args: argparse.Namespace) -> None:
     ]
     totals: dict[str, int] = dict.fromkeys(policy.VERDICTS, 0)
     review_totals: dict[str, int] = dict.fromkeys(REVIEW_COLUMNS, 0)
+    merge_totals: dict[str, int] = dict.fromkeys(MERGE_COLUMNS, 0)
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
-        review_totals[comments.review_verdict(item) or "none"] += 1
+        review_totals[review_outcome.review_verdict(item) or "none"] += 1
+        merge_totals[review_outcome.merge_token(item) or "none"] += 1
         lines.append(report_row(item))
     spend = total_spend(every, results)
     for problem in unreadable:
@@ -169,31 +253,17 @@ def run_report(args: argparse.Namespace) -> None:
         + ", ".join(f"{name} {review_totals[name]}" for name in REVIEW_COLUMNS)
         + ".",
         "",
+        "Pull request heads: "
+        + ", ".join(
+            f"{MERGE_NAMES[name]} {merge_totals[name]}" for name in MERGE_COLUMNS
+        )
+        + ".",
+        "",
+        *conflict_lines(results),
         policy.REVISION_DISCLOSURE,
         "",
     ]
-    org: str | None = getattr(args, "org", None)
-    extra: dict[str, Any] = {}
-    if org is not None:
-        pulls, excluded = outputs.pull_request_urls(results, org)
-        extra = {"pull_requests": pulls, "excluded_pull_request_urls": excluded}
-        if excluded:
-            # The refused values descend from agent output; only the
-            # count is printed.
-            lines += [
-                f"The run's outputs left {excluded} pull request link"
-                f"{'s' if excluded != 1 else ''} out: not a pull request "
-                "in this organisation.",
-                "",
-            ]
-            print(
-                f"::warning::{excluded} pull request link(s) failed validation "
-                "and were left out of the run's outputs"
-            )
-        github_output: Path | None = getattr(args, "github_output", None)
-        if github_output is not None:
-            with github_output.open("a", encoding="utf-8") as handle:
-                handle.write(outputs.output_lines(pulls))
+    extra = write_outputs(args, results, lines)
     args.output_md.parent.mkdir(parents=True, exist_ok=True)
     args.output_md.write_text("\n".join(lines), encoding="utf-8")
     args.output_json.write_text(
@@ -202,6 +272,7 @@ def run_report(args: argparse.Namespace) -> None:
                 "schema": SCHEMA,
                 "totals": totals,
                 "review_totals": review_totals,
+                "merge_totals": merge_totals,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,

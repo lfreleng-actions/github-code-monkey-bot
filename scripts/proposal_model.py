@@ -77,6 +77,9 @@ class Check:
     # The names of the head's failing checks the selection carried:
     # what the round set out to fix besides the threads.
     failing_checks: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # Whether the selection found the head conflicting with the default
+    # branch: the round exists, in part, to rebase it.
+    conflicted: bool = False
     # The antagonistic review that handed the pull request back, as the
     # selection read it (``review_id``, ``round``, ``url``), or None.
     antagonistic_review: dict[str, Any] | None = None
@@ -117,6 +120,7 @@ class Check:
             check.pull_number = int(pull["number"])
             check.pull_request_url = str(pull["url"])
             check.round = int(entry["round"])
+            check.conflicted = pull.get("mergeable") is False
             check.threads = [
                 {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
                 for t in cast("list[dict[str, Any]]", entry.get("threads") or [])
@@ -170,6 +174,7 @@ class Check:
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,
+            "conflicted": self.conflicted,
             "antagonistic_review": self.antagonistic_review,
             "collected_at": self.collected_at,
             "session": self.session,

@@ -238,7 +238,15 @@ def round_note(check: Check) -> str:
     base = "rebased onto the default branch" if check.rebased else "on its base"
     failing = policy.failing_checks_text(list(check.failing_checks))
     checks = f" It set out to fix the failing checks: {failing}." if failing else ""
-    return f"Round {check.round} of revision, {base}.{checks}{handback_note(check)}\n\n"
+    conflict = (
+        " It set out to resolve a conflict with the default branch."
+        if check.conflicted
+        else ""
+    )
+    return (
+        f"Round {check.round} of revision, {base}.{conflict}{checks}"
+        f"{handback_note(check)}\n\n"
+    )
 
 
 def handback_note(check: Check) -> str:
