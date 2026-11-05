@@ -99,7 +99,7 @@ class ParseLedgerTest(unittest.TestCase):
 
 
 class MergeTest(unittest.TestCase):
-    """``merge`` keeps one assessment per head within retention."""
+    """``merge`` keeps one assessment per head and mode within retention."""
 
     def test_newest_wins_per_head_and_repository_case_is_folded(self) -> None:
         """Duplicates collapse to the latest; owner case does not split them."""
@@ -128,6 +128,85 @@ class MergeTest(unittest.TestCase):
     def test_empty_input_is_an_empty_ledger(self) -> None:
         """No prior ledgers merge to the empty ledger."""
         self.assertEqual(ledger.merge([], now=NOW), ledger.empty_ledger())
+
+
+class MergeModesTest(unittest.TestCase):
+    """A dry-run entry never erases a live one at the same head."""
+
+    def merged(self, *entries: dict[str, Any]) -> dict[str, Any]:
+        """Merge each entry as its own run's ledger, as fetch does."""
+        return ledger.merge([make_ledger(entry) for entry in entries], now=NOW)
+
+    def assessed(self, held: dict[str, Any], *, dry_run: bool) -> Any:
+        """The entry that makes the head a skip for a run of this mode."""
+        return ledger.already_assessed(
+            held, "lfreleng-actions/repo", 157, SHA, dry_run=dry_run
+        )
+
+    def test_newer_dry_entry_keeps_the_older_live_one(self) -> None:
+        """A dry run after a live one: live selection still skips the head."""
+        live = make_entry(assessed_at=stamp(NOW - timedelta(days=2)), run_id=1)
+        dry = make_entry(
+            dry_run=True,
+            verdict="would-do",
+            assessed_at=stamp(NOW - timedelta(days=1)),
+            run_id=2,
+        )
+        held = self.merged(live, dry)
+        self.assertEqual(self.assessed(held, dry_run=False), live)
+        self.assertIsNotNone(self.assessed(held, dry_run=True))
+
+    def test_newer_live_entry_skips_both_modes(self) -> None:
+        """A live run after a dry one: both modes skip the head."""
+        dry = make_entry(
+            dry_run=True, assessed_at=stamp(NOW - timedelta(days=2)), run_id=1
+        )
+        live = make_entry(assessed_at=stamp(NOW - timedelta(days=1)), run_id=2)
+        held = self.merged(dry, live)
+        self.assertEqual(self.assessed(held, dry_run=False), live)
+        self.assertIsNotNone(self.assessed(held, dry_run=True))
+
+    def test_newest_live_entry_wins(self) -> None:
+        """Two live entries for one head collapse to the newer."""
+        older = make_entry(assessed_at=stamp(NOW - timedelta(days=2)), run_id=1)
+        newer = make_entry(assessed_at=stamp(NOW - timedelta(days=1)), run_id=2)
+        held = self.merged(newer, older)
+        self.assertEqual(held["entries"], [newer])
+
+    def test_newest_dry_entry_wins_and_live_selection_ignores_it(self) -> None:
+        """Two dry entries collapse to the newer; a live run still looks."""
+        older = make_entry(
+            dry_run=True, assessed_at=stamp(NOW - timedelta(days=2)), run_id=1
+        )
+        newer = make_entry(
+            dry_run=True, assessed_at=stamp(NOW - timedelta(days=1)), run_id=2
+        )
+        held = self.merged(newer, older)
+        self.assertEqual(held["entries"], [newer])
+        self.assertIsNone(self.assessed(held, dry_run=False))
+        self.assertEqual(self.assessed(held, dry_run=True), newer)
+
+    def test_retention_prunes_either_mode(self) -> None:
+        """A stale entry goes whatever its mode; a fresh one of each stays."""
+        stale = NOW - timedelta(days=ledger.RETENTION_DAYS, seconds=1)
+        fresh = NOW - timedelta(days=1)
+        entries = [
+            make_entry(dry_run=mode, assessed_at=stamp(when), run_id=index)
+            for index, (mode, when) in enumerate(
+                ((False, stale), (True, stale), (False, fresh), (True, fresh))
+            )
+        ]
+        held = self.merged(*entries)
+        self.assertEqual(held["entries"], entries[2:])
+
+    def test_merge_is_stable_and_idempotent(self) -> None:
+        """Same-time entries of both modes order the same way, and re-merge alike."""
+        live = make_entry(run_id=1)
+        dry = make_entry(dry_run=True, run_id=2)
+        first = self.merged(dry, live)
+        self.assertEqual(first, self.merged(live, dry))
+        self.assertEqual(ledger.merge([first], now=NOW), first)
+        self.assertEqual(first["entries"], [live, dry])
 
 
 class AlreadyAssessedTest(unittest.TestCase):
