@@ -11,6 +11,8 @@ from pathlib import Path
 from issue_reads import SelectionError
 
 REPO_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
+# An App's slug, the login GraphQL gives it without REST's [bot].
+APP_LOGIN_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 
 
 def parse_repositories(text: str) -> list[str]:
@@ -41,6 +43,28 @@ def load_exclusions(file: Path | None, override: str) -> list[str]:
         if stripped:
             names.extend(parse_repositories(stripped))
     return names
+
+
+def load_reviewers(file: Path | None) -> frozenset[str]:
+    """The antagonistic review Apps whose findings count; empty turns them off.
+
+    One App login per line, without the ``[bot]`` suffix; ``#`` starts
+    a comment. A named file that is missing or malformed fails the
+    selection rather than drop a reviewer silently.
+    """
+    if file is None:
+        return frozenset()
+    if not file.is_file():
+        raise SelectionError(f"reviewer file {file} is not a regular file")
+    logins: set[str] = set()
+    for line in file.read_text(encoding="utf-8").splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if not APP_LOGIN_RE.fullmatch(stripped):
+            raise SelectionError(f"invalid App login {stripped!r} in {file}")
+        logins.add(stripped)
+    return frozenset(logins)
 
 
 def parse_max_pull_requests(text: str) -> int:

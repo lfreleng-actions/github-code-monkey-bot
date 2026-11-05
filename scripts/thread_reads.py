@@ -3,11 +3,12 @@
 
 """A bot pull request's unresolved review threads, as the packet carries them.
 
-A thread counts when Copilot or a maintainer opened it. Each carries
-the ids a reply and a resolve need, the opener as data, and the
-newest later comments from Copilot or a maintainer, so the agent reads
-the discussion a finding grew and the selection hears a maintainer's
-word on the thread itself (DESIGN.md section 20).
+A thread counts when Copilot, a listed antagonistic review App or a
+maintainer opened it. Each carries the ids a reply and a resolve
+need, the opener as data, and the newest later comments from those
+authors, so the agent reads the discussion a finding grew and the
+selection hears a maintainer's word on the thread itself (DESIGN.md
+section 20).
 """
 
 from __future__ import annotations
@@ -32,12 +33,15 @@ MAX_THREAD_REPLIES = 10
 # thread past this many pages fails closed rather than guess.
 COMMENTS_PER_PAGE = 100
 MAX_THREAD_PAGES = 10
-# Review threads whose opening comment comes from Copilot or a
-# maintainer count as work; a passer-by's thread does not. GraphQL
-# names the reviewer without the [bot] suffix REST gives it.
+# Review threads whose opening comment comes from Copilot, a listed
+# antagonistic review App or a maintainer count as work; a
+# passer-by's thread does not. GraphQL names a bot without the [bot]
+# suffix REST gives it, and types an App's author ``Bot``.
 THREAD_AUTHORS = reads.COMMENT_ASSOCIATIONS
 COPILOT_LOGIN = review.REVIEWER_LOGIN.removesuffix("[bot]")
-COMMENT_FIELDS = "databaseId body authorAssociation createdAt author { login }"
+COMMENT_FIELDS = (
+    "databaseId body authorAssociation createdAt author { login __typename }"
+)
 THREADS_QUERY = f"""
 query($owner: String!, $name: String!, $number: Int!, $after: String) {{
   repository(owner: $owner, name: $name) {{
@@ -87,12 +91,15 @@ class ThreadPacket:
 
 
 def unresolved_threads(
-    repository: str, number: int, since: str | None = None
+    repository: str,
+    number: int,
+    since: str | None = None,
+    reviewers: frozenset[str] = frozenset(),
 ) -> ThreadPacket:
     """The unresolved review threads worth answering, bounded, read whole first.
 
-    A thread counts when its opening comment comes from Copilot or a
-    maintainer. Each carries the ids the publisher needs to reply and
+    A thread counts when its opening comment comes from Copilot, an
+    App in ``reviewers`` or a maintainer. Each carries the ids the publisher needs to reply and
     resolve, and the body as data for the agent. Every thread that
     counts is read before the bounds apply, so a maintainer's word
     after ``since`` is heard whichever thread holds it, and the
@@ -110,7 +117,7 @@ def unresolved_threads(
         )
         threads = thread_connection(data)
         for node in cast("list[Any]", threads.get("nodes") or []):
-            thread = thread_entry(node)
+            thread = thread_entry(node, reviewers)
             if thread is not None:
                 found.append(thread)
         page = threads.get("pageInfo")
@@ -182,7 +189,9 @@ def thread_size(thread: dict[str, Any]) -> int:
     return sum(len(body.encode("utf-8")) for body in bodies)
 
 
-def thread_entry(node: Any) -> dict[str, Any] | None:
+def thread_entry(
+    node: Any, reviewers: frozenset[str] = frozenset()
+) -> dict[str, Any] | None:
     """One unresolved thread in packet form, or None when it does not count."""
     if not isinstance(node, dict):
         return None
@@ -192,7 +201,7 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
     comment = first_comment(data.get("comments"))
     if comment is None:
         return None
-    login = comment_author(comment)
+    login = comment_author(comment, reviewers)
     if login is None:
         return None
     thread_id = data.get("id")
@@ -204,6 +213,7 @@ def thread_entry(node: Any) -> dict[str, Any] | None:
     eligible = eligible_replies(
         thread_comments(thread_id, cast("dict[str, Any]", data["comments"])),
         comment_id,
+        reviewers,
     )
     replies = trimmed_replies(eligible)
     return {
@@ -289,8 +299,15 @@ def first_comment(comments: Any) -> dict[str, Any] | None:
     return cast("dict[str, Any]", first) if isinstance(first, dict) else None
 
 
-def comment_author(comment: dict[str, Any]) -> str | None:
-    """The login of a comment that counts, Copilot's or a maintainer's, else None."""
+def comment_author(
+    comment: dict[str, Any], reviewers: frozenset[str] = frozenset()
+) -> str | None:
+    """The login of a comment that counts, else None.
+
+    Copilot's counts, a maintainer's, and a listed App's when GraphQL
+    types its author ``Bot``: a user who took the App's slug as a
+    login is not the App.
+    """
     author = comment.get("author")
     login = (
         cast("dict[str, Any]", author).get("login")
@@ -299,12 +316,11 @@ def comment_author(comment: dict[str, Any]) -> str | None:
     )
     if not isinstance(login, str):
         return None
-    if (
-        login != COPILOT_LOGIN
-        and comment.get("authorAssociation") not in THREAD_AUTHORS
-    ):
-        return None
-    return login
+    if login == COPILOT_LOGIN or comment.get("authorAssociation") in THREAD_AUTHORS:
+        return login
+    if login in reviewers and cast("dict[str, Any]", author).get("__typename") == "Bot":
+        return login
+    return None
 
 
 def comment_text(comment: dict[str, Any]) -> str:
@@ -331,11 +347,13 @@ def comment_fields(comment: dict[str, Any], login: str) -> dict[str, Any]:
     }
 
 
-def eligible_replies(comments: list[Any], opener_id: int) -> list[dict[str, Any]]:
+def eligible_replies(
+    comments: list[Any], opener_id: int, reviewers: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
     """Every reply on the thread that counts, in thread order, each bounded.
 
-    The opener is dropped, and a reply from anyone but Copilot or a
-    maintainer is not carried.
+    The opener is dropped, and a reply from anyone but Copilot, a
+    listed App or a maintainer is not carried.
     """
     eligible: list[dict[str, Any]] = []
     for item in comments:
@@ -344,7 +362,7 @@ def eligible_replies(comments: list[Any], opener_id: int) -> list[dict[str, Any]
         comment = cast("dict[str, Any]", item)
         if comment.get("databaseId") == opener_id:
             continue
-        login = comment_author(comment)
+        login = comment_author(comment, reviewers)
         if login is None:
             continue
         eligible.append(comment_fields(comment, login))

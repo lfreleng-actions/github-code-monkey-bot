@@ -7,6 +7,10 @@ A revision candidate is an open pull request the bot opened from the
 designated fork, on a ``code-monkey/issue-<n>`` branch. Each read here
 types and bounds what it returns; the selection decides. See
 DESIGN.md section 20.
+
+An antagonistic review hands a pull request back with one review by a
+listed App whose body ends with a hand-back marker naming the head
+(DESIGN.md section 20.1); the review's body is the round's data.
 """
 
 from __future__ import annotations
@@ -23,6 +27,14 @@ import review_verdict as verdicts
 BRANCH_RE = re.compile(r"^code-monkey/issue-(?P<number>[1-9][0-9]*)$")
 MAX_REVIEW_BODY = verdicts.MAX_BODY_BYTES
 MAX_ROUNDS = 10
+# The last line of an antagonistic review that hands the pull request
+# back. The review bot's trusted applier writes it after its footer;
+# agent text there cannot forge it, since that bot disarms ``<``
+# outside code. Matched against the body after trailing whitespace.
+HANDBACK = re.compile(
+    r"(?:\A|\n)<!-- antagonistic-handback round=(?P<round>[1-9][0-9]*)"
+    r" head=(?P<head>[0-9a-f]{40}) run=(?P<run>[1-9][0-9]*) -->\Z"
+)
 
 
 def bot_pull_request(
@@ -153,4 +165,84 @@ def latest_review(repository: str, number: int, head_sha: str) -> dict[str, Any]
         **verdict.to_json(
             review_id=review_id if type(review_id) is int else None, commit_id=head_sha
         ),
+    }
+
+
+def listed_app(user: Any, reviewers: frozenset[str]) -> str | None:
+    """The login of a REST user that is a listed App, else None.
+
+    REST names an App ``<slug>[bot]`` with type ``Bot``; a user who
+    took the slug as a login is type ``User`` and does not count.
+    """
+    if not reviewers or not isinstance(user, dict):
+        return None
+    data = cast("dict[str, Any]", user)
+    login = data.get("login")
+    if data.get("type") != "Bot" or not isinstance(login, str):
+        return None
+    if not login.endswith("[bot]") or login.removesuffix("[bot]") not in reviewers:
+        return None
+    return login
+
+
+def handback_marker(body: str, head_sha: str) -> tuple[int, int] | None:
+    """The round and run a body's hand-back marker names for ``head_sha``, or None.
+
+    The marker counts only as the body's last line; one mid-body, or
+    one naming another head, is text.
+    """
+    found = HANDBACK.search(body.rstrip())
+    if found is None or found.group("head") != head_sha:
+        return None
+    return int(found.group("round")), int(found.group("run"))
+
+
+def handback_review(
+    repository: str, number: int, head_sha: str, reviewers: frozenset[str]
+) -> dict[str, Any] | None:
+    """The newest antagonistic review of the head that hands it back, or None.
+
+    It must be a submitted review by a listed App on ``head_sha``
+    whose body ends with a hand-back marker naming that head. A
+    listing that fails raises, as every revision read does, so no
+    round runs without the findings it was sent for; an empty list
+    turns the read off.
+    """
+    if not reviewers:
+        return None
+    newest: tuple[str, int, dict[str, Any], tuple[int, int]] | None = None
+    for review_data in github.api_list(f"repos/{repository}/pulls/{number}/reviews"):
+        login = listed_app(review_data.get("user"), reviewers)
+        if login is None or review_data.get("commit_id") != head_sha:
+            continue
+        submitted = review_data.get("submitted_at")
+        if review_data.get("state") == "PENDING" or not isinstance(submitted, str):
+            continue
+        review_id = review_data.get("id")
+        body = review_data.get("body")
+        if type(review_id) is not int or not isinstance(body, str):
+            raise github.GitHubError(
+                f"antagonistic review by {login} carries no id or readable body"
+            )
+        marker = handback_marker(body, head_sha)
+        if marker is None:
+            continue
+        if newest is None or (submitted, review_id) > (newest[0], newest[1]):
+            newest = (submitted, review_id, review_data, marker)
+    if newest is None:
+        return None
+    submitted, review_id, review_data, (round_number, run) = newest
+    body = str(review_data["body"])
+    bounded = reads.truncate_utf8(body, MAX_REVIEW_BODY)
+    return {
+        "review_id": review_id,
+        "round": round_number,
+        "run": run,
+        "head_sha": head_sha,
+        "url": f"https://github.com/{repository}/pull/{number}"
+        f"#pullrequestreview-{review_id}",
+        "author": listed_app(review_data.get("user"), reviewers),
+        "submitted_at": submitted,
+        "body": bounded,
+        "body_truncated": len(bounded) < len(body),
     }

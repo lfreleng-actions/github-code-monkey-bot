@@ -1744,7 +1744,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         script = flatten(self.step("select", "Select issues")["run"])
         self.assertIn("--fork-orgs monkey-assets/config/fork-orgs.json", script)
 
-    @unittest.expectedFailure
     def test_select_reads_the_antagonistic_reviewers(self) -> None:
         """The trusted App list comes from the pinned assets (DESIGN.md 20.1)."""
         script = flatten(self.step("select", "Select issues")["run"])

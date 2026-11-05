@@ -120,7 +120,6 @@ class HandbackReviewTest(unittest.TestCase):
         listing.assert_called_once_with(f"repos/{REPO}/pulls/41/reviews")
         return found
 
-    @unittest.expectedFailure
     def test_hand_back_is_recorded(self) -> None:
         """Review id, round, run, head and URL come with the bounded body."""
         found = self.read(review())
@@ -132,7 +131,6 @@ class HandbackReviewTest(unittest.TestCase):
         self.assertEqual(found["body"], body(SUMMARY_ONLY))
         self.assertFalse(found["body_truncated"])
 
-    @unittest.expectedFailure
     def test_every_body_shape_is_carried_whole(self) -> None:
         """A summary-only defect, an unplaced finding and the 422 fallback."""
         for text in (SUMMARY_ONLY, UNPLACED, FALLBACK):
@@ -141,7 +139,6 @@ class HandbackReviewTest(unittest.TestCase):
                 assert found is not None
                 self.assertIn(text, found["body"])
 
-    @unittest.expectedFailure
     def test_newest_hand_back_wins(self) -> None:
         """Of two hand-backs of the head, the later submitted one counts."""
         later = review(id=502, submitted_at="2026-10-06T00:00:00Z")
@@ -149,7 +146,6 @@ class HandbackReviewTest(unittest.TestCase):
         assert found is not None
         self.assertEqual(found["review_id"], 502)
 
-    @unittest.expectedFailure
     def test_what_does_not_count(self) -> None:
         """Older head, mid-body marker, other head, impostor, unlisted App."""
         cases = {
@@ -173,7 +169,6 @@ class HandbackReviewTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertIsNone(self.read(data))
 
-    @unittest.expectedFailure
     def test_empty_list_reads_nothing(self) -> None:
         """No listed App turns the source off without a read."""
         with patch.object(github, "api_list") as listing:
@@ -181,7 +176,6 @@ class HandbackReviewTest(unittest.TestCase):
         self.assertIsNone(found)
         listing.assert_not_called()
 
-    @unittest.expectedFailure
     def test_body_is_bounded_data(self) -> None:
         """Instructions, mentions and links are carried as text, cut to the bound."""
         hostile = (
@@ -197,7 +191,6 @@ class HandbackReviewTest(unittest.TestCase):
         self.assertEqual(len(found["body"].encode()), revisions.MAX_REVIEW_BODY)
         self.assertTrue(found["body_truncated"])
 
-    @unittest.expectedFailure
     def test_failures_are_not_absences(self) -> None:
         """A failed listing, or a listed review without a body, fails closed."""
         with (
@@ -215,14 +208,12 @@ class HandbackReviewTest(unittest.TestCase):
 class ReviewerListTest(unittest.TestCase):
     """The committed list names the Apps; empty turns the source off."""
 
-    @unittest.expectedFailure
     def test_committed_list(self) -> None:
         """The repository's list holds the antagonistic review App."""
         path = Path(__file__).resolve().parents[1] / "config"
         listed = inputs.load_reviewers(path / "antagonistic-reviewers.txt")
         self.assertEqual(listed, REVIEWERS)
 
-    @unittest.expectedFailure
     def test_parsing(self) -> None:
         """Comments and blanks are skipped; a bad login or a missing file fails."""
         self.assertEqual(inputs.load_reviewers(None), frozenset())
@@ -248,7 +239,6 @@ class AppThreadTest(unittest.TestCase):
             packet = threads_of.unresolved_threads(REPO, 41, None, listed)
         return [t["thread_id"] for t in packet.threads]
 
-    @unittest.expectedFailure
     def test_listed_app_thread_counts(self) -> None:
         """The App's thread is carried with its ids, not as a maintainer's."""
         with patch.object(github, "graphql", return_value=thread_page([app_thread()])):
@@ -260,7 +250,6 @@ class AppThreadTest(unittest.TestCase):
         self.assertFalse(kept["maintainer"])
         self.assertFalse(packet.maintainer_since)
 
-    @unittest.expectedFailure
     def test_impostors_and_unlisted_apps_do_not(self) -> None:
         """A user holding the login, or an App off the list, opens no work."""
         impostor = app_thread()
@@ -269,7 +258,6 @@ class AppThreadTest(unittest.TestCase):
         self.assertEqual(self.threads(app_thread(), frozenset()), [])
         self.assertEqual(self.threads(app_thread(), frozenset({"other"})), [])
 
-    @unittest.expectedFailure
     def test_app_replies_are_carried(self) -> None:
         """The App's later reply on a thread reaches the packet."""
         node = app_thread()
@@ -286,7 +274,6 @@ class AppThreadTest(unittest.TestCase):
         replies = packet.threads[0]["replies"]
         self.assertEqual([r["body"] for r in replies], ["Still wrong."])
 
-    @unittest.expectedFailure
     def test_query_asks_for_the_author_type(self) -> None:
         """GraphQL types the author, so an App is told from a user."""
         self.assertIn("__typename", threads_of.COMMENT_FIELDS)
@@ -334,7 +321,6 @@ def handback_record() -> dict[str, Any]:
 class HandbackCheckTest(unittest.TestCase):
     """The publisher names the review it answered, from trusted fields alone."""
 
-    @unittest.expectedFailure
     def test_check_keeps_the_trusted_fields(self) -> None:
         """The body stays in the packet; the check keeps id, round and URL."""
         check = check_with(handback_record())
@@ -344,7 +330,6 @@ class HandbackCheckTest(unittest.TestCase):
         self.assertEqual(check.to_json()["antagonistic_review"]["review_id"], 501)
         self.assertIsNone(check_with(None).antagonistic_review)
 
-    @unittest.expectedFailure
     def test_entry_shape_is_checked(self) -> None:
         """A malformed hand-back in the selection fails the check."""
         base: dict[str, Any] = {
@@ -384,7 +369,6 @@ class HandbackCheckTest(unittest.TestCase):
                     {**entry, "antagonistic_review": handback_record()}
                 )
 
-    @unittest.expectedFailure
     def test_round_note_names_the_review(self) -> None:
         """The description's round line links the review it answers."""
         note = revision_check.round_note(check_with(handback_record()))
@@ -392,7 +376,6 @@ class HandbackCheckTest(unittest.TestCase):
         self.assertNotIn("evil", note)
         self.assertNotIn("antagonistic", revision_check.round_note(check_with(None)))
 
-    @unittest.expectedFailure
     def test_summary_without_an_answer_warns(self) -> None:
         """A round summary that skips the hand-back warns; one that answers does not."""
         check = check_with(handback_record())
@@ -404,7 +387,6 @@ class HandbackCheckTest(unittest.TestCase):
         )
         self.assertEqual(check.warnings, [])
 
-    @unittest.expectedFailure
     def test_oversized_answer_is_refused(self) -> None:
         """A hand-back round's summary over the bound is refused, not cut.
 
@@ -492,7 +474,6 @@ class HandbackFooterTest(unittest.TestCase):
                 )
         return str(write.call_args.args[2]["body"])
 
-    @unittest.expectedFailure
     def test_footer_records_the_review(self) -> None:
         """``antagonistic=<id>`` ends the footer, and the history reads it."""
         posted = self.comment()
@@ -511,7 +492,6 @@ class HandbackFooterTest(unittest.TestCase):
             ("3", "2026-10-07T00:00:00Z", "501"),
         )
 
-    @unittest.expectedFailure
     def test_handoff_records_the_review(self) -> None:
         """A handoff answered the review too, so its footer names it."""
         posted = self.comment(verdict="handoff", reasons=["Disputed."], commits=[])
@@ -527,7 +507,6 @@ class HandbackFooterTest(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 self.assertNotIn("antagonistic=", self.comment(**overrides))
 
-    @unittest.expectedFailure
     def test_history_reads_every_footer_form(self) -> None:
         """Old footers and the new field alike count as rounds."""
         footers = [
