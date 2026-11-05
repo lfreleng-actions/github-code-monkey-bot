@@ -1818,7 +1818,11 @@ empty when none failed), `checks_dropped` (the failing runs, and
 the annotations of carried runs, the bounds left out: at most 30
 runs, 10 annotations each, 2 KiB per title, summary and message,
 32 KiB in all; annotations past the third page of a run count
-unread, whatever their level), `pr_comments`, `new_comments` and
+unread, whatever their level), `checks_unsettled` (the head's runs
+whose `status` is not `completed`, queued, in progress or waiting,
+counted over every run whatever the bounds keep: an empty `checks`
+beside a non-zero count says CI had not finished, not that it
+passed), `pr_comments`, `new_comments` and
 `new_pr_comments`; an issue entry has `task: "issue"` and
 `checkout_sha` equal to `base_sha`. Beside it the select job writes
 `matrix.json`
@@ -2193,7 +2197,14 @@ Three ways in, all through the select job and its read token:
   for the head it selected, before the test, which
   adds up to a minute per such candidate; one that never settles is
   no work on its own, so a GitHub hiccup spends no round. A head with no
-  review yet waits for the gate; a clean head with nothing else needs
+  review yet waits for the gate; a head with nothing else whose check
+  runs have not all finished (`check_reads.is_unsettled`, the predicate
+  the publish job's `running` state uses) skips as `checks still
+  running`, not `nothing outstanding`, so the skipped-issues record
+  and the report tell it from a green head and the next scan reads it
+  again, since the select job waits for no CI; with other work
+  outstanding the round goes ahead and the entry's `checks_unsettled`
+  tells it CI had not finished; a clean head with nothing else needs
   no round; and after a handoff (§20.3) neither the disputed threads
   nor a failing check nor a hand-back brings a round on its own, a
   maintainer's comment does. Revisions come
@@ -2341,10 +2352,14 @@ annotations come from the code under review, and asks the session to
 reproduce each failing job from the repository's workflow
 definitions, record what it ran in the manifest's `commands`, and
 report a failure it cannot reproduce or attribute to the change in
-the pull request body rather than fix it blind. The bundle step reads the base the
-agent chose, accepting nothing but the two recorded values on the
-command line. The trust boundary of §4 stands: the job holds no
-write credential and the fork is public.
+the pull request body rather than fix it blind. When
+`checks_unsettled` is non-zero, the prompt tells the session that CI
+had not finished when the selection read the head, so the absence
+of a failing check is not evidence it passed, and that it still runs
+the repository's tests before it finishes. The bundle step reads the
+base the agent chose, accepting nothing but the two recorded values
+on the command line. The trust boundary of §4 stands: the job holds
+no write credential and the fork is public.
 
 ### 20.3 The publish job
 
@@ -2360,7 +2375,10 @@ arises during the round reaches the comment, the report and the
 next selection, not the description. That
 line, and the round's issue comment, also name the failing checks
 the selection carried, escaped and bounded as agent text is, since
-a check's name comes from the code under review. A round sent by an
+a check's name comes from the code under review, and, when the
+selection's `checks_unsettled` is a count from one to 1,000, say `N
+check(s) still running at selection`; any other value says nothing.
+A round sent by an
 antagonistic hand-back names the review it answers, its round and
 its URL, in both places, from the trusted selection fields alone,
 never the body, and the check refuses an entry whose URL is not the

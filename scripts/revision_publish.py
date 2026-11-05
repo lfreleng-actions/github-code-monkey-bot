@@ -106,6 +106,7 @@ def run_push(
     # may add a cleanup warning of its own after them.
     carried = list(cast("list[str]", check.get("warnings") or []))
     warnings.extend(carried)
+    result["checks_unsettled"] = check.get("checks_unsettled") or 0
     if result["verdict"] == "handoff":
         # The step holds no token for a handoff, so the head check
         # waits for respond, which has the pull request token.

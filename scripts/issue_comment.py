@@ -25,6 +25,7 @@ from review_outcome import (
     review_sentence,
     review_token,
     review_verdict,
+    unsettled_at_selection,
 )
 
 
@@ -108,6 +109,9 @@ def _proposed_comment(
                 opening.rstrip(".")
                 + f". It set out to fix the failing checks: {failing}"
             )
+        running = unsettled_at_selection(result.get("checks_unsettled"))
+        if running:
+            opening = opening.rstrip(".") + f". {running}"
         answered = handback_text(result)
         if answered:
             opening = opening.rstrip(".") + f". {answered}"

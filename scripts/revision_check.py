@@ -15,6 +15,7 @@ import re
 from typing import Any, cast
 
 import proposal_policy as policy
+import review_outcome as outcome
 from proposal_model import Check
 from proposal_policy import PublishError, Rejection
 
@@ -238,6 +239,9 @@ def round_note(check: Check) -> str:
     base = "rebased onto the default branch" if check.rebased else "on its base"
     failing = policy.failing_checks_text(list(check.failing_checks))
     checks = f" It set out to fix the failing checks: {failing}." if failing else ""
+    running = outcome.unsettled_at_selection(check.checks_unsettled)
+    if running:
+        checks += f" {running}."
     conflict = (
         " It set out to resolve a conflict with the default branch."
         if check.conflicted

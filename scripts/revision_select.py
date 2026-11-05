@@ -131,7 +131,8 @@ def outstanding(
     pull request comments do not carry it; the thread
     reads heard it over every thread, the packet's bounds aside. A
     head with no review yet is left for the gate to await, and a clean
-    head with nothing else is done. A ``mergeable`` that never settled
+    head with nothing else is done, or skips as still running while
+    its checks have yet to finish. A ``mergeable`` that never settled
     is no work on its own, so a GitHub hiccup cannot spend rounds.
     """
     packet, verdict = findings.threads, findings.verdict
@@ -250,6 +251,7 @@ def build_entry(
         "antagonistic_review": findings.handback,
         "checks": findings.checks.checks,
         "checks_dropped": findings.checks.dropped,
+        "checks_unsettled": findings.checks.unsettled,
         **conversation(repository, issue, pull_number, since),
     }
 
@@ -264,7 +266,8 @@ def scan_reasons(
     """Why a scan gives the pull request a round, or ``Skip`` when it does not."""
     reasons = outstanding(pull, findings, repository=repository, since=history.since)
     if not reasons:
-        raise Skip("nothing outstanding")
+        running = findings.checks.unsettled
+        raise Skip("checks still running" if running else "nothing outstanding")
     # After a handoff the threads the agent disputed stay open on
     # purpose; a maintainer's word, not the threads or the checks,
     # resumes rounds.

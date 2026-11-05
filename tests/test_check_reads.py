@@ -143,6 +143,21 @@ class SelectionTest(ChecksCase):
         # A run whose output counts no annotation costs no read.
         self.assertFalse(any("annotations" in e for e in self.endpoints))
 
+    def test_unfinished_runs_count_as_unsettled_and_nowhere_else(self) -> None:
+        """Queued and in-progress runs are unsettled; a success counts nowhere."""
+        self.runs = [
+            run(1, "going", None, status="in_progress"),
+            run(2, "queued", None, status="queued"),
+            run(3, "ok", "success"),
+        ]
+        packet = self.read()
+        self.assertEqual(packet.unsettled, 2)
+        self.assertEqual(packet.checks, [])
+        self.assertEqual(packet.outstanding, 0)
+        self.assertEqual(packet.dropped, 0)
+        self.runs = [run(3, "ok", "success")]
+        self.assertEqual(self.read().unsettled, 0)
+
     def test_excluded_names_are_carried_but_not_outstanding(self) -> None:
         """The exclusion list keeps a run out of the count that brings a round."""
         self.runs = [run(1, "external"), run(2, "ours")]
@@ -222,6 +237,17 @@ class BoundsTest(ChecksCase):
         packet = self.read()
         self.assertEqual(len(packet.checks), checks.MAX_CHECKS)
         self.assertEqual(packet.dropped, 5)
+        self.assertEqual(packet.outstanding, 35)
+
+    def test_unsettled_count_is_whole_whatever_the_bounds_keep(self) -> None:
+        """Every unfinished run counts, past the failing-run bound too."""
+        self.runs = [run(i, f"r{i:02}") for i in range(35)]
+        self.runs += [
+            run(100 + i, f"q{i:02}", None, status="queued") for i in range(40)
+        ]
+        packet = self.read()
+        self.assertEqual(len(packet.checks), checks.MAX_CHECKS)
+        self.assertEqual(packet.unsettled, 40)
         self.assertEqual(packet.outstanding, 35)
 
     def test_message_and_summary_truncated_utf8_safe(self) -> None:

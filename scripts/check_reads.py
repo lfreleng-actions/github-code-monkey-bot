@@ -53,14 +53,18 @@ class CheckPacket:
     dropped: int
     # Failing runs, kept or dropped, that are not on the exclusion list.
     outstanding: int
+    # Runs not yet completed: queued, in progress or waiting. Whole,
+    # whatever the bounds keep; their absence from ``checks`` proves
+    # nothing about whether they will pass.
+    unsettled: int = 0
 
 
 def failing_checks(repository: str, head_sha: str) -> CheckPacket:
     """The head's failing check runs with their annotations, bounded.
 
     Every run is read before the bounds apply, so the count of
-    failing runs that bring a round is whole whatever the packet
-    keeps.
+    failing runs that bring a round, and of runs yet to finish, is
+    whole whatever the packet keeps.
     """
     return failing_of(repository, check_runs(repository, head_sha))
 
@@ -81,6 +85,7 @@ def failing_of(
         key=lambda run: (str(run.get("name") or ""), run_id(run) or 0),
     )
     outstanding = sum(1 for run in failing if run.get("name") not in EXCLUDED)
+    unsettled = sum(1 for run in runs if is_unsettled(run))
     kept: list[dict[str, Any]] = []
     dropped = max(0, len(failing) - MAX_CHECKS)
     total = 0
@@ -97,7 +102,7 @@ def failing_of(
         dropped += unread + len(annotations) - len(entry["annotations"])
         total += size
         kept.append(entry)
-    return CheckPacket(kept, dropped, outstanding)
+    return CheckPacket(kept, dropped, outstanding, unsettled)
 
 
 def check_runs(
