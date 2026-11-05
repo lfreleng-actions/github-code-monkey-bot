@@ -991,7 +991,6 @@ class RunPushRevisionTest(NoNetworkCase):
             "delete": delete,
         }
 
-    @unittest.expectedFailure
     def test_a_branch_moved_since_selection_is_refused_before_any_write(self) -> None:
         """Another round moved the branch: rejected, no replay, scratch or swap."""
         result, writes = self.push_untouched({"state": "open"}, "b" * 40)
@@ -1004,7 +1003,6 @@ class RunPushRevisionTest(NoNetworkCase):
         for name in ("create", "replay", "graphql", "delete"):
             writes[name].assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_deleted_branch_is_refused_before_any_write(self) -> None:
         """A 404 on the branch is the branch gone, a rejection, not a failure."""
         result, writes = self.push_untouched({"state": "open"}, GONE)
@@ -1015,7 +1013,6 @@ class RunPushRevisionTest(NoNetworkCase):
         for name in ("create", "replay", "graphql"):
             writes[name].assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_merged_pull_request_is_a_rejection(self) -> None:
         """Merged, its branch deleted: rejected, nothing written, nothing raised."""
         result, writes = self.push_untouched(MERGED_PULL, GONE)
@@ -1027,7 +1024,6 @@ class RunPushRevisionTest(NoNetworkCase):
         for mock in writes.values():
             mock.assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_closed_pull_request_is_a_rejection(self) -> None:
         """Closed unmerged, its branch still there: rejected, nothing written."""
         result, writes = self.push_untouched(CLOSED_PULL, HEAD)
@@ -1059,7 +1055,6 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertEqual(update["beforeOid"], HEAD)
         self.assertEqual(update["afterOid"], NEW_HEAD)
 
-    @unittest.expectedFailure
     def test_a_failed_head_read_still_fails_the_job(self) -> None:
         """A 502 on the pre-read is not absence: the job fails, nothing moves."""
         path = self.write_check(revision_check())
@@ -1308,7 +1303,6 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(stored["_replied"], 0)
         self.assertIsInstance(stored["_error"], SystemExit)
 
-    @unittest.expectedFailure
     def test_a_handoff_on_a_merged_pull_request_is_refused(self) -> None:
         """Merged at the selected head: rejected, no reply, nothing raised."""
         stored = self.respond_handoff(HEAD, MERGED_PULL)
@@ -1320,7 +1314,6 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(stored["_replied"], 0)
         self.assertIsNone(stored["_error"])
 
-    @unittest.expectedFailure
     def test_a_handoff_on_a_closed_pull_request_is_refused(self) -> None:
         """Closed unmerged at the selected head: rejected, no reply."""
         stored = self.respond_handoff(HEAD, CLOSED_PULL)
@@ -1477,6 +1470,7 @@ class HandoffTest(NoNetworkCase):
 
     def test_cleanup_warning_survives_an_operational_failure(self) -> None:
         """A scratch branch left after a failed replay reaches the written result."""
+        self.target_at_selection()
         path = self.write_check(revision_check())
 
         def move(_clone: Path, check: dict[str, Any]) -> list[str]:
@@ -1498,6 +1492,7 @@ class HandoffTest(NoNetworkCase):
 
     def test_an_unknown_swap_outcome_is_not_called_unchanged(self) -> None:
         """When the branch may have moved, the failure says so rather than deny it."""
+        self.target_at_selection()
         path = self.write_check(revision_check())
         with (
             patch.object(refs, "ensure_fork"),
@@ -1520,6 +1515,7 @@ class HandoffTest(NoNetworkCase):
 
     def test_cleanup_warning_survives_a_failed_swap(self) -> None:
         """A scratch branch left after a failed move is reported, not lost."""
+        self.target_at_selection()
         path = self.write_check(revision_check())
 
         def move(_clone: Path, check: dict[str, Any]) -> list[str]:
@@ -2100,7 +2096,6 @@ class RunRetitleTest(NoNetworkCase):
             )
         return write, out.getvalue()
 
-    @unittest.expectedFailure
     def test_a_merged_pull_request_keeps_its_title(self) -> None:
         """Merged, its branch deleted: the title is left alone and nothing raises."""
         write, out = self.retitle_gone(dict(MERGED_PULL, title="Fix: Old"), "f" * 40)
@@ -2108,21 +2103,18 @@ class RunRetitleTest(NoNetworkCase):
         self.assertIn("retitle: pull request #41 is merged; title left alone", out)
         self.assertFalse(self.record.is_file())
 
-    @unittest.expectedFailure
     def test_a_closed_pull_request_keeps_its_title(self) -> None:
         """Closed at the selected head: nothing to retitle for."""
         write, out = self.retitle_gone(dict(CLOSED_PULL, title="Fix: Old"), HEAD)
         write.assert_not_called()
         self.assertIn("retitle: pull request #41 is closed; title left alone", out)
 
-    @unittest.expectedFailure
     def test_a_deleted_branch_keeps_the_title(self) -> None:
         """An open pull request whose branch reads 404: left alone, no failure."""
         write, out = self.retitle_gone({"state": "open", "title": "Fix: Old"}, "f" * 40)
         write.assert_not_called()
         self.assertIn("title left alone", out)
 
-    @unittest.expectedFailure
     def test_a_deleted_branch_at_the_selected_head_keeps_the_title(self) -> None:
         """The pull request still reports the selected head; its branch reads 404.
 
@@ -2136,7 +2128,6 @@ class RunRetitleTest(NoNetworkCase):
         )
         self.assertFalse(self.record.is_file())
 
-    @unittest.expectedFailure
     def test_a_branch_ahead_of_the_pull_request_keeps_the_title(self) -> None:
         """The branch moved while the pull request still reports the selected head."""
         write, out = self.retitle_gone(
@@ -2145,7 +2136,6 @@ class RunRetitleTest(NoNetworkCase):
         write.assert_not_called()
         self.assertIn("retitle: branch moved to bbbbbbb; title left alone", out)
 
-    @unittest.expectedFailure
     def test_a_failed_branch_read_fails_the_retitle(self) -> None:
         """A 502 on the branch read is not absence: the step fails, nothing written."""
         with self.assertRaises(SystemExit):

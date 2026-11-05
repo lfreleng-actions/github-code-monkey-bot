@@ -16,8 +16,9 @@ from typing import Any, cast
 
 import bot_github as github
 import copilot_review as review
+import issue_reads as reads
 import proposal_model as model
-from branch_swap import already_moved
+from branch_swap import already_moved, branch_tip
 
 
 def run_retitle(args: argparse.Namespace) -> None:
@@ -26,9 +27,12 @@ def run_retitle(args: argparse.Namespace) -> None:
     The Semantic Pull Request check runs on the push and compares the
     title with the commit subject, so the title must lead the push
     (AGENTS.md section 10.1). Only a proposed revision whose title
-    differs writes, and only while the pull request heads at the
-    selected commit or at this run's own published chain on a retry;
-    a head another session moved keeps its title. What the write
+    differs writes, and only while the pull request and its fork
+    branch, read live, both head at the selected commit or at this
+    run's own published chain on a retry; a head another session
+    moved keeps its title, as does a pull request closed or merged
+    since selection, or one whose branch is gone, and none of them
+    fails the step. Any other branch read failure fails it. What the write
     replaced goes to ``--record`` so a push that then fails with the
     branch unchanged can take the title back.
     """
@@ -39,13 +43,27 @@ def run_retitle(args: argparse.Namespace) -> None:
     repository = str(check["repository"])
     number = int(check["pull_number"])
     title = str(check.get("pr_title") or "")
+    pull = github.api_object(f"repos/{repository}/pulls/{number}")
+    state = reads.pull_state(pull)
+    if state != "open":
+        print(f"retitle: pull request #{number} is {state}; title left alone")
+        return
     head = review.pull_head(repository, number)
+    # The pull request's head can lag its fork branch, deleted or moved
+    # since, so the branch itself must agree before the title moves.
+    tip = branch_tip(str(check["fork_repository"]), str(check["branch"]))
+    if tip is None:
+        print(f"retitle: branch {check['branch']} is gone; title left alone")
+        return
+    if tip != head:
+        print(f"retitle: branch moved to {tip[:7]}; title left alone")
+        return
     if head != str(check["head_sha"]):
         chain = already_moved(check)
         if chain is None or head != chain[-1]:
             print(f"retitle: head moved to {head[:7]}; title left alone")
             return
-    current = github.api_object(f"repos/{repository}/pulls/{number}").get("title")
+    current = pull.get("title")
     if not title or title == current:
         print("retitle: title unchanged")
         return

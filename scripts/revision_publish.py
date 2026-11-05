@@ -23,7 +23,7 @@ import copilot_review as review
 import issue_reads as reads
 import proposal_model as model
 import thread_reads as threads_of
-from branch_swap import SwapUnknown, already_moved, move_branch
+from branch_swap import SwapUnknown, already_moved, branch_tip, move_branch
 from proposal_policy import PublishError, Rejection
 from revision_check import reply_marker
 
@@ -64,6 +64,34 @@ def update_pull_request(
     )
 
 
+def closed_pull_request(repository: str, number: int) -> str | None:
+    """Why the round stands down when its pull request is no longer open, else None.
+
+    A pull request closed or merged since selection has nothing left
+    for the round to publish to: a rejection, not a failure. A read
+    that fails is the caller's failure.
+    """
+    state = reads.pull_state(github.api_object(f"repos/{repository}/pulls/{number}"))
+    if state == "open":
+        return None
+    return f"pull request #{number} is {state}; nothing to publish"
+
+
+def moved_branch(check: dict[str, Any]) -> str | None:
+    """Why the round stands down when the bot branch left the selected head.
+
+    Read before any write to the branch, so a branch another round
+    moved, or deleted, is refused with no replay, scratch branch or
+    swap. A read that fails is the caller's failure.
+    """
+    expected = str(check["head_sha"])
+    head = branch_tip(str(check["fork_repository"]), str(check["branch"]))
+    if head == expected:
+        return None
+    now = "a deleted branch" if head is None else head[:7]
+    return f"head moved from {expected[:7]} to {now} since selection; nothing forced"
+
+
 def run_push(
     args: argparse.Namespace,
     check: dict[str, Any],
@@ -102,6 +130,9 @@ def run_push(
     target = str(check["repository"])
     fork = str(check["fork_repository"])
     try:
+        closed = closed_pull_request(target, int(check["pull_number"]))
+        if closed is not None:
+            raise Rejection(closed)
         refs.ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
         refs.sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
         published = already_moved(check)
@@ -113,6 +144,12 @@ def run_push(
             result["commits"] = published
             warnings.append("an earlier attempt already moved the branch to this round")
         else:
+            # GitHub may refuse a stale beforeOid with a generic error
+            # the swap cannot tell from a lost reply, so a move made
+            # before this read is refused here, before any write.
+            moved = moved_branch(check)
+            if moved is not None:
+                raise Rejection(moved)
             result["commits"] = move_branch(args.workdir / "clone", check)
     except Rejection as exc:
         result["verdict"] = "rejected"
@@ -146,23 +183,28 @@ def added_warnings(check: dict[str, Any], seen: int) -> list[str]:
 
 
 def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
-    """Whether the handoff may answer: the pull request head is the recorded one.
+    """Whether the handoff may answer: the pull request is open at the recorded head.
 
-    A proposal's swap refuses a moved head by itself; a handoff moves
-    nothing, so the guard is this read, with the pull request token.
-    Replies written against code a maintainer has since replaced
-    answer the wrong head, and the handoff's footer would pause the
-    rounds on a head the agent never weighed: a moved head is a
-    rejection. A head that cannot be read is a failure, not a
-    handoff taken on trust; the result records it before the raise.
+    A proposal's push refuses a closed pull request and a moved head
+    by itself; a handoff pushes nothing, so the guard is this read,
+    with the pull request token. A pull request closed or merged since
+    selection has nothing left to answer, and replies written against
+    code a maintainer has since replaced answer the wrong head, while
+    the handoff's footer would pause the rounds on a head the agent
+    never weighed: either is a rejection. A state or head that cannot
+    be read is a failure, not a handoff taken on trust; the result
+    records it before the raise.
     """
     expected = str(check["head_sha"])
+    repository = str(check["repository"])
+    number = int(check["pull_number"])
     try:
-        head = review.pull_head(str(check["repository"]), int(check["pull_number"]))
+        closed = closed_pull_request(repository, number)
+        head = None if closed is not None else review.pull_head(repository, number)
     except github.GitHubError as exc:
         result["verdict"] = "publish-failed"
         cast("list[str]", result["reasons"]).append(
-            f"could not read the pull request head: {github.safe_message(exc)}"
+            f"could not read the pull request: {github.safe_message(exc)}"
         )
         return False
     if head == expected:
@@ -170,8 +212,9 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     result["verdict"] = "rejected"
     result["pull_request_url"] = None
     cast("list[str]", result["reasons"]).append(
-        f"head moved from {expected[:7]} to {head[:7]} since selection; the "
-        "handoff answers code the agent did not see"
+        closed
+        or f"head moved from {expected[:7]} to {str(head)[:7]} since selection; "
+        "the handoff answers code the agent did not see"
     )
     return False
 

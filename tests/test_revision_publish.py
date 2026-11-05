@@ -202,7 +202,6 @@ class AlreadyMovedTest(unittest.TestCase):
         """The verified chain comes back as the publication."""
         self.assertEqual(self.moved([NEW]), [NEW])
 
-    @unittest.expectedFailure
     def test_a_deleted_branch_holds_no_chain(self) -> None:
         """A 404 on the fork branch means the branch is gone: None."""
         gone = github.GitHubError("gh: Not Found (HTTP 404)", status=404)
