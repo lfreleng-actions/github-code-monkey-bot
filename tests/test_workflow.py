@@ -2104,6 +2104,64 @@ class ListInputContracts(ReusableWorkflowCase):
                         self.assertNotRegex(text, rf"inputs\.{name}\b")
 
 
+@unittest.skipUnless(shutil.which("bash"), "needs bash")
+class NamedRepositoryContracts(ReusableWorkflowCase):
+    """The repository check reads gh's answer from stdout alone."""
+
+    STUB = (
+        "#!/bin/sh\n"
+        "printf '%b' \"$GH_STDOUT\"\n"
+        "printf '%b' \"$GH_STDERR\" >&2\n"
+        'exit "$GH_STATUS"\n'
+    )
+
+    def resolve(self, stdout: str, stderr: str, status: int) -> tuple[int, str]:
+        """Run the step on one scan repository against a stub gh."""
+        script = str(self.step("select", "named")["run"])
+        with tempfile.TemporaryDirectory() as holder:
+            stub = Path(holder) / "gh"
+            stub.write_text(self.STUB, encoding="utf-8")
+            stub.chmod(0o755)
+            proc = subprocess.run(
+                ["bash", "-eo", "pipefail", "-c", script],
+                env={
+                    "PATH": f"{holder}{os.pathsep}{os.environ['PATH']}",
+                    "ORG": "o",
+                    "REPOSITORIES": "repo",
+                    "ISSUE_REPOSITORIES": "",
+                    "PULL_REPOSITORIES": "",
+                    "GITHUB_OUTPUT": str(Path(holder) / "output"),
+                    "GH_STDOUT": stdout,
+                    "GH_STDERR": stderr,
+                    "GH_STATUS": str(status),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        return proc.returncode, proc.stdout
+
+    def test_a_warning_on_stderr_does_not_reject_a_public_repository(self) -> None:
+        """An update notice beside a successful answer is not part of it."""
+        status, output = self.resolve("false\\n", "A new release of gh\\n", 0)
+        self.assertEqual(status, 0, output)
+
+    def test_failures_are_told_apart_by_stderr(self) -> None:
+        """Private and absent reject the name; anything else is an error."""
+        rejected = "::error::repository o/repo not found or not public"
+        failed = "::error::Could not read o/repo: gh: Server Error (HTTP 502)"
+        cases = (
+            ("true\\n", "", 0, 1, rejected),
+            ("", "gh: Not Found (HTTP 404)\\n", 1, 1, rejected),
+            ("", "gh: Server Error (HTTP 502)\\n", 1, 2, failed),
+        )
+        for stdout, stderr, code, expected, message in cases:
+            with self.subTest(stdout=stdout, stderr=stderr):
+                status, output = self.resolve(stdout, stderr, code)
+                self.assertEqual(status, expected, output)
+                self.assertIn(message, output)
+
+
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
