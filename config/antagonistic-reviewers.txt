@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# GitHub Apps whose antagonistic reviews a revision round reads. One
+# App login per line, without the [bot] suffix; '#' starts a comment.
+# A review or thread counts only when its author has this login and
+# GitHub types it a Bot. An empty list turns the source off
+# (docs/DESIGN.md section 20.1).
+lf-releng-antagonistic-review-bot

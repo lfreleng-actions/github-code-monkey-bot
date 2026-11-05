@@ -77,6 +77,9 @@ class Check:
     # The names of the head's failing checks the selection carried:
     # what the round set out to fix besides the threads.
     failing_checks: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # The antagonistic review that handed the pull request back, as the
+    # selection read it (``review_id``, ``round``, ``url``), or None.
+    antagonistic_review: dict[str, Any] | None = None
     # When the selection read the issue's comments: the watermark the
     # round footer carries, so a comment posted during the run is new
     # work for the next round.
@@ -122,6 +125,12 @@ class Check:
                 str(c["name"])
                 for c in cast("list[dict[str, Any]]", entry.get("checks") or [])
             ]
+            handback = entry.get("antagonistic_review")
+            if isinstance(handback, dict):
+                data = cast("dict[str, Any]", handback)
+                check.antagonistic_review = {
+                    key: data[key] for key in ("review_id", "round", "url")
+                }
         return check
 
     def to_json(self) -> dict[str, Any]:
@@ -161,6 +170,7 @@ class Check:
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,
+            "antagonistic_review": self.antagonistic_review,
             "collected_at": self.collected_at,
             "session": self.session,
             "retry_of": self.retry_of,

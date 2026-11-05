@@ -11,6 +11,7 @@ and defused before a human reads it.
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 import proposal_policy as policy
@@ -20,6 +21,14 @@ from proposal_policy import PublishError, Rejection
 MAX_REPLY = 4_000
 MAX_RESPONSES = 100
 REPLY_PREFIX = "🐒 Reply from the AI agent that authored this pull request: "
+# The review URL the selection builds for a hand-back: the only form
+# the description and the issue comment will print.
+HANDBACK_URL = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*"
+    r"#pullrequestreview-[1-9][0-9]*"
+)
+# What the round summary names when it answers a hand-back.
+HANDBACK_SECTION = "antagonistic review"
 
 
 def reply_marker(round_number: int, session: str) -> str:
@@ -64,6 +73,38 @@ def check_entry(data: dict[str, Any]) -> None:
             or type(cast("dict[str, Any]", thread).get("comment_id")) is not int
         ):
             raise PublishError("selection thread lacks thread_id or comment_id")
+    check_handback(
+        data.get("antagonistic_review"),
+        data.get("repository"),
+        pull_data["number"],
+    )
+
+
+def check_handback(handback: Any, repository: Any, number: int) -> None:
+    """A selection's hand-back is None or names this pull request's review."""
+    if handback is None:
+        return
+    data = cast("dict[str, Any]", handback) if isinstance(handback, dict) else {}
+    review_id, round_number, url = (
+        data.get("review_id"),
+        data.get("round"),
+        data.get("url"),
+    )
+    if (
+        type(review_id) is not int
+        or review_id < 1
+        or type(round_number) is not int
+        or round_number < 1
+        or not isinstance(url, str)
+        or not HANDBACK_URL.fullmatch(url)
+        or not isinstance(repository, str)
+        or url
+        != f"https://github.com/{repository}/pull/{number}"
+        f"#pullrequestreview-{review_id}"
+    ):
+        raise PublishError(
+            "selection antagonistic_review lacks id, round or its own url"
+        )
 
 
 def accepted_bases(check: Check) -> tuple[str, ...]:
@@ -138,11 +179,31 @@ def read_responses(manifest: dict[str, Any], check: Check) -> None:
 
 
 def read_summary(manifest: dict[str, Any], check: Check) -> None:
-    """The round summary is the issue comment; required and bounded."""
+    """The round summary is the issue comment; required and bounded.
+
+    A round answering a hand-back refuses a summary over the bound
+    rather than cut it: on a handoff it is the only answer to the
+    review's body findings, and the footer records the review as
+    answered.
+    """
     summary = manifest.get("round_summary")
     if not isinstance(summary, str) or not summary.strip():
         raise Rejection("manifest carries no round_summary")
-    check.round_summary = policy.defuse_mentions(summary.strip())[: policy.MAX_REASON]
+    text = policy.defuse_mentions(summary.strip())
+    if check.antagonistic_review is not None and len(text) > policy.MAX_REASON:
+        raise Rejection(
+            f"round_summary answering an antagonistic review exceeds "
+            f"{policy.MAX_REASON} characters"
+        )
+    check.round_summary = text[: policy.MAX_REASON]
+    if (
+        check.antagonistic_review is not None
+        and HANDBACK_SECTION not in check.round_summary.lower()
+    ):
+        check.warnings.append(
+            "the round summary does not answer the antagonistic review that "
+            "handed this pull request back"
+        )
 
 
 def read_revision(manifest: dict[str, Any], check: Check) -> None:
@@ -177,4 +238,14 @@ def round_note(check: Check) -> str:
     base = "rebased onto the default branch" if check.rebased else "on its base"
     failing = policy.failing_checks_text(list(check.failing_checks))
     checks = f" It set out to fix the failing checks: {failing}." if failing else ""
-    return f"Round {check.round} of revision, {base}.{checks}\n\n"
+    return f"Round {check.round} of revision, {base}.{checks}{handback_note(check)}\n\n"
+
+
+def handback_note(check: Check) -> str:
+    """The sentence naming the antagonistic review a round answers, or nothing."""
+    handback = check.antagonistic_review
+    if handback is None:
+        return ""
+    return (
+        f" It answers antagonistic review round {handback['round']}: {handback['url']}."
+    )

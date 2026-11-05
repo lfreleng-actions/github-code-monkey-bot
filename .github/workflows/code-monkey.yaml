@@ -660,6 +660,8 @@ jobs:
             --exclude-file monkey-assets/config/excluded-repos.txt \
             --exclude-repos "$EXCLUDE_REPOS" \
             --fork-orgs monkey-assets/config/fork-orgs.json \
+            --antagonistic-reviewers \
+            monkey-assets/config/antagonistic-reviewers.txt \
             --max-pull-requests "$MAX_PRS" \
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \

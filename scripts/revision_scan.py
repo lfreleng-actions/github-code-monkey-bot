@@ -30,6 +30,7 @@ def scan(
     skipped: dict[str, int],
     skipped_issues: list[dict[str, str]],
     allowed: Callable[[str], bool] | None = None,
+    reviewers: frozenset[str] = frozenset(),
 ) -> list[Round]:
     """A builder per bot pull request in the owner, ranked, built on demand.
 
@@ -41,9 +42,10 @@ def scan(
     which returns the entry or None after recording the skip; the
     repository beside it lets the budget refuse a second round of one
     repository unread. ``allowed`` is the run's repository policy, by
-    lower-cased name; a hit outside it gets no builder.
+    lower-cased name; a hit outside it gets no builder. ``reviewers``
+    are the antagonistic review Apps whose findings count.
     """
-    inputs = Inputs(org, bot, fork_orgs)
+    inputs = Inputs(org, bot, fork_orgs, reviewers)
     slug = str(bot["login"]).removesuffix("[bot]")
     found = revisions.search_bot_pull_requests(org, slug)
     ranked: list[tuple[tuple[int, str, int], str, int, Prefetch]] = []

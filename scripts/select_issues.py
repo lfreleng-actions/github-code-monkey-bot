@@ -43,6 +43,7 @@ from issue_reads import SelectionError
 from selection_choose import choose
 from selection_inputs import (
     load_exclusions,
+    load_reviewers,
     parse_max_pull_requests,
     parse_repositories,
 )
@@ -230,6 +231,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         # review; no other mode publishes that.
         raise SelectionError("pull_requests needs pull-requests mode")
     exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
+    reviewers = load_reviewers(args.antagonistic_reviewers)
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
     try:
         enabled = categories.parse_categories(args.categories)
@@ -261,6 +263,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         explicit=explicit_run,
         skips=(skipped, skipped_issues),
         allowed=allowed,
+        reviewers=reviewers,
     )
     if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given
@@ -389,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)
+    parser.add_argument("--antagonistic-reviewers", type=Path)
     parser.add_argument("--include-dotgithub", action="store_true")
     parser.add_argument("--include-assigned", action="store_true")
     parser.add_argument("--max-pull-requests", default="10")
