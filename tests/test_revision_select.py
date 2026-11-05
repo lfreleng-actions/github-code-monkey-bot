@@ -27,6 +27,15 @@ BASE = "b" * 40
 TIP = "c" * 40
 BOT = {"login": "lf-code-monkey[bot]", "email": "e"}
 FORK_ORGS: dict[str, Any] = {"default": "lfreleng-bot-forks", "organisations": {}}
+APP = "lf-releng-antagonistic-review-bot"
+REVIEWERS = frozenset({APP})
+# The body shapes an antagonistic review takes (DESIGN.md section 20.1).
+SUMMARY_ONLY = "The change never closes the file it opens.\n"
+UNPLACED = "Summary.\n\n**src/x.py:12**: the loop is off by one.\n"
+FALLBACK = (
+    "GitHub refused the inline findings.\n\n"
+    "**src/x.py:12**: off by one.\n**src/y.py:3**: unused import.\n"
+)
 
 
 def pull(**overrides: Any) -> dict[str, Any]:
@@ -61,6 +70,24 @@ def thread() -> dict[str, Any]:
         "replies": [],
         "replies_dropped": False,
     }
+
+
+def app_review(text: str, *, handback: bool = True) -> dict[str, Any]:
+    """The listed App's REST review of the head, ending with its marker."""
+    kind = "antagonistic-handback" if handback else "antagonistic-review"
+    return {
+        "id": 501,
+        "user": {"login": f"{APP}[bot]", "type": "Bot"},
+        "commit_id": HEAD,
+        "state": "COMMENTED",
+        "submitted_at": "2026-10-05T00:00:00Z",
+        "body": f"{text}\n---\nFooter.\n<!-- {kind} round=2 head={HEAD} run=777 -->\n",
+    }
+
+
+def no_rounds() -> list[dict[str, Any]]:
+    """An empty, typed round summary list."""
+    return []
 
 
 class RevisionCase(unittest.TestCase):
@@ -498,6 +525,149 @@ class PullRequestForBranchTest(unittest.TestCase):
             self.assertIsNone(
                 select.pull_request_for_branch("org/alpha", "f", "b", BOT["login"])
             )
+
+
+class HandbackSelectionTest(RevisionCase):
+    """A hand-back newer than the last round brings one; its body rides along."""
+
+    def setUp(self) -> None:
+        """No hand-back by default: the listing returns no reviews."""
+        super().setUp()
+        self.reviews: list[dict[str, Any]] = []
+        patch.object(github, "api_list", side_effect=self.reviews_of).start()
+
+    def reviews_of(self, endpoint: str) -> list[dict[str, Any]]:
+        """The fixture reviews, for the pull request's review listing alone."""
+        self.assertEqual(endpoint, "repos/org/alpha/pulls/41/reviews")
+        return self.reviews
+
+    def scan(self) -> dict[str, Any]:
+        """The entry a scan builds with the App listed."""
+        return select.build_entry(
+            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS),
+            "alpha",
+            41,
+            explicit=False,
+        )
+
+    @unittest.expectedFailure
+    def test_hand_back_with_inline_findings(self) -> None:
+        """The App's threads and its body reach the entry; the scan selects."""
+        self.threads = [{**thread(), "author": APP}]
+        self.reviews = [app_review(UNPLACED)]
+        entry = self.scan()
+        self.assertIn("antagonistic review round 2 handed back", entry["round_reasons"])
+        self.assertEqual(entry["threads"][0]["author"], APP)
+        handback = entry["antagonistic_review"]
+        self.assertEqual(handback["review_id"], 501)
+        self.assertEqual(
+            handback["url"],
+            "https://github.com/org/alpha/pull/41#pullrequestreview-501",
+        )
+        self.assertIn(UNPLACED, handback["body"])
+
+    @unittest.expectedFailure
+    def test_body_only_findings_select(self) -> None:
+        """A summary-only defect, an unplaced finding, the 422 fallback."""
+        for text in (SUMMARY_ONLY, UNPLACED, FALLBACK):
+            with self.subTest(text=text):
+                self.reviews = [app_review(text)]
+                entry = self.scan()
+                self.assertEqual(
+                    entry["round_reasons"], ["antagonistic review round 2 handed back"]
+                )
+                self.assertIn(text, entry["antagonistic_review"]["body"])
+
+    @unittest.expectedFailure
+    def test_threads_reader_hears_the_list(self) -> None:
+        """The thread read is given the listed Apps."""
+        with patch.object(
+            thread_reads,
+            "unresolved_threads",
+            return_value=thread_reads.ThreadPacket([], 0, False),
+        ) as read:
+            self.reviews = [app_review(SUMMARY_ONLY)]
+            self.scan()
+        self.assertEqual(read.call_args.args[3], REVIEWERS)
+
+    @unittest.expectedFailure
+    def test_a_review_landing_between_reads_is_not_half_read(self) -> None:
+        """A hand-back posted mid-read fails the read; the retry reads it whole.
+
+        GitHub posts a review with its inline comments, so one landing
+        between the reads would put its threads in the packet without
+        its body. A round those threads start moves the head, and a
+        hand-back of an older head never counts again, so its body
+        findings would be lost: the read fails instead.
+        """
+        order: list[str] = []
+        posted: list[bool] = [False]
+
+        def reviews_of(_endpoint: str) -> list[dict[str, Any]]:
+            order.append("reviews")
+            found = [app_review(UNPLACED)] if posted[0] else []
+            posted[0] = True
+            return found
+
+        def threads_of(*_args: Any) -> Any:
+            order.append("threads")
+            found = [{**thread(), "author": APP}] if posted[0] else []
+            return thread_reads.ThreadPacket(found, 0, False)
+
+        patch.object(github, "api_list", side_effect=reviews_of).start()
+        patch.object(thread_reads, "unresolved_threads", side_effect=threads_of).start()
+        with self.assertRaisesRegex(github.GitHubError, "changed during the read"):
+            self.scan()
+        self.assertEqual(order, ["reviews", "threads", "reviews"])
+        entry = self.scan()
+        self.assertEqual(entry["antagonistic_review"]["review_id"], 501)
+        self.assertIn(UNPLACED, entry["antagonistic_review"]["body"])
+        self.assertEqual(entry["threads"][0]["author"], APP)
+        # Once a round moves the head, the old head's hand-back is gone.
+        self.pull = pull(head_sha="f" * 40)
+        self.assertIsNone(self.scan()["antagonistic_review"])
+
+    @unittest.expectedFailure
+    def test_no_hand_back_brings_no_round(self) -> None:
+        """An ``antagonistic-review`` marker hands nothing back."""
+        self.reviews = [app_review(SUMMARY_ONLY, handback=False)]
+        with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
+            self.scan()
+
+    @unittest.expectedFailure
+    def test_a_hand_back_before_the_watermark_is_answered(self) -> None:
+        """A hand-back the last round already read brings no round of its own."""
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        self.rounds = (1, no_rounds(), "2026-10-06T00:00:00Z", "proposed")
+        with self.assertRaisesRegex(select.Skip, "nothing outstanding"):
+            self.scan()
+        self.rounds = (1, no_rounds(), "2026-10-04T00:00:00Z", "proposed")
+        self.assertEqual(
+            self.scan()["round_reasons"], ["antagonistic review round 2 handed back"]
+        )
+
+    @unittest.expectedFailure
+    def test_failed_listing_fails_the_read(self) -> None:
+        """A review listing that fails aborts the build; no round runs without it."""
+        patch.object(
+            github, "api_list", side_effect=github.GitHubError("listing failed")
+        ).start()
+        with self.assertRaises(github.GitHubError):
+            self.scan()
+        with self.assertRaises(github.GitHubError):
+            select.build_entry(
+                select.Inputs("org", BOT, FORK_ORGS, REVIEWERS),
+                "alpha",
+                41,
+                explicit=True,
+            )
+
+    @unittest.expectedFailure
+    def test_unlisted_reads_nothing(self) -> None:
+        """Without a listed App the entry carries no hand-back and lists nothing."""
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        entry = self.build(explicit=True)
+        self.assertIsNone(entry["antagonistic_review"])
 
 
 if __name__ == "__main__":

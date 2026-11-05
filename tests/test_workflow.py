@@ -1744,6 +1744,15 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         script = flatten(self.step("select", "Select issues")["run"])
         self.assertIn("--fork-orgs monkey-assets/config/fork-orgs.json", script)
 
+    @unittest.expectedFailure
+    def test_select_reads_the_antagonistic_reviewers(self) -> None:
+        """The trusted App list comes from the pinned assets (DESIGN.md 20.1)."""
+        script = flatten(self.step("select", "Select issues")["run"])
+        self.assertIn(
+            "--antagonistic-reviewers monkey-assets/config/antagonistic-reviewers.txt",
+            script,
+        )
+
     def test_read_mint_scopes_to_the_requested_repositories(self) -> None:
         """Selection reads with the caller's repository list; empty is org-wide."""
         mint = self.step("select", "app-token")
