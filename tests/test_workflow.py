@@ -2556,20 +2556,22 @@ class TestingCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], True)
 
-    def test_plumbing_is_secretless_selection_of_the_pr_head(self) -> None:
-        """PR runs select only, dry, with no secrets, from the PR's own assets."""
+    def test_plumbing_is_secretless_selection_of_the_merge_ref(self) -> None:
+        """PR runs select only, dry, with no secrets, from the merge commit.
+
+        The local ``uses:`` reads the workflow from ``github.sha``; the
+        assets come from the same commit, so a branch behind main across
+        a workflow/script interface change still runs one consistent
+        pair rather than the merge-ref workflow with head-ref scripts.
+        """
         job = self.jobs["plumbing"]
         self.assertEqual(job["uses"], REUSABLE_CALL)
         self.assertNotIn("secrets", job)
         with_ = cast(dict[str, Any], job["with"])
         self.assertEqual(with_["mode"], "select")
         self.assertIs(with_["dry_run"], True)
-        self.assert_expression(
-            with_["assets_repository"], "github.event.pull_request.head.repo.full_name"
-        )
-        self.assert_expression(
-            with_["assets_ref"], "github.event.pull_request.head.sha"
-        )
+        self.assert_expression(with_["assets_repository"], "github.repository")
+        self.assert_expression(with_["assets_ref"], "github.sha")
 
     def test_manual_dry_run_takes_the_target_lists(self) -> None:
         """A dispatch names repositories to scan or issues to work."""
