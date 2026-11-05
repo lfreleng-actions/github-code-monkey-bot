@@ -31,6 +31,7 @@ categories = import_module("issue_categories")
 
 ALL = frozenset(categories.ALL_CATEGORIES)
 outputs = import_module("selection_outputs")
+document = import_module("selection_document")
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -1517,7 +1518,7 @@ class MainTest(NoSubprocessCase):
                 (out / "excluded-repos.txt").read_text(encoding="utf-8"), "gamma\n"
             )
         self.assertIn("Selected 1 issue(s) from 3 open", stderr.getvalue())
-        self.assertEqual(selection["schema"], select.SCHEMA)
+        self.assertEqual(selection["schema"], document.SCHEMA)
         self.assertTrue(selection["dry_run"])
         self.assertEqual(selection["bot"]["login"], "b[bot]")
         self.assertEqual(selection["guidance"]["commit"], SHA_A)
