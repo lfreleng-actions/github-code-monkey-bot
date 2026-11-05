@@ -1571,10 +1571,13 @@ read a prior run's ledger.
 The template's linting configuration stays as the repository's
 gate: `prek` hooks including gitleaks, gitlint, ruff, mypy,
 basedpyright, actionlint, gha-workflow-linter, reuse, markdownlint,
-write-good and `aislop` at threshold 100. pre-commit.ci skips the
-hooks it cannot finish: `gha-workflow-linter` and `aislop` need the
-network, and actionlint runs past its 180-second limit, so the
-`actionlint` job in `testing.yaml` runs that hook instead.
+write-good and `aislop` at threshold 100. pre-commit.ci stops the
+whole run at 3 minutes and has no network, so it skips four hooks:
+`gha-workflow-linter` and `aislop` need the network, and
+`monkey-tests` and actionlint are the slowest. The `regression` and
+`actionlint` jobs in `testing.yaml` run the last two, and
+`linting.yaml` runs the rest of `ci.skip` through the
+`generic-workflows` linting reusable.
 
 ## 15. Rollout
 

@@ -4,12 +4,13 @@
 
 ci:
   autofix_prs: false
-  # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter.
-  # aislop also runs engines that can call the network at scan time
-  # (dependency audits), so it cannot run in the sandbox either.
-  # actionlint-shellcheck outruns pre-commit.ci's 180-second limit on
-  # these workflow files; the 'actionlint' job in testing.yaml runs it.
-  skip: [gha-workflow-linter, aislop, actionlint-shellcheck]
+  # pre-commit.ci's sandbox has no network and a 3 minute limit on the
+  # whole run. gha-workflow-linter and aislop need the network.
+  # monkey-tests is the largest hook and duplicates testing.yaml's
+  # regression job, so it is skipped to stay under the limit; the same
+  # holds for actionlint-shellcheck and testing.yaml's actionlint job.
+  # linting.yaml runs the hooks listed here that testing.yaml does not.
+  skip: [gha-workflow-linter, aislop, actionlint-shellcheck, monkey-tests]
   autofix_commit_msg: |
     Chore: Pre-commit autofixes
 
