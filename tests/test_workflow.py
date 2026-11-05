@@ -2133,7 +2133,6 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
             )
         return proc.returncode, proc.stdout
 
-    @unittest.expectedFailure
     def test_a_warning_on_stderr_does_not_reject_a_public_repository(self) -> None:
         """An update notice beside a successful answer is not part of it."""
         status, output = self.resolve("false\\n", "A new release of gh\\n", 0)

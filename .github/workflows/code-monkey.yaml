@@ -339,19 +339,23 @@ jobs:
           REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
         run: |
           # Whether the repository exists and is public; 2 on any
-          # other failure.
+          # other failure. Stderr stays apart from the answer, so a
+          # notice gh prints while succeeding cannot change it.
           usable() {
-            local output status
+            local output status errors log
+            log="$(mktemp)"
             set +e
-            output="$(gh api "repos/$ORG/$1" --jq .private 2>&1)"
+            output="$(gh api "repos/$ORG/$1" --jq .private 2> "$log")"
             status=$?
             set -e
+            errors="$(cat "$log")"
+            rm -f "$log"
             if [ "$status" -eq 0 ]; then
               [ "$output" = false ] && return 0
               return 1
             fi
-            if grep -q 'HTTP 404' <<< "$output"; then return 1; fi
-            echo "::error::Could not read $ORG/$1: $output"
+            if grep -q 'HTTP 404' <<< "$errors"; then return 1; fi
+            echo "::error::Could not read $ORG/$1: $errors"
             exit 2
           }
           IFS=, read -ra scan <<< "$REPOSITORIES"
