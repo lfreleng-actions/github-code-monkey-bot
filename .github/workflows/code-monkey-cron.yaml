@@ -82,6 +82,12 @@ on:
         description: 'Request and await a Copilot review of each pull request'
         type: boolean
         default: true
+      request_antagonistic_review:
+        description: >-
+          Ask the review bot for an antagonistic review once Copilot's
+          review is clean
+        type: boolean
+        default: true
       repositories:
         description: 'Repositories to scan (commas and/or spaces)'
         type: string
@@ -218,6 +224,10 @@ jobs:
       request_review: >-
         ${{ github.event_name != 'workflow_dispatch'
             || inputs.request_review }}
+      # A schedule passes no inputs; antagonistic requests are on for it.
+      request_antagonistic_review: >-
+        ${{ github.event_name != 'workflow_dispatch'
+            || inputs.request_antagonistic_review }}
       repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
       pull_requests: "${{ inputs.pull_requests || '' }}"
@@ -240,6 +250,7 @@ jobs:
       copilot_token: "${{ secrets.COPILOT_CLI_TOKEN }}"
       github_app_private_key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
       copilot_review_token: "${{ secrets.COPILOT_REVIEW_TOKEN }}"
+      antagonistic_dispatch_token: "${{ secrets.CODE_REVIEW_DISPATCH_TOKEN }}"
 
   # Post the scheduled run's pull requests to Slack. Dispatches never
   # post. The links come from the report, which cannot yet
@@ -300,6 +311,8 @@ jobs:
           UNMERGEABLE: "${{ needs.code-monkey.outputs.unmergeable_pull_requests }}"
           # yamllint disable-line rule:line-length
           FAILING_CHECKS: "${{ needs.code-monkey.outputs.failing_check_pull_requests }}"
+          # yamllint disable-line rule:line-length
+          ANTAGONISTIC: "${{ needs.code-monkey.outputs.antagonistic_pull_requests }}"
           RUN_RESULT: "${{ needs.code-monkey.result }}"
           SELECTED: "${{ needs.code-monkey.outputs.selected_count }}"
           REVISE_ONLY: >-
@@ -351,6 +364,13 @@ jobs:
               ready+=("$url")
             fi
           done
+          # A ready link whose antagonistic review the run requested
+          # says so beside it, matched as owner/repo#N.
+          if ! antagonistic=$(jq -r 'if type == "array" then .[] | @json
+              else error("not an array") end' <<< "${ANTAGONISTIC:-[]}"); then
+            echo "::warning::The antagonistic output is not a JSON array"
+            antagonistic=''
+          fi
           heading='_Conflicting with the default branch, so no CI ran;'
           heading="$heading each needs a rebase, by a later round or,"
           heading="$heading at the round cap, by a human:_"
@@ -359,7 +379,14 @@ jobs:
           shown=0
           lines=()
           for url in "${ready[@]}"; do
-            lines+=("<$url>")
+            path="${url#https://github.com/}"
+            ref="${path%%/pull/*}#${path##*/pull/}"
+            if [ -n "$antagonistic" ] &&
+              grep -qixF -- "\"$ref\"" <<< "$antagonistic"; then
+              lines+=("<$url> (antagonistic review requested)")
+            else
+              lines+=("<$url>")
+            fi
           done
           if [ "${#conflicting[@]}" -gt 0 ]; then
             if [ "${#ready[@]}" -gt 0 ]; then

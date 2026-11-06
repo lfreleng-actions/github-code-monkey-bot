@@ -352,12 +352,12 @@ class TopLevelContracts(ReusableWorkflowCase):
                     self.assertEqual(value, "false")
 
     def test_every_trusted_job_loads_the_allow_list(self) -> None:
-        """Select, publish and report load the allow-list before hardening.
+        """Select, publish, report and antagonistic load the allow-list first.
 
         CONNECTION_ALLOW_LIST does not cross job boundaries, and
         harden-runner in block mode with an empty list enforces nothing.
         """
-        for job in ("select", "publish", "report"):
+        for job in ("select", "publish", "report", "antagonistic"):
             with self.subTest(job=job):
                 loaders = self.actions(job, BLOCK_ACTION)
                 self.assertEqual(len(loaders), 1)
@@ -390,7 +390,7 @@ class TopLevelContracts(ReusableWorkflowCase):
         loaders = [
             (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
         ]
-        self.assertEqual(len(loaders), 3)
+        self.assertEqual(len(loaders), 4)
         for job, step in loaders:
             with_ = cast(dict[str, Any], step["with"])
             self.assertEqual(set(with_) - {"allow_list_summary"}, set(expected))
@@ -1926,6 +1926,15 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         # that selected nothing from one whose selections came to no link.
         selected = declared.pop("selected_count")
         self.assert_expression(str(selected["value"]), "jobs.select.outputs.count")
+        # What the request job dispatched, not what the report nominated.
+        requested = declared.pop("antagonistic_pull_requests")
+        self.assert_expression(
+            str(requested["value"]), "jobs.antagonistic.outputs.requested"
+        )
+        self.assert_expression(
+            str(self.jobs["report"]["outputs"]["antagonistic_pull_requests"]),
+            "steps.report.outputs.antagonistic_pull_requests",
+        )
         self.assertEqual(
             set(declared),
             {
@@ -2412,7 +2421,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 18)
+        self.assertEqual(len(inputs), 19)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -2420,6 +2429,208 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         self.assertNotIn("revise_only", group)
         self.assertNotIn("schedule", group)
         self.assertTrue(group.endswith("|| 'code-monkey'"))
+
+
+ANTAGONISTIC_TOKEN = "secrets.antagonistic_dispatch_token"
+ANTAGONISTIC_WORKFLOW = "code-review-antagonistic.yaml"
+
+
+class AntagonisticRequestContracts(ReusableWorkflowCase):
+    """The request for an antagonistic review and its one credential (#138)."""
+
+    def test_token_reaches_one_step_of_one_job(self) -> None:
+        """The dispatch token appears in the dispatch step alone."""
+        holders = [
+            (job, step.get("name"))
+            for job in self.jobs
+            for step in self.steps(job)
+            if "antagonistic_dispatch_token" in dumped(step)
+        ]
+        self.assertEqual(holders, [("antagonistic", "Dispatch antagonistic reviews")])
+        for job, body in self.jobs.items():
+            outside = {k: v for k, v in body.items() if k != "steps"}
+            with self.subTest(job=job):
+                self.assertNotIn("antagonistic_dispatch_token", dumped(outside))
+        step = self.step("antagonistic", "dispatch")
+        self.assert_expression(step["env"]["GH_TOKEN"], ANTAGONISTIC_TOKEN)
+
+    def test_job_holds_no_permission_and_follows_the_report(self) -> None:
+        """No grant, after the report, skipped in dry runs and when off."""
+        job = self.jobs["antagonistic"]
+        self.assertEqual(job["name"], "Request antagonistic review")
+        self.assertEqual(job["permissions"], {})
+        self.assertEqual(job["needs"], ["select", "report"])
+        self.assert_expression(
+            job["if"],
+            "!cancelled() && needs.report.result == 'success' &&"
+            " !inputs.dry_run && inputs.mode == 'pull-requests' &&"
+            " inputs.request_antagonistic_review &&"
+            " inputs.antagonistic_repository != '' &&"
+            " needs.report.outputs.antagonistic_pull_requests != '' &&"
+            " needs.report.outputs.antagonistic_pull_requests != '[]'",
+        )
+        self.assertEqual(self.actions("antagonistic", CHECKOUT), [])
+        self.assertEqual(self.actions("antagonistic", DOWNLOAD), [])
+
+    def test_publish_job_holds_no_new_credential(self) -> None:
+        """The publish job's record step is offline and sees no token."""
+        self.assertNotIn("antagonistic_dispatch_token", dumped(self.jobs["publish"]))
+        self.assertNotIn("antagonistic_dispatch_token", dumped(self.jobs["report"]))
+        step = self.step("publish", "antagonistic")
+        self.assertNotIn("GH_TOKEN", step.get("env", {}))
+        self.assertLess(
+            self.position("publish", "merge-probe"),
+            self.position("publish", "antagonistic"),
+        )
+        self.assertLess(
+            self.position("publish", "antagonistic"),
+            self.position("publish", "comment-token"),
+        )
+        self.assert_expression(
+            step["env"]["SWITCH"], "inputs.request_antagonistic_review"
+        )
+        self.assertIn("scripts/antagonistic_request.py", flatten(str(step["run"])))
+
+    def test_switch_defaults_on_in_both_workflows(self) -> None:
+        """The workflow_call input and the dispatch form default to true."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["request_antagonistic_review"]["type"], "boolean")
+        self.assertIs(inputs["request_antagonistic_review"]["default"], True)
+        self.assertEqual(
+            inputs["antagonistic_repository"]["default"],
+            "lfreleng-actions/github-code-review-bot",
+        )
+        cron = cast(
+            dict[str | bool, Any], yaml.safe_load(CRON.read_text(encoding="utf-8"))
+        )
+        form = cast(
+            dict[str, dict[str, Any]], cron[TRIGGERS]["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(form["request_antagonistic_review"]["type"], "boolean")
+        self.assertIs(form["request_antagonistic_review"]["default"], True)
+        caller = cron["jobs"]["code-monkey"]
+        self.assert_expression(
+            caller["with"]["request_antagonistic_review"],
+            "github.event_name != 'workflow_dispatch'"
+            " || inputs.request_antagonistic_review",
+        )
+        self.assert_expression(
+            caller["secrets"]["antagonistic_dispatch_token"],
+            "secrets.CODE_REVIEW_DISPATCH_TOKEN",
+        )
+
+    def dispatch(
+        self, nominees: object, token: str = "t", fail: str = ""
+    ) -> tuple[int, str, list[str], str, str]:
+        """Run the dispatch step with a fake gh; return status, outputs, calls."""
+        step = self.step("antagonistic", "dispatch")
+        with tempfile.TemporaryDirectory() as holder:
+            work = Path(holder)
+            fake = work / "bin"
+            fake.mkdir()
+            calls = work / "calls"
+            calls.touch()
+            (fake / "gh").write_text(
+                "#!/bin/bash\n"
+                f'printf "%s\\n" "$*" >> "{calls}"\n'
+                f'case "$*" in *"{fail or "never"}"*) exit 1 ;; esac\n',
+                encoding="utf-8",
+            )
+            (fake / "gh").chmod(0o755)
+            output = work / "output"
+            summary = work / "summary"
+            output.touch()
+            summary.touch()
+            env = {
+                "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}",
+                "GH_TOKEN": token,
+                "REPOSITORY": "lfreleng-actions/github-code-review-bot",
+                "ORG": "lfreleng-actions",
+                "NOMINEES": nominees
+                if isinstance(nominees, str)
+                else json.dumps(nominees),
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(summary),
+            }
+            run = subprocess.run(
+                ["bash", "-c", str(step["run"])],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return (
+                run.returncode,
+                output.read_text(encoding="utf-8"),
+                calls.read_text(encoding="utf-8").splitlines(),
+                run.stdout,
+                summary.read_text(encoding="utf-8"),
+            )
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_one_nominee_dispatches_once_live(self) -> None:
+        """One dispatch per pull request, with dry_run=false."""
+        status, output, calls, _, summary = self.dispatch(["lfreleng-actions/a#1"])
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            calls,
+            [
+                f"workflow run {ANTAGONISTIC_WORKFLOW} --repo"
+                " lfreleng-actions/github-code-review-bot -f dry_run=false"
+                " -f pull_requests=lfreleng-actions/a#1"
+            ],
+        )
+        self.assertIn('requested=["lfreleng-actions/a#1"]', output)
+        self.assertIn("requested: lfreleng-actions/a#1", summary)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_empty_token_warns_and_dispatches_nothing(self) -> None:
+        """The default stays harmless until the secret is configured."""
+        status, output, calls, stdout, _ = self.dispatch(
+            ["lfreleng-actions/a#1"], token=""
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("::warning::", stdout)
+        self.assertIn("requested=[]", output)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_a_failed_dispatch_is_a_warning(self) -> None:
+        """Three nominees, one failing: two requested, one warned, success."""
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2", "lfreleng-actions/c#3"]
+        status, output, calls, stdout, summary = self.dispatch(pulls, fail="b#2")
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 3)
+        self.assertIn(
+            'requested=["lfreleng-actions/a#1","lfreleng-actions/c#3"]', output
+        )
+        self.assertEqual(stdout.count("::warning::"), 1)
+        self.assertIn("failed: lfreleng-actions/b#2", summary)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_malformed_nominees_are_refused_before_any_dispatch(self) -> None:
+        """Another owner, bad syntax or a newline refuses the whole list."""
+        good = "lfreleng-actions/a#1"
+        for bad in (
+            "elsewhere/a#2",
+            "lfreleng-actions/a#0",
+            "lfreleng-actions/a",
+            "lfreleng-actions/a#2\nlfreleng-actions/b#3",
+            "lfreleng-actions/a b#2",
+            "{}",
+        ):
+            with self.subTest(nominee=bad):
+                status, _, calls, _, _ = self.dispatch([good, bad])
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+        status, _, calls, _, _ = self.dispatch("not json")
+        self.assertNotEqual(status, 0)
+        self.assertEqual(calls, [])
+        status, _, calls, _, _ = self.dispatch([good, 3])
+        self.assertNotEqual(status, 0)
+        self.assertEqual(calls, [])
 
 
 class InterfaceContracts(ReusableWorkflowCase):
@@ -2450,6 +2661,8 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "include_assigned",
                 "load_repo_skills",
                 "request_review",
+                "request_antagonistic_review",
+                "antagonistic_repository",
                 "repositories",
                 "exclude_repos",
                 "guidance_repository",
@@ -2467,7 +2680,12 @@ class InterfaceContracts(ReusableWorkflowCase):
         secrets = cast(dict[str, dict[str, Any]], call["secrets"])
         self.assertEqual(
             set(secrets),
-            {"copilot_token", "github_app_private_key", "copilot_review_token"},
+            {
+                "copilot_token",
+                "github_app_private_key",
+                "copilot_review_token",
+                "antagonistic_dispatch_token",
+            },
         )
         for name, secret in secrets.items():
             with self.subTest(secret=name):
@@ -2492,6 +2710,8 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_assigned": False,
             "load_repo_skills": False,
             "request_review": True,
+            "request_antagonistic_review": True,
+            "antagonistic_repository": "lfreleng-actions/github-code-review-bot",
             "revise": True,
             "revise_only": False,
             "pull_requests": "",
@@ -2618,7 +2838,12 @@ class CronCallerContracts(WorkflowCase):
         secrets = cast(dict[str, Any], job["secrets"])
         self.assertEqual(
             set(secrets),
-            {"copilot_token", "github_app_private_key", "copilot_review_token"},
+            {
+                "copilot_token",
+                "github_app_private_key",
+                "copilot_review_token",
+                "antagonistic_dispatch_token",
+            },
         )
         self.assert_expression(secrets["copilot_token"], "secrets.COPILOT_CLI_TOKEN")
         self.assert_expression(
@@ -2776,6 +3001,7 @@ class CronSlackContracts(WorkflowCase):
         failing: str | None = None,
         revise_only: str | None = None,
         selected: str | None = None,
+        antagonistic: str | None = None,
     ) -> dict[str, str]:
         """Run the digest step's script and return what it wrote to its outputs."""
         step = self.step("notify", "digest")
@@ -2803,6 +3029,8 @@ class CronSlackContracts(WorkflowCase):
                 env["REVISE_ONLY"] = revise_only
             if selected is not None:
                 env["SELECTED"] = selected
+            if antagonistic is not None:
+                env["ANTAGONISTIC"] = antagonistic
             subprocess.run(
                 ["bash", "-c", str(step["run"])],
                 env=env,
@@ -2876,6 +3104,29 @@ class CronSlackContracts(WorkflowCase):
         self.assertTrue(alone["body"].startswith("_Conflicting"))
         broken = self.digest(json.dumps([ready]), unmergeable="not json")
         self.assertEqual(broken["body"], f"<{ready}>")
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_digest_marks_requested_antagonistic_reviews(self) -> None:
+        """A requested link says so beside it; a stray name adds nothing (#138)."""
+        step = self.step("notify", "digest")
+        self.assert_expression(
+            step["env"]["ANTAGONISTIC"],
+            "needs.code-monkey.outputs.antagonistic_pull_requests",
+        )
+        one, two = PULL_URL.format("a", 1), PULL_URL.format("b", 2)
+        out = self.digest(
+            json.dumps([one, two]),
+            antagonistic=json.dumps(["LFRELENG-actions/b#2", "lfreleng-actions/c#3"]),
+        )
+        self.assertEqual(
+            out["body"].split("\\n"),
+            [f"<{one}>", f"<{two}> (antagonistic review requested)"],
+        )
+        self.assertNotIn("/c/", out["body"])
+        for value in ("", "[]", "not json"):
+            with self.subTest(antagonistic=value):
+                quiet = self.digest(json.dumps([one]), antagonistic=value)
+                self.assertEqual(quiet["body"], f"<{one}>")
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_digest_counts_pull_requests_with_failing_checks(self) -> None:
