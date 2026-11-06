@@ -524,6 +524,43 @@ than `pull-requests`, or with `revise` off. Beside named
 `pull_requests` it changes nothing, since a named run scans nothing
 and works what it names and nothing else.
 
+**Overlapping runs.** Scans share one concurrency group, but a live
+dispatch naming `issues` or `pull_requests` locks on its own run
+(§11), since a group built from its target list would pass GitHub's
+400-character limit. So nothing stops a scheduled scan, the 02:00 run
+or a `revise_only` slot, from running beside a named dispatch, or two
+dispatches beside each other, and both can select one issue or pull
+request. One of them is then wasted: a revision stands down at the
+author job when the other has already pushed (§20.2), and a new issue
+spends a whole session the publish job then refuses. Before it
+selects, the select job lists the caller workflow's other runs that
+are `in_progress` or `queued`, with the native token, which holds
+`actions: read` on the caller repository the runs and their artifacts
+live in. For each it reads the `monkey-evidence-*` artifact that run's
+select job published, found through that run's own artifact listing:
+the name must carry the run's id, the listing must name the run as its
+producer, the latest attempt that published one is the selection the
+run works, and the zip's bytes must match the SHA-256 digest GitHub
+recorded at upload, never the name alone. That run holds every issue
+and pull request in its `selection.json`, a revision's issue and its
+pull request both, unless the selection is a dry run or a
+`select`-mode run, which publish nothing. The selector skips a held
+target, named or scanned, ahead of the cap, the budget and the
+one-per-repository rule, counts it under `held` and records it in
+`skipped_issues` with a reason naming the run that works it, so the
+summary shows it like any other skip. A held scan target frees its
+place for the next candidate, so the run may work a second issue of
+the repository the other run works in. A run whose select job has not
+finished has published nothing and holds nothing: the publish job's
+refusal still covers that window. The check fails open: a run listing,
+an artifact listing, a download, a digest or a selection that fails
+prints a `::warning::` and holds nothing for that run, or for every
+run when the listing fails, and selection proceeds as before. The
+check saves wasted work and no more; the publish job's locks and the
+compare-and-swap (§11, §20.3) remain the safety net.
+`scripts/run_overlap.py` holds the check; it reads at most 20 other
+runs.
+
 **Guidance ref.** `guidance_ref` may name a branch, a tag or a
 commit. The selector resolves it to a commit, following an annotated
 tag, and refuses a ref whose target is anything but a commit, so the
@@ -1572,7 +1609,9 @@ rotation reminder as the model PAT (§10.2).
   references and fail the run before any job starts. Its scope is
   the named targets alone (§6 "Explicit issues", §20.1), and
   `max_pull_requests` bounds it. Two dispatches naming the same or
-  overlapping targets run together; the publish job's locks below
+  overlapping targets run together, as do a scan and a dispatch; the
+  later one's selector skips a target the earlier one already
+  selected (§6 "Overlapping runs"), and the publish job's locks below
   serialise their writes to any one pull request or issue, so
   neither can retitle, push or roll back a title under the other
   (§20.3), and the §6 open-pull-request check, the publisher's
@@ -1650,7 +1689,7 @@ conflicts while producer artifacts survive.
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
-| Two runs overlap | Duplicate branches | Caller concurrency group for scans; named-issue dispatches lock per run and rely on the §6 open-pull-request check and branch-exists refusal |
+| Two runs overlap | Duplicate branches, or a wasted session on one target | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected (§6 "Overlapping runs"), failing open, and the §6 open-pull-request check and branch-exists refusal stay behind it |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
@@ -1714,6 +1753,7 @@ scripts/revision_check.py                a revision's offline checks
 scripts/branch_swap.py                   the compare-and-swap branch move
 scripts/revision_publish.py              the push, replies and resolves
 scripts/selection_choose.py              the cap, budget and one-per-repo rule
+scripts/run_overlap.py                   targets other active runs hold (§6)
 prompt/revise.md                         the revision task (§20.2)
 tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
@@ -1878,7 +1918,7 @@ cross-checked against the trusted `selection.json`.
               "untrusted_author": 4, "no_type": 3, "closed": 0,
               "category": 0, "assigned": 2, "attempted": 1,
               "linked_pr": 0, "one_per_repo": 30, "cap": 15,
-              "revision": 0, "duplicate": 0},
+              "revision": 0, "duplicate": 0, "held": 0},
   "explicit_repositories": [],
   "explicit_issues": [],
   "skipped_issues": [],
@@ -1916,12 +1956,15 @@ not, and the summary lists each: `pull_request`, `repository`,
 `label`, `untrusted_author` (an author outside `OWNER` and `MEMBER`,
 or an App, without `agent-approved`, §6), `no_type`, `closed`,
 `category`, `assigned`, `attempted`, `linked_pr`, `one_per_repo`,
-`cap`, `revision` and `duplicate`. An issue entry's `author_is_bot`
+`cap`, `revision`, `duplicate` and `held` (another in-progress run
+selected the target, §6 "Overlapping runs"). An issue entry's
+`author_is_bot`
 records whether an App or bot opened the issue. `explicit_issues`
 holds the named issues as `owner/repo#N`, in the order given, and
 `skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
-dropped; both are empty on a scan. `explicit_pull_requests`,
+dropped; both are empty on a scan, but for a target another run
+holds, which `skipped_issues` records on a scan too. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
 selection holds revision entries alone and `candidates_seen` is 0.
 A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
@@ -2385,7 +2428,11 @@ of an issue from an author outside `OWNER` and `MEMBER`, or from an
 App, that lacks the `agent-approved` label, and the reason names the
 label, so its pull request costs no further rounds until a
 maintainer approves the issue. A named round, like a named issue,
-applies no author rule. A scan honours the
+applies no author rule. The selector skips a round, named or scanned,
+whose pull request or issue another in-progress or queued run already
+selected, counts it under `held` and names that run in the reason, so
+two runs do not revise one pull request at once (§6 "Overlapping
+runs"). A scan honours the
 run's repository policy, the named repositories or everything but the
 exclusions, before it reads a hit. The round number continues from the
 bot's own footers on the issue: the last line of each of its comments,

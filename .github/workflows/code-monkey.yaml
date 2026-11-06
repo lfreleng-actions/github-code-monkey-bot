@@ -264,7 +264,7 @@ jobs:
     permissions:
       issues: read  # Candidate scan without an App (dry-run plumbing)
       contents: read  # Checkout trusted assets; read public repositories
-      actions: read  # Read this run's creation time for comment markers
+      actions: read  # This run's creation time; other runs' selections
     outputs:
       assets_sha: "${{ steps.pinned.outputs.sha }}"
       run_created_at: "${{ steps.identity.outputs.created_at }}"
@@ -755,6 +755,22 @@ jobs:
           python3 monkey-assets/scripts/preflight.py token \
             --repository "$REPOSITORY"
 
+      # A scan and a named dispatch hold different concurrency groups,
+      # so both can select one target. The caller workflow's other
+      # active runs and their selection evidence live in this
+      # repository, which the native token reads and the App may not.
+      # Fails open: a failed read warns and holds nothing
+      # (docs/DESIGN.md section 6 "Overlapping runs").
+      - name: 'Find targets other runs hold'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          REPOSITORY: "${{ github.repository }}"
+          RUN_ID: "${{ github.run_id }}"
+        run: |
+          python3 monkey-assets/scripts/run_overlap.py \
+            --repository "$REPOSITORY" --run-id "$RUN_ID" \
+            --output held-targets.json
+
       - name: 'Select issues'
         env:
           GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
@@ -815,7 +831,7 @@ jobs:
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \
-            --bot-slug "$BOT_SLUG" "${extra[@]}"
+            --bot-slug "$BOT_SLUG" --held-file held-targets.json "${extra[@]}"
           cat artefacts/selection-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: 'Publish selection outputs'
