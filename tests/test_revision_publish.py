@@ -183,6 +183,18 @@ class MoveBranchTest(unittest.TestCase):
         data, commits = self.swap_lost(NEW, mismatch)
         self.assertEqual(commits, [NEW])
 
+    def test_a_refused_swap_is_superseded(self) -> None:
+        """Only the refusal for a moved head says another run won (issue #154)."""
+        mismatch = (
+            'GraphQL errors: [{"message": "Expected branch to point to beforeOid"}]'
+        )
+        for state in ("b" * 40, github.GitHubError("unreachable")):
+            with self.subTest(state=str(state)[:12]):
+                data, _ = self.swap_lost(state, mismatch)
+                self.assertIsInstance(data["error"], policy.Superseded)
+        data, _ = self.swap_lost(HEAD)
+        self.assertNotIsInstance(data["error"], policy.Superseded)
+
 
 class AlreadyMovedTest(unittest.TestCase):
     """The adoption test reads a deleted branch as no chain, not a failure."""

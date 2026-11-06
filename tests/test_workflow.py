@@ -1155,9 +1155,64 @@ class RevisionContracts(ReusableWorkflowCase):
                 "base_sha": "a" * 40,
                 "branch": "code-monkey/issue-7",
                 "reason": reason,
+                "superseded": True,
             },
         )
         self.assertEqual(proc.stdout, "Manifest outcome: abstain\n")
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_only_a_stood_down_round_is_superseded(self) -> None:
+        """The stand-down marks its manifest; an agent's mark is removed (issue #154)."""
+        bundle = self.step("author", "Bundle proposed commits")
+
+        def run(moved: str, agent: dict[str, Any] | None) -> dict[str, Any]:
+            with tempfile.TemporaryDirectory() as name:
+                work = Path(name)
+                (work / "artefacts").mkdir()
+                if agent is not None:
+                    (work / "artefacts" / "manifest.json").write_text(
+                        json.dumps(agent), encoding="utf-8"
+                    )
+                subprocess.run(
+                    ["bash", "-e", "-c", str(bundle["run"])],
+                    cwd=work,
+                    env={
+                        "PATH": os.environ["PATH"],
+                        "BRANCH": "code-monkey/issue-7",
+                        "BASE_SHA": "a" * 40,
+                        "REBASE_SHA": "c" * 40,
+                        "REPOSITORY": "owner/repo",
+                        "ISSUE": "7",
+                        "AGENT_OUTCOME": "success",
+                        "MOVED": moved,
+                        "MOVED_REASON": "moved",
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                return json.loads(
+                    (work / "artefacts" / "manifest.json").read_text(encoding="utf-8")
+                )
+
+        self.assertIs(run("true", None)["superseded"], True)
+        forged = {
+            "schema": 1,
+            "outcome": "abstain",
+            "repository": "owner/repo",
+            "issue": 7,
+            "base_sha": "a" * 40,
+            "branch": "code-monkey/issue-7",
+            "reason": "r",
+            "superseded": True,
+        }
+        cleaned = run("", forged)
+        self.assertNotIn("superseded", cleaned)
+        self.assertEqual(
+            cleaned, {k: v for k, v in forged.items() if k != "superseded"}
+        )
+        # A manifest without the field passes as it was.
+        self.assertEqual(run("", {"outcome": "abstain"}), {"outcome": "abstain"})
 
     def test_prompt_follows_the_task(self) -> None:
         """The revise prompt exists and the assemble step picks it by task."""

@@ -35,6 +35,11 @@ MAX_ROUNDS = 10
 # antagonistic rounds. Footer history that goes wrong still ends the
 # loop here.
 MAX_TOTAL_ROUNDS = 60
+# Superseded rounds per pull request: rounds that lost a race with
+# another run's push count toward no segment's cap, only the
+# ceiling above, so this bounds them apart.
+# Racing runs, or a forged stand-down, stop here for a human.
+MAX_STALE_ROUNDS = 10
 # The last line of an antagonistic review that hands the pull request
 # back. The review bot's trusted applier writes it after its footer;
 # agent text there cannot forge it, since that bot disarms ``<``
@@ -55,6 +60,23 @@ def round_cap_reached(round_number: int, segment: int, cap: int = MAX_ROUNDS) ->
     in all, is the cap.
     """
     return segment >= cap or round_number >= MAX_TOTAL_ROUNDS
+
+
+def rounds_spent(round_number: int, stale: object) -> int:
+    """The rounds the ceiling counts once ``round_number`` has run.
+
+    ``stale`` is the superseded rounds before it, as the selection
+    counted them. A counted round raises the global round and a
+    superseded one the stale count, so either way the sum is what the
+    selector next compares with the ceiling (DESIGN.md 20.1).
+    """
+    return round_number + (stale if type(stale) is int and stale > 0 else 0)
+
+
+def stale_cap_reached(round_number: int, stale: object) -> bool:
+    """Whether a superseded round leaves the pull request at the ceiling or its guard."""
+    count = stale if type(stale) is int and stale > 0 else 0
+    return round_number + count >= MAX_TOTAL_ROUNDS or count + 1 >= MAX_STALE_ROUNDS
 
 
 def cap_reason(round_number: int, segment: int, cap: int = MAX_ROUNDS) -> str | None:

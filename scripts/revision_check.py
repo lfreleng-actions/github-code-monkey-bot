@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import proposal_policy as policy
 import review_outcome as outcome
+import revision_reads as revisions
 from proposal_model import Check
 from proposal_policy import PublishError, Rejection
 
@@ -67,6 +68,13 @@ def check_entry(data: dict[str, Any]) -> None:
     segment = data.get("segment_round", data["round"])
     if type(segment) is not int or not 1 <= segment <= int(data["round"]):
         raise PublishError("selection segment round is not within the round")
+    stale = data.get("stale_rounds", 0)
+    if (
+        type(stale) is not int
+        or not 0 <= stale < revisions.MAX_STALE_ROUNDS
+        or int(data["round"]) + stale > revisions.MAX_TOTAL_ROUNDS
+    ):
+        raise PublishError("selection superseded rounds are not below their limits")
     threads = data.get("threads")
     if not isinstance(threads, list):
         raise PublishError("selection revision entry carries no thread list")
