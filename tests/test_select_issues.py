@@ -441,7 +441,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertEqual([i["key"] for i in selection["issues"]], ["alpha-3"])
         self.assertEqual(selection["skipped_issues"], [])
 
-    @unittest.expectedFailure
     def test_summary_shows_each_named_issues_author(self) -> None:
         """The operator sees the association of every named issue admitted."""
         self.details[("org/alpha", 3)] = self.detail(author_association="NONE")
@@ -986,7 +985,6 @@ class CheapFilterTest(unittest.TestCase):
         self.assertEqual([c["number"] for c in kept], [9])
         self.assertEqual(skipped["label"], len(select.SKIP_LABELS))
 
-    @unittest.expectedFailure
     def test_untrusted_authors_need_the_approval_label(self) -> None:
         """Only owners and members pass unasked; agent-approved admits the rest."""
         bot = {"login": "app/helper", "type": "Bot", "is_bot": True}
@@ -1121,7 +1119,6 @@ class EnrichTest(NoSubprocessCase):
         self.assertEqual([c["number"] for c in enriched], [2, 4])
         self.assertEqual(skipped["assigned"], 0)
 
-    @unittest.expectedFailure
     def test_the_direct_read_decides_the_author(self) -> None:
         """The direct read's association and author type overrule the search's."""
         details: dict[int, dict[str, Any]] = {
@@ -1512,7 +1509,6 @@ class WriteOutputsTest(unittest.TestCase):
         self.assertNotIn("\n## Heading", summary)
         self.assertIn("Real \\| evil \\| row", rows[0])
 
-    @unittest.expectedFailure
     def test_named_issue_revised_shows_its_author(self) -> None:
         """A named issue worked as a revision round still lists its association."""
         named = {**self.chosen_issue(), "author_association": "CONTRIBUTOR"}

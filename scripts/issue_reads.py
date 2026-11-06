@@ -19,6 +19,7 @@ import urllib.parse
 from typing import Any, NamedTuple, cast
 
 import bot_github as github
+import issue_authors as authors
 
 SEARCH_LIMIT = 1000
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -35,7 +36,7 @@ MAX_GUIDANCE_BYTES = 1024 * 1024
 PLACEHOLDER_BOT = "code-monkey[bot]"
 
 SEARCH_FIELDS = (
-    "repository,number,title,url,labels,assignees,authorAssociation,"
+    "repository,number,title,url,labels,assignees,author,authorAssociation,"
     "createdAt,isPullRequest,state"
 )
 
@@ -176,7 +177,6 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
     state = issue.get("state")
     if state not in ("open", "closed"):
         raise github.GitHubError(f"{repo}#{number}: unexpected state {state!r}")
-    association = issue.get("author_association")
     return {
         "state": state,
         "title": github.require_str(issue, "title", "issue"),
@@ -189,7 +189,7 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
         # has no search payload, so the direct read supplies them.
         "url": github.require_str(issue, "html_url", "issue"),
         "created_at": github.require_str(issue, "created_at", "issue"),
-        "author_association": association if isinstance(association, str) else None,
+        **authors.author_fields(issue),
     }
 
 

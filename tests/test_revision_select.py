@@ -370,7 +370,6 @@ class BuildEntryTest(RevisionCase):
             with self.assertRaisesRegex(select.Skip, "no-agent"):
                 self.build(explicit=True)
 
-    @unittest.expectedFailure
     def test_scan_round_needs_a_trusted_author_or_the_approval(self) -> None:
         """An untrusted author's issue costs no round until a maintainer approves it."""
         self.threads = [thread()]
@@ -649,7 +648,6 @@ class ScanTest(RevisionCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(reads_made, [41])
 
-    @unittest.expectedFailure
     def test_scan_skips_an_untrusted_authors_round(self) -> None:
         """A scanned round on an unapproved external issue is a named skip."""
         hits = [{"repository": "org/alpha", "number": 41, "created_at": "t1"}]

@@ -24,6 +24,7 @@ import bot_github as github
 import check_reads
 import explicit_issues
 import fork_orgs as forks
+import issue_authors as authors
 import issue_reads as reads
 import merge_state
 import repository_reads as repositories
@@ -171,9 +172,9 @@ def build_entry(
     """The selection entry for one bot pull request, or raise ``Skip``.
 
     ``explicit`` means an operator named it: the work-outstanding
-    test does not apply, since the operator decided, but the safety
-    tests and the round cap do. ``prefetched`` carries the pull
-    request and issue a scan read to rank the candidate.
+    test and the author rule do not apply, since the operator decided,
+    but the other safety tests and the round cap do. ``prefetched``
+    carries the pull request and issue a scan read to rank it.
     """
     org, bot, fork_orgs = inputs.org, inputs.bot, inputs.fork_orgs
     meta = repositories.repository_meta(org, repo_name)
@@ -216,10 +217,10 @@ def build_entry(
         if explicit
         else scan_reasons(pull, findings, history, repository=repository)
     )
-    details = (
-        issue_packet(repository, issue)
-        if prefetched is None
-        else packet_of(prefetched.details, issue)
+    details = packet_of(
+        read_issue(repository, issue) if prefetched is None else prefetched.details,
+        issue,
+        explicit=explicit,
     )
     rebase_sha = reads.branch_head(repository, str(meta["default_branch"]))
     return {
@@ -319,11 +320,6 @@ def scan_reasons(
     return reasons
 
 
-def issue_packet(repository: str, issue: int) -> dict[str, Any]:
-    """The issue's details for the entry, after its own safety tests."""
-    return packet_of(read_issue(repository, issue), issue)
-
-
 def read_issue(repository: str, issue: int) -> dict[str, Any]:
     """The issue's details, or ``Skip`` when the issue is gone."""
     try:
@@ -334,12 +330,14 @@ def read_issue(repository: str, issue: int) -> dict[str, Any]:
         raise Skip(f"issue #{issue} is gone") from exc
 
 
-def packet_of(details: dict[str, Any], issue: int) -> dict[str, Any]:
+def packet_of(details: dict[str, Any], issue: int, *, explicit: bool) -> dict[str, Any]:
     """The entry's view of the issue, after its safety tests."""
     if details["state"] != "open":
         raise Skip(f"issue #{issue} is closed")
     if "no-agent" in details["labels"]:
         raise Skip(f"issue #{issue} carries the no-agent label")
+    if not explicit and not authors.admits(details):
+        raise Skip(f"issue #{issue}'s author needs the {authors.APPROVAL_LABEL} label")
     return {k: v for k, v in details.items() if k not in ("state", "assignees")}
 
 

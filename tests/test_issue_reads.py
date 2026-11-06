@@ -502,10 +502,10 @@ class IssueDetailsTest(ReadsCase):
                 "url": "https://github.com/org/repo/issues/7",
                 "created_at": "2026-01-07T00:00:00Z",
                 "author_association": "MEMBER",
+                "author_is_bot": False,
             },
         )
 
-    @unittest.expectedFailure
     def test_flags_an_app_or_bot_author(self) -> None:
         """An App's issue reads as a bot whatever association it carries."""
         for user, expected in (

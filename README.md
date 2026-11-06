@@ -80,8 +80,11 @@ caps (`max_rounds` lifts the ten-round limit per antagonistic
 review round for one run; sixty rounds in all stays the ceiling),
 a category list, and either a repository list to scan or a list of
 issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
-skips the scan and the triage filters. A list of the bot's open pull
-requests runs a revision round on each; an issue whose earlier
+skips the scan and the triage filters. A scan works an issue from
+an organisation owner or member; an issue from anyone else, or from
+an App, waits for a maintainer to label it `agent-approved`.
+`no-agent` opts any issue out and wins over `agent-approved`. A list
+of the bot's open pull requests runs a revision round on each; an issue whose earlier
 attempt is still open gets a round too, and scheduled runs revise
 before they take new issues unless `revise` is off. A second
 schedule, with `revise_only`, runs every four hours from 06:00 UTC on
