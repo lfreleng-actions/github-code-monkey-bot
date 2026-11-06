@@ -2083,7 +2083,10 @@ line and provenance block first, then the agent's text.
 ```
 
 URLs are `null` where the mode or a rejection stopped short, and
-`author_session` where no proposal arrived. `review` is present on
+`author_session` where no proposal arrived. `reasons` starts as the
+check's, at most 20, each cut to 2,000 characters: a rejection quotes
+the proposal it refused, and the next selection carries them to the
+agent (§6). `review` is present on
 a published pull request when `request_review` is on: `requested`
 says whether the request landed (§8 step 10), `verdict` is `clean`,
 `findings` or `pending`, `assessment` is `approval`, `closer-look`,

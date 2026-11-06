@@ -90,7 +90,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "fork_repository": check.get("fork_repository"),
         "issue": check.get("issue"),
         "verdict": verdict,
-        "reasons": list(cast("list[Any]", check.get("reasons") or [])),
+        "reasons": policy.bounded_reasons(check.get("reasons")),
         "warnings": [],
         "dry_run": bool(args.dry_run),
         "mode": args.mode,

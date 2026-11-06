@@ -604,6 +604,17 @@ class RunPushTest(NoNetworkCase):
         self.assertEqual(result["agent_seconds"], 90)
         self.assertEqual(result["pr_title"], "Fix: Both")
 
+    def test_rejection_reasons_are_bounded(self) -> None:
+        """Each reason is cut, and their count capped, before the result records them."""
+        many = ["x" * (policy.MAX_REASON + 50)] + [
+            f"r{i}" for i in range(policy.MAX_RESULT_REASONS + 5)
+        ]
+        path = self.write_check(check_json(verdict="rejected", reasons=many))
+        result = publish.run_push(self.push_args(path))
+        self.assertEqual(len(result["reasons"]), policy.MAX_RESULT_REASONS)
+        self.assertEqual(result["reasons"][0], "x" * policy.MAX_REASON)
+        self.assertEqual(result["reasons"][1], "r0")
+
     def test_author_session_is_recorded(self) -> None:
         """The trusted proposal artifact ID travels into the result."""
         path = self.write_check(check_json(verdict="abstain"))

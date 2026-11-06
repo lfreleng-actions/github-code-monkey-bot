@@ -14,7 +14,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 MAX_COMMITS = 5
 # createCommitOnBranch accepts at most 100 file changes per call.
@@ -32,6 +32,8 @@ MAX_PR_BODY = 65_536
 # appear in an issue comment; the manifest itself may be up to 1 MiB.
 MAX_REASON = 2_000
 MAX_COMMENT_REASON = 4_000
+# The check's reasons result.json records, each cut to MAX_REASON.
+MAX_RESULT_REASONS = 20
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 KEY_RE = re.compile(r"[A-Za-z0-9_.-]+")
 COMMIT_TYPES = (
@@ -269,6 +271,18 @@ def comment_safe(text: str) -> str:
     """
     flat = " ".join(text.split()).replace("@", "@\u200b")
     return html.escape(flat, quote=False)
+
+
+def bounded_reasons(raw: Any) -> list[str]:
+    """The check's reasons as the result records them, bounded.
+
+    A rejection quotes the proposal it refused, a subject or a body
+    line, so a reason is untrusted text of any length. Each is cut to
+    ``MAX_REASON`` characters and at most ``MAX_RESULT_REASONS`` kept:
+    the next selection carries them to the agent (DESIGN.md section 6).
+    """
+    reasons = cast("list[Any]", raw) if isinstance(raw, list) else []
+    return [str(r)[:MAX_REASON] for r in reasons[:MAX_RESULT_REASONS]]
 
 
 # A check name in a round note: the selection bounds the packet, and
