@@ -246,6 +246,7 @@ def build_entry(
         },
         "round": highest + 1,
         "segment_round": segment_round,
+        "stale_rounds": history.stale,
         "max_rounds": inputs.max_rounds,
         "round_reasons": reasons,
         "rounds": rounds,
@@ -271,14 +272,16 @@ def next_segment_round(
 
     The cap is the run's ``max_rounds`` per segment. An unanswered
     hand-back of the head that no round has carried yet starts a new
-    segment whatever the last one counted; only the sixty-round
-    ceiling still stops it, and at that ceiling nothing is read.
-    Without ``findings`` the hand-back is read only at the cap, so a
-    capped pull request costs that one read, not the packet's.
+    segment whatever the last one counted; only the sixty-round ceiling,
+    superseded rounds included, and their guard of ten still stop it,
+    and there nothing is read. Without ``findings`` the hand-back is
+    read only at the cap, so a capped pull request costs that read alone.
     """
     highest, segment, cap = history.highest, history.segment, inputs.max_rounds
-    if highest >= revisions.MAX_TOTAL_ROUNDS:
-        raise Skip(str(revisions.cap_reason(highest, segment, cap)))
+    if (spent := highest + history.stale) >= revisions.MAX_TOTAL_ROUNDS:
+        raise Skip(str(revisions.cap_reason(spent, segment, cap)))
+    if history.stale >= revisions.MAX_STALE_ROUNDS:
+        raise Skip("too many superseded rounds; a human must look")
     if findings is None and not revisions.round_cap_reached(highest, segment, cap):
         return segment + 1
     handback = (

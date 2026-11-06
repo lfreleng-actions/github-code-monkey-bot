@@ -133,6 +133,10 @@ class Rejection(Exception):
     """The proposal broke a rule; recorded as a verdict, not an error."""
 
 
+class Superseded(Rejection):
+    """Another run's push moved the branch first; no segment's cap counts it."""
+
+
 @dataclass(frozen=True)
 class Identity:
     """The trailer identities the publisher appends to every commit."""

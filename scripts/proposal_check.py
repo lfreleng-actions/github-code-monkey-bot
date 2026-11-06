@@ -130,6 +130,11 @@ def read_manifest(path: Path, check: Check) -> dict[str, Any]:
             reason if isinstance(reason, str) and reason.strip() else "no reason given"
         )
         check.reasons.append(text[: policy.MAX_REASON])
+        check.superseded = (
+            outcome == "abstain"
+            and check.task == "revise"
+            and manifest.get("superseded") is True
+        )
         revision.read_handoff(manifest, check)
         return manifest
     commands = manifest.get("commands")

@@ -107,10 +107,15 @@ def cap_detail(item: dict[str, Any]) -> str:
     """The report's word for a capped round, as the issue comment's notice has it."""
     if not comments.capped(item):
         return ""
-    if comments.round_of(item) >= revisions.MAX_TOTAL_ROUNDS:
+    if comments.spent_of(item) >= revisions.MAX_TOTAL_ROUNDS:
         return (
             f"; round cap of {revisions.MAX_TOTAL_ROUNDS} reached in all,"
             " a human must take over"
+        )
+    if comments.superseded(item):
+        return (
+            f"; {revisions.MAX_STALE_ROUNDS} superseded rounds reached,"
+            " a human must look"
         )
     return (
         "; round cap reached for this antagonistic review round, a human must take over"

@@ -1928,7 +1928,9 @@ A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
 `pull_request` (`number`, `url`, `title`, `head_sha`, `mergeable`,
 `created_at`), `round` (global, as the footers number it),
 `segment_round` (the round's place in its antagonistic segment, which
-the cap reads, §20.1), `max_rounds` (the run's rounds per segment),
+the cap reads, §20.1), `stale_rounds` (the superseded rounds before
+this one, which the ceiling reads with `round`, §20.1), `max_rounds`
+(the run's rounds per segment),
 `collected_at` (when the selection read the comments; every entry
 carries it), `session` (the run id and the select job's attempt:
 new on a full rerun, which authors anew, kept across a retry of the
@@ -1972,7 +1974,10 @@ leaves none, the workflow writes one with `"outcome":
 "author-failed"` so the publisher has something to report. A
 revision round that stood down because its branch moved or vanished
 after selection ran no agent, and the workflow writes `"outcome":
-"abstain"` with the reason instead (§20.2).
+"abstain"` with the reason and `"superseded": true` instead (§20.2).
+That stand-down alone sets `superseded`: the bundle step deletes the
+field from a manifest the agent wrote, and the check honours it on a
+revision's abstention alone.
 
 ```json
 {
@@ -2414,6 +2419,26 @@ whose round published nothing, an abstention, a rejection or a failure,
 counts toward the cap and moves no watermark, since it handled no
 request.
 
+**Superseded rounds.** A round that loses a race with another run's
+push did no work the cap exists to bound: the author job stood it
+down because the branch moved or vanished after selection (§20.2),
+the push found the branch at another head before its swap or the
+swap's compare-and-swap refused it (§20.3), or `respond` found a
+handoff's head moved (§20.3). Its footer ends `stale=1` (§20.3), and
+`round_reads.round_history` counts such a footer in `stale` alone:
+it raises no round number, opens or lengthens no segment, anchors no
+review and adds no round summary, so the round costs the pull
+request none of its segment's cap, and the next round takes the same
+round number. It still ran, so the selector adds `stale` to the
+highest round against the ceiling of sixty below. A branch that
+vanished reads the same way, though its pull request, merged or
+closed, is never selected again; a pull request
+the push or `respond` reads as closed is a plain rejection. Racing
+runs, or a stand-down a manifest forges past the bundle step, could
+then loop without bound, so a guard of its own (`MAX_STALE_ROUNDS`,
+ten) skips a pull request whose history holds ten superseded
+footers, before any hand-back read, until a human looks.
+
 **The cap per antagonistic segment.** The review bot gives a pull
 request up to five antagonistic rounds before a maintainer takes over
 (`lfreleng-actions/github-code-review-bot` issues 28 and 58), and each
@@ -2449,9 +2474,16 @@ segment sits a ceiling of sixty rounds (`MAX_TOTAL_ROUNDS`: the first
 publication's ten and ten for each of the review bot's five rounds);
 at or above it the selector skips first, reading no hand-back,
 whatever the segment says or the run's cap, so footer history that
-goes wrong still ends the loop. The entry carries the global
-`round`, `segment_round` and `max_rounds`, and the publisher reads
-them through one rule, `revision_reads.round_cap_reached`. At the cap
+goes wrong still ends the loop. The segment's cap bounds the rounds
+that count; the ceiling bounds those and the superseded rounds above
+together, which also have their own guard of ten. The entry carries the global
+`round`, `segment_round`, `stale_rounds` and `max_rounds`, and the
+publisher reads them through one rule, `revision_reads.round_cap_reached`,
+with `round` plus `stale_rounds` as the rounds the ceiling counts
+(`issue_comment.spent_of`): the issue comment's cap notice, the
+report's cap note and the antagonistic review nomination all read
+that sum, so a round that spends the ceiling's last round offers no
+further round the selector would refuse. At the cap
 the selector skips the pull request with that reason, and the
 publisher of the segment's last round has already said a human must
 take over until the next antagonistic review hands it back. One key
@@ -2550,7 +2582,8 @@ naming the branch, the fork and, for a moved branch, both heads cut
 to seven characters, exits 0 and sets an output that skips every
 later step that would install the toolchain, assemble the prompt or
 run the session. The bundle step then writes an `abstain` manifest
-with the same reason, so the run stays green, the report and digest
+with the same reason and `superseded: true`, so the run stays green,
+the round counts toward no segment's cap (§20.1), the report and digest
 count a skip rather than a failure, and the issue gets the one
 "did not attempt it" comment; the publisher's own moved-head
 rejection is never reached, since the round proposes nothing. Any
@@ -2623,7 +2656,8 @@ the push step holds none for a handoff, reads the pull request's
 state and head before any reply goes up: a pull request closed or
 merged since selection is a rejection with no reply, as on the push;
 a head that moved during the session is a rejection, since the
-replies answer code the agent did not see; and a state or head it
+replies answer code the agent did not see, and a superseded round
+(§20.1); and a state or head it
 cannot read is a failure, never a handoff taken on trust. The
 next scan leaves the pull
 request alone until a maintainer comments, on the issue, the pull
@@ -2678,7 +2712,8 @@ that failed would otherwise replay against a `beforeOid` the swap
 itself retired and refuse the run's own publication. The publisher
 reads a branch that fails the proof once more before any write: a
 head other than the recorded one, or a branch that reads as gone (a
-404), is a rejection with no replay, temporary branch or swap.
+404), is a rejection with no replay, temporary branch or swap, and
+marks the round superseded (§20.1).
 GitHub has answered a stale `beforeOid` with a generic error the
 compare-and-swap refusal below cannot recognise, so this read, not
 the swap, settles a move made before it. A 404 in the adoption proof
@@ -2690,6 +2725,7 @@ the move and then lose the reply: at the new tip the move stands,
 with a warning; at the recorded head the move did not happen and the
 failure says the branch holds its old head; elsewhere, the
 compare-and-swap refusal, and that message alone, is the rejection,
+superseded like the read before the swap,
 while any other error there, or no answer, is an outcome the result
 names unknown and never calls unchanged, so a human reads the fork
 before the next round. After the read above, a move between that
@@ -2749,7 +2785,12 @@ anchors the segment (§20.1). A proposal or handoff that consumed the
 hand-back then ends its marker with `antagonistic=<review id>`, the
 receiving-side key `lfreleng-actions/github-code-review-bot` issue 31
 will use for an idempotent hand-back; a failed round never writes
-it. The round history reads every footer form, with either field or
+it. A round that lost a race with another run's push (§20.1) ends
+its marker with `stale=1`, after every other field, and its comment
+says the round does not count toward the round cap, with no cap
+notice unless it spent the ceiling's last round or was the tenth
+superseded round, when the comment says a human must step in. The
+round history reads every footer form, with any of these fields or
 without them. The summary and the reasons are agent text: flattened
 to one line, mentions defused and HTML escaped, so they can neither
 hide the verdict and

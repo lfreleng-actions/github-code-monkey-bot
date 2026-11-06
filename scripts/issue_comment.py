@@ -65,6 +65,11 @@ def segment_of(result: dict[str, Any]) -> int:
     return value if type(value) is int and value > 0 else round_of(result)
 
 
+def spent_of(result: dict[str, Any]) -> int:
+    """The rounds the ceiling counts once this one has run, superseded ones too."""
+    return revisions.rounds_spent(round_of(result), result.get("stale_rounds"))
+
+
 def capped(result: dict[str, Any]) -> bool:
     """Whether the round leaves the pull request at the cap with work undone.
 
@@ -72,10 +77,13 @@ def capped(result: dict[str, Any]) -> bool:
     an antagonistic segment (ten by default) or sixty in all, until
     the next hand-back starts a segment, so every outcome at the cap
     but a clean proposal that can merge with no known failing check
-    needs a human; that one is finished.
+    needs a human; that one is finished. A superseded round counts
+    toward no segment's cap, only the ceiling and its own guard.
     """
+    if superseded(result):
+        return revisions.stale_cap_reached(round_of(result), result.get("stale_rounds"))
     if not revisions.round_cap_reached(
-        round_of(result), segment_of(result), cap_of(result)
+        spent_of(result), segment_of(result), cap_of(result)
     ):
         return False
     return (
@@ -86,14 +94,21 @@ def capped(result: dict[str, Any]) -> bool:
     )
 
 
+def superseded(result: dict[str, Any]) -> bool:
+    """Whether the round lost a race with another run's push (DESIGN.md 20.1)."""
+    return result.get("superseded") is True
+
+
 def cap_notice(result: dict[str, Any]) -> str:
-    """The notice for a capped round: the segment's cap, or the ceiling's."""
-    if round_of(result) >= revisions.MAX_TOTAL_ROUNDS:
+    """The notice for a capped round: the segment's cap, the ceiling's or the guard's."""
+    if spent_of(result) >= revisions.MAX_TOTAL_ROUNDS:
         return (
             f" This was the round cap of {revisions.MAX_TOTAL_ROUNDS} over every"
             " antagonistic review round: the workflow selects this pull request"
             " no further, and a human must take over."
         )
+    if superseded(result):
+        return f" This was superseded round {revisions.MAX_STALE_ROUNDS}: a human must look."
     return (
         f" This was the round cap of {cap_of(result)} per antagonistic review"
         " round: the workflow selects this pull request no further until the"
@@ -278,6 +293,11 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     if len(reasons) > policy.MAX_COMMENT_REASON:
         reasons = reasons[: policy.MAX_COMMENT_REASON - 1] + "…"
     text = template(result, reasons, run_url)
+    if text is not None and superseded(result):
+        text += (
+            " This round does not count toward the round cap of its antagonistic"
+            " review round: the branch moved after this run selected it."
+        )
     if text is not None and capped(result):
         text += cap_notice(result)
     return text
@@ -335,6 +355,9 @@ def run_comment(args: argparse.Namespace) -> None:
         # The receiving side's key for an idempotent hand-back: which
         # antagonistic review this round consumed.
         suffix += f" antagonistic={handback}"
+    if superseded(result):
+        # The round history counts this round apart from every cap.
+        suffix += " stale=1"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
 
