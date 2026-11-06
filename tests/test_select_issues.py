@@ -138,6 +138,7 @@ def fresh_skipped() -> dict[str, int]:
             "linked_pr",
             "one_per_repo",
             "cap",
+            "untrusted_author",
         ),
         0,
     )
@@ -432,6 +433,24 @@ class ExplicitIssuesTest(NoSubprocessCase):
         """Naming issues and repositories at once is refused."""
         with self.assertRaises(reads.SelectionError):
             select.build_selection(self.args("org/alpha#3", repositories="alpha"))
+
+    def test_named_issue_from_an_untrusted_author_is_admitted(self) -> None:
+        """Naming an issue is the approval: no author rule applies."""
+        self.details[("org/alpha", 3)] = self.detail(author_association="NONE")
+        selection, _ = select.build_selection(self.args("org/alpha#3"))
+        self.assertEqual([i["key"] for i in selection["issues"]], ["alpha-3"])
+        self.assertEqual(selection["skipped_issues"], [])
+
+    def test_summary_shows_each_named_issues_author(self) -> None:
+        """The operator sees the association of every named issue admitted."""
+        self.details[("org/alpha", 3)] = self.detail(author_association="NONE")
+        self.details[("org/delta", 7)] = self.detail(author_association=None)
+        selection, _ = select.build_selection(self.args("org/alpha#3,org/delta#7"))
+        self.assertEqual(selection["skipped"]["untrusted_author"], 0)
+        text = outputs.summary_markdown(selection)
+        self.assertIn("| alpha#3 | NONE |", text)
+        self.assertIn("| delta#7 | unknown |", text)
+        self.assertIn("| untrusted_author | 0 |", text)
 
     def test_summary_lists_skipped_issues(self) -> None:
         """The step summary names each skipped issue and its reason."""
@@ -966,6 +985,35 @@ class CheapFilterTest(unittest.TestCase):
         self.assertEqual([c["number"] for c in kept], [9])
         self.assertEqual(skipped["label"], len(select.SKIP_LABELS))
 
+    def test_untrusted_authors_need_the_approval_label(self) -> None:
+        """Only owners and members pass unasked; agent-approved admits the rest."""
+        bot = {"login": "app/helper", "type": "Bot", "is_bot": True}
+        issues = [
+            search_issue("alpha", 1, authorAssociation="OWNER"),
+            search_issue("alpha", 2, authorAssociation="MEMBER"),
+            search_issue("alpha", 3, authorAssociation="CONTRIBUTOR"),
+            search_issue("alpha", 4, authorAssociation="NONE"),
+            search_issue("alpha", 5, authorAssociation=None),
+            search_issue(
+                "alpha", 6, authorAssociation="NONE", labels=["agent-approved"]
+            ),
+            search_issue(
+                "alpha",
+                7,
+                authorAssociation="NONE",
+                labels=["agent-approved", "no-agent"],
+            ),
+            search_issue("alpha", 8, authorAssociation="MEMBER", author=bot),
+            search_issue("alpha", 9, authorAssociation="COLLABORATOR"),
+        ]
+        del issues[4]["authorAssociation"]
+        kept, skipped = self.run_filter(issues)
+        self.assertEqual([c["number"] for c in kept], [1, 2, 6])
+        self.assertEqual(skipped["untrusted_author"], 5)
+        self.assertEqual(skipped["label"], 1)
+        self.assertEqual(sum(skipped.values()), 6)
+        self.assertIn("untrusted_author", select.SKIP_COUNTERS)
+
     def test_explicit_overrides_exclusions_and_dotgithub_only(self) -> None:
         """Naming a repository lifts the exclusion list and .github rule, no more."""
         issues = [
@@ -1070,6 +1118,31 @@ class EnrichTest(NoSubprocessCase):
             )
         self.assertEqual([c["number"] for c in enriched], [2, 4])
         self.assertEqual(skipped["assigned"], 0)
+
+    def test_the_direct_read_decides_the_author(self) -> None:
+        """The direct read's association and author type overrule the search's."""
+        details: dict[int, dict[str, Any]] = {
+            1: {"author_association": "NONE", "labels": []},
+            2: {"author_association": "NONE", "labels": ["agent-approved"]},
+            3: {"author_association": "MEMBER", "author_is_bot": True, "labels": []},
+            4: {"author_association": "OWNER", "labels": []},
+            5: {"author_association": None, "labels": []},
+            6: {"author_association": "MEMBER", "author_is_bot": False, "labels": []},
+        }
+        base = [candidate("r", n) for n in details]
+        skipped = fresh_skipped()
+
+        def lookup(_repo: str, number: int) -> dict[str, Any]:
+            """The issue as the direct read reports it."""
+            return {**candidate("r", number), "state": "open", **details[number]}
+
+        with patch.object(reads, "issue_details", side_effect=lookup):
+            enriched = select.enrich(
+                base, include_assigned=False, enabled=ALL, skipped=skipped
+            )
+        self.assertEqual([c["number"] for c in enriched], [2, 4, 6])
+        self.assertEqual(skipped["untrusted_author"], 3)
+        self.assertEqual(sum(skipped.values()), 3)
 
 
 class ChooseTest(NoSubprocessCase):
@@ -1435,6 +1508,29 @@ class WriteOutputsTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertNotIn("\n## Heading", summary)
         self.assertIn("Real \\| evil \\| row", rows[0])
+
+    def test_named_issue_revised_shows_its_author(self) -> None:
+        """A named issue worked as a revision round still lists its association."""
+        named = {**self.chosen_issue(), "author_association": "CONTRIBUTOR"}
+        revised = {
+            **self.chosen_issue(),
+            "repository": "org/Beta",
+            "repo_name": "Beta",
+            "number": 5,
+            "task": "revise",
+            "pull_request": {"number": 9},
+            "round": 2,
+            "author_association": "NONE",
+        }
+        other = {**self.chosen_issue(), "number": 8, "author_association": "OWNER"}
+        selection = {
+            **sample_selection([named, revised, other]),
+            "explicit_issues": ["org/alpha#3", "org/beta#5"],
+        }
+        summary = outputs.summary_markdown(selection)
+        self.assertIn("| alpha#3 | CONTRIBUTOR |", summary)
+        self.assertIn("| Beta#5 | NONE |", summary)
+        self.assertNotIn("| alpha#8 | OWNER |", summary)
 
     def test_empty_summary(self) -> None:
         """No issues renders the placeholder row and an em dash for no priority."""

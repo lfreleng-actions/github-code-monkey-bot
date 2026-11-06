@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,8 +39,27 @@ def summary_markdown(selection: dict[str, Any]) -> str:
         lines += [
             "",
             f"Named issues ({len(named)}), worked in the order given; the"
-            " triage filters do not apply.",
+            " triage filters and the author rule do not apply.",
+            "",
+            "| Named issue | Author association |",
+            "| --- | --- |",
         ]
+        # A named issue with an open bot pull request becomes a revise
+        # entry, so match on the reference, not the task. GitHub
+        # compares repository names without case.
+        references = {name.lower() for name in named}
+        for issue in cast("list[dict[str, Any]]", selection["issues"]):
+            if f"{issue['repository']}#{issue['number']}".lower() not in references:
+                continue
+            association = issue.get("author_association")
+            # GitHub's own enum, never issue text; anything else reads as unknown.
+            shown = (
+                association
+                if isinstance(association, str)
+                and re.fullmatch(r"[A-Z_]+", association)
+                else "unknown"
+            )
+            lines.append(f"| {issue['repo_name']}#{issue['number']} | {shown} |")
     skipped_issues = cast("list[dict[str, str]]", selection.get("skipped_issues") or [])
     if skipped_issues:
         lines += ["", "| Skipped issue | Reason |", "| --- | --- |"]

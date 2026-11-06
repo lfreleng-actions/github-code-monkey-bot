@@ -443,6 +443,17 @@ the exclusion list and is not `.github` (unless
 - has a Type (triage has run);
 - has no `question`, `breaking-change` or `chore` label;
 - has no `no-agent` label (a human opt-out, per issue);
+- has an author whose `author_association` is `OWNER` or `MEMBER`,
+  and who is not an App or bot, or carries the `agent-approved`
+  label, a maintainer's opt-in. Triage gives anyone's issue a Type,
+  so any other author (`COLLABORATOR`, `CONTRIBUTOR`, `FIRST_TIMER`,
+  `FIRST_TIME_CONTRIBUTOR`, `MANNEQUIN`, `NONE`, or an association
+  that is absent or unreadable) needs the label. `no-agent` takes
+  precedence: the selector skips an issue carrying both labels. The
+  search payload decides before any per-issue read, the direct read
+  decides again with the final word, and a skip counts once, under
+  `untrusted_author`. Every site calls one helper,
+  `issue_authors.admits`, so the sites cannot drift;
 - has no assignee, unless the caller sets `include_assigned`: an
   assignee means a human has claimed the work;
 - has no pull request, open, closed or merged, from its
@@ -542,8 +553,10 @@ works those and scans nothing. The splitter accepts `repo#N`,
 reference to another owner, and publishes each as `owner/repo#N`;
 the selector reads that form and nothing else. Naming an issue is an
 operator's decision, so the triage signals do not apply: no Type,
-label, assignee or category filter, no ranking, and no
-one-per-repository rule, since the operator chose the set. What
+label, assignee or category filter, no author rule, no ranking, and
+no one-per-repository rule, since the operator chose the set. The
+summary lists the author association of each named issue admitted:
+the operator sees whose issue they approved. What
 remains is what the pipeline cannot work around: a repository the
 author job cannot clone or the publisher cannot fork (archived,
 template, fork, non-public or empty), a closed or absent issue, a
@@ -1836,10 +1849,11 @@ cross-checked against the trusted `selection.json`.
     "sha256": "<64 hex>"
   },
   "candidates_seen": 78,
-  "skipped": {"pull_request": 0, "no_type": 3, "closed": 0,
-              "assigned": 2, "label": 5, "category": 0,
-              "attempted": 1, "linked_pr": 0, "repository": 12,
-              "one_per_repo": 30, "cap": 15},
+  "skipped": {"pull_request": 0, "repository": 12, "label": 5,
+              "untrusted_author": 4, "no_type": 3, "closed": 0,
+              "category": 0, "assigned": 2, "attempted": 1,
+              "linked_pr": 0, "one_per_repo": 30, "cap": 15,
+              "revision": 0, "duplicate": 0},
   "explicit_repositories": [],
   "explicit_issues": [],
   "skipped_issues": [],
@@ -1872,8 +1886,15 @@ cross-checked against the trusted `selection.json`.
 ```
 
 `key` is `<repo_name>-<number>` and doubles as the matrix key and
-the artifact-name suffix. `explicit_issues` holds the named issues
-as `owner/repo#N`, in the order given, and `skipped_issues` one
+the artifact-name suffix. `skipped` carries every counter, zero or
+not, and the summary lists each: `pull_request`, `repository`,
+`label`, `untrusted_author` (an author outside `OWNER` and `MEMBER`,
+or an App, without `agent-approved`, §6), `no_type`, `closed`,
+`category`, `assigned`, `attempted`, `linked_pr`, `one_per_repo`,
+`cap`, `revision` and `duplicate`. An issue entry's `author_is_bot`
+records whether an App or bot opened the issue. `explicit_issues`
+holds the named issues as `owner/repo#N`, in the order given, and
+`skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
 dropped; both are empty on a scan. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
@@ -2330,7 +2351,13 @@ Whatever the way in, the candidate must be the bot's own: open, opened
 by the App, head in the designated fork (§4.3) on a
 `code-monkey/issue-<n>` branch; its repository must pass the §6 safety
 tests, and its issue must be open and carry no `no-agent` label, so
-closing the issue or opting it out stops the rounds. A scan honours the
+closing the issue or opting it out stops the rounds. A round a scan
+finds also applies the §6 author rule: the selector skips the round
+of an issue from an author outside `OWNER` and `MEMBER`, or from an
+App, that lacks the `agent-approved` label, and the reason names the
+label, so its pull request costs no further rounds until a
+maintainer approves the issue. A named round, like a named issue,
+applies no author rule. A scan honours the
 run's repository policy, the named repositories or everything but the
 exclusions, before it reads a hit. The round number continues from the
 bot's own footers on the issue: the last line of each of its comments,

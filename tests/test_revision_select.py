@@ -370,6 +370,59 @@ class BuildEntryTest(RevisionCase):
             with self.assertRaisesRegex(select.Skip, "no-agent"):
                 self.build(explicit=True)
 
+    def test_scan_round_needs_a_trusted_author_or_the_approval(self) -> None:
+        """An untrusted author's issue costs no round until a maintainer approves it."""
+        self.threads = [thread()]
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "CONTRIBUTOR",
+        }
+        with patch.object(reads, "issue_details", return_value=details):
+            with self.assertRaisesRegex(select.Skip, "agent-approved"):
+                self.build(explicit=False)
+            details["author_association"] = None
+            with self.assertRaisesRegex(select.Skip, "agent-approved"):
+                self.build(explicit=False)
+            details["labels"] = ["bug", "agent-approved", "no-agent"]
+            with self.assertRaisesRegex(select.Skip, "no-agent"):
+                self.build(explicit=False)
+            details["labels"] = ["bug", "agent-approved"]
+            self.assertEqual(self.build(explicit=False)["number"], 7)
+            details["labels"] = ["bug"]
+            details["author_association"] = "MEMBER"
+            details["author_is_bot"] = True
+            with self.assertRaisesRegex(select.Skip, "agent-approved"):
+                self.build(explicit=False)
+            details["author_is_bot"] = False
+            for association in ("OWNER", "MEMBER"):
+                details["author_association"] = association
+                self.assertEqual(self.build(explicit=False)["number"], 7)
+
+    def test_named_round_applies_no_author_rule(self) -> None:
+        """Naming the pull request is the approval, whoever filed the issue."""
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "NONE",
+        }
+        with patch.object(reads, "issue_details", return_value=details):
+            self.assertEqual(self.build(explicit=True)["number"], 7)
+
     def test_packet_carries_the_comments_since_the_last_round(self) -> None:
         """The instruction that caused the round reaches the agent, whatever the cap."""
         self.rounds = (
@@ -594,6 +647,38 @@ class ScanTest(RevisionCase):
         entries = [entry for _, build in builders if (entry := build()) is not None]
         self.assertEqual(len(entries), 1)
         self.assertEqual(reads_made, [41])
+
+    def test_scan_skips_an_untrusted_authors_round(self) -> None:
+        """A scanned round on an unapproved external issue is a named skip."""
+        hits = [{"repository": "org/alpha", "number": 41, "created_at": "t1"}]
+        self.threads = [thread()]
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": [],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "NONE",
+        }
+        skipped = {"revision": 0}
+        named: list[dict[str, str]] = []
+        patch.object(reads, "issue_details", return_value=details).start()
+        with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
+            builders = select.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped=skipped,
+                skipped_issues=named,
+            )
+        self.assertIsNone(builders[0][1]())
+        self.assertEqual(skipped["revision"], 1)
+        self.assertEqual(named[0]["issue"], "org/alpha#41")
+        self.assertIn("agent-approved", named[0]["reason"])
 
 
 class PullRequestForBranchTest(unittest.TestCase):

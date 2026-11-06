@@ -32,6 +32,7 @@ from typing import Any, cast
 import bot_github as github
 import explicit_issues as explicit_targets
 import fork_orgs as forks
+import issue_authors as authors
 import issue_categories as categories
 import issue_reads as reads
 import repository_reads as repositories
@@ -113,6 +114,11 @@ def cheap_filter(
         if SKIP_LABELS.intersection(labels):
             skipped["label"] += 1
             continue
+        association = issue.get("authorAssociation")
+        bot = authors.is_bot(issue.get("author"))
+        if not authors.author_admitted(association, labels, bot=bot):
+            skipped["untrusted_author"] += 1
+            continue
         kept.append(
             {
                 "repository": full,
@@ -120,7 +126,8 @@ def cheap_filter(
                 "number": github.require_int(issue, "number", "search issue"),
                 "url": github.require_str(issue, "url", "search issue"),
                 "created_at": github.require_str(issue, "createdAt", "search issue"),
-                "author_association": issue.get("authorAssociation"),
+                "author_association": association,
+                "author_is_bot": bot,
                 "default_branch": meta["default_branch"],
             }
         )
@@ -152,11 +159,16 @@ def enrich(
         if SKIP_LABELS.intersection(details["labels"]):
             skipped["label"] += 1
             continue
+        # The direct read is newer than the search and overrules it.
+        merged = {**candidate, **details}
+        if not authors.admits(merged):
+            skipped["untrusted_author"] += 1
+            continue
         found = categories.categories_of(details["labels"], details["type"])
         if not found & enabled:
             skipped["category"] += 1
             continue
-        enriched.append({**candidate, **details, "categories": sorted(found)})
+        enriched.append({**merged, "categories": sorted(found)})
     return enriched
 
 
@@ -164,6 +176,7 @@ SKIP_COUNTERS = (
     "pull_request",
     "repository",
     "label",
+    "untrusted_author",
     "no_type",
     "closed",
     "category",
