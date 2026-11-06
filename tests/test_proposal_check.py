@@ -623,6 +623,12 @@ class RunCheckOutcomeTest(GitCase):
         self.assertEqual(check.reasons, ["issue needs a design"])
         self.assertEqual(check.commits, [])
 
+    @unittest.expectedFailure
+    def test_an_issue_abstention_is_never_superseded(self) -> None:
+        """Only a revision round can lose a race to another run's push."""
+        self.fixture.manifest(outcome="abstain", reason="r", superseded=True)
+        self.assertIs(self.fixture.run().superseded, False)
+
     def test_author_failed(self) -> None:
         """author-failed without a reason gets a placeholder."""
         self.fixture.manifest(outcome="author-failed", reason=None)
@@ -1250,6 +1256,35 @@ class RevisionCheckTest(GitCase):
         check = self.run_revision()
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertLessEqual(len(check.round_summary), 2000)
+
+    @unittest.expectedFailure
+    def test_a_stood_down_abstention_is_superseded(self) -> None:
+        """The stand-down's ``superseded: true`` reaches check.json (issue #154)."""
+        self.fixture.manifest(outcome="abstain", reason="moved", superseded=True)
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "abstain", check.reasons)
+        self.assertIs(check.superseded, True)
+        self.assertIs(check.to_json()["superseded"], True)
+
+    @unittest.expectedFailure
+    def test_only_a_revision_abstention_is_superseded(self) -> None:
+        """Any other outcome, or a value but ``true``, leaves the round counted."""
+        for outcome, value in (
+            ("abstain", "true"),
+            ("abstain", 1),
+            ("author-failed", True),
+        ):
+            with self.subTest(outcome=outcome, value=value):
+                self.fixture.manifest(outcome=outcome, reason="r", superseded=value)
+                self.assertIs(self.run_revision().superseded, False)
+        self.fixture.commit(
+            "Fix(readme): Correct typo", {"README.md": "# Repo\n\nfixed\n"}
+        )
+        self.fixture.bundle()
+        self.fixture.revision_manifest(superseded=True)
+        check = self.run_revision()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertIs(check.superseded, False)
 
     def test_handoff_outcome_replies_without_a_chain(self) -> None:
         """Disputing every finding is a handoff: replies validated, nothing to replay."""
