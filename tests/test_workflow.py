@@ -928,9 +928,8 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assert_expression(env["HEAD_SHA"], "matrix.head_sha")
         script = flatten(fetch["run"])
         self.assertIn('"https://github.com/$FORK_REPOSITORY.git"', script)
-        self.assertIn(
-            '[ "$(git -C workspace rev-parse FETCH_HEAD)" = "$HEAD_SHA" ]', script
-        )
+        self.assertIn('now="$(git -C workspace rev-parse FETCH_HEAD)"', script)
+        self.assertIn('if [ "$now" = "$HEAD_SHA" ]', script)
         self.assertNotIn("token", script.lower())
         self.assertLess(
             self.position("author", "Checkout target repository"),
@@ -944,7 +943,6 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
         self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
 
-    @unittest.expectedFailure
     def test_a_moved_branch_warns_and_never_errors(self) -> None:
         """A moved or missing branch is a skip: a warning and an output, never an error."""
         fetch = self.step("author", "fetch-branch")
@@ -956,7 +954,6 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn('echo "reason=$reason"', script)
         self.assertIn('"$GITHUB_OUTPUT"', script)
 
-    @unittest.expectedFailure
     def test_every_session_step_skips_when_the_branch_moved(self) -> None:
         """No toolchain, prompt or session after the round stood down.
 
@@ -1048,7 +1045,6 @@ class RevisionContracts(ReusableWorkflowCase):
         )
         return proc.returncode, proc.stdout, output.read_text(encoding="utf-8")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("git") and shutil.which("bash"), "needs git")
     def test_fetch_stands_down_on_a_moved_or_missing_branch(self) -> None:
         """The recorded head checks out; a moved or gone branch warns and exits 0."""
@@ -1096,7 +1092,6 @@ class RevisionContracts(ReusableWorkflowCase):
             self.assertNotIn("::warning::", stdout)
             self.assertEqual(outputs, "")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_a_stood_down_round_bundles_an_abstention(self) -> None:
         """The bundle step writes `abstain` with the fetch step's reason."""
