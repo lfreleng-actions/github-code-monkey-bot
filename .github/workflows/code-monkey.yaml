@@ -264,6 +264,7 @@ jobs:
     permissions:
       issues: read  # Candidate scan without an App (dry-run plumbing)
       contents: read  # Checkout trusted assets; read public repositories
+      # A rejecting run's publish result, read for the next attempt (§6)
       actions: read  # Read this run's creation time for comment markers
     outputs:
       assets_sha: "${{ steps.pinned.outputs.sha }}"
@@ -783,6 +784,10 @@ jobs:
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
           GUIDANCE_REF: "${{ inputs.guidance_ref }}"
           BOT_SLUG: "${{ steps.app-token.outputs.app-slug }}"
+          # A rejecting run's publish result lives in this repository,
+          # which the App token may not reach; this token reads it.
+          RESULTS_TOKEN: "${{ github.token }}"
+          RESULTS_REPOSITORY: "${{ github.repository }}"
         run: |
           extra=()
           if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
@@ -815,7 +820,8 @@ jobs:
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \
-            --bot-slug "$BOT_SLUG" "${extra[@]}"
+            --bot-slug "$BOT_SLUG" \
+            --results-repository "$RESULTS_REPOSITORY" "${extra[@]}"
           cat artefacts/selection-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: 'Publish selection outputs'

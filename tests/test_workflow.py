@@ -2059,6 +2059,15 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         script = flatten(self.step("select", "Select issues")["run"])
         self.assertIn("--fork-orgs monkey-assets/config/fork-orgs.json", script)
 
+    def test_select_reads_rejections_with_the_run_token(self) -> None:
+        """A rejecting run's result is read in this repository (DESIGN.md 6)."""
+        step = self.step("select", "Select issues")
+        env = cast(dict[str, Any], step["env"])
+        self.assertEqual(env["RESULTS_TOKEN"], "${{ github.token }}")
+        self.assertEqual(env["RESULTS_REPOSITORY"], "${{ github.repository }}")
+        script = flatten(step["run"])
+        self.assertIn('--results-repository "$RESULTS_REPOSITORY"', script)
+
     def test_select_reads_the_antagonistic_reviewers(self) -> None:
         """The trusted App list comes from the pinned assets (DESIGN.md 20.1)."""
         script = flatten(self.step("select", "Select issues")["run"])

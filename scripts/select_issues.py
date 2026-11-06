@@ -35,6 +35,7 @@ import fork_orgs as forks
 import issue_authors as authors
 import issue_categories as categories
 import issue_reads as reads
+import previous_rejection
 import repository_reads as repositories
 import revision_select
 import selection_outputs as outputs
@@ -347,6 +348,12 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
         reviser=rounds.for_issue,
     )
+    if args.results_repository:
+        previous_rejection.attach(
+            chosen,
+            results_repository=args.results_repository,
+            bot_login=str(bot["login"]),
+        )
     stamp(chosen, args.session, collected_at)
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
@@ -389,6 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance-ref", default="main")
     parser.add_argument("--guidance-path", default="AGENTS.md")
     parser.add_argument("--bot-slug", default="")
+    parser.add_argument("--results-repository", default="")
     return parser
 
 

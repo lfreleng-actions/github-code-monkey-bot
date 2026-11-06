@@ -609,6 +609,26 @@ thread cannot exhaust the select job. The issue body itself is always present: e
 reports are the point of the exercise, and the prompt treats every
 body as data rather than instruction.
 
+**Previous rejection.** When the bot's latest outcome footer on the
+issue says `rejected`, the select job reads that run's publish
+result (`result.json`, section 18.4) from the caller repository with
+the run's own token (`github.token`, `actions: read`), since the App
+token may not reach it, and adds its reasons to the entry as
+`previous_rejection` under a fixed heading: at most 10 reasons, each
+cut to 2,000 bytes and 8 KiB in all, counted as `selection.json`
+serialises them, escapes included, with a count of what it dropped.
+The records count against the selection's 12 MiB budget like the
+entries do: one that would overrun it keeps a note and drops its
+reasons. The prompt asks the agent to address each reason first. The
+read fails soft: a run in another repository, a missing, ambiguous or
+expired artifact, a download the bounded fetch refuses, or a result
+too deeply nested to parse leaves a fixed note in place of the
+reasons, and selection goes on; the select job replaces a lone
+surrogate in a reason rather than fail on it. A history
+longer than the round reads span, or a failed read of it, adds
+nothing. The reasons quote the refused proposal, so they are data,
+like the issue body.
+
 ## 7. The Author Job
 
 One matrix entry per selected issue, `max-parallel` set from
@@ -1957,7 +1977,11 @@ counted over every run whatever the bounds keep: an empty `checks`
 beside a non-zero count says CI had not finished, not that it
 passed), `pr_comments`, `new_comments` and
 `new_pr_comments`; an issue entry has `task: "issue"` and
-`checkout_sha` equal to `base_sha`. Beside it the select job writes
+`checkout_sha` equal to `base_sha`. Either kind adds
+`previous_rejection` when the bot's latest outcome on the issue was
+`rejected` (§6), as `{heading, run_url, reasons, reasons_dropped,
+note}`: `note` is null when the select job read the reasons, and otherwise
+a fixed text saying why it could not. Beside it the select job writes
 `matrix.json`
 (`{"include": [{key, repository, repo_name, number, base_sha,
 branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
@@ -2132,7 +2156,10 @@ result carries a MAC under a key the author never holds, fetched
 under the bounds §8 step 1 applies to proposals, the report is
 informational, and nothing may write on the strength of it (the
 activity log of §19 included). The maintainers have yet to choose
-the secret that supplies the key.
+the secret that supplies the key. The next selection's
+`previous_rejection` (§6) reads this file too; it writes nothing on
+its strength, and the agent treats its bounded reasons as data, so a
+forged result can at worst mislead one attempt a human reviews.
 
 ### 18.5 Script interfaces
 
