@@ -3254,7 +3254,6 @@ class CronSlackContracts(WorkflowCase):
         self.assertEqual(out["text"], "🐒 Code Monkey: 2 pull requests for review")
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_digest_says_when_nothing_was_raised(self) -> None:
         """An empty night reads differently from a broken one."""
         out = self.digest("[]")
