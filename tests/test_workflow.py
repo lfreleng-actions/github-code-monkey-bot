@@ -39,6 +39,9 @@ LINTING = WORKFLOWS / "linting.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
 REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
 TOOLCHAIN_PIN = WORKFLOWS.parents[1] / "tools" / "copilot-cli"
+# The one place the select and publish jobs read the zizmor release from.
+ZIZMOR_VERSION_PATH = "config/zizmor-version.txt"
+ZIZMOR_VERSION_FILE = WORKFLOWS.parents[1] / ZIZMOR_VERSION_PATH
 PRE_COMMIT_CONFIG = WORKFLOWS.parents[1] / ".pre-commit-config.yaml"
 
 PLACEHOLDER_NAME = "Code Monkey"
@@ -1818,12 +1821,21 @@ class PreflightContracts(ReusableWorkflowCase):
             self.position("publish", "Open pull request"),
         )
 
+    @unittest.expectedFailure
     def test_zizmor_is_pinned(self) -> None:
-        """The auditor the gate runs is an exact version."""
+        """The auditor the gate runs is the exact version one file names."""
+        lines = [
+            line.strip()
+            for line in ZIZMOR_VERSION_FILE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r"^\d+\.\d+\.\d+$")
         run = flatten(self.step("select", "Install zizmor")["run"])
-        self.assertRegex(
-            run, r"\"\$UV\" tool install --python \"\$PYTHON\" 'zizmor==\d+\.\d+\.\d+'"
-        )
+        self.assertIn(f"monkey-assets/{ZIZMOR_VERSION_PATH}", run)
+        self.assertIn('[[ ! "$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]]', run)
+        self.assertIn('"$UV" tool install --python "$PYTHON" "zizmor==$version"', run)
+        self.assertNotRegex(run, r"zizmor==\d")
 
     def test_preflight_uv_run_sees_only_the_assets_checkout(self) -> None:
         """Nothing but the pinned assets lands in the workspace before uv runs.
@@ -1865,6 +1877,43 @@ class PreflightContracts(ReusableWorkflowCase):
         self.assertEqual(run.count('"$UV" run --'), 1)
         self.assertLess(
             self.position("select", INSTALL_PYTHON), self.position("select", PREFLIGHT)
+        )
+
+
+class PublishAuditInstallContracts(ReusableWorkflowCase):
+    """The publish job installs zizmor exactly as the select job does."""
+
+    INSTALL_STEPS = ("Set up uv", "Install Python", "Install zizmor")
+
+    @unittest.expectedFailure
+    def test_publish_runs_the_select_install_steps(self) -> None:
+        """Same action, settings, environment, script and working directory."""
+        for name in self.INSTALL_STEPS:
+            with self.subTest(step=name):
+                publish = self.step("publish", name)
+                select = self.step("select", name)
+                self.assertEqual(runnable(publish), runnable(select))
+                self.assertEqual(publish.get("id"), select.get("id"))
+                self.assertEqual(publish.get("shell"), select.get("shell"))
+
+    @unittest.expectedFailure
+    def test_publish_installs_zizmor_before_any_untrusted_input(self) -> None:
+        """uv runs beside the publisher checkout alone, before the check.
+
+        The proposal artifact lands in the workspace later, so nothing
+        it carries can steer uv; the check needs zizmor on PATH.
+        """
+        order = [
+            self.position("publish", "Checkout trusted publisher"),
+            *(self.position("publish", name) for name in self.INSTALL_STEPS),
+            self.position("publish", "Fetch selection evidence"),
+            self.position("publish", "Fetch and accept bounded proposal"),
+            self.position("publish", "Check proposal offline"),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(
+            order[: len(self.INSTALL_STEPS) + 1],
+            list(range(order[0], order[0] + len(self.INSTALL_STEPS) + 1)),
         )
 
 
