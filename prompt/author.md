@@ -80,8 +80,19 @@ part and note it in your manifest reason.
      total change under 4 MiB. The workflow rejects a commit subject
      longer than the target's `.gitlint` `title-max-length` where it
      sets one, and 50 where it does not, even when the target's own
-     gitlint hook allows more. Do not touch `AGENTS.md`, `LICENSE*`,
-     `REUSE.toml` or `.gitlint`. Workflow files under
+     gitlint hook allows more. Do not add, edit, delete or rename a
+     protected file: agent instruction files (`AGENTS.md`,
+     `CLAUDE.md`, `GEMINI.md`, `copilot-instructions.md`, `SKILL.md`,
+     `.cursorrules` and the like at any depth; `.claude/`,
+     `.cursor/`, `.copilot/` and similar directories; and
+     `.github/instructions/`, `.github/prompts/`, `.github/agents/`,
+     `.github/skills/` and `.github/copilot/`), review and gate
+     configuration (`CODEOWNERS`,
+     `REUSE.toml`, `.gitlint`, `.aislop/`, and at the root
+     `SECURITY.md`, `.pre-commit-config.yaml` and `.zizmor.yml`),
+     and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When the
+     change cannot avoid one, abstain and name the file in your
+     reason. Workflow files under
      `.github/workflows/` are fine. When the fix needs a step you
      cannot take, do the rest and open the pull request body with an
      `> **INFO**` banner listing the follow-up a human must make and

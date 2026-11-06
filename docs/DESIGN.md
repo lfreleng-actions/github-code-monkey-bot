@@ -741,8 +741,11 @@ The workflow facts the prompt adds:
    parent. At most five commits and 100 file changes per commit;
    under 4 MiB in total; a subject within the target's `.gitlint`
    `title-max-length`, or 50 where it sets none, as the publisher
-   enforces (§8) even where the target's gitlint is looser; hands
-   off `AGENTS.md`, `LICENSE*`, `REUSE.toml` and `.gitlint`.
+   enforces (§8) even where the target's gitlint is looser; no
+   change to a protected file, which the prompt names by class
+   (agent instruction files, review and gate configuration,
+   licences) with the examples §8 lists, abstaining and naming the
+   file when the change cannot avoid one.
    Workflow files are in scope. Where the fix needs a step the
    replay cannot take, the agent finishes the rest and opens the
    pull request body with an `INFO` banner naming the human
