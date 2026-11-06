@@ -677,7 +677,13 @@ jobs:
           UV: "${{ steps.setup-uv.outputs.uv-path }}"
           PYTHON: "${{ steps.python.outputs.path }}"
         run: |
-          "$UV" tool install --python "$PYTHON" 'zizmor==1.30.1'
+          version="$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' \
+            monkey-assets/config/zizmor-version.txt)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo '::error::config/zizmor-version.txt names no exact version'
+            exit 1
+          fi
+          "$UV" tool install --python "$PYTHON" "zizmor==$version"
 
       - name: 'Pre-flight: workflow contracts and audit'
         env:
@@ -1430,6 +1436,99 @@ jobs:
           ref: "${{ needs.select.outputs.assets_sha }}"
           path: 'monkey-assets'
           persist-credentials: false
+
+      # zizmor for the online audit of every proposal inside the
+      # check below (docs/DESIGN.md section 8): the select job's
+      # install steps verbatim, run before the proposal artifact
+      # lands in the workspace. The select job's comments on them
+      # hold here too.
+      - name: 'Set up uv'
+        id: setup-uv
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          working-directory: "${{ runner.temp }}"
+          tool-bin-dir: "${{ runner.temp }}/uv-tool-bin"
+          # Its post-step 'uv cache prune' would hit the invalid
+          # preference below.
+          enable-cache: false
+        env:
+          UV_NO_CONFIG: '1'
+          UV_NO_PROJECT: '1'
+          # setup-uv's only uv call here is "uv python find", whose
+          # result it executes; an invalid preference makes uv refuse
+          # its arguments before any lookup.
+          UV_PYTHON_PREFERENCE: 'lookup-disabled'
+          # Inherited, it makes setup-uv probe uv, which the line above
+          # fails.
+          UV_PYTHON_ARCH: ''
+          # setup-uv puts this directory on PATH ahead of its own uv
+          # before its bare 'uv python find', so an inherited one could
+          # hold the uv that runs. It is the one 'Install Python' fills.
+          UV_PYTHON_INSTALL_DIR: "${{ runner.temp }}/uv-python"
+
+      # uv installs and finds its own Python under an emptied
+      # environment, so nothing an earlier step exported picks it; every
+      # later uv call takes it as an absolute --python.
+      - name: 'Install Python'
+        id: python
+        shell: bash
+        # uv starts a .venv interpreter in its working directory to
+        # inspect it, even under env -i.
+        working-directory: "${{ runner.temp }}"
+        env:
+          UV: "${{ steps.setup-uv.outputs.uv-path }}"
+          INSTALL_DIR: "${{ runner.temp }}/uv-python"
+        run: |
+          clean=(UV_NO_CONFIG=1 UV_NO_PROJECT=1
+            "UV_PYTHON_INSTALL_DIR=$INSTALL_DIR"
+            "UV_CACHE_DIR=$RUNNER_TEMP/uv-cache")
+          for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy \
+              https_proxy all_proxy no_proxy SSL_CERT_FILE SSL_CERT_DIR \
+              UV_NATIVE_TLS; do
+            if [ -n "${!name+set}" ]; then clean+=("$name=${!name}"); fi
+          done
+          env -i "${clean[@]}" "$UV" python install --quiet --no-bin 3.13
+          # 'python find' starts any .venv interpreter in the working
+          # directory or above it; 'python list' reads the install's
+          # metadata instead.
+          listed=$(env -i "${clean[@]}" "$UV" python list --only-installed \
+            --managed-python --output-format json 3.13)
+          # The first entry's "path", past its other keys and the
+          # objects nested in them.
+          first='^\[\{([^{}"]|"[^"]*"|\{[^{}]*\})*"path":"([^"]+)"'
+          py=
+          if [[ "$listed" =~ $first ]]; then
+            py="${BASH_REMATCH[2]}"
+          fi
+          # uv lists an install below the working directory relative to
+          # it, so resolve it there, and refuse '..' before the check.
+          case "$py" in
+            /*) ;;
+            ?*) py="$PWD/$py" ;;
+          esac
+          case "$py/" in
+            */../*) py= ;;
+          esac
+          case "$py" in
+            "$INSTALL_DIR"/*) ;;
+            *) echo "::error::uv found Python outside its install directory"
+               exit 1 ;;
+          esac
+          echo "path=$py" >> "$GITHUB_OUTPUT"
+
+      - name: 'Install zizmor'
+        env:
+          UV: "${{ steps.setup-uv.outputs.uv-path }}"
+          PYTHON: "${{ steps.python.outputs.path }}"
+        run: |
+          version="$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' \
+            monkey-assets/config/zizmor-version.txt)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo '::error::config/zizmor-version.txt names no exact version'
+            exit 1
+          fi
+          "$UV" tool install --python "$PYTHON" "zizmor==$version"
 
       - name: 'Fetch selection evidence'
         # yamllint disable-line rule:line-length

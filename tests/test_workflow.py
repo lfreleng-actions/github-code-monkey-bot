@@ -1821,7 +1821,6 @@ class PreflightContracts(ReusableWorkflowCase):
             self.position("publish", "Open pull request"),
         )
 
-    @unittest.expectedFailure
     def test_zizmor_is_pinned(self) -> None:
         """The auditor the gate runs is the exact version one file names."""
         lines = [
@@ -1885,7 +1884,6 @@ class PublishAuditInstallContracts(ReusableWorkflowCase):
 
     INSTALL_STEPS = ("Set up uv", "Install Python", "Install zizmor")
 
-    @unittest.expectedFailure
     def test_publish_runs_the_select_install_steps(self) -> None:
         """Same action, settings, environment, script and working directory."""
         for name in self.INSTALL_STEPS:
@@ -1896,7 +1894,6 @@ class PublishAuditInstallContracts(ReusableWorkflowCase):
                 self.assertEqual(publish.get("id"), select.get("id"))
                 self.assertEqual(publish.get("shell"), select.get("shell"))
 
-    @unittest.expectedFailure
     def test_publish_installs_zizmor_before_any_untrusted_input(self) -> None:
         """uv runs beside the publisher checkout alone, before the check.
 
