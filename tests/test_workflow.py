@@ -944,6 +944,206 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn('[[ "$TASK" =~ ^(issue|revise)$ ]]', guard)
         self.assertIn('[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
 
+    @unittest.expectedFailure
+    def test_a_moved_branch_warns_and_never_errors(self) -> None:
+        """A moved or missing branch is a skip: a warning and an output, never an error."""
+        fetch = self.step("author", "fetch-branch")
+        self.assertEqual(fetch["name"], "Fetch pull request branch")
+        script = flatten(fetch["run"])
+        self.assertNotIn("::error::", script)
+        self.assertIn('echo "::warning::Skipped: $reason"', script)
+        self.assertIn("echo 'moved=true'", script)
+        self.assertIn('echo "reason=$reason"', script)
+        self.assertIn('"$GITHUB_OUTPUT"', script)
+
+    @unittest.expectedFailure
+    def test_every_session_step_skips_when_the_branch_moved(self) -> None:
+        """No toolchain, prompt or session after the round stood down.
+
+        The packet step runs, since the bundle step reads its outputs,
+        and the bundle step runs to write the abstention.
+        """
+        guard = "steps.fetch-branch.outputs.moved != 'true'"
+        steps = self.steps("author")
+        start = self.position("author", "fetch-branch") + 1
+        end = self.position("author", "Bundle proposed commits")
+        self.assertIn(
+            "Run coding agent (Copilot)", [s.get("name") for s in steps[start:end]]
+        )
+        for step in steps[start:end]:
+            if step.get("id") == "packet":
+                continue
+            with self.subTest(step=step.get("name")):
+                self.assert_expression(str(step.get("if", "")), guard)
+        packet = flatten(self.step("author", "packet")["run"])
+        self.assertIn('if [ "$TASK" = revise ] && [ "$MOVED" != true ]', packet)
+        self.assert_expression(
+            self.step("author", "packet")["env"]["MOVED"],
+            "steps.fetch-branch.outputs.moved",
+        )
+
+    def fetch_fixture(self, holder: Path) -> tuple[dict[str, str], str, str]:
+        """A fork with the bot branch at two commits, and a checkout to fetch into.
+
+        Returns the step environment, which points github.com at the
+        fixture, and the first and second commits on the branch.
+        """
+        env = clean_git_env()
+        env.update(
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": f"url.file://{holder}/.insteadOf",
+                "GIT_CONFIG_VALUE_0": "https://github.com/",
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@example.invalid",
+            }
+        )
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        fork = holder / "forks" / "repo.git"
+        source = holder / "source"
+        git("init", "-q", "-b", "main", str(source))
+        git("-C", str(source), "commit", "-q", "--allow-empty", "-m", "Base")
+        git("-C", str(source), "switch", "-q", "-c", "code-monkey/issue-7")
+        git("-C", str(source), "commit", "-q", "--allow-empty", "-m", "One")
+        first = git("-C", str(source), "rev-parse", "HEAD")
+        git("-C", str(source), "commit", "-q", "--allow-empty", "-m", "Two")
+        second = git("-C", str(source), "rev-parse", "HEAD")
+        git("-C", str(source), "switch", "-q", "main")
+        git("clone", "-q", "--bare", str(source), str(fork))
+        git("clone", "-q", str(source), str(holder / "run" / "workspace"))
+        env.update(
+            {
+                "FORK_REPOSITORY": "forks/repo",
+                "BRANCH": "code-monkey/issue-7",
+                "GITHUB_OUTPUT": str(holder / "output"),
+            }
+        )
+        return env, first, second
+
+    def run_fetch(self, env: dict[str, str], holder: Path) -> tuple[int, str, str]:
+        """Run the fetch step; return its exit code, stdout and outputs."""
+        fetch = self.step("author", "Fetch pull request branch")
+        output = holder / "output"
+        output.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            ["bash", "-e", "-c", str(fetch["run"])],
+            cwd=holder / "run",
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode, proc.stdout, output.read_text(encoding="utf-8")
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("git") and shutil.which("bash"), "needs git")
+    def test_fetch_stands_down_on_a_moved_or_missing_branch(self) -> None:
+        """The recorded head checks out; a moved or gone branch warns and exits 0."""
+        with tempfile.TemporaryDirectory() as name:
+            holder = Path(name)
+            env, first, second = self.fetch_fixture(holder)
+
+            code, stdout, outputs = self.run_fetch({**env, "HEAD_SHA": second}, holder)
+            self.assertEqual((code, stdout, outputs), (0, "", ""))
+            current = subprocess.run(
+                ["git", "-C", str(holder / "run" / "workspace"), "branch", "--show"],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(current, "code-monkey/issue-7")
+
+            code, stdout, outputs = self.run_fetch({**env, "HEAD_SHA": first}, holder)
+            moved = (
+                f"code-monkey/issue-7 in forks/repo moved from {first[:7]} to "
+                f"{second[:7]} after this run selected it. Another run has "
+                "revised this pull request since (a named dispatch or the "
+                "schedule); its work stands, and this round made no change. "
+                "The next scan picks the pull request up at its new head."
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout, f"::warning::Skipped: {moved}\n")
+            self.assertEqual(outputs, f"moved=true\nreason={moved}\n")
+
+            gone = {**env, "HEAD_SHA": first, "BRANCH": "code-monkey/issue-8"}
+            code, stdout, outputs = self.run_fetch(gone, holder)
+            vanished = (
+                "code-monkey/issue-8 in forks/repo no longer exists; the pull "
+                "request was merged or closed since this run selected it."
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout, f"::warning::Skipped: {vanished}\n")
+            self.assertEqual(outputs, f"moved=true\nreason={vanished}\n")
+
+            # Any other failure is a failure, not a skip.
+            broken = {**env, "HEAD_SHA": first, "FORK_REPOSITORY": "forks/absent"}
+            code, stdout, outputs = self.run_fetch(broken, holder)
+            self.assertNotEqual(code, 0)
+            self.assertNotIn("::warning::", stdout)
+            self.assertEqual(outputs, "")
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_a_stood_down_round_bundles_an_abstention(self) -> None:
+        """The bundle step writes `abstain` with the fetch step's reason."""
+        bundle = self.step("author", "Bundle proposed commits")
+        env = cast(dict[str, Any], bundle["env"])
+        self.assert_expression(env["MOVED"], "steps.fetch-branch.outputs.moved")
+        self.assert_expression(env["MOVED_REASON"], "steps.fetch-branch.outputs.reason")
+        reason = "code-monkey/issue-7 in forks/repo moved from aaaaaaa to bbbbbbb."
+        with tempfile.TemporaryDirectory() as name:
+            work = Path(name)
+            (work / "artefacts").mkdir()
+            proc = subprocess.run(
+                ["bash", "-e", "-c", str(bundle["run"])],
+                cwd=work,
+                env={
+                    "PATH": os.environ["PATH"],
+                    "BRANCH": "code-monkey/issue-7",
+                    "BASE_SHA": "a" * 40,
+                    "REBASE_SHA": "c" * 40,
+                    "REPOSITORY": "owner/repo",
+                    "ISSUE": "7",
+                    "AGENT_OUTCOME": "skipped",
+                    "MOVED": "true",
+                    "MOVED_REASON": reason,
+                },
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            manifest = json.loads(
+                (work / "artefacts" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse((work / "artefacts" / "changes.bundle").exists())
+        self.assertEqual(
+            manifest,
+            {
+                "schema": 1,
+                "outcome": "abstain",
+                "repository": "owner/repo",
+                "issue": 7,
+                "base_sha": "a" * 40,
+                "branch": "code-monkey/issue-7",
+                "reason": reason,
+            },
+        )
+        self.assertEqual(proc.stdout, "Manifest outcome: abstain\n")
+
     def test_prompt_follows_the_task(self) -> None:
         """The revise prompt exists and the assemble step picks it by task."""
         self.assertTrue(REVISE_PROMPT.is_file())
