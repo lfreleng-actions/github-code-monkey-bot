@@ -1594,6 +1594,10 @@ jobs:
           KEY: "${{ matrix.key }}"
           # yamllint disable-line rule:line-length
           RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The online zizmor audit's token (docs/DESIGN.md section 8):
+          # the native one, which reads public actions and writes
+          # nothing; the check hands it to zizmor alone.
+          ZIZMOR_GITHUB_TOKEN: "${{ github.token }}"
         run: |
           python3 monkey-assets/scripts/publish.py check \
             --selection evidence/selection.json --key "$KEY" \

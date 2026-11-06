@@ -103,6 +103,9 @@ class Check:
     # that pull request's number, the one whose branch the publisher
     # may reset. None for every other entry, a scan's included.
     retry_of: int | None = None
+    # What the online zizmor audit found (DESIGN.md section 8): its
+    # pass note; blank when the check never reached it.
+    online_audit: str = ""
 
     @classmethod
     def from_entry(cls, key: str, entry: dict[str, Any]) -> Check:
@@ -198,6 +201,7 @@ class Check:
             "collected_at": self.collected_at,
             "session": self.session,
             "retry_of": self.retry_of,
+            "online_audit": self.online_audit,
         }
 
 
@@ -247,6 +251,7 @@ class Context:
     model: str
     run_url: str
     issue_url: str
+    zizmor_token: str = ""
 
 
 def check_summary(check: Check) -> str:
@@ -262,4 +267,6 @@ def check_summary(check: Check) -> str:
             headline = str(commit["headline"]).replace("|", "\\|")
             lines.append(f"| {headline} | {files} | {size} |")
         lines += ["", f"Needs `workflows: write`: {check.needs_workflows}", ""]
+    if check.online_audit:
+        lines += [policy.log_safe(check.online_audit), ""]
     return "\n".join(lines) + "\n"

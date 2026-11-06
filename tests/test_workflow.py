@@ -1720,7 +1720,8 @@ class PublishJobContracts(ReusableWorkflowCase):
         for step in (push, opened, comment):
             self.assertNotIn("github.token", dumped(step))
         # The native token reads alone in the job: this run's artifacts,
-        # whether a public fork exists, and the public target's reviews,
+        # public actions for the online zizmor audit, whether a public
+        # fork exists, and the public target's reviews,
         # check runs and mergeability; the job grants it actions: read
         # and nothing more.
         users = [
@@ -1732,6 +1733,7 @@ class PublishJobContracts(ReusableWorkflowCase):
             users,
             [
                 "Fetch and accept bounded proposal",
+                "Check proposal offline",
                 "Check fork exists",
                 "Await Copilot review",
                 "Probe mergeability",
@@ -1913,7 +1915,6 @@ class PublishAuditInstallContracts(ReusableWorkflowCase):
             list(range(order[0], order[0] + len(self.INSTALL_STEPS) + 1)),
         )
 
-    @unittest.expectedFailure
     def test_check_audits_online_with_the_native_token(self) -> None:
         """The check step hands zizmor the native token, read-only.
 
