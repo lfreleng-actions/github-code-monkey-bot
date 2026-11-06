@@ -38,7 +38,8 @@ waits for the verdict, which the issue comment and the run report
 state. A review with findings, or a maintainer's comment, brings a
 revision round: a later session reads the findings, revises the
 same pull request in place, answers each thread, and the review
-runs again, up to ten rounds. The agent reads the organisation's
+runs again, up to ten rounds, counted afresh for each antagonistic
+review that hands the pull request back. The agent reads the organisation's
 `AGENTS.md` at a recorded commit and works to its rules.
 
 ## Where bot branches live
@@ -75,7 +76,8 @@ stops it. Organisation
 administrators can dispatch it by hand, live unless they tick
 `dry_run`, and without a Slack post, with a model, a mode
 (`select`, `branches`, `pull-requests`), issue, runtime and round
-caps (`max_rounds` lifts the ten-round limit for one run),
+caps (`max_rounds` lifts the ten-round limit per antagonistic
+review round for one run; sixty rounds in all stays the ceiling),
 a category list, and either a repository list to scan or a list of
 issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
 skips the scan and the triage filters. A list of the bot's open pull

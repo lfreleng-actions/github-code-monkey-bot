@@ -26,7 +26,15 @@ import review_verdict as verdicts
 
 BRANCH_RE = re.compile(r"^code-monkey/issue-(?P<number>[1-9][0-9]*)$")
 MAX_REVIEW_BODY = verdicts.MAX_BODY_BYTES
+# Rounds per segment by default, the first publication's and each
+# antagonistic hand-back's after it (DESIGN.md section 20.1); a run's
+# ``max_rounds`` input may set another.
 MAX_ROUNDS = 10
+# The ceiling over every segment, whatever a run's cap: the first
+# publication's ten and ten for each of the review bot's five
+# antagonistic rounds. Footer history that goes wrong still ends the
+# loop here.
+MAX_TOTAL_ROUNDS = 60
 # The last line of an antagonistic review that hands the pull request
 # back. The review bot's trusted applier writes it after its footer;
 # agent text there cannot forge it, since that bot disarms ``<``
@@ -35,6 +43,37 @@ HANDBACK = re.compile(
     r"(?:\A|\n)<!-- antagonistic-handback round=(?P<round>[1-9][0-9]*)"
     r" head=(?P<head>[0-9a-f]{40}) run=(?P<run>[1-9][0-9]*) -->\Z"
 )
+
+
+def round_cap_reached(round_number: int, segment: int, cap: int = MAX_ROUNDS) -> bool:
+    """Whether a pull request at these counts is at the round cap.
+
+    ``round_number`` is the global round, ``segment`` the rounds in
+    the current antagonistic segment and ``cap`` the run's rounds per
+    segment. The selector asks with the rounds so far, the publisher
+    with the round it ran: either way ``cap`` in a segment, or sixty
+    in all, is the cap.
+    """
+    return segment >= cap or round_number >= MAX_TOTAL_ROUNDS
+
+
+def cap_reason(round_number: int, segment: int, cap: int = MAX_ROUNDS) -> str | None:
+    """Why the selector skips a pull request at these counts, or None."""
+    if not round_cap_reached(round_number, segment, cap):
+        return None
+    limit = MAX_TOTAL_ROUNDS if round_number >= MAX_TOTAL_ROUNDS else cap
+    return f"round cap of {limit} reached; a human must take over"
+
+
+def unanswered(
+    handback: dict[str, Any] | None, since: str | None
+) -> dict[str, Any] | None:
+    """The hand-back when no round has answered it yet: posted after ``since``."""
+    if handback is None or (
+        since is not None and str(handback["submitted_at"]) <= since
+    ):
+        return None
+    return handback
 
 
 def bot_pull_request(
@@ -246,3 +285,23 @@ def handback_review(
         "body": bounded,
         "body_truncated": len(bounded) < len(body),
     }
+
+
+def pull_request_for_branch(
+    repository: str, fork_org: str, branch: str, bot_login: str
+) -> int | None:
+    """The number of the bot's open pull request from the fork branch, if any."""
+    entries = reads.api_page(
+        f"repos/{repository}/pulls?state=open&head={fork_org}:{branch}&per_page=20"
+    )
+    for data in entries:
+        user = data.get("user")
+        login = (
+            cast("dict[str, Any]", user).get("login")
+            if isinstance(user, dict)
+            else None
+        )
+        number = data.get("number")
+        if login == bot_login and type(number) is int:
+            return number
+    return None

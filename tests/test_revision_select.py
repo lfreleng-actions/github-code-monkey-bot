@@ -116,6 +116,11 @@ class RevisionCase(unittest.TestCase):
             None,
             None,
         )
+        # Rounds in the current antagonistic segment; None reads as
+        # every round, as a history with no hand-back answered has it.
+        self.segment: int | None = None
+        # The review ids the history's footers carried.
+        self.anchored: frozenset[int] = frozenset()
         self.newer = False
         patch.object(
             repository_reads, "repository_meta", side_effect=self.meta_of
@@ -176,7 +181,10 @@ class RevisionCase(unittest.TestCase):
     def rounds_of(self, *_args: Any) -> Any:
         """The fixture rounds."""
         highest, summaries, since, verdict = self.rounds
-        return round_reads.RoundHistory(highest, summaries, since, verdict)
+        segment = highest if self.segment is None else self.segment
+        return round_reads.RoundHistory(
+            highest, summaries, since, verdict, segment, self.anchored
+        )
 
     def newer_of(self, *_args: Any) -> bool:
         """Whether a maintainer commented since."""
@@ -625,10 +633,10 @@ class HandbackSelectionTest(RevisionCase):
         self.assertEqual(endpoint, "repos/org/alpha/pulls/41/reviews")
         return self.reviews
 
-    def scan(self) -> dict[str, Any]:
-        """The entry a scan builds with the App listed."""
+    def scan(self, max_rounds: int = revisions.MAX_ROUNDS) -> dict[str, Any]:
+        """The entry a scan builds with the App listed, at the run's cap."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS),
+            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, max_rounds),
             "alpha",
             41,
             explicit=False,
@@ -744,6 +752,192 @@ class HandbackSelectionTest(RevisionCase):
         self.reviews = [app_review(SUMMARY_ONLY)]
         entry = self.build(explicit=True)
         self.assertIsNone(entry["antagonistic_review"])
+
+
+class SegmentCapTest(RevisionCase):
+    """Ten rounds per antagonistic segment, sixty in all (issue #135)."""
+
+    # Before the fixture hand-back was submitted, so it is unanswered.
+    SINCE = "2026-10-04T00:00:00Z"
+
+    def setUp(self) -> None:
+        """Work outstanding by default, so only the cap decides; no hand-back."""
+        super().setUp()
+        self.threads = [thread()]
+        self.reviews: list[dict[str, Any]] = []
+        self.listings = 0
+        patch.object(github, "api_list", side_effect=self.reviews_of).start()
+
+    def reviews_of(self, endpoint: str) -> list[dict[str, Any]]:
+        """The fixture reviews, for the pull request's review listing alone."""
+        self.assertEqual(endpoint, "repos/org/alpha/pulls/41/reviews")
+        self.listings += 1
+        return self.reviews
+
+    def scan(self, max_rounds: int = revisions.MAX_ROUNDS) -> dict[str, Any]:
+        """The entry a scan builds with the App listed, at the run's cap."""
+        return select.build_entry(
+            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, max_rounds),
+            "alpha",
+            41,
+            explicit=False,
+        )
+
+    def history(self, highest: int, segment: int) -> None:
+        """A round history at ``highest``, ``segment`` of them in this segment."""
+        self.rounds = (highest, no_rounds(), self.SINCE, "proposed")
+        self.segment = segment
+
+    def test_ten_rounds_without_a_hand_back_cap(self) -> None:
+        """The eleventh round is skipped, as before; the ninth goes ahead."""
+        self.history(10, 10)
+        with self.assertRaisesRegex(
+            select.Skip, "round cap of 10 reached; a human must take over"
+        ):
+            self.scan()
+        self.history(9, 9)
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (10, 10))
+
+    def test_a_hand_back_starts_a_new_segment(self) -> None:
+        """An accepted hand-back on the head: round 11 globally, 1 in its segment."""
+        self.history(10, 10)
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (11, 1))
+        self.assertEqual(entry["antagonistic_review"]["review_id"], 501)
+        # Below the cap a hand-back starts a segment all the same.
+        self.history(4, 4)
+        self.assertEqual(self.scan()["segment_round"], 1)
+
+    def test_a_segment_after_a_reset_caps_again(self) -> None:
+        """Ten rounds after a reset cap again, until the next hand-back."""
+        self.history(20, 10)
+        with self.assertRaisesRegex(select.Skip, "round cap of 10 reached"):
+            self.scan()
+        self.history(15, 5)
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (16, 6))
+        self.history(20, 10)
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (21, 1))
+
+    def test_an_answered_hand_back_does_not_reset(self) -> None:
+        """A hand-back the last round already read starts no segment."""
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        self.rounds = (10, no_rounds(), "2026-10-06T00:00:00Z", "proposed")
+        self.segment = 10
+        with self.assertRaisesRegex(select.Skip, "round cap of 10 reached"):
+            self.scan()
+
+    def test_a_rejected_hand_back_does_not_reset(self) -> None:
+        """Only a hand-back the #107 checks accept resets the count."""
+        older = app_review(SUMMARY_ONLY)
+        older["commit_id"] = "f" * 40
+        not_last = app_review(SUMMARY_ONLY)
+        not_last["body"] = f"{not_last['body']}Trailing text.\n"
+        rejected = {
+            "wrong App": {
+                **app_review(SUMMARY_ONLY),
+                "user": {"login": "some-other-app[bot]", "type": "Bot"},
+            },
+            "not a Bot": {
+                **app_review(SUMMARY_ONLY),
+                "user": {"login": f"{APP}[bot]", "type": "User"},
+            },
+            "older head": older,
+            "marker not last": not_last,
+        }
+        self.history(10, 10)
+        for name, review in rejected.items():
+            with self.subTest(name=name):
+                self.reviews = [review]
+                with self.assertRaisesRegex(select.Skip, "round cap of 10 reached"):
+                    self.scan()
+        # With the source off, no listed App's hand-back counts at all.
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        with self.assertRaisesRegex(select.Skip, "round cap of 10 reached"):
+            self.build(explicit=True)
+
+    def test_the_ceiling_holds_whatever_the_segment(self) -> None:
+        """Sixty rounds in all skip, even with a fresh hand-back."""
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        self.history(revisions.MAX_TOTAL_ROUNDS, 1)
+        with self.assertRaisesRegex(
+            select.Skip, "round cap of 60 reached; a human must take over"
+        ):
+            self.scan()
+        self.history(revisions.MAX_TOTAL_ROUNDS - 1, 3)
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (60, 1))
+
+    def test_the_ceiling_reads_no_hand_back(self) -> None:
+        """At sixty rounds the skip comes first; a failing listing cannot abort it."""
+        self.history(revisions.MAX_TOTAL_ROUNDS, 10)
+        with (
+            patch.object(
+                github, "api_list", side_effect=github.GitHubError("listing failed")
+            ),
+            self.assertRaisesRegex(select.Skip, "round cap of 60 reached"),
+        ):
+            self.scan()
+
+    def test_a_carried_hand_back_does_not_reset(self) -> None:
+        """A hand-back a round already carried starts no segment, however fresh.
+
+        Failed attempts move no watermark, so the hand-back stays newer
+        than it; and one arriving while a round's selection read it is
+        newer than that round's watermark too. Either way its first
+        round anchored it, and the segment counts from there.
+        """
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        self.anchored = frozenset({501})
+        # Ten failed attempts at the hand-back exhaust its segment.
+        self.history(20, 10)
+        with self.assertRaisesRegex(select.Skip, "round cap of 10 reached"):
+            self.scan()
+        self.history(15, 5)
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (16, 6))
+        # Answered by a round whose watermark predates it, at a cap of one.
+        self.rounds = (11, no_rounds(), "2026-10-04T23:59:59Z", "proposed")
+        self.segment = 1
+        with self.assertRaisesRegex(select.Skip, "round cap of 1 reached"):
+            self.scan(max_rounds=1)
+        # A review no round carried still resets the count.
+        self.anchored = frozenset({499})
+        entry = self.scan(max_rounds=1)
+        self.assertEqual((entry["round"], entry["segment_round"]), (12, 1))
+
+    def test_the_runs_cap_applies_per_segment(self) -> None:
+        """A run's ``max_rounds`` caps each segment; the ceiling stays sixty."""
+        self.history(14, 4)
+        with self.assertRaisesRegex(select.Skip, "round cap of 4 reached"):
+            self.scan(max_rounds=4)
+        self.history(13, 3)
+        entry = self.scan(max_rounds=4)
+        self.assertEqual(
+            (entry["round"], entry["segment_round"], entry["max_rounds"]), (14, 4, 4)
+        )
+        self.history(14, 4)
+        self.reviews = [app_review(SUMMARY_ONLY)]
+        entry = self.scan(max_rounds=4)
+        self.assertEqual((entry["round"], entry["segment_round"]), (15, 1))
+        self.history(revisions.MAX_TOTAL_ROUNDS, 5)
+        with self.assertRaisesRegex(select.Skip, "round cap of 60 reached"):
+            self.scan(max_rounds=50)
+
+    def test_a_capped_pull_request_costs_one_read(self) -> None:
+        """At the cap with no hand-back, the review listing is the only read."""
+        self.history(10, 10)
+        with (
+            patch.object(thread_reads, "unresolved_threads") as threads,
+            self.assertRaisesRegex(select.Skip, "round cap"),
+        ):
+            self.scan()
+        threads.assert_not_called()
+        self.assertEqual(self.listings, 1)
 
 
 class ConflictSelectionTest(RevisionCase):

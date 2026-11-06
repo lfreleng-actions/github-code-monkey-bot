@@ -369,6 +369,27 @@ class HandbackCheckTest(unittest.TestCase):
                     {**entry, "antagonistic_review": handback_record()}
                 )
 
+    def test_segment_round_is_checked_and_carried(self) -> None:
+        """The segment count sits within the round, and the check keeps it."""
+        base: dict[str, Any] = {
+            "task": "revise",
+            "repository": REPO,
+            "rebase_sha": "c" * 40,
+            "pull_request": {"number": 41, "url": "u", "head_sha": HEAD},
+            "round": 11,
+            "threads": [],
+        }
+        for good in (1, 11):
+            revision_check.check_entry({**base, "segment_round": good})
+        revision_check.check_entry(base)
+        for bad in (0, 12, "1", True, None):
+            with (
+                self.subTest(bad=bad),
+                self.assertRaises(revision_check.PublishError),
+            ):
+                revision_check.check_entry({**base, "segment_round": bad})
+        self.assertEqual(check_with(None).to_json()["segment_round"], 3)
+
     def test_round_note_names_the_review(self) -> None:
         """The description's round line links the review it answers."""
         note = revision_check.round_note(check_with(handback_record()))
@@ -480,7 +501,7 @@ class HandbackFooterTest(unittest.TestCase):
         self.assertTrue(
             posted.endswith(
                 "<!-- code-monkey https://run proposed round=3 pr=41 "
-                "since=2026-10-07T00:00:00Z antagonistic=501 -->"
+                "since=2026-10-07T00:00:00Z handback=501 antagonistic=501 -->"
             ),
             posted,
         )
@@ -499,13 +520,31 @@ class HandbackFooterTest(unittest.TestCase):
         self.assertIn("It answers antagonistic review round 2", posted)
 
     def test_rounds_that_answered_nothing_record_nothing(self) -> None:
-        """An abstention, or a round with no hand-back, adds no field."""
+        """An abstention, or a round with no hand-back, adds no ``antagonistic=``."""
         for overrides in (
             {"verdict": "abstain", "reasons": ["no"]},
             {"antagonistic_review": None},
         ):
             with self.subTest(overrides=overrides):
                 self.assertNotIn("antagonistic=", self.comment(**overrides))
+        self.assertNotIn("handback=", self.comment(antagonistic_review=None))
+
+    def test_every_round_sent_a_hand_back_records_it(self) -> None:
+        """A failed round records the hand-back it carried, yet consumes nothing."""
+        for verdict in ("abstain", "rejected", "author-failed", "publish-failed"):
+            with self.subTest(verdict=verdict):
+                posted = self.comment(verdict=verdict, reasons=["no"], commits=[])
+                self.assertTrue(
+                    posted.endswith("since=2026-10-07T00:00:00Z handback=501 -->"),
+                    posted,
+                )
+                self.assertNotIn("antagonistic=", posted)
+                found = round_reads.FOOTER.search(posted)
+                assert found is not None
+                self.assertEqual(
+                    (found.group("handback"), found.group("antagonistic")),
+                    ("501", None),
+                )
 
     def test_history_reads_every_footer_form(self) -> None:
         """Old footers and the new field alike count as rounds."""
@@ -531,6 +570,161 @@ class HandbackFooterTest(unittest.TestCase):
         self.assertEqual(history.highest, 4)
         self.assertEqual([s["round"] for s in history.summaries], [1, 2, 3, 4])
         self.assertEqual(history.since, "2026-10-05T00:00:00Z")
+
+    def test_history_counts_the_segment(self) -> None:
+        """Rounds since the latest answered hand-back; ``round=N`` stays global."""
+
+        def history(footers: list[str]) -> Any:
+            entries = [
+                {
+                    "user": {"login": BOT},
+                    "body": f"r{n}\n\n{footer}",
+                    "created_at": f"2026-10-01T{n:02d}:00:00Z",
+                }
+                for n, footer in enumerate(footers)
+            ]
+            with patch.object(reads, "api_page", return_value=entries):
+                return round_reads.round_history(REPO, 7, BOT)
+
+        rounds = ["<!-- code-monkey https://r/0 proposed -->"] + [
+            f"<!-- code-monkey https://r/{n} proposed round={n} pr=41 -->"
+            for n in range(1, 11)
+        ]
+        found = history(rounds)
+        self.assertEqual((found.highest, found.segment), (10, 10))
+        answered = (
+            "<!-- code-monkey https://r/11 proposed round=11 pr=41 "
+            "since=2026-10-02T00:00:00Z antagonistic=501 -->"
+        )
+        found = history([*rounds, answered])
+        self.assertEqual((found.highest, found.segment), (11, 1))
+        # A failed round counts; a round posted twice counts once.
+        later = [
+            "<!-- code-monkey https://r/12 author-failed round=12 pr=41 -->",
+            "<!-- code-monkey https://r/12 proposed round=12 pr=41 -->",
+            "<!-- code-monkey https://r/12 proposed review=clean round=12 pr=41 -->",
+        ]
+        found = history([*rounds, answered, *later])
+        self.assertEqual((found.highest, found.segment), (12, 2))
+        self.assertEqual(found.summaries[-1]["round"], 12)
+        # The latest answered hand-back starts the segment.
+        second = answered.replace("11", "13").replace("501", "502")
+        found = history([*rounds, answered, *later, second])
+        self.assertEqual((found.highest, found.segment), (13, 1))
+        self.assertEqual(history([]).segment, 0)
+        # A resumed handoff on the same head names the answered review
+        # again; its first answering round still opens the segment.
+        repeated = [
+            "<!-- code-monkey https://r/11 handoff round=11 pr=41 "
+            "since=2026-10-02T00:00:00Z antagonistic=501 -->",
+            *[
+                f"<!-- code-monkey https://r/{n} handoff round={n} pr=41 "
+                f"since=2026-10-{n - 9:02d}T00:00:00Z antagonistic=501 -->"
+                for n in range(12, 21)
+            ],
+        ]
+        found = history([*rounds, *repeated])
+        self.assertEqual((found.highest, found.segment), (20, 10))
+        # Posted out of order, the earliest round still anchors it.
+        found = history([*rounds, *reversed(repeated)])
+        self.assertEqual((found.highest, found.segment), (20, 10))
+        # A new review after the repeats opens the next segment.
+        found = history([*rounds, *repeated, second.replace("13", "21")])
+        self.assertEqual((found.highest, found.segment), (21, 1))
+        # A marker mid-body is text, and resets nothing.
+        self.assertEqual(history([*rounds, f"{answered}\ntrailing"]).segment, 10)
+        self.assertEqual(history(rounds).anchored, frozenset())
+        # Failed attempts at a hand-back count from the first of them,
+        # and anchor its review as one a later retry cannot reset on.
+        failed = [
+            f"<!-- code-monkey https://r/{n} author-failed round={n} pr=41 "
+            "handback=501 -->"
+            for n in range(11, 21)
+        ]
+        found = history([*rounds, *failed])
+        self.assertEqual((found.highest, found.segment), (20, 10))
+        self.assertEqual(found.anchored, frozenset({501}))
+        # The round that finally answers it opens nothing new.
+        found = history([*rounds, *failed, answered.replace("11", "21")])
+        self.assertEqual((found.highest, found.segment), (21, 11))
+        self.assertEqual(found.anchored, frozenset({501}))
+
+
+class SegmentCapNoticeTest(unittest.TestCase):
+    """The comment's cap follows the segment, and the ceiling (issue #135)."""
+
+    @staticmethod
+    def result(**overrides: Any) -> dict[str, Any]:
+        """A revision round's result with findings left on the head."""
+        data: dict[str, Any] = {
+            "verdict": "proposed",
+            "repository": REPO,
+            "issue": 7,
+            "commits": ["e" * 40],
+            "pull_request_url": f"https://github.com/{REPO}/pull/41",
+            "round_summary": "s",
+            "mergeable": True,
+        }
+        data.update(overrides)
+        return data
+
+    def text(self, **overrides: Any) -> str:
+        """The comment for the overridden result."""
+        return comments.comment_body(self.result(**overrides), "") or ""
+
+    def test_a_fresh_segment_is_not_capped(self) -> None:
+        """Round 11, the first of its segment, shows no capped notice."""
+        result = self.result(round=11, segment_round=1)
+        self.assertFalse(comments.capped(result))
+        self.assertNotIn("round cap", self.text(round=11, segment_round=1))
+
+    def test_the_tenth_of_a_segment_is_capped(self) -> None:
+        """Ten in a segment caps, per antagonistic review round."""
+        text = self.text(round=20, segment_round=10)
+        self.assertTrue(comments.capped(self.result(round=20, segment_round=10)))
+        self.assertIn("round cap of 10 per antagonistic review round", text)
+        self.assertIn("the next antagonistic review hands it back", text)
+        self.assertIn("a human must take over", text)
+
+    def test_the_runs_cap_applies_per_segment(self) -> None:
+        """A run's ``max_rounds`` caps the segment and names itself."""
+        self.assertFalse(
+            comments.capped(self.result(round=20, segment_round=10, max_rounds=12))
+        )
+        text = self.text(round=22, segment_round=12, max_rounds=12)
+        self.assertIn("round cap of 12 per antagonistic review round", text)
+        text = self.text(round=60, segment_round=12, max_rounds=50)
+        self.assertIn("round cap of 60 over every antagonistic review round", text)
+
+    def test_the_ceiling_caps_whatever_the_segment(self) -> None:
+        """Round sixty caps with the ceiling's notice."""
+        text = self.text(round=revisions.MAX_TOTAL_ROUNDS, segment_round=2)
+        self.assertIn("round cap of 60 over every antagonistic review round", text)
+        self.assertIn("a human must take over", text)
+        self.assertNotIn("round cap of 10", text)
+
+    def test_a_result_without_a_segment_caps_on_the_round(self) -> None:
+        """An older result, with no segment recorded, caps as it did."""
+        self.assertTrue(comments.capped(self.result(round=10)))
+        self.assertTrue(comments.capped(self.result(round=12, segment_round=0)))
+        self.assertFalse(comments.capped(self.result(round=9)))
+
+    def test_the_report_says_the_same(self) -> None:
+        """The run report's detail names the segment, or the ceiling."""
+        reporting = import_module("proposal_report")
+        conflicted = {"mergeable": False}
+        self.assertIn(
+            "round cap reached for this antagonistic review round",
+            reporting.cap_detail(self.result(round=20, segment_round=10, **conflicted)),
+        )
+        self.assertIn(
+            "round cap of 60 reached in all",
+            reporting.cap_detail(self.result(round=60, segment_round=1, **conflicted)),
+        )
+        self.assertEqual(
+            reporting.cap_detail(self.result(round=11, segment_round=1, **conflicted)),
+            "",
+        )
 
 
 if __name__ == "__main__":

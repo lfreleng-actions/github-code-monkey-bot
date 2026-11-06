@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import bot_github as github
 import check_reads
@@ -32,6 +32,7 @@ import round_reads as rounds_of
 import thread_reads
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
+from revision_reads import pull_request_for_branch
 
 TASK = "revise"
 
@@ -144,10 +145,8 @@ def outstanding(
         reasons.append(f"{total} unresolved review thread(s)")
     if verdict is not None and verdict.get("verdict") == "findings":
         reasons.append("Copilot's review of the head has findings")
-    handback = findings.handback
-    if handback is not None and (
-        since is None or str(handback["submitted_at"]) > since
-    ):
+    handback = revisions.unanswered(findings.handback, since)
+    if handback is not None:
         reasons.append(f"antagonistic review round {handback['round']} handed back")
     if findings.checks.outstanding:
         reasons.append("failing checks")
@@ -206,9 +205,12 @@ def build_entry(
         repository, issue, str(bot["login"]), str(pull["created_at"]), pull_number
     )
     highest, rounds, since = history.highest, history.summaries, history.since
-    if highest >= inputs.max_rounds:
-        raise Skip(f"round cap of {inputs.max_rounds} reached; a human must take over")
+    # Skips a capped pull request before the packet's reads.
+    next_segment_round(repository, pull, history, inputs, None)
     findings = read_findings(repository, pull, since, inputs.reviewers)
+    # The hand-back may have changed since the cap read it; decide on
+    # the one the packet carries.
+    segment_round = next_segment_round(repository, pull, history, inputs, findings)
     reasons = (
         ["named by the operator"]
         if explicit
@@ -241,7 +243,9 @@ def build_entry(
             key: pull[key]
             for key in ("number", "url", "title", "head_sha", "mergeable", "created_at")
         },
-        **{"round": highest + 1, "max_rounds": inputs.max_rounds},
+        "round": highest + 1,
+        "segment_round": segment_round,
+        "max_rounds": inputs.max_rounds,
         "round_reasons": reasons,
         "rounds": rounds,
         "threads": findings.threads.threads,
@@ -251,8 +255,46 @@ def build_entry(
         "checks": findings.checks.checks,
         "checks_dropped": findings.checks.dropped,
         "checks_unsettled": findings.checks.unsettled,
-        **conversation(repository, issue, pull_number, since),
+        **rounds_of.conversation(repository, issue, pull_number, since),
     }
+
+
+def next_segment_round(
+    repository: str,
+    pull: dict[str, Any],
+    history: rounds_of.RoundHistory,
+    inputs: Inputs,
+    findings: Findings | None,
+) -> int:
+    """The coming round's place in its antagonistic segment, or ``Skip`` at the cap.
+
+    The cap is the run's ``max_rounds`` per segment. An unanswered
+    hand-back of the head that no round has carried yet starts a new
+    segment whatever the last one counted; only the sixty-round
+    ceiling still stops it, and at that ceiling nothing is read.
+    Without ``findings`` the hand-back is read only at the cap, so a
+    capped pull request costs that one read, not the packet's.
+    """
+    highest, segment, cap = history.highest, history.segment, inputs.max_rounds
+    if highest >= revisions.MAX_TOTAL_ROUNDS:
+        raise Skip(str(revisions.cap_reason(highest, segment, cap)))
+    if findings is None and not revisions.round_cap_reached(highest, segment, cap):
+        return segment + 1
+    handback = (
+        findings.handback
+        if findings is not None
+        else revisions.handback_review(
+            repository, int(pull["number"]), str(pull["head_sha"]), inputs.reviewers
+        )
+    )
+    fresh = (
+        revisions.unanswered(handback, history.since) is not None
+        and review_id_of(handback) not in history.anchored
+    )
+    reason = revisions.cap_reason(highest, 0 if fresh else segment, cap)
+    if reason is not None:
+        raise Skip(reason)
+    return 1 if fresh else segment + 1
 
 
 def scan_reasons(
@@ -299,49 +341,6 @@ def packet_of(details: dict[str, Any], issue: int) -> dict[str, Any]:
     if "no-agent" in details["labels"]:
         raise Skip(f"issue #{issue} carries the no-agent label")
     return {k: v for k, v in details.items() if k not in ("state", "assignees")}
-
-
-def conversation(
-    repository: str, issue: int, pull_number: int, since: str | None
-) -> dict[str, Any]:
-    """The maintainers' comments, on the issue and the pull request, old and new."""
-    comments, dropped, truncated = reads.filtered_comments(repository, issue)
-    pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
-    new_comments, new_dropped = rounds_of.comments_since(repository, issue, since)
-    new_pr_comments, new_pr_dropped = rounds_of.comments_since(
-        repository, pull_number, since
-    )
-    return {
-        "comments": comments,
-        "comments_dropped": dropped,
-        "comments_truncated": truncated,
-        "pr_comments": pr_comments,
-        "pr_comments_dropped": pr_dropped,
-        "new_comments": new_comments,
-        "new_comments_dropped": new_dropped,
-        "new_pr_comments": new_pr_comments,
-        "new_pr_comments_dropped": new_pr_dropped,
-    }
-
-
-def pull_request_for_branch(
-    repository: str, fork_org: str, branch: str, bot_login: str
-) -> int | None:
-    """The number of the bot's open pull request from the fork branch, if any."""
-    entries = reads.api_page(
-        f"repos/{repository}/pulls?state=open&head={fork_org}:{branch}&per_page=20"
-    )
-    for data in entries:
-        user = data.get("user")
-        login = (
-            cast("dict[str, Any]", user).get("login")
-            if isinstance(user, dict)
-            else None
-        )
-        number = data.get("number")
-        if login == bot_login and type(number) is int:
-            return number
-    return None
 
 
 Builder = Callable[[], dict[str, Any] | None]

@@ -64,6 +64,9 @@ def check_entry(data: dict[str, Any]) -> None:
         raise PublishError("selection pull request lacks number or url")
     if type(data.get("round")) is not int or int(data["round"]) < 1:
         raise PublishError("selection revision round is not a positive integer")
+    segment = data.get("segment_round", data["round"])
+    if type(segment) is not int or not 1 <= segment <= int(data["round"]):
+        raise PublishError("selection segment round is not within the round")
     threads = data.get("threads")
     if not isinstance(threads, list):
         raise PublishError("selection revision entry carries no thread list")

@@ -15,6 +15,7 @@ import proposal_model as model
 import proposal_policy as policy
 import report_outputs as outputs
 import review_outcome
+import revision_reads as revisions
 from proposal_policy import PublishError
 
 SCHEMA = 1
@@ -101,6 +102,20 @@ MERGE_NAMES = {
 }
 
 
+def cap_detail(item: dict[str, Any]) -> str:
+    """The report's word for a capped round, as the issue comment's notice has it."""
+    if not comments.capped(item):
+        return ""
+    if comments.round_of(item) >= revisions.MAX_TOTAL_ROUNDS:
+        return (
+            f"; round cap of {revisions.MAX_TOTAL_ROUNDS} reached in all,"
+            " a human must take over"
+        )
+    return (
+        "; round cap reached for this antagonistic review round, a human must take over"
+    )
+
+
 def conflict_lines(results: list[dict[str, Any]]) -> list[str]:
     """The pull requests whose head conflicts, listed apart from the ready ones."""
     conflicting = [item for item in results if item.get("mergeable") is False]
@@ -121,8 +136,7 @@ def conflict_lines(results: list[dict[str, Any]]) -> list[str]:
             if type(behind) is int
             else ""
         )
-        if comments.capped(item):
-            detail += "; round cap reached, a human must take over"
+        detail += cap_detail(item)
         lines.append(f"- {label}: {url}{detail}")
     return [*lines, ""]
 
@@ -158,8 +172,7 @@ def failing_check_lines(results: list[dict[str, Any]]) -> list[str]:
         if len(names) > MAX_LISTED_CHECKS:
             listed += f" and {len(names) - MAX_LISTED_CHECKS} more"
         detail = f": {cell(listed)}" if listed else ""
-        if comments.capped(item):
-            detail += "; round cap reached, a human must take over"
+        detail += cap_detail(item)
         lines.append(f"- {label}: {url}{detail}")
     return [*lines, ""]
 
