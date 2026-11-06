@@ -12,10 +12,12 @@ the publisher acts on. See DESIGN.md sections 8 and 18.3.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import online_audit
 import proposal_policy as policy
 import revision_check as revision
 from fork_orgs import ALLOWED_RE
@@ -369,6 +371,11 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
         + "\n"
     )
     policy.check_pull_request_body_size(check.pr_body)
+    # Last, so a proposal the offline rules reject never spends the
+    # token or the network on zizmor.
+    check.online_audit = online_audit.audit(
+        clone, check.base_sha, commits[-1], context.workdir, context.zizmor_token
+    )
 
 
 def run_check(
@@ -379,8 +386,15 @@ def run_check(
     workdir: Path,
     coauthors_path: Path,
     run_url: str,
+    zizmor_token: str | None = None,
 ) -> Check:
-    """The offline verification pipeline."""
+    """The verification pipeline: offline rules, then the online audit.
+
+    ``zizmor_token`` defaults to the one the job hands over in the
+    environment (``ZIZMOR_GITHUB_TOKEN``).
+    """
+    if zizmor_token is None:
+        zizmor_token = os.environ.get(online_audit.TOKEN_VARIABLE, "")
     selection = load_json(selection_path, "selection")
     entry = selection_entry(selection, key)
     context = Context(
@@ -390,6 +404,7 @@ def run_check(
         model=field_str(selection, "model", "selection"),
         run_url=run_url,
         issue_url=str(entry["url"]),
+        zizmor_token=zizmor_token,
     )
     check = Check.from_entry(key, entry)
     check.bot_login = context.identity.bot_login

@@ -39,6 +39,9 @@ LINTING = WORKFLOWS / "linting.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
 REVISE_PROMPT = WORKFLOWS.parents[1] / "prompt" / "revise.md"
 TOOLCHAIN_PIN = WORKFLOWS.parents[1] / "tools" / "copilot-cli"
+# The one place the select and publish jobs read the zizmor release from.
+ZIZMOR_VERSION_PATH = "config/zizmor-version.txt"
+ZIZMOR_VERSION_FILE = WORKFLOWS.parents[1] / ZIZMOR_VERSION_PATH
 PRE_COMMIT_CONFIG = WORKFLOWS.parents[1] / ".pre-commit-config.yaml"
 
 PLACEHOLDER_NAME = "Code Monkey"
@@ -1734,7 +1737,8 @@ class PublishJobContracts(ReusableWorkflowCase):
         for step in (push, opened, comment):
             self.assertNotIn("github.token", dumped(step))
         # The native token reads alone in the job: this run's artifacts,
-        # whether a public fork exists, and the public target's reviews,
+        # public actions for the online zizmor audit, whether a public
+        # fork exists, and the public target's reviews,
         # check runs and mergeability; the job grants it actions: read
         # and nothing more.
         users = [
@@ -1746,6 +1750,7 @@ class PublishJobContracts(ReusableWorkflowCase):
             users,
             [
                 "Fetch and accept bounded proposal",
+                "Check proposal offline",
                 "Check fork exists",
                 "Await Copilot review",
                 "Probe mergeability",
@@ -1836,11 +1841,19 @@ class PreflightContracts(ReusableWorkflowCase):
         )
 
     def test_zizmor_is_pinned(self) -> None:
-        """The auditor the gate runs is an exact version."""
+        """The auditor the gate runs is the exact version one file names."""
+        lines = [
+            line.strip()
+            for line in ZIZMOR_VERSION_FILE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r"^\d+\.\d+\.\d+$")
         run = flatten(self.step("select", "Install zizmor")["run"])
-        self.assertRegex(
-            run, r"\"\$UV\" tool install --python \"\$PYTHON\" 'zizmor==\d+\.\d+\.\d+'"
-        )
+        self.assertIn(f"monkey-assets/{ZIZMOR_VERSION_PATH}", run)
+        self.assertIn('[[ ! "$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]]', run)
+        self.assertIn('"$UV" tool install --python "$PYTHON" "zizmor==$version"', run)
+        self.assertNotRegex(run, r"zizmor==\d")
 
     def test_preflight_uv_run_sees_only_the_assets_checkout(self) -> None:
         """Nothing but the pinned assets lands in the workspace before uv runs.
@@ -1883,6 +1896,53 @@ class PreflightContracts(ReusableWorkflowCase):
         self.assertLess(
             self.position("select", INSTALL_PYTHON), self.position("select", PREFLIGHT)
         )
+
+
+class PublishAuditInstallContracts(ReusableWorkflowCase):
+    """The publish job installs zizmor exactly as the select job does."""
+
+    INSTALL_STEPS = ("Set up uv", "Install Python", "Install zizmor")
+
+    def test_publish_runs_the_select_install_steps(self) -> None:
+        """Same action, settings, environment, script and working directory."""
+        for name in self.INSTALL_STEPS:
+            with self.subTest(step=name):
+                publish = self.step("publish", name)
+                select = self.step("select", name)
+                self.assertEqual(runnable(publish), runnable(select))
+                self.assertEqual(publish.get("id"), select.get("id"))
+                self.assertEqual(publish.get("shell"), select.get("shell"))
+
+    def test_publish_installs_zizmor_before_any_untrusted_input(self) -> None:
+        """uv runs beside the publisher checkout alone, before the check.
+
+        The proposal artifact lands in the workspace later, so nothing
+        it carries can steer uv; the check needs zizmor on PATH.
+        """
+        order = [
+            self.position("publish", "Checkout trusted publisher"),
+            *(self.position("publish", name) for name in self.INSTALL_STEPS),
+            self.position("publish", "Fetch selection evidence"),
+            self.position("publish", "Fetch and accept bounded proposal"),
+            self.position("publish", "Check proposal offline"),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(
+            order[: len(self.INSTALL_STEPS) + 1],
+            list(range(order[0], order[0] + len(self.INSTALL_STEPS) + 1)),
+        )
+
+    def test_check_audits_online_with_the_native_token(self) -> None:
+        """The check step hands zizmor the native token, read-only.
+
+        The job grants it ``actions: read`` and ``contents: read``:
+        enough for zizmor's online audits on public actions, and no
+        write anywhere.
+        """
+        check = self.step("publish", "Check proposal offline")
+        self.assert_expression(check["env"]["ZIZMOR_GITHUB_TOKEN"], "github.token")
+        self.assertNotIn("GH_TOKEN", check["env"])
+        self.assertNotIn("GITHUB_TOKEN", check["env"])
 
 
 class MintProvenanceContracts(ReusableWorkflowCase):

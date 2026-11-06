@@ -906,6 +906,39 @@ For each selected issue:
    without regard to case. Changes
    under `.github/workflows/` pass and set `needs_workflows` in the
    check summary; no token mint depends on it (step 6).
+
+   Every proposal then faces an **online zizmor audit**, the last
+   part of the check (`online_audit.py`), since the author job's
+   offline run skips the audits that need the network, such as
+   `stale-action-refs`. The check exports the base and the head into
+   two worktrees side by side and runs
+   `zizmor --persona auditor --min-severity informational`
+   `--format json --collect=all --strict-collection .` in each,
+   online, with the native token alone in `GH_TOKEN` and every other
+   token and `ZIZMOR_*` variable stripped. It runs whatever the
+   proposal changes: zizmor decides what it collects, not the check,
+   since a check that guessed which changes zizmor reads (nested
+   workflow directories, an `action.yml` symlink whose target
+   changes) would let every wrong guess skip the audit unseen.
+   `--collect=all` audits tracked files a `.gitignore` would hide,
+   and `--strict-collection` fails on an input zizmor cannot parse
+   instead of dropping it. Both trees load the base's zizmor
+   configuration (`.github/zizmor.yml`, `.github/zizmor.yaml`,
+   `zizmor.yml` or `zizmor.yaml`, first found) through `--config`,
+   or none through `--no-config`, so a proposal cannot loosen the
+   rules that judge it. A finding is new when the head holds more
+   findings of that rule in that file than the base does, so
+   findings that moved or that the change fixed never block;
+   findings zizmor reports as ignored never count. New findings
+   reject the proposal, naming each rule and file. zizmor's
+   no-inputs exit (3) counts as no findings for that tree, which
+   covers a repository with no workflow at all and a proposal that
+   adds its first workflow or removes its last. Every other failure
+   rejects: a missing token or binary, a timeout, another exit
+   outside zizmor's finding codes, or output that is not a JSON
+   list. The publish job installs zizmor with the select job's
+   steps, from the version in `config/zizmor-version.txt` that both
+   jobs and CI read, before the proposal lands in its workspace.
 4. **Check the message** of each commit against the rules the org
    guidance makes mechanical: subject length from the target's
    `.gitlint` (fallback 50), capitalised type from the allowed list
@@ -2031,7 +2064,8 @@ is the CLI's own usage output. Bounds on acceptance: manifest
 
 ### 18.3 `check.json` (publish, offline verdict; trusted)
 
-The output of `publish.py check`, produced without credentials.
+The output of `publish.py check`, produced with no credential but
+the native token it hands zizmor for the online audit (§8 step 3).
 
 ```json
 {
@@ -2057,7 +2091,8 @@ The output of `publish.py check`, produced without credentials.
   ],
   "pr_title": "Feat(sbom): Add CycloneDX 1.6 output",
   "pr_body": "...",
-  "stats": {"files_changed": 2, "added_bytes": 1234}
+  "stats": {"files_changed": 2, "added_bytes": 1234},
+  "online_audit": "online audit: no new zizmor findings"
 }
 ```
 
@@ -2070,6 +2105,9 @@ summary alone; no step gates on it. `commits[].body` is the
 composed message the publisher will send: the agent's body plus the
 trailers §5 describes. `pr_body` is the composed body: the closing
 line and provenance block first, then the agent's text.
+`online_audit` is the online zizmor audit's pass note, blank
+when the check rejected the proposal before reaching it; its
+rejections land in `reasons`.
 
 ### 18.4 `result.json` (publish, per issue; trusted)
 

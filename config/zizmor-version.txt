@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# The zizmor release the workflows install: the select job's pre-flight
+# audit and the publish job's online audit of each proposal read it
+# here, so the two cannot drift. One exact version on one line; '#'
+# starts a comment.
+1.30.1

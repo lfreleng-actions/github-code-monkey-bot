@@ -30,6 +30,8 @@ model = import_module("proposal_model")
 github = import_module("bot_github")
 policy = import_module("proposal_policy")
 revision_check = import_module("revision_check")
+online_audit = import_module("online_audit")
+stub = import_module("zizmor_stub")
 
 BOT_LOGIN = "code-monkey[bot]"
 BOT_EMAIL = "1+code-monkey[bot]@users.noreply.github.com"
@@ -284,9 +286,23 @@ class Fixture:
         path.write_text(json.dumps(COAUTHORS), encoding="utf-8")
         return path
 
-    def run(self, *, key: str = KEY) -> Any:
-        """Run the offline check with the clone pointed at the local upstream."""
-        with patch.object(checks, "prepare_clone", local_prepare_clone(self.upstream)):
+    def run(
+        self, *, key: str = KEY, zizmor: Any = None, zizmor_token: str | None = "t0ken"
+    ) -> Any:
+        """Run the check with the clone pointed at the local upstream.
+
+        ``zizmor`` is a ``StubZizmor`` to put first on PATH for the
+        online audit, every proposal's last stage; by default one that
+        finds nothing. ``zizmor_token`` is the token the audit gets;
+        None leaves it to the environment, as the publish job does.
+        """
+        if zizmor is None:
+            zizmor = stub.StubZizmor(self.root)
+        path = zizmor.path()
+        with (
+            patch.object(checks, "prepare_clone", local_prepare_clone(self.upstream)),
+            patch.dict(os.environ, {"PATH": path}),
+        ):
             return checks.run_check(
                 selection_path=self.write_selection(),
                 key=key,
@@ -294,6 +310,7 @@ class Fixture:
                 workdir=self.workdir,
                 coauthors_path=self.write_coauthors(),
                 run_url=RUN_URL,
+                zizmor_token=zizmor_token,
             )
 
 
@@ -449,7 +466,8 @@ class RunCheckProposedTest(GitCase):
         )
         self.fixture.bundle()
         self.fixture.manifest(pr_title="CI: Add a workflow")
-        check = self.fixture.run()
+        zizmor = stub.StubZizmor(self.root)
+        check = self.fixture.run(zizmor=zizmor, zizmor_token="t0ken")
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertTrue(check.needs_workflows)
 
@@ -610,6 +628,82 @@ class RunCheckProposedTest(GitCase):
         check = self.fixture.run()
         self.assertEqual(check.verdict, "abstain")
         self.assertTrue(any("usage.json unreadable" in r for r in check.reasons))
+
+
+class RunCheckOnlineAuditTest(GitCase):
+    """The check audits every proposal online with zizmor."""
+
+    WORKFLOW = ".github/workflows/ci.yaml"
+
+    def propose_workflow(self) -> None:
+        """One commit adding a workflow, bundled with its manifest."""
+        self.fixture.commit(
+            "CI: Add a workflow\n\nBody.\n",
+            {self.WORKFLOW: "on: push\njobs: {}\n"},
+        )
+        self.fixture.bundle()
+        self.fixture.manifest(pr_title="CI: Add a workflow")
+
+    def test_added_finding_rejects(self) -> None:
+        """A finding the base lacks rejects, naming the rule and the file."""
+        self.propose_workflow()
+        zizmor = stub.StubZizmor(
+            self.root, head=[stub.finding("stale-action-refs", self.WORKFLOW)]
+        )
+        check = self.fixture.run(zizmor=zizmor, zizmor_token="t0ken")
+        self.assertEqual(check.verdict, "rejected")
+        self.assertEqual(check.commits, [])
+        self.assertIn("stale-action-refs", check.reasons[0])
+        self.assertIn(self.WORKFLOW, check.reasons[0])
+        self.assertEqual(len(zizmor.calls()), 2)
+
+    def test_clean_workflow_change_is_proposed(self) -> None:
+        """No new finding: proposed, with the audit's note on the check."""
+        self.propose_workflow()
+        zizmor = stub.StubZizmor(self.root)
+        check = self.fixture.run(zizmor=zizmor, zizmor_token="t0ken")
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertIn("no new zizmor findings", check.online_audit)
+        self.assertEqual(check.to_json()["online_audit"], check.online_audit)
+        self.assertIn(check.online_audit, model.check_summary(check))
+        self.assertEqual(
+            [call["env"]["GH_TOKEN"] for call in zizmor.calls()], ["t0ken"] * 2
+        )
+
+    def test_token_defaults_to_the_environment(self) -> None:
+        """Without an explicit token, the check reads the job's variable."""
+        self.propose_workflow()
+        zizmor = stub.StubZizmor(self.root)
+        with patch.dict(os.environ, {online_audit.TOKEN_VARIABLE: "env-t0ken"}):
+            check = self.fixture.run(zizmor=zizmor, zizmor_token=None)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(
+            [call["env"]["GH_TOKEN"] for call in zizmor.calls()], ["env-t0ken"] * 2
+        )
+        self.assertNotIn(online_audit.TOKEN_VARIABLE, zizmor.calls()[0]["env"])
+
+    def test_missing_token_rejects(self) -> None:
+        """A proposal with no token to audit it fails closed."""
+        self.propose_workflow()
+        zizmor = stub.StubZizmor(self.root)
+        check = self.fixture.run(zizmor=zizmor, zizmor_token="")
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn("token", check.reasons[0])
+        self.assertEqual(zizmor.calls(), [])
+
+    def test_change_without_workflows_is_audited(self) -> None:
+        """A proposal that touches no workflow is audited all the same."""
+        fixed = README.replace("with a typo", "without a typo")
+        self.fixture.commit(
+            "Fix(readme): Correct typo\n\nBody.\n", {"README.md": fixed}
+        )
+        self.fixture.bundle()
+        self.fixture.manifest()
+        zizmor = stub.StubZizmor(self.root, exit_code=3)
+        check = self.fixture.run(zizmor=zizmor, zizmor_token="t0ken")
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.online_audit, "online audit: no new zizmor findings")
+        self.assertEqual(len(zizmor.calls()), 2)
 
 
 class RunCheckOutcomeTest(GitCase):
@@ -1136,8 +1230,12 @@ class RevisionCheckTest(GitCase):
         selection = self.fixture.selection(
             **{**self.fixture.revision_entry(self.tip, self.head), **extra}
         )
-        with patch.object(
-            checks, "prepare_clone", local_prepare_clone(self.fixture.upstream)
+        zizmor = stub.StubZizmor(self.root)
+        with (
+            patch.object(
+                checks, "prepare_clone", local_prepare_clone(self.fixture.upstream)
+            ),
+            patch.dict(os.environ, {"PATH": zizmor.path()}),
         ):
             return checks.run_check(
                 selection_path=self.fixture.write_selection(selection),
@@ -1146,6 +1244,7 @@ class RevisionCheckTest(GitCase):
                 workdir=self.fixture.workdir,
                 coauthors_path=self.fixture.write_coauthors(),
                 run_url=RUN_URL,
+                zizmor_token="t0ken",
             )
 
     def test_chain_on_the_original_base(self) -> None:
