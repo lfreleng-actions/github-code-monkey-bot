@@ -145,9 +145,24 @@ def _proposed_comment(
         answered = handback_text(result)
         if answered:
             opening = opening.rstrip(".") + f". {answered}"
-        return outcome_text(opening, result)
+        return outcome_text(opening, result) + antagonistic_sentence(result)
     opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
-    return outcome_text(opening, result)
+    return outcome_text(opening, result) + antagonistic_sentence(result)
+
+
+def antagonistic_sentence(result: dict[str, Any]) -> str:
+    """Say an antagonistic review was requested, when the publisher nominated one.
+
+    The request is made after publication, so the comment says
+    "requested", never "reviewed"; a switch that is off says nothing.
+    """
+    record = result.get("antagonistic")
+    if (
+        not isinstance(record, dict)
+        or cast("dict[str, Any]", record).get("state") != "requested"
+    ):
+        return ""
+    return " An antagonistic review was requested from the review bot."
 
 
 def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:

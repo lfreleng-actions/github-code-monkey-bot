@@ -79,6 +79,18 @@ on:
           it and report its verdict
         type: boolean
         default: true
+      request_antagonistic_review:
+        description: >-
+          Once Copilot's review of a published head is clean, ask the
+          review bot for an antagonistic review of the pull request
+        type: boolean
+        default: true
+      antagonistic_repository:
+        description: >-
+          Repository whose code-review-antagonistic.yaml the request
+          dispatches; empty requests nothing
+        type: string
+        default: 'lfreleng-actions/github-code-review-bot'
       repositories:
         description: 'Repositories to scan; commas and/or spaces'
         type: string
@@ -181,6 +193,11 @@ on:
           write on the target organisation; used by the review request
           step alone, which falls back to the App token without it
         required: false
+      antagonistic_dispatch_token:
+        description: >-
+          Fine-grained PAT with Actions write on antagonistic_repository
+          and nothing else; used by the antagonistic request step alone
+        required: false
     outputs:
       pull_requests:
         description: >-
@@ -202,6 +219,12 @@ on:
           check runs when the publish job's review wait ended; the
           publication went ahead, and a revision round reads them
         value: "${{ jobs.report.outputs.failing_check_pull_requests }}"
+      antagonistic_pull_requests:
+        description: >-
+          Compact JSON array of owner/repo#N, the pull requests whose
+          antagonistic review this run requested; empty when the
+          request job did not run
+        value: "${{ jobs.antagonistic.outputs.requested }}"
       selected_count:
         description: >-
           Entries the select job chose, issues and revisions together,
@@ -1719,6 +1742,22 @@ jobs:
             --result artefacts/result.json --check artefacts/check.json \
             --output artefacts/result.json
 
+      # Offline: records in result.json whether the antagonistic
+      # request job will ask for a review of this pull request, so the
+      # comment can say so (docs/DESIGN.md section 20.5). The report
+      # recomputes the nomination and never reads this record.
+      - name: 'Record antagonistic review request'
+        id: antagonistic
+        if: >-
+          !cancelled() && steps.push.outcome == 'success'
+        env:
+          SWITCH: "${{ inputs.request_antagonistic_review }}"
+          REPOSITORY: "${{ inputs.antagonistic_repository }}"
+        run: |
+          python3 monkey-assets/scripts/antagonistic_request.py \
+            --result artefacts/result.json --output artefacts/result.json \
+            --switch "$SWITCH" --repository "$REPOSITORY"
+
       # Runs after a failed push or open as well, so a publish failure
       # and its rollback reach the issue; never after cancellation.
       - name: 'Mint issue comment token'
@@ -1849,6 +1888,8 @@ jobs:
       unmergeable_pull_requests: "${{ steps.report.outputs.unmergeable_pull_requests }}"
       # yamllint disable-line rule:line-length
       failing_check_pull_requests: "${{ steps.report.outputs.failing_check_pull_requests }}"
+      # yamllint disable-line rule:line-length
+      antagonistic_pull_requests: "${{ steps.report.outputs.antagonistic_pull_requests }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'
@@ -1918,3 +1959,114 @@ jobs:
           path: 'artefacts/'
           retention-days: 90
           if-no-files-found: 'warn'
+
+  # Asks the review bot for an antagonistic review of each pull request
+  # the report nominated (docs/DESIGN.md section 20.5). The job holds
+  # one credential, a token with Actions write on the review bot's
+  # repository alone, in one step; it reads no artifact and checks out
+  # nothing. The nomination decides nothing: the review bot re-checks
+  # every condition that matters, so a forged one costs a skipped
+  # selection there.
+  antagonistic:
+    name: 'Request antagonistic review'
+    needs: [select, report]
+    if: >-
+      !cancelled() && needs.report.result == 'success' &&
+      !inputs.dry_run && inputs.mode == 'pull-requests' &&
+      inputs.request_antagonistic_review &&
+      inputs.antagonistic_repository != '' &&
+      needs.report.outputs.antagonistic_pull_requests != '' &&
+      needs.report.outputs.antagonistic_pull_requests != '[]'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 10
+    permissions: {}
+    outputs:
+      requested: "${{ steps.dispatch.outputs.requested }}"
+    steps:
+      - name: 'Load egress allow-list'
+        if: inputs.harden_runner_egress == 'block'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: "${{ inputs.harden_runner_allowlist }}"
+          # yamllint disable-line rule:line-length
+          supplemental_config: "${{ inputs.harden_runner_supplemental_allowlist }}"
+          # A caller naming a list depends on it, so its absence fails
+          # here rather than at the first blocked connection.
+          # yamllint disable-line rule:line-length
+          supplemental_required: "${{ inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false' }}"
+          # yamllint disable-line rule:line-length
+          supplemental_unpinned: "${{ inputs.harden_runner_supplemental_unpinned && 'true' || 'false' }}"
+          extra_endpoints: "${{ inputs.harden_runner_extra_endpoints }}"
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: "${{ inputs.harden_runner_egress }}"
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      # Every nominee is checked as a JSON string literal, so one
+      # holding a newline cannot pass as two. A malformed list or
+      # repository refuses the whole request before any dispatch; an
+      # empty token or a failed dispatch is a warning, since the next
+      # publication or revision round asks again.
+      - name: 'Dispatch antagonistic reviews'
+        id: dispatch
+        env:
+          GH_TOKEN: "${{ secrets.antagonistic_dispatch_token }}"
+          REPOSITORY: "${{ inputs.antagonistic_repository }}"
+          ORG: "${{ inputs.org }}"
+          NOMINEES: "${{ needs.report.outputs.antagonistic_pull_requests }}"
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if ! [[ "$REPOSITORY" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo '::error::antagonistic_repository is not owner/repo'
+            exit 1
+          fi
+          if ! items=$(jq -r 'if type == "array" then .[] | @json
+              else error("not an array") end' <<< "$NOMINEES"); then
+            echo '::error::The nominated pull requests are not a JSON array'
+            exit 1
+          fi
+          pattern='^"([A-Za-z0-9-]+)/[A-Za-z0-9_.-]+#[1-9][0-9]*"$'
+          pulls=()
+          while IFS= read -r item; do
+            [ -n "$item" ] || continue
+            if ! [[ "$item" =~ $pattern ]] ||
+              [ "${BASH_REMATCH[1],,}" != "${ORG,,}" ]; then
+              echo "::error::Refused a nominee outside $ORG or not owner/repo#N"
+              exit 1
+            fi
+            pulls+=("${item:1:${#item}-2}")
+          done <<< "$items"
+          requested=()
+          failed=()
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::warning::antagonistic_dispatch_token is not set;' \
+              'no antagonistic review requested'
+            echo 'Antagonistic review: no dispatch token; nothing requested.' \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo 'requested=[]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for pull in "${pulls[@]}"; do
+            if gh workflow run code-review-antagonistic.yaml \
+              --repo "$REPOSITORY" -f dry_run=false -f pull_requests="$pull"
+            then
+              requested+=("$pull")
+            else
+              echo "::warning::Antagonistic review request failed: $pull"
+              failed+=("$pull")
+            fi
+          done
+          {
+            echo '## Antagonistic review requests'
+            echo
+            for pull in "${requested[@]}"; do echo "- requested: $pull"; done
+            for pull in "${failed[@]}"; do echo "- failed: $pull"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          json=$(jq -cn '$ARGS.positional' --args "${requested[@]}")
+          echo "requested=$json" >> "$GITHUB_OUTPUT"

@@ -1117,7 +1117,10 @@ For each selected issue:
     request can merge. Failing checks on the head add a sentence
     naming them, bounded and escaped, as do failures among checks
     still running when the wait ended; passing, absent or unread
-    checks add nothing. A conflict or a known failing check, settled
+    checks add nothing. A pull request nominated for an antagonistic
+    review (§20.5) adds a sentence saying the workflow requested one
+    from the review bot; when the switch is off, the comment says
+    nothing of it. A conflict or a known failing check, settled
     or still running, at the round cap leaves work undone: that
     comment hands over to a human. The marker carries the review
     verdict too, for findings the counts and the assessment, and for
@@ -1160,7 +1163,9 @@ For each selected issue:
     sessions' spend, so a run's cost is the sum of its reports.
     The report job also exposes the pull requests the run opened or
     revised as the workflow's outputs (§18.6), from which the
-    scheduled caller posts a Slack digest (§11).
+    scheduled caller posts a Slack digest (§11), and names those it
+    nominates for an antagonistic review, which a last job asks the
+    review bot for (§20.5).
 
 ## 9. Inputs
 
@@ -1183,6 +1188,8 @@ For each selected issue:
 | `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
 | `request_review` | boolean | `true` | §8 steps 10–11: request, await, report |
+| `request_antagonistic_review` | boolean | `true` | §20.5: ask the review bot after a clean review |
+| `antagonistic_repository` | string | `lfreleng-actions/github-code-review-bot` | Holds the antagonistic workflow (§20.5) |
 | `repositories` | string | `''` | Commas and/or spaces; split per §6 |
 | `issues` | string | `''` | Issues to work instead of scanning (§6) |
 | `pull_requests` | string | `''` | Bot pull requests to revise (§20) |
@@ -1204,7 +1211,9 @@ For each selected issue:
 
 Secrets: `copilot_token` (model PAT, §10.2), `github_app_private_key`
 (select and publish alone), `copilot_review_token` (the review
-request step alone, §10.4). All three are optional.
+request step alone, §10.4), `antagonistic_dispatch_token` (the
+antagonistic request job's dispatch step alone, §10.5). All four are
+optional.
 
 Numeric inputs are strings because reusable-workflow `number`
 inputs cannot carry validation and `fromJSON` handles the
@@ -1230,6 +1239,7 @@ with:
 | `include_assigned` | boolean | `false` |
 | `load_repo_skills` | boolean | `false` |
 | `request_review` | boolean | `true` |
+| `request_antagonistic_review` | boolean | `true` |
 | `repositories` | string | `''` |
 | `issues` | string | `''` |
 | `pull_requests` | string | `''` |
@@ -1252,7 +1262,7 @@ entries, worked in parallel, and at most ten pull requests.
 limit; anything non-numeric or negative fails the select job.
 `categories` passes straight through: `docs` for a run that fixes
 documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 17 inputs, within
+schedule, passing no inputs, gets. The form holds 19 inputs, within
 GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
 
@@ -1435,6 +1445,27 @@ organisation, so it widens what that one step could do, not what the
 App holds; its expiry needs the same owner and rotation reminder as
 the model PAT (§10.2).
 
+### 10.5 The antagonistic dispatch credential
+
+The request for an antagonistic review (§20.5) starts a workflow in
+another repository, which neither the App's installation token nor a
+job's own token can do. The repository secret
+`CODE_REVIEW_DISPATCH_TOKEN` is a fine-grained token, resource owner
+`lfreleng-actions`, limited to the one repository
+`antagonistic_repository` names, with Actions: write and the
+implicit Metadata: read; it can start, cancel or rerun that
+repository's workflows and nothing else. The scheduled caller passes
+it as the optional `antagonistic_dispatch_token`, and the
+`antagonistic` job's `Dispatch antagonistic reviews` step is the one
+place that reads it. That job holds `permissions: {}`, checks out
+nothing and runs after the report job, so no agent output, script
+from a target or publish step runs beside it; the publish job, which
+records the nomination, holds no new credential.
+`tests/test_workflow.py` pins that reach. Without the secret the
+step warns, dispatches nothing and succeeds, so the default stays
+harmless until a maintainer sets it. Its expiry needs the same owner and
+rotation reminder as the model PAT (§10.2).
+
 ## 11. Scheduling and Concurrency
 
 - Cron `0 6,10,14,18 * * 1-5`, live, with `revise_only` (§6 "Two
@@ -1464,6 +1495,9 @@ the model PAT (§10.2).
   array sorts none. The `failing_check_pull_requests` output adds a
   count under the list, by the same rule, of the links published
   with failing checks, pointing at the run report for the names. A
+  link the `antagonistic_pull_requests` output names, as
+  `owner/repo#N`, gets `(antagonistic review requested)` beside it;
+  a name that matches no link adds nothing. A
   run that raised nothing posts
   a line saying it raised none, so an empty night reads
   differently from a broken one, and a run with failed jobs that
@@ -1994,7 +2028,8 @@ line and provenance block first, then the agent's text.
     "reasons": ["1 unresolved review thread"],
     "review_id": 5425770192,
     "commit_id": "<40 hex>"
-  }
+  },
+  "antagonistic": {"state": "off", "reason": null}
 }
 ```
 
@@ -2032,6 +2067,11 @@ verdict (`pending (not requested)` for that case) and, for findings,
 the counts of threads, suppressed
 findings and findings on unchanged code, a count of the wrong shape
 left out.
+On a pushed result the publish job adds `antagonistic` (§20.5):
+`state` is `requested` (nominated: the request job will ask, and
+its summary says whether the dispatch landed), `off` (the switch),
+`dry-run`, or `skipped` with `reason` naming the condition that
+failed. The comment reads it; the report recomputes the rule.
 
 **Open gap.** The publisher writes this file, but the report cannot
 yet prove it did: the author job can reach the Actions runtime
@@ -2071,6 +2111,8 @@ publish.py review-await --result result.json --output result.json
     [--wait-minutes N]
 publish.py respond --result result.json --check check.json
     --output result.json
+antagonistic_request.py --result result.json --output result.json
+    --switch true|false [--repository O/R]
 publish.py report --results DIR --output-md PATH --output-json PATH
     [--org ORG --github-output PATH]
 merge_state.py --result result.json --check check.json
@@ -2087,11 +2129,12 @@ operational failures alone.
 ### 18.6 Workflow outputs (report → caller)
 
 A caller cannot read `report.json` without the run's namespace, so
-the reusable workflow declares five `workflow_call` outputs. Four
+the reusable workflow declares six `workflow_call` outputs. Four
 come from the report job's `Build report` step through
 `publish.py report --org ORG --github-output PATH`; `selected_count`
 is the select job's own `count`, the length of the trusted matrix,
-checked there as digits:
+checked there as digits; `antagonistic_pull_requests` is the
+antagonistic job's `requested`, the nominees it dispatched (§20.5):
 
 | Output | Value |
 | ------ | ----- |
@@ -2100,6 +2143,7 @@ checked there as digits:
 | `unmergeable_pull_requests` | Those whose head conflicts (§8 step 11) |
 | `failing_check_pull_requests` | Those with failing checks (§8 step 11) |
 | `selected_count` | Entries selected, issues and revisions, as a string |
+| `antagonistic_pull_requests` | `owner/repo#N` of each request (§20.5) |
 
 Results are not yet authenticated (§18.4), so `report_outputs.py`
 treats each field as hostile. A URL counts when the whole value
@@ -2123,7 +2167,9 @@ empty strings. Like the report, the outputs are informational: they
 name pull requests, and nothing may write to a repository on the
 strength of them. The scheduled caller's Slack digest (§11) is their
 one consumer; a forged result can at most add a link to another pull
-request in the organisation.
+request in the organisation. The report's
+`antagonistic_pull_requests` output, the request job's input, is the
+one exception, and §20.5 bounds it.
 
 ## 19. Activity Log and Blockers
 
@@ -2431,7 +2477,9 @@ is another agent's review, data and never instructions, as Copilot's
 text is: nothing parses findings out of it, the session reads it.
 A review listing that fails, or a listed review without a readable
 body, fails the read as every revision read does, so no round runs
-without the findings that brought it.
+without the findings that brought it. This workflow also asks for
+that review itself once Copilot's is clean (§20.5); the marker
+above, never the request, makes a hand-back.
 
 ### 20.2 The author job
 
@@ -2668,3 +2716,41 @@ human, as the guidance requires.
 
 Open points, listed in §16: a comment at the round cap from the
 select job, and rounds within one run.
+
+### 20.5 Requesting the antagonistic review
+
+With `request_antagonistic_review` on, the default, the workflow
+asks the review bot for its antagonistic review (§20.1) of each pull
+request it published this run whose Copilot review came back clean,
+rather than wait for the review bot's own schedule. The rule
+nominates a live `proposed` result with a pull request when
+Copilot's review is `clean` and judged the published head, the
+probe did not find a conflict, the head has no known failing check
+and its checks are `passing`, `running` or `none` (never
+`unknown`), and the round is below the sixty-round ceiling. The rule
+nominates a clean head at a segment's cap: the next hand-back opens
+a new segment. `scripts/antagonistic_request.py` holds the rule.
+
+Three jobs share the work. The publish job's offline
+`Record antagonistic review request` step writes the result's
+`antagonistic` record (§18.4) for the comment, with no token. The
+report job recomputes the rule from every result, ignoring the
+recorded state, over the URLs `report_outputs.py` already accepted,
+and emits the nominees as `owner/repo#N`. The `antagonistic` job,
+skipped in a dry run, outside `pull-requests` mode, with the switch
+off, `antagonistic_repository` empty or no nominee, re-validates each
+nominee against the run's `org`, refuses the whole list on one bad
+entry, and runs `gh workflow run code-review-antagonistic.yaml
+-f dry_run=false -f pull_requests=<nominee>` once per pull request
+with the token of §10.5. A failed dispatch is a warning naming the
+pull request and the job goes on; its `requested` output feeds
+`antagonistic_pull_requests` (§18.6).
+
+**Trust.** Nothing authenticates a result yet (§18.4), so a forged
+result can nominate another bot pull request in the organisation.
+The other side bounds the cost: the review bot's selection re-checks
+the bot authorship, the clean Copilot review of the current head,
+its own round cap and whether it already reviewed that head, so a
+forged nomination at most spends one skipped selection. The request
+never counts as a hand-back; the review bot's marker does
+(§20.1).

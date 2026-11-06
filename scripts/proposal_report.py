@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import antagonistic_request as antagonistic
 import issue_comment as comments
 import proposal_model as model
 import proposal_policy as policy
@@ -243,12 +244,22 @@ def write_outputs(
     pulls, excluded = outputs.pull_request_urls(results, org)
     unmergeable = outputs.unmergeable_urls(results, org)
     failing = outputs.failing_check_urls(results, org)
+    nominated = antagonistic.nominees(results, pulls)
     extra: dict[str, Any] = {
         "pull_requests": pulls,
         "unmergeable_pull_requests": unmergeable,
         "failing_check_pull_requests": failing,
+        "antagonistic_pull_requests": nominated,
         "excluded_pull_request_urls": excluded,
     }
+    if nominated:
+        lines += [
+            "Pull requests nominated for an antagonistic review, which the "
+            "request job asks the review bot for when the switch is on: "
+            + ", ".join(cell(pull) for pull in nominated)
+            + ".",
+            "",
+        ]
     if excluded:
         # The refused values descend from agent output; only the
         # count is printed.
@@ -268,6 +279,7 @@ def write_outputs(
             handle.write(outputs.output_lines(pulls))
             handle.write(outputs.unmergeable_lines(unmergeable))
             handle.write(outputs.failing_check_lines(failing))
+            handle.write(antagonistic.output_lines(nominated))
     return extra
 
 
