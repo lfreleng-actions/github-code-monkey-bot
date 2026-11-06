@@ -55,8 +55,46 @@ HEADLINE_RE = re.compile(
 TRAILER_RE = re.compile(r"^[A-Za-z][A-Za-z-]*: .+$")
 URL_RE = re.compile(r"https?://")
 
-PROTECTED_PATHS = ("AGENTS.md", "REUSE.toml", ".gitlint")
-PROTECTED_PREFIXES = ("LICENSE", "LICENSES/")
+# Files an agent harness reads as instructions, or that decide who
+# reviews and which gates run: a proposal that changed one would be
+# the agent rewriting its own instructions or the checks it reports.
+# Names and directories compare in lower case.
+PROTECTED_NAMES = frozenset(
+    {
+        "agents.md",
+        "claude.md",
+        "gemini.md",
+        "copilot-instructions.md",
+        "skill.md",
+        ".cursorrules",
+        ".windsurfrules",
+        ".clinerules",
+        "codeowners",
+        "reuse.toml",
+        ".gitlint",
+    }
+)
+PROTECTED_ROOT_FILES = frozenset(
+    {"security.md", ".pre-commit-config.yaml", ".zizmor.yml", ".zizmor.yaml"}
+)
+PROTECTED_DIRS = frozenset(
+    {
+        ".copilot",
+        ".claude",
+        ".cursor",
+        ".agents",
+        ".windsurf",
+        ".clinerules",
+        ".gemini",
+        ".codex",
+        ".aislop",
+    }
+)
+PROTECTED_GITHUB_DIRS = ("instructions", "prompts", "agents", "skills", "copilot")
+# Licence files keep their upper-case convention, so ``src/licenses.py``
+# stays editable while ``LICENSE.txt`` and ``LICENCE`` do not.
+LICENCE_PREFIXES = ("LICENSE", "LICENCE")
+LICENCE_DIR = "LICENSES"
 WORKFLOW_PREFIX = ".github/workflows/"
 MODE_REGULAR = "100644"
 MODE_EXECUTABLE = "100755"
@@ -134,9 +172,25 @@ def safe_path(path: str) -> bool:
 
 
 def protected(path: str) -> bool:
-    """Files the agent must never change."""
-    return path in PROTECTED_PATHS or any(
-        path.startswith(prefix) for prefix in PROTECTED_PREFIXES
+    """Agent instruction files, review and gate configuration, licences.
+
+    The agent must never add, edit, delete or rename one of these.
+    """
+    parts = path.split("/")
+    name = parts[-1]
+    lowered = [part.lower() for part in parts]
+    if lowered[-1] in PROTECTED_NAMES:
+        return True
+    if len(parts) == 1 and lowered[0] in PROTECTED_ROOT_FILES:
+        return True
+    if name.startswith(LICENCE_PREFIXES) or LICENCE_DIR in parts[:-1]:
+        return True
+    if any(part in PROTECTED_DIRS for part in lowered[:-1]):
+        return True
+    return (
+        len(parts) > 2
+        and lowered[0] == ".github"
+        and lowered[1] in PROTECTED_GITHUB_DIRS
     )
 
 

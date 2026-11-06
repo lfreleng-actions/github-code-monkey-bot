@@ -110,6 +110,10 @@ class Fixture:
         (self.upstream / "README.md").write_text(README, encoding="utf-8")
         (self.upstream / ".gitlint").write_text(GITLINT, encoding="utf-8")
         (self.upstream / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+        (self.upstream / ".github").mkdir()
+        (self.upstream / ".github" / "copilot-instructions.md").write_text(
+            "# Instructions\n", encoding="utf-8"
+        )
         (self.upstream / "old.txt").write_text("old\n", encoding="utf-8")
         run_git(self.upstream, "add", "-A")
         run_git(self.upstream, "commit", "-q", "-m", "Chore: Initial commit")
@@ -726,6 +730,16 @@ class RunCheckRejectionTest(GitCase):
         self.fixture.bundle()
         self.fixture.manifest(pr_title="Docs: Update agents")
         self.assertIn("AGENTS.md is protected", self.rejected())
+
+    def test_protected_deletion(self) -> None:
+        """Deleting an agent instruction file is refused like editing one."""
+        self.fixture.commit(
+            "Chore: Drop instructions\n\nBody.\n",
+            {".github/copilot-instructions.md": None},
+        )
+        self.fixture.bundle()
+        self.fixture.manifest(pr_title="Chore: Drop instructions")
+        self.assertIn(".github/copilot-instructions.md is protected", self.rejected())
 
     def test_subject_without_type(self) -> None:
         """A subject lacking a Conventional Commit type is rejected."""

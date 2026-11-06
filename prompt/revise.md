@@ -86,8 +86,19 @@ round summary.
      placeholder it replaces. The same limits as a first session
      apply: at most five commits and 100 file changes per commit;
      under 4 MiB in total; a subject within the target's `.gitlint`
-     `title-max-length` or 50; hands off `AGENTS.md`, `LICENSE*`,
-     `REUSE.toml` and `.gitlint`. The workflow cannot add or edit
+     `title-max-length` or 50; no addition, edit, deletion or rename
+     of a protected file: agent instruction files (`AGENTS.md`,
+     `CLAUDE.md`, `GEMINI.md`, `copilot-instructions.md`, `SKILL.md`,
+     `.cursorrules` and the like at any depth; `.claude/`,
+     `.cursor/`, `.copilot/` and similar directories; and
+     `.github/instructions/`, `.github/prompts/`, `.github/agents/`,
+     `.github/skills/` and `.github/copilot/`), review and gate
+     configuration (`CODEOWNERS`,
+     `REUSE.toml`, `.gitlint`, `.aislop/`, and at the root
+     `SECURITY.md`, `.pre-commit-config.yaml` and `.zizmor.yml`),
+     and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When a fix
+     cannot avoid a protected file, abstain and name the file in
+     your reason. The workflow cannot add or edit
      an executable file, a symlink or a submodule, or change a
      file's mode. The publisher rejects any edit to an existing
      executable file, even one that keeps its mode; deleting one is

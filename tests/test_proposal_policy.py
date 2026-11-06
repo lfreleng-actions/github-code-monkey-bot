@@ -77,25 +77,128 @@ class SafePathTest(unittest.TestCase):
                 self.assertTrue(policy.safe_path(good))
 
 
+PROTECTED_NAMES = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "copilot-instructions.md",
+    "SKILL.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    "CODEOWNERS",
+    "REUSE.toml",
+    ".gitlint",
+)
+PROTECTED_ROOT_FILES = (
+    "SECURITY.md",
+    ".pre-commit-config.yaml",
+    ".zizmor.yml",
+    ".zizmor.yaml",
+)
+PROTECTED_DIRS = (
+    ".copilot",
+    ".claude",
+    ".cursor",
+    ".agents",
+    ".windsurf",
+    ".clinerules",
+    ".gemini",
+    ".codex",
+    ".aislop",
+)
+PROTECTED_GITHUB_DIRS = ("instructions", "prompts", "agents", "skills", "copilot")
+
+
+def cased(path: str) -> tuple[str, str]:
+    """The path in upper and in lower case."""
+    return path.upper(), path.lower()
+
+
 class ProtectedTest(unittest.TestCase):
     """``protected`` names the files the agent must not touch."""
 
-    def test_protected_paths(self) -> None:
-        """Exact names and licence prefixes are protected."""
-        for path in (
-            "AGENTS.md",
-            "REUSE.toml",
-            ".gitlint",
-            "LICENSE",
-            "LICENSE.txt",
-            "LICENSES/Apache-2.0.txt",
-        ):
+    def assert_protected(self, paths: list[str]) -> None:
+        """Every path is protected."""
+        for path in paths:
             with self.subTest(path=path):
                 self.assertTrue(policy.protected(path))
 
+    def test_root_paths(self) -> None:
+        """The original root names and licence paths stay protected."""
+        self.assert_protected(
+            [
+                "AGENTS.md",
+                "REUSE.toml",
+                ".gitlint",
+                "LICENSE",
+                "LICENSE.txt",
+                "LICENSES/Apache-2.0.txt",
+            ]
+        )
+
+    def test_names_at_any_depth(self) -> None:
+        """Instruction and gate file names, root or nested, either case."""
+        paths: list[str] = []
+        for name in PROTECTED_NAMES:
+            for path in (name, f"docs/{name}", f"a/b/{name}"):
+                paths += [path, *cased(path)]
+        self.assert_protected(paths)
+
+    def test_root_files(self) -> None:
+        """Security policy and hook configuration at the root, either case."""
+        paths: list[str] = []
+        for name in PROTECTED_ROOT_FILES:
+            paths += [name, *cased(name)]
+        self.assert_protected(paths)
+
+    def test_licences_at_any_depth(self) -> None:
+        """Licence files and the LICENSES directory, root or nested."""
+        self.assert_protected(
+            [
+                "LICENCE",
+                "LICENSE-MIT",
+                "docs/LICENSE",
+                "vendor/lib/LICENCE.md",
+                "docs/LICENSE-notes.md",
+                "vendor/LICENSES/MIT.txt",
+            ]
+        )
+
+    def test_directories_at_any_depth(self) -> None:
+        """Agent configuration directories, root or nested, either case."""
+        paths: list[str] = []
+        for directory in PROTECTED_DIRS:
+            for path in (f"{directory}/settings.json", f"pkg/{directory}/x/y.md"):
+                paths += [path, *cased(path)]
+        self.assert_protected(paths)
+
+    def test_github_agent_directories(self) -> None:
+        """Instruction, prompt, agent and skill trees under .github/."""
+        paths: list[str] = []
+        for directory in PROTECTED_GITHUB_DIRS:
+            for path in (
+                f".github/{directory}/x.md",
+                f".github/{directory}/nested/y.md",
+            ):
+                paths += [path, *cased(path)]
+        self.assert_protected(paths)
+
     def test_unprotected_paths(self) -> None:
-        """Prefix matching applies to the path start only."""
-        for path in ("docs/LICENSE-notes.md", "docs/AGENTS.md", "src/agents.md"):
+        """Ordinary files, workflows and look-alike names stay editable."""
+        for path in (
+            "README.md",
+            "docs/guide.md",
+            "action.yaml",
+            ".github/workflows/ci.yaml",
+            ".github/dependabot.yml",
+            "src/licenses.py",
+            "tests/test_agents.py",
+            "docs/SECURITY.md",
+            "tests/.pre-commit-config.yaml",
+            ".github/prompts",
+            "src/.claude",
+        ):
             with self.subTest(path=path):
                 self.assertFalse(policy.protected(path))
 

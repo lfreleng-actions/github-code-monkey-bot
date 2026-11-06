@@ -741,8 +741,11 @@ The workflow facts the prompt adds:
    parent. At most five commits and 100 file changes per commit;
    under 4 MiB in total; a subject within the target's `.gitlint`
    `title-max-length`, or 50 where it sets none, as the publisher
-   enforces (§8) even where the target's gitlint is looser; hands
-   off `AGENTS.md`, `LICENSE*`, `REUSE.toml` and `.gitlint`.
+   enforces (§8) even where the target's gitlint is looser; no
+   change to a protected file, which the prompt names by class
+   (agent instruction files, review and gate configuration,
+   licences) with the examples §8 lists, abstaining and naming the
+   file when the change cannot avoid one.
    Workflow files are in scope. Where the fix needs a step the
    replay cannot take, the agent finishes the rest and opens the
    pull request body with an `INFO` banner naming the human
@@ -858,8 +861,29 @@ For each selected issue:
    the tree and every path valid UTF-8, since the API takes text and
    the check would otherwise see one name while the API creates
    another; at least one and at most 100 file changes per commit,
-   the mutation's requirements; total added bytes under the cap; no change to
-   `AGENTS.md`, `LICENSE*`, `REUSE.toml` or `.gitlint`. Changes
+   the mutation's requirements; total added bytes under the cap; no
+   addition, edit, deletion or rename of a protected path, as
+   `protected` in `proposal_policy.py` defines it. It covers three
+   classes, since a change to one is the agent rewriting its own
+   instructions or the checks it reports as passed:
+   - *agent instruction files*: a file named `AGENTS.md`,
+     `CLAUDE.md`, `GEMINI.md`, `copilot-instructions.md`,
+     `SKILL.md`, `.cursorrules`, `.windsurfrules` or `.clinerules`
+     at any depth; anything under a `.copilot`, `.claude`,
+     `.cursor`, `.agents`, `.windsurf`, `.clinerules`, `.gemini` or
+     `.codex` directory at any depth; and anything under
+     `.github/instructions/`, `.github/prompts/`, `.github/agents/`,
+     `.github/skills/` or `.github/copilot/`;
+   - *review and gate configuration*: `CODEOWNERS`, `REUSE.toml` and
+     `.gitlint` at any depth, an `.aislop` directory at any depth,
+     and `SECURITY.md`, `.pre-commit-config.yaml` and
+     `.zizmor.yml`/`.zizmor.yaml` at the root;
+   - *licences*: a file whose name starts with `LICENSE` or
+     `LICENCE` at any depth, and anything under a `LICENSES`
+     directory.
+
+   Names and directories other than the licence ones compare
+   without regard to case. Changes
    under `.github/workflows/` pass and set `needs_workflows` in the
    check summary; no token mint depends on it (step 6).
 4. **Check the message** of each commit against the rules the org
