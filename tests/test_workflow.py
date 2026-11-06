@@ -2054,6 +2054,31 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         with_ = cast(dict[str, Any], self.step("select", "app-token")["with"])
         self.assertEqual(with_["permission-checks"], "read")
 
+    @unittest.expectedFailure
+    def test_selection_skips_targets_other_runs_hold(self) -> None:
+        """The native token reads other runs' selections first (DESIGN.md 6).
+
+        The caller's runs and their evidence live in the caller
+        repository, which the App may not cover; the script fails open
+        itself, so the step carries no continue-on-error to hide a bug.
+        """
+        held = self.step("select", "Find targets other runs hold")
+        env = cast(dict[str, Any], held["env"])
+        self.assert_expression(env["GH_TOKEN"], "github.token")
+        self.assert_expression(env["REPOSITORY"], "github.repository")
+        self.assert_expression(env["RUN_ID"], "github.run_id")
+        run = flatten(held["run"])
+        self.assertIn("monkey-assets/scripts/run_overlap.py", run)
+        self.assertIn("--output held-targets.json", run)
+        self.assertNotIn("continue-on-error", held)
+        self.assertLess(
+            self.position("select", "Find targets other runs hold"),
+            self.position("select", "Select issues"),
+        )
+        select = flatten(self.step("select", "Select issues")["run"])
+        self.assertIn("--held-file held-targets.json", select)
+        self.assertEqual(self.jobs["select"]["permissions"]["actions"], "read")
+
     def test_select_resolves_fork_organisations(self) -> None:
         """Selection carries the committed fork mapping into every entry."""
         script = flatten(self.step("select", "Select issues")["run"])

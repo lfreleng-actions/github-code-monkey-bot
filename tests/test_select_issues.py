@@ -553,6 +553,94 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
 
+    def held_file(self, *targets: tuple[str, int, int]) -> str:
+        """Write a held-targets file as ``run_overlap.py`` does; return its path."""
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "held-targets.json"
+        held = [
+            {"repository": repository, "number": number, "run_id": run}
+            for repository, number, run in targets
+        ]
+        path.write_text(json.dumps({"held": held}), encoding="utf-8")
+        return str(path)
+
+    @unittest.expectedFailure
+    def test_issues_another_run_holds_are_skipped(self) -> None:
+        """Scanned and named issues alike: skipped, recorded, read no further."""
+        prior = patch.object(reads, "prior_attempt", return_value=None).start()
+        patch.object(reads, "has_open_linked_pr", return_value=False).start()
+        patch.object(reads, "branch_head", return_value=SHA_A).start()
+        patch.object(reads, "filtered_comments", return_value=([], 0, False)).start()
+        ranked = [candidate("alpha", 3), candidate("beta", 5)]
+        # GitHub compares repository names without case; so does the hold.
+        held = self.held_file(("Org/Alpha", 3, 4242))
+        named = ("--issues", "org/alpha#3,org/beta#5")
+        for extra in ((), named):
+            with (
+                self.subTest(named=bool(extra)),
+                patch.object(select, "scan_candidates", return_value=(2, ranked)),
+                patch.object(explicit_targets, "candidates", return_value=ranked),
+            ):
+                prior.reset_mock()
+                selection, _ = select.build_selection(
+                    self.args(*extra, "--held-file", held)
+                )
+                self.assertEqual([e["key"] for e in selection["issues"]], ["beta-5"])
+                self.assertEqual(selection["skipped"]["held"], 1)
+                self.assertEqual(
+                    selection["skipped_issues"],
+                    [{"issue": "org/alpha#3", "reason": "being worked by run 4242"}],
+                )
+                for call in prior.call_args_list:
+                    self.assertNotEqual(call.args[0], "org/alpha")
+
+    @unittest.expectedFailure
+    def test_named_pull_request_another_run_holds_is_skipped(self) -> None:
+        """A named round whose pull request another run selected costs no session."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        selection, _ = select.build_selection(
+            self.args(
+                "--pull-requests",
+                "org/alpha#41",
+                "--held-file",
+                self.held_file(("org/alpha", 41, 4242)),
+            )
+        )
+        self.assertEqual(selection["issues"], [])
+        self.assertEqual(selection["skipped"]["held"], 1)
+        self.assertEqual(
+            selection["skipped_issues"],
+            [{"issue": "org/alpha#41", "reason": "being worked by run 4242"}],
+        )
+        summary = outputs.summary_markdown(selection)
+        self.assertIn("| org/alpha#41 | being worked by run 4242 |", summary)
+        self.assertIn("| held | 1 |", summary)
+
+    @unittest.expectedFailure
+    def test_scanned_round_another_run_holds_is_recorded(self) -> None:
+        """A scan records a held skip in skipped_issues, unlike its other skips."""
+        entry = self.revision("alpha", 41, 7)
+        with patch.object(
+            revision_select, "scan", return_value=[("org/alpha", lambda: entry)]
+        ):
+            selection, _ = select.build_selection(
+                self.args("--held-file", self.held_file(("org/alpha", 7, 99)))
+            )
+        self.assertEqual(selection["issues"], [])
+        self.assertEqual(
+            selection["skipped_issues"],
+            [{"issue": "org/alpha#7", "reason": "being worked by run 99"}],
+        )
+
+    def test_no_held_file_holds_nothing(self) -> None:
+        """Without the file, as in a test or a local run, nothing is held."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        selection, _ = select.build_selection(
+            self.args("--pull-requests", "org/alpha#41")
+        )
+        self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
+
     def test_named_pull_requests_need_pull_requests_mode(self) -> None:
         """A round names a live pull request; a branches run cannot publish one."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
