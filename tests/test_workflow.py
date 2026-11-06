@@ -1913,6 +1913,19 @@ class PublishAuditInstallContracts(ReusableWorkflowCase):
             list(range(order[0], order[0] + len(self.INSTALL_STEPS) + 1)),
         )
 
+    @unittest.expectedFailure
+    def test_check_audits_online_with_the_native_token(self) -> None:
+        """The check step hands zizmor the native token, read-only.
+
+        The job grants it ``actions: read`` and ``contents: read``:
+        enough for zizmor's online audits on public actions, and no
+        write anywhere.
+        """
+        check = self.step("publish", "Check proposal offline")
+        self.assert_expression(check["env"]["ZIZMOR_GITHUB_TOKEN"], "github.token")
+        self.assertNotIn("GH_TOKEN", check["env"])
+        self.assertNotIn("GITHUB_TOKEN", check["env"])
+
 
 class MintProvenanceContracts(ReusableWorkflowCase):
     """Every App token names a known owner and carries the least it needs."""
