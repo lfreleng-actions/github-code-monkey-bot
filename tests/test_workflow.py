@@ -553,6 +553,23 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
+    def test_prompts_address_the_previous_rejection(self) -> None:
+        """Both prompts point the agent at the reasons the publisher gave.
+
+        The selection carries the last rejection's reasons as
+        ``previous_rejection`` (DESIGN.md 6); unread, the next attempt
+        repeats what the publisher refused.
+        """
+        for path in (PROMPT, REVISE_PROMPT):
+            with self.subTest(prompt=path.name):
+                prompt = squash(path.read_text(encoding="utf-8"))
+                self.assertIn("the packet carries `previous_rejection`", prompt)
+                self.assertIn(
+                    "address each reason it lists, or abstain naming the "
+                    "reason you cannot address",
+                    prompt,
+                )
+
     def test_prompts_state_the_executable_file_rule(self) -> None:
         """Both prompts forbid editing executables and ask for a mode self-check.
 
