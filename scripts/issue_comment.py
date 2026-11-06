@@ -14,6 +14,7 @@ import bot_github as github
 import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
+import revision_reads as revisions
 import write_recovery as recovery
 from review_outcome import (
     checks_failed,
@@ -42,20 +43,10 @@ def outcome_text(opening: str, result: dict[str, Any]) -> str:
     return text
 
 
-MAX_ROUNDS = 10
-
-
 def cap_of(result: dict[str, Any]) -> int:
-    """The round cap the selection ran with; the default when unrecorded."""
+    """The rounds per segment the selection ran with; the default when unrecorded."""
     value = result.get("max_rounds")
-    return value if type(value) is int and value > 0 else MAX_ROUNDS
-
-
-def cap_notice(result: dict[str, Any]) -> str:
-    return (
-        f" This was the round cap of {cap_of(result)}: the workflow selects"
-        " this pull request no further, and a human must take over."
-    )
+    return value if type(value) is int and value > 0 else revisions.MAX_ROUNDS
 
 
 def round_of(result: dict[str, Any]) -> int:
@@ -64,20 +55,50 @@ def round_of(result: dict[str, Any]) -> int:
     return value if type(value) is int and value > 0 else 0
 
 
+def segment_of(result: dict[str, Any]) -> int:
+    """The round's place in its antagonistic segment, as the selection counted it.
+
+    A result that records none caps on the global round, as it did
+    before segments, so a missing count never lifts the cap.
+    """
+    value = result.get("segment_round")
+    return value if type(value) is int and value > 0 else round_of(result)
+
+
 def capped(result: dict[str, Any]) -> bool:
     """Whether the round leaves the pull request at the cap with work undone.
 
-    The selector skips a pull request at the cap whatever its state,
-    so every tenth-round outcome but a clean proposal that can merge
-    with no known failing check needs a human; that one is finished.
+    The selector skips a pull request at the cap, the run's rounds in
+    an antagonistic segment (ten by default) or sixty in all, until
+    the next hand-back starts a segment, so every outcome at the cap
+    but a clean proposal that can merge with no known failing check
+    needs a human; that one is finished.
     """
-    if round_of(result) < cap_of(result):
+    if not revisions.round_cap_reached(
+        round_of(result), segment_of(result), cap_of(result)
+    ):
         return False
     return (
         result.get("verdict") != "proposed"
         or review_verdict(result) != "clean"
         or result.get("mergeable") is False
         or checks_failed(result)
+    )
+
+
+def cap_notice(result: dict[str, Any]) -> str:
+    """The notice for a capped round: the segment's cap, or the ceiling's."""
+    if round_of(result) >= revisions.MAX_TOTAL_ROUNDS:
+        return (
+            f" This was the round cap of {revisions.MAX_TOTAL_ROUNDS} over every"
+            " antagonistic review round: the workflow selects this pull request"
+            " no further, and a human must take over."
+        )
+    return (
+        f" This was the round cap of {cap_of(result)} per antagonistic review"
+        " round: the workflow selects this pull request no further until the"
+        " next antagonistic review hands it back, and until then a human must"
+        " take over."
     )
 
 
@@ -165,11 +186,15 @@ def _handoff_comment(result: dict[str, Any], reasons: str, run_url: str) -> str:
 
 def handback_id(result: dict[str, Any]) -> int | None:
     """The id of the antagonistic review the round answered, or None."""
+    if result.get("verdict") not in ("proposed", "handoff"):
+        return None
+    return carried_id(result)
+
+
+def carried_id(result: dict[str, Any]) -> int | None:
+    """The id of the antagonistic review the round was sent with, whatever its verdict."""
     handback = result.get("antagonistic_review")
-    if not isinstance(handback, dict) or result.get("verdict") not in (
-        "proposed",
-        "handoff",
-    ):
+    if not isinstance(handback, dict):
         return None
     review_id = cast("dict[str, Any]", handback).get("review_id")
     return review_id if type(review_id) is int and review_id > 0 else None
@@ -284,6 +309,12 @@ def run_comment(args: argparse.Namespace) -> None:
         # The watermark for the next round: when this run read the
         # comments, not when it wrote this one.
         suffix += f" since={collected}"
+    carried = carried_id(result)
+    if carried is not None:
+        # Every round sent with a hand-back records it, a failed one
+        # too, so the round history counts its segment from the first
+        # attempt and a retry cannot restart it.
+        suffix += f" handback={carried}"
     handback = handback_id(result)
     if handback is not None:
         # The receiving side's key for an idempotent hand-back: which

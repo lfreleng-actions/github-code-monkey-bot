@@ -107,6 +107,8 @@ def run_push(
     carried = list(cast("list[str]", check.get("warnings") or []))
     warnings.extend(carried)
     result["checks_unsettled"] = check.get("checks_unsettled") or 0
+    # The cap the outcome comment states reads the round's segment.
+    result["segment_round"] = check.get("segment_round") or 0
     if result["verdict"] == "handoff":
         # The step holds no token for a handoff, so the head check
         # waits for respond, which has the pull request token.

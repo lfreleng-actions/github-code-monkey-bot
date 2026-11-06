@@ -1695,7 +1695,7 @@ switch.
   outstanding would close the loop within the day rather than at the
   next schedule.
 - **A comment at the round cap from the select job.** The publisher
-  of the tenth round says a human must take over; the selector names
+  of a segment's last round says a human must take over; the selector names
   a pull request it skips at the cap later in the summary alone.
 - **More than one issue per repository per run**, sequentially in
   one session, if the one-per-repository rule starves the backlog.
@@ -1846,7 +1846,9 @@ dropped; both are empty on a scan. `explicit_pull_requests`,
 selection holds revision entries alone and `candidates_seen` is 0.
 A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
 `pull_request` (`number`, `url`, `title`, `head_sha`, `mergeable`,
-`created_at`), `round`,
+`created_at`), `round` (global, as the footers number it),
+`segment_round` (the round's place in its antagonistic segment, which
+the cap reads, §20.1), `max_rounds` (the run's rounds per segment),
 `collected_at` (when the selection read the comments; every entry
 carries it), `session` (the run id and the select job's attempt:
 new on a full rerun, which authors anew, kept across a retry of the
@@ -2210,7 +2212,8 @@ reads the review and the comments, revises the same branch in place,
 and the publisher moves the branch, answers each thread, and runs
 the §8 review gate on the new head. One run performs one round; the
 next run, scheduled or dispatched, performs the next, up to ten per
-pull request, the cap the guidance sets.
+pull request, the cap the guidance sets, counted afresh for each
+antagonistic review that hands the pull request back (§20.1).
 
 ### 20.1 Selection
 
@@ -2308,10 +2311,51 @@ request so starts its own round count, cap, watermark and pause
 afresh. A footer
 whose round published nothing, an abstention, a rejection or a failure,
 counts toward the cap and moves no watermark, since it handled no
-request. At the cap the selector skips the pull request with that
-reason, and the publisher of the tenth round has already said a human
-must take over. One key admits one entry, so a pull request named beside
-its own issue runs once.
+request.
+
+**The cap per antagonistic segment.** The review bot gives a pull
+request up to five antagonistic rounds before a maintainer takes over
+(`lfreleng-actions/github-code-review-bot` issues 28 and 58), and each
+hand-back needs its own Copilot cycles to answer, so ten rounds is a
+cap per **segment**, not per pull request. The first publication
+opens the first segment; the first round whose footer carries a
+review, as the hand-back its entry held (`handback=<review id>`) or
+as the one it answered (`antagonistic=<review id>`, §20.3), opens the
+next, and counts as its first. A failed round records the hand-back
+its entry held too, so its retries count in the segment it opened. A
+later round naming the same review, as a handoff a maintainer resumes
+on the same head or a retry of a failed round does, opens nothing, so
+each review ID anchors at its first round and the latest of those
+anchors starts the segment. `round_reads.round_history` returns
+the segment's count beside `highest`, by round number, so a round
+posted twice counts once, and
+the footer's `round=N` stays global: the round number is monotonic
+for history and summaries, and the cap alone reads the segment. The
+selector skips a pull request whose segment holds ten rounds, or the
+rounds a dispatch's `max_rounds` input sets for that run, unless
+the selection finds an unanswered hand-back of the head (the one the
+work-outstanding test reads: a listed App typed `Bot`, the current
+head, the marker on the body's last line, posted after the
+watermark) whose review no footer has anchored yet; that round opens
+a new segment and goes ahead whatever the last one counted. The
+anchor, not the watermark, decides: a failed round moves no
+watermark, and a hand-back that a round's selection read as it
+arrived postdates that round's watermark, yet a footer carries
+each. No comment resets the count, and a footer counts when the bot
+posted it. At the cap the selector reads the hand-back alone, before
+the packet, so a capped pull request costs one read. Above every
+segment sits a ceiling of sixty rounds (`MAX_TOTAL_ROUNDS`: the first
+publication's ten and ten for each of the review bot's five rounds);
+at or above it the selector skips first, reading no hand-back,
+whatever the segment says or the run's cap, so footer history that
+goes wrong still ends the loop. The entry carries the global
+`round`, `segment_round` and `max_rounds`, and the publisher reads
+them through one rule, `revision_reads.round_cap_reached`. At the cap
+the selector skips the pull request with that reason, and the
+publisher of the segment's last round has already said a human must
+take over until the next antagonistic review hands it back. One key
+admits one entry, so a pull request named beside its own issue runs
+once.
 
 The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
@@ -2581,19 +2625,28 @@ and the rest proceed. The §8 review gate then requests and awaits
 the review of the new head, and the issue comment names the round,
 the pull request and the head the push left, since later rounds
 replace the same branch, the summary and the verdict, with the round
-in its marker, which is how the next selection counts rounds. A
-proposal or handoff that consumed an antagonistic hand-back ends its
-marker with `antagonistic=<review id>`, the receiving-side key
-`lfreleng-actions/github-code-review-bot` issue 31 will use for an
-idempotent hand-back; the round history reads every footer form, with
-the field or without it. The summary
-and the reasons are agent text: flattened to one line, mentions
-defused and HTML escaped, so they can neither hide the verdict and
+in its marker, which is how the next selection counts rounds. Every
+round whose entry held an antagonistic hand-back, whatever its
+verdict, records it in its marker as `handback=<review id>`, which
+anchors the segment (§20.1). A proposal or handoff that consumed the
+hand-back then ends its marker with `antagonistic=<review id>`, the
+receiving-side key `lfreleng-actions/github-code-review-bot` issue 31
+will use for an idempotent hand-back; a failed round never writes
+it. The round history reads every footer form, with either field or
+without them. The summary and the reasons are agent text: flattened
+to one line, mentions defused and HTML escaped, so they can neither
+hide the verdict and
 the marker after them nor collapse them into a block. At the cap,
-every outcome but a clean proposal says a human must take over and
-promises no further round, since the selector skips the pull
-request from then on, a handoff's "once a maintainer comments"
-included.
+ten rounds in the segment or the run's `max_rounds` (§20.1), every
+outcome but a clean proposal says the cap is that number of rounds
+per antagonistic review round,
+that a human must take over until the next antagonistic review
+hands the pull request back, and promises no further round
+otherwise, since the selector skips the pull request until then, a
+handoff's "once a maintainer comments" included; at the sixty-round
+ceiling it says a human must take over, with no exception. The run
+report's capped details and the pull request's disclosure of how
+the workflow answers findings say the same.
 
 ### 20.4 What this changes about trust
 

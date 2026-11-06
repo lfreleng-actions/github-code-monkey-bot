@@ -324,7 +324,7 @@ class CommentBodyTest(unittest.TestCase):
         self.assertIn("3 previously missed findings", missed or "")
         self.assertIn("needs a closer look", missed or "")
         self.assertIn("changes recommended", findings or "")
-        self.assertIn("a maintainer must act", findings or "")
+        self.assertIn("a maintainer, or the next antagonistic review", findings or "")
         self.assertNotIn("ready", (findings or "").lower())
         pending = comments.comment_body(
             result_json(review=review_record("pending")), ""
@@ -446,6 +446,14 @@ class CommentBodyTest(unittest.TestCase):
                 fail=publish.fail,
             )
             self.assertEqual(pushed["checks_unsettled"], expected)
+        for carried, expected in (({"segment_round": 1}, 1), ({}, 0)):
+            pushed = publish.revision_publish.run_push(
+                args,
+                {"verdict": "proposed", "task": "revise", **carried},
+                {"verdict": "proposed", "warnings": []},
+                fail=publish.fail,
+            )
+            self.assertEqual(pushed["segment_round"], expected)
 
     def test_round_cap_notice_on_every_unfinished_outcome(self) -> None:
         """Whatever ends the tenth round short of clean says a human takes over."""
@@ -3967,7 +3975,11 @@ class HeadChecksTest(unittest.TestCase):
         lines = reporting.failing_check_lines([data])
         listed = [line for line in lines if line.startswith("- ")]
         self.assertEqual(len(listed), 1)
-        self.assertIn("Lint; round cap reached, a human must take over", listed[0])
+        self.assertIn(
+            "Lint; round cap reached for this antagonistic review round, a human must"
+            " take over",
+            listed[0],
+        )
         below = reporting.failing_check_lines([{**data, "round": 9}])
         self.assertNotIn("round cap", "\n".join(below))
 
@@ -3986,7 +3998,11 @@ class HeadChecksTest(unittest.TestCase):
             if line.startswith("- ")
         ]
         self.assertEqual(len(listed), 1)
-        self.assertIn("Lint; round cap reached, a human must take over", listed[0])
+        self.assertIn(
+            "Lint; round cap reached for this antagonistic review round, a human must"
+            " take over",
+            listed[0],
+        )
         unsettled = {**running, "checks": checks_record("running", unsettled=1)}
         self.assertEqual(reporting.failing_check_lines([unsettled]), [])
 

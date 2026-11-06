@@ -80,9 +80,10 @@ MANIFEST_SCHEMA = 1
 # every round before anything merges.
 REVISION_DISCLOSURE = (
     "Review findings on this pull request are answered by a later "
-    "revision round of this workflow, up to ten rounds; a maintainer "
-    "must act on any finding that remains after that, and reviews "
-    "every round before merge."
+    "revision round of this workflow, up to ten rounds per antagonistic "
+    "review round; after that a maintainer, or the next antagonistic "
+    "review, takes on any finding that remains, and a maintainer "
+    "reviews every round before merge."
 )
 
 

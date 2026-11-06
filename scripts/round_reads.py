@@ -26,7 +26,8 @@ FOOTER = re.compile(
     r"(?: mergeable=(?:true|false|unknown))?"
     r"(?: checks=(?:passing|failing|running|none|unknown)(?:/[0-9a-f]{12})?)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
-    r"(?: antagonistic=(?P<antagonistic>\d+))? -->\s*\Z"
+    r"(?: handback=(?P<handback>\d+))?(?: antagonistic=(?P<antagonistic>\d+))?"
+    r" -->\s*\Z"
 )
 # Pages of issue comments the round history may span before the
 # read fails closed rather than trust a partial count.
@@ -48,6 +49,16 @@ class RoundHistory:
     since: str | None
     # The verdict of the latest footer; ``handoff`` pauses the scan.
     last_verdict: str | None
+    # Rounds in the current antagonistic segment: since the round that
+    # first carried the latest hand-back (``handback=`` or
+    # ``antagonistic=``), that round counted as the first, or every
+    # round when none did.
+    # The cap reads this; ``highest`` stays the global round number.
+    segment: int
+    # Every antagonistic review a round was sent for or answered: one
+    # of these opens no new segment, however its time reads against
+    # the watermark.
+    anchored: frozenset[int] = frozenset()
 
 
 def round_history(
@@ -73,8 +84,19 @@ def round_history(
     sets the watermark there, since the comment itself comes later
     than the input the agent saw. The whole history is read; one too
     long to read fails closed rather than yield a partial count.
+
+    The segment counts round numbers, not footers, so a round posted
+    twice counts once: from the round that first carried the latest
+    antagonistic review to the highest round of all. A round carries
+    a review when its footer names it as answered (``antagonistic=``)
+    or as the hand-back it was sent for (``handback=``), which a round
+    that failed records too. A later round naming a review already
+    carried, as a resumed handoff or a retried failure on the same
+    head does, opens no segment.
     """
     highest = 0
+    # Each antagonistic review's first round, by review id.
+    answered: dict[int, int] = {}
     summaries: list[dict[str, Any]] = []
     # since, created, verdict: handled rounds order by the read time
     # they record, so a retry of an older round posted after a newer
@@ -112,6 +134,11 @@ def round_history(
                 continue
             number = int(found.group("round"))
             highest = max(highest, number)
+            for field in ("handback", "antagonistic"):
+                review = found.group(field)
+                if review is not None:
+                    first = answered.get(int(review), number)
+                    answered[int(review)] = min(first, number)
             summaries.append(
                 {
                     "round": number,
@@ -120,11 +147,14 @@ def round_history(
                 }
             )
         if len(entries) < reads.COMMENTS_PER_PAGE:
+            segment_start = max(answered.values(), default=0)
             return RoundHistory(
                 highest,
                 summaries[-MAX_ROUNDS:],
                 latest[0] if latest else None,
                 latest[2] if latest else None,
+                highest - segment_start + 1 if segment_start else highest,
+                frozenset(answered),
             )
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"
