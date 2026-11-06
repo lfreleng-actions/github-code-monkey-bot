@@ -505,6 +505,23 @@ class IssueDetailsTest(ReadsCase):
             },
         )
 
+    @unittest.expectedFailure
+    def test_flags_an_app_or_bot_author(self) -> None:
+        """An App's issue reads as a bot whatever association it carries."""
+        for user, expected in (
+            ({"login": "helper[bot]", "type": "Bot"}, True),
+            ({"login": "helper[bot]"}, True),
+            ({"login": "alice", "type": "User"}, False),
+            (None, False),
+        ):
+            with (
+                self.subTest(user=user),
+                patch.object(github, "api_object", return_value=self.issue(user=user)),
+                patch.object(github, "api_list", return_value=[]),
+            ):
+                details = reads.issue_details("org/repo", 7)
+                self.assertIs(details["author_is_bot"], expected)
+
     def test_missing_type_and_priority(self) -> None:
         """No type object and no Priority field yield None for both."""
         with (
