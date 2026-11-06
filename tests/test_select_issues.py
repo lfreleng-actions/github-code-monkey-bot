@@ -296,6 +296,21 @@ class ExplicitIssuesTest(NoSubprocessCase):
             ]
         )
 
+    def test_previous_rejection_reaches_the_entry(self) -> None:
+        """A results repository turns on the read; its record joins the entry."""
+        record = {"heading": "h", "reasons": ["r"]}
+        previous = import_module("previous_rejection")
+        args = self.args("org/alpha#3")
+        with patch.object(previous, "lookup", return_value=record) as lookup:
+            selection, _ = select.build_selection(args)
+        self.assertNotIn("previous_rejection", selection["issues"][0])
+        lookup.assert_not_called()
+        args.results_repository = "org/caller"
+        with patch.object(previous, "lookup", return_value=record) as lookup:
+            selection, _ = select.build_selection(args)
+        self.assertEqual(selection["issues"][0]["previous_rejection"], record)
+        self.assertEqual(lookup.call_args.args[1:], ("org/caller", "b[bot]"))
+
     def test_named_issues_are_worked_in_order_without_triage_filters(self) -> None:
         """No scan, no Type, label, assignee, category or one-per-repository rule."""
         selection, _ = select.build_selection(

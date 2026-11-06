@@ -39,7 +39,10 @@ part and note it in your manifest reason.
 
 1. **Read first.** Read the issue packet, the organisation guidance
    in full, the repository's own `AGENTS.md` if present, and enough of
-   the repository to know its build, test and lint commands.
+   the repository to know its build, test and lint commands. When
+   the packet carries `previous_rejection`, the publisher rejected
+   the last attempt: address each reason it lists, or abstain naming
+   the reason you cannot address.
 2. **Decide if the issue is tractable.** A tractable issue is one
    where you can make the change, pass the checks the guidance and
    the repository require, and explain the result in a pull request

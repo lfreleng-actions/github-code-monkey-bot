@@ -553,6 +553,23 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn("50 where it does not", prompt)
         self.assertIn("placeholder", prompt)
 
+    def test_prompts_address_the_previous_rejection(self) -> None:
+        """Both prompts point the agent at the reasons the publisher gave.
+
+        The selection carries the last rejection's reasons as
+        ``previous_rejection`` (DESIGN.md 6); unread, the next attempt
+        repeats what the publisher refused.
+        """
+        for path in (PROMPT, REVISE_PROMPT):
+            with self.subTest(prompt=path.name):
+                prompt = squash(path.read_text(encoding="utf-8"))
+                self.assertIn("the packet carries `previous_rejection`", prompt)
+                self.assertIn(
+                    "address each reason it lists, or abstain naming the "
+                    "reason you cannot address",
+                    prompt,
+                )
+
     def test_prompts_state_the_executable_file_rule(self) -> None:
         """Both prompts forbid editing executables and ask for a mode self-check.
 
@@ -2058,6 +2075,15 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         """Selection carries the committed fork mapping into every entry."""
         script = flatten(self.step("select", "Select issues")["run"])
         self.assertIn("--fork-orgs monkey-assets/config/fork-orgs.json", script)
+
+    def test_select_reads_rejections_with_the_run_token(self) -> None:
+        """A rejecting run's result is read in this repository (DESIGN.md 6)."""
+        step = self.step("select", "Select issues")
+        env = cast(dict[str, Any], step["env"])
+        self.assertEqual(env["RESULTS_TOKEN"], "${{ github.token }}")
+        self.assertEqual(env["RESULTS_REPOSITORY"], "${{ github.repository }}")
+        script = flatten(step["run"])
+        self.assertIn('--results-repository "$RESULTS_REPOSITORY"', script)
 
     def test_select_reads_the_antagonistic_reviewers(self) -> None:
         """The trusted App list comes from the pinned assets (DESIGN.md 20.1)."""

@@ -48,7 +48,10 @@ round summary.
    comments and the earlier rounds), the organisation guidance in
    full, the repository's own `AGENTS.md` if present, and the
    branch's existing commits. A maintainer's reply on a thread
-   settles it the same way a comment on the pull request does.
+   settles it the same way a comment on the pull request does. When
+   the packet carries `previous_rejection`, the publisher rejected
+   the last round: address each reason it lists, or abstain naming
+   the reason you cannot address.
 2. **Decide what each finding deserves.** Verify a finding before
    acting on it: findings have been right about a defect and wrong
    about its cause. Fix what deserves a fix. Where you judge a finding
