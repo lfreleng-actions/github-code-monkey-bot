@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import bot_github as github
 import check_reads
@@ -32,6 +32,7 @@ import round_reads as rounds_of
 import thread_reads
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
+from revision_reads import pull_request_for_branch
 
 TASK = "revise"
 
@@ -251,7 +252,7 @@ def build_entry(
         "checks": findings.checks.checks,
         "checks_dropped": findings.checks.dropped,
         "checks_unsettled": findings.checks.unsettled,
-        **conversation(repository, issue, pull_number, since),
+        **rounds_of.conversation(repository, issue, pull_number, since),
     }
 
 
@@ -299,49 +300,6 @@ def packet_of(details: dict[str, Any], issue: int) -> dict[str, Any]:
     if "no-agent" in details["labels"]:
         raise Skip(f"issue #{issue} carries the no-agent label")
     return {k: v for k, v in details.items() if k not in ("state", "assignees")}
-
-
-def conversation(
-    repository: str, issue: int, pull_number: int, since: str | None
-) -> dict[str, Any]:
-    """The maintainers' comments, on the issue and the pull request, old and new."""
-    comments, dropped, truncated = reads.filtered_comments(repository, issue)
-    pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
-    new_comments, new_dropped = rounds_of.comments_since(repository, issue, since)
-    new_pr_comments, new_pr_dropped = rounds_of.comments_since(
-        repository, pull_number, since
-    )
-    return {
-        "comments": comments,
-        "comments_dropped": dropped,
-        "comments_truncated": truncated,
-        "pr_comments": pr_comments,
-        "pr_comments_dropped": pr_dropped,
-        "new_comments": new_comments,
-        "new_comments_dropped": new_dropped,
-        "new_pr_comments": new_pr_comments,
-        "new_pr_comments_dropped": new_pr_dropped,
-    }
-
-
-def pull_request_for_branch(
-    repository: str, fork_org: str, branch: str, bot_login: str
-) -> int | None:
-    """The number of the bot's open pull request from the fork branch, if any."""
-    entries = reads.api_page(
-        f"repos/{repository}/pulls?state=open&head={fork_org}:{branch}&per_page=20"
-    )
-    for data in entries:
-        user = data.get("user")
-        login = (
-            cast("dict[str, Any]", user).get("login")
-            if isinstance(user, dict)
-            else None
-        )
-        number = data.get("number")
-        if login == bot_login and type(number) is int:
-            return number
-    return None
 
 
 Builder = Callable[[], dict[str, Any] | None]

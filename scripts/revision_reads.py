@@ -246,3 +246,23 @@ def handback_review(
         "body": bounded,
         "body_truncated": len(bounded) < len(body),
     }
+
+
+def pull_request_for_branch(
+    repository: str, fork_org: str, branch: str, bot_login: str
+) -> int | None:
+    """The number of the bot's open pull request from the fork branch, if any."""
+    entries = reads.api_page(
+        f"repos/{repository}/pulls?state=open&head={fork_org}:{branch}&per_page=20"
+    )
+    for data in entries:
+        user = data.get("user")
+        login = (
+            cast("dict[str, Any]", user).get("login")
+            if isinstance(user, dict)
+            else None
+        )
+        number = data.get("number")
+        if login == bot_login and type(number) is int:
+            return number
+    return None

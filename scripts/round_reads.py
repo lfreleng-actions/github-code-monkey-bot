@@ -204,3 +204,24 @@ def comments_since(
         kept.append(comment)
     kept.reverse()
     return kept, len(found) - len(kept)
+
+
+def conversation(
+    repository: str, issue: int, pull_number: int, since: str | None
+) -> dict[str, Any]:
+    """The maintainers' comments, on the issue and the pull request, old and new."""
+    comments, dropped, truncated = reads.filtered_comments(repository, issue)
+    pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
+    new_comments, new_dropped = comments_since(repository, issue, since)
+    new_pr_comments, new_pr_dropped = comments_since(repository, pull_number, since)
+    return {
+        "comments": comments,
+        "comments_dropped": dropped,
+        "comments_truncated": truncated,
+        "pr_comments": pr_comments,
+        "pr_comments_dropped": pr_dropped,
+        "new_comments": new_comments,
+        "new_comments_dropped": new_dropped,
+        "new_pr_comments": new_pr_comments,
+        "new_pr_comments_dropped": new_pr_dropped,
+    }
