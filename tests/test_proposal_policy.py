@@ -137,7 +137,6 @@ class ProtectedTest(unittest.TestCase):
             ]
         )
 
-    @unittest.expectedFailure
     def test_names_at_any_depth(self) -> None:
         """Instruction and gate file names, root or nested, either case."""
         paths: list[str] = []
@@ -146,7 +145,6 @@ class ProtectedTest(unittest.TestCase):
                 paths += [path, *cased(path)]
         self.assert_protected(paths)
 
-    @unittest.expectedFailure
     def test_root_files(self) -> None:
         """Security policy and hook configuration at the root, either case."""
         paths: list[str] = []
@@ -154,7 +152,6 @@ class ProtectedTest(unittest.TestCase):
             paths += [name, *cased(name)]
         self.assert_protected(paths)
 
-    @unittest.expectedFailure
     def test_licences_at_any_depth(self) -> None:
         """Licence files and the LICENSES directory, root or nested."""
         self.assert_protected(
@@ -168,7 +165,6 @@ class ProtectedTest(unittest.TestCase):
             ]
         )
 
-    @unittest.expectedFailure
     def test_directories_at_any_depth(self) -> None:
         """Agent configuration directories, root or nested, either case."""
         paths: list[str] = []
@@ -177,7 +173,6 @@ class ProtectedTest(unittest.TestCase):
                 paths += [path, *cased(path)]
         self.assert_protected(paths)
 
-    @unittest.expectedFailure
     def test_github_agent_directories(self) -> None:
         """Instruction, prompt, agent and skill trees under .github/."""
         paths: list[str] = []

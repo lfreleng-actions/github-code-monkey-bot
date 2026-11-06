@@ -731,7 +731,6 @@ class RunCheckRejectionTest(GitCase):
         self.fixture.manifest(pr_title="Docs: Update agents")
         self.assertIn("AGENTS.md is protected", self.rejected())
 
-    @unittest.expectedFailure
     def test_protected_deletion(self) -> None:
         """Deleting an agent instruction file is refused like editing one."""
         self.fixture.commit(
