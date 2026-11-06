@@ -2054,7 +2054,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         with_ = cast(dict[str, Any], self.step("select", "app-token")["with"])
         self.assertEqual(with_["permission-checks"], "read")
 
-    @unittest.expectedFailure
     def test_selection_skips_targets_other_runs_hold(self) -> None:
         """The native token reads other runs' selections first (DESIGN.md 6).
 

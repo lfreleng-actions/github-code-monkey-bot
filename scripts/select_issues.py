@@ -37,6 +37,7 @@ import issue_categories as categories
 import issue_reads as reads
 import repository_reads as repositories
 import revision_select
+import run_overlap
 import selection_outputs as outputs
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
@@ -187,6 +188,7 @@ SKIP_COUNTERS = (
     "cap",
     "revision",
     "duplicate",
+    "held",
 )
 
 
@@ -295,6 +297,9 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     enabled, fork_orgs = load_policy(args)
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
+    holds = run_overlap.Holds(
+        run_overlap.load_held(args.held_file), skipped, skipped_issues
+    )
     bot = reads.bot_identity(args.bot_slug)
     explicit_run = bool(targets or pulls)
     lowered = {name.lower() for name in exclusions}
@@ -337,14 +342,16 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             skipped=skipped,
         )
     chosen = choose(
-        ranked,
+        holds.issues(ranked),
         fork_orgs=fork_orgs,
         max_pull_requests=max_pull_requests,
         skipped=skipped,
         one_per_repository=not explicit_run,
         named=explicit_run,
         skipped_issues=skipped_issues if explicit_run else None,
-        revisions=rounds.named(pulls) + (rounds.scan() if not explicit_run else []),
+        revisions=holds.rounds(
+            rounds.named(pulls) + (rounds.scan() if not explicit_run else [])
+        ),
         reviser=rounds.for_issue,
     )
     stamp(chosen, args.session, collected_at)
@@ -389,6 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance-ref", default="main")
     parser.add_argument("--guidance-path", default="AGENTS.md")
     parser.add_argument("--bot-slug", default="")
+    parser.add_argument("--held-file", type=Path)
     return parser
 
 
