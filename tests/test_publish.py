@@ -43,6 +43,15 @@ FORK = f"{FORK_ORG}/repo"
 BRANCH = "code-monkey/issue-7"
 FORK_BRANCH_URL = f"https://github.com/{FORK}/tree/{BRANCH}"
 
+# The reason the author job's fetch step gives when a revision's
+# branch moved after selection (DESIGN.md section 20.2).
+MOVED_REASON = (
+    f"{BRANCH} in {FORK} moved from 0266eb8 to d41c6d6 after this run "
+    "selected it. Another run has revised this pull request since (a named "
+    "dispatch or the schedule); its work stands, and this round made no "
+    "change. The next scan picks the pull request up at its new head."
+)
+
 
 BOT = "code-monkey[bot]"
 
@@ -240,6 +249,21 @@ class CommentBodyTest(unittest.TestCase):
         self.assertEqual(
             comments.comment_body(result, ""),
             "🐒 An AI agent looked at this issue and did not attempt it: too big; unclear",
+        )
+
+    def test_abstain_when_the_branch_moved(self) -> None:
+        """A round that stood down says what happened, in one sentence run."""
+        result = result_json(
+            verdict="abstain",
+            reasons=[MOVED_REASON],
+            round=2,
+            pull_request_url=None,
+            branch_url=None,
+        )
+        self.assertEqual(
+            comments.comment_body(result, "https://run"),
+            "🐒 An AI agent looked at this issue and did not attempt it: "
+            + MOVED_REASON,
         )
 
     def test_rejected(self) -> None:
@@ -3449,6 +3473,44 @@ class RunReportTest(NoNetworkCase):
         self.assertEqual(report["premium_requests"], 7)
         self.assertEqual(len(report["unreadable"]), 1)
         self.assertEqual(len(report["results"]), 2)
+
+    def test_a_stood_down_round_counts_as_a_skip(self) -> None:
+        """A moved branch's abstention is abstained, never failed or rejected."""
+        results = self.root / "results"
+        results.mkdir()
+        (results / "result.json").write_text(
+            json.dumps(
+                result_json(
+                    verdict="abstain",
+                    reasons=[MOVED_REASON],
+                    round=2,
+                    pull_request_url=None,
+                    branch_url=None,
+                    premium_requests=0,
+                )
+            ),
+            encoding="utf-8",
+        )
+        output_md = self.root / "report.md"
+        output_json = self.root / "report.json"
+        reporting.run_report(
+            argparse.Namespace(
+                results=results, output_md=output_md, output_json=output_json
+            )
+        )
+        markdown = output_md.read_text(encoding="utf-8")
+        self.assertIn(
+            f"| {REPOSITORY}#7 (round 2) | abstain | — | — | 0 | {MOVED_REASON} |",
+            markdown,
+        )
+        self.assertIn(
+            "Proposed 0, abstained 1, handed off 0, rejected 0, failed 0, ",
+            markdown,
+        )
+        totals = json.loads(output_json.read_text(encoding="utf-8"))["totals"]
+        self.assertEqual(
+            (totals["abstain"], totals["author-failed"], totals["rejected"]), (1, 0, 0)
+        )
 
     def test_empty_report(self) -> None:
         """No results renders the placeholder row."""

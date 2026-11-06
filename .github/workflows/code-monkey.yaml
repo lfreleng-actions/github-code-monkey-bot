@@ -940,24 +940,51 @@ jobs:
 
       # The bot branch lives in a public fork, so it fetches without a
       # credential. The head must be the one the selection recorded:
-      # a branch that moved since is not the work this round was
-      # chosen for, and the publisher would refuse the result anyway.
+      # a branch that moved or vanished since is another round's work,
+      # or none, so the round stands down with a warning and the later
+      # steps skip; the bundle step writes the abstention
+      # (docs/DESIGN.md section 20.2). Any other fetch failure fails.
       - name: 'Fetch pull request branch'
+        id: fetch-branch
         if: matrix.task == 'revise'
         env:
           FORK_REPOSITORY: "${{ matrix.fork_repository }}"
           BRANCH: "${{ matrix.branch }}"
           HEAD_SHA: "${{ matrix.head_sha }}"
         run: |
-          git -C workspace fetch -q "https://github.com/$FORK_REPOSITORY.git" \
-            "refs/heads/$BRANCH"
-          [ "$(git -C workspace rev-parse FETCH_HEAD)" = "$HEAD_SHA" ] || {
-            echo "::error::$BRANCH in $FORK_REPOSITORY is not at $HEAD_SHA"
-            exit 1; }
-          git -C workspace branch -q "$BRANCH" "$HEAD_SHA"
-          git -C workspace switch -q "$BRANCH"
+          if fetched=$(LC_ALL=C git -C workspace fetch -q \
+              "https://github.com/$FORK_REPOSITORY.git" \
+              "refs/heads/$BRANCH" 2>&1); then
+            now="$(git -C workspace rev-parse FETCH_HEAD)"
+            if [ "$now" = "$HEAD_SHA" ]; then
+              git -C workspace branch -q "$BRANCH" "$HEAD_SHA"
+              git -C workspace switch -q "$BRANCH"
+              exit 0
+            fi
+            reason="$BRANCH in $FORK_REPOSITORY moved from ${HEAD_SHA:0:7}"
+            reason="$reason to ${now:0:7} after this run selected it."
+            reason="$reason Another run has revised this pull request since"
+            reason="$reason (a named dispatch or the schedule); its work"
+            reason="$reason stands, and this round made no change. The next"
+            reason="$reason scan picks the pull request up at its new head."
+          else
+            case "$fetched" in
+              *"couldn't find remote ref"*)
+                reason="$BRANCH in $FORK_REPOSITORY no longer exists; the"
+                reason="$reason pull request was merged or closed since this"
+                reason="$reason run selected it." ;;
+              *) printf '%s\n' "$fetched" >&2
+                 exit 1 ;;
+            esac
+          fi
+          echo "::warning::Skipped: $reason"
+          {
+            echo 'moved=true'
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 'Set up Node.js'
+        if: steps.fetch-branch.outputs.moved != 'true'
         # yamllint disable-line rule:line-length
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -970,6 +997,7 @@ jobs:
       # would otherwise choose the interpreter setup-uv starts.
       - name: 'Set up uv'
         id: setup-uv
+        if: steps.fetch-branch.outputs.moved != 'true'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
@@ -997,6 +1025,7 @@ jobs:
       # under an emptied environment, for uv tool install below.
       - name: 'Install Python'
         id: python
+        if: steps.fetch-branch.outputs.moved != 'true'
         shell: bash
         # uv starts a .venv interpreter in its working directory to
         # inspect it, even under env -i.
@@ -1043,6 +1072,7 @@ jobs:
           echo "path=$py" >> "$GITHUB_OUTPUT"
 
       - name: 'Install agent toolchain'
+        if: steps.fetch-branch.outputs.moved != 'true'
         env:
           PIN_DIR: 'monkey-assets/tools/copilot-cli'
           UV: "${{ steps.setup-uv.outputs.uv-path }}"
@@ -1068,6 +1098,7 @@ jobs:
           TASK: "${{ matrix.task }}"
           CHECKOUT_SHA: "${{ matrix.checkout_sha }}"
           HEAD_SHA: "${{ matrix.head_sha }}"
+          MOVED: "${{ steps.fetch-branch.outputs.moved }}"
         run: |
           mkdir -p artefacts
           jq -e --arg key "$KEY" '.issues[] | select(.key == $key)' \
@@ -1080,8 +1111,11 @@ jobs:
           git -C workspace config user.name "$git_name"
           git -C workspace config user.email "$git_email"
           git -C workspace config commit.gpgsign false
+          # A round that stood down never switched to the bot branch.
           expected="$CHECKOUT_SHA"
-          if [ "$TASK" = revise ]; then expected="$HEAD_SHA"; fi
+          if [ "$TASK" = revise ] && [ "$MOVED" != true ]; then
+            expected="$HEAD_SHA"
+          fi
           [ "$(git -C workspace rev-parse HEAD)" = "$expected" ]
           {
             echo "git_identity=$git_name <$git_email>"
@@ -1090,6 +1124,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: 'Assemble prompt'
+        if: steps.fetch-branch.outputs.moved != 'true'
         env:
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           BRANCH: "${{ steps.packet.outputs.branch }}"
@@ -1136,6 +1171,7 @@ jobs:
 
       - name: 'Run coding agent (Copilot)'
         id: agent
+        if: steps.fetch-branch.outputs.moved != 'true'
         timeout-minutes: ${{ fromJSON(needs.select.outputs.agent_timeout) }}
         env:
           COPILOT_GITHUB_TOKEN: "${{ secrets.copilot_token }}"
@@ -1195,9 +1231,21 @@ jobs:
           REPOSITORY: "${{ steps.packet.outputs.repository }}"
           ISSUE: "${{ matrix.number }}"
           AGENT_OUTCOME: "${{ steps.agent.outcome }}"
+          MOVED: "${{ steps.fetch-branch.outputs.moved }}"
+          MOVED_REASON: "${{ steps.fetch-branch.outputs.reason }}"
         run: |
           # shellcheck disable=SC2016  # jq variables, not shell expansions
-          if [ ! -s artefacts/manifest.json ]; then
+          if [ "$MOVED" = true ]; then
+            # The round stood down before any session: the branch is
+            # another round's work, or gone.
+            jq -n --arg repo "$REPOSITORY" --argjson issue "$ISSUE" \
+              --arg base "$BASE_SHA" --arg branch "$BRANCH" \
+              --arg reason "$MOVED_REASON" '{
+                schema: 1, outcome: "abstain",
+                repository: $repo, issue: $issue, base_sha: $base,
+                branch: $branch, reason: $reason
+              }' > artefacts/manifest.json
+          elif [ ! -s artefacts/manifest.json ]; then
             jq -n --arg repo "$REPOSITORY" --argjson issue "$ISSUE" \
               --arg base "$BASE_SHA" --arg branch "$BRANCH" \
               --arg outcome "$AGENT_OUTCOME" '{

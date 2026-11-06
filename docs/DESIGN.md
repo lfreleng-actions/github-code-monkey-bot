@@ -1649,6 +1649,7 @@ conflicts while producer artifacts survive.
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
+| A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
 | Two runs overlap | Duplicate branches | Caller concurrency group for scans; named-issue dispatches lock per run and rely on the §6 open-pull-request check and branch-exists refusal |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
@@ -1968,7 +1969,10 @@ SHA-256 the `guidance` block records) and `excluded-repos.txt`. The job outputs
 
 Written by the agent into the artefacts directory. When the agent
 leaves none, the workflow writes one with `"outcome":
-"author-failed"` so the publisher has something to report.
+"author-failed"` so the publisher has something to report. A
+revision round that stood down because its branch moved or vanished
+after selection ran no agent, and the workflow writes `"outcome":
+"abstain"` with the reason instead (§20.2).
 
 ```json
 {
@@ -2536,8 +2540,22 @@ above, never the request, makes a hand-back.
 
 The author job checks out the default branch head (`checkout_sha`),
 fetches the bot branch from the public fork without a credential,
-refuses any head but the recorded one, and checks it out. The prompt
-is `prompt/revise.md`: weigh each finding as the guidance says, fix
+refuses any head but the recorded one, and checks it out. A branch
+that moved or vanished after selection stands the round down, as
+the publish job does (§20.3): the moved branch is another round's
+work, a named dispatch's or the schedule's, and a vanished one
+means the pull request merged or closed, so the job neither
+fetches again nor retries. The fetch step prints a `::warning::`
+naming the branch, the fork and, for a moved branch, both heads cut
+to seven characters, exits 0 and sets an output that skips every
+later step that would install the toolchain, assemble the prompt or
+run the session. The bundle step then writes an `abstain` manifest
+with the same reason, so the run stays green, the report and digest
+count a skip rather than a failure, and the issue gets the one
+"did not attempt it" comment; the publisher's own moved-head
+rejection is never reached, since the round proposes nothing. Any
+other fetch failure still fails the job. The prompt is
+`prompt/revise.md`: weigh each finding as the guidance says, fix
 what deserves a fix, commit by the guidance's review-round rules
 (amend a single commit; one dedicated feedback commit on a
 multi-commit branch), keep the chain on `base_sha` unless a
