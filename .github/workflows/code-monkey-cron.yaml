@@ -438,7 +438,7 @@ jobs:
             body="$body see the run report._"
           fi
           if [ "$RUN_RESULT" != 'success' ]; then
-            failed='_Some jobs in this run failed; see the workflow run._'
+            failed='❌ _Some jobs in this run failed; see the workflow run._'
             body="$body\\n\\n$failed"
           fi
           noun='pull requests'
