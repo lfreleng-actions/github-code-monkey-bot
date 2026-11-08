@@ -26,7 +26,7 @@ import thread_reads as threads_of
 import write_recovery as recovery
 from branch_heads import branch_tip
 from branch_swap import SwapUnknown, already_moved, move_branch
-from proposal_policy import PublishError, Rejection
+from proposal_policy import PublishError, Rejection, Superseded
 from revision_check import reply_marker
 from revision_title import update_pull_request
 
@@ -109,6 +109,12 @@ def run_push(
     result["checks_unsettled"] = check.get("checks_unsettled") or 0
     # The cap the outcome comment states reads the round's segment.
     result["segment_round"] = check.get("segment_round") or 0
+    # The ceiling reads the superseded rounds before this one too.
+    result["stale_rounds"] = check.get("stale_rounds") or 0
+    # The comment step recounts the history from the pull request's opening.
+    result["pull_opened_at"] = check.get("pull_opened_at") or None
+    # The author job's stand-down for a moved head (DESIGN.md 20.1).
+    result["superseded"] = check.get("superseded") is True
     if result["verdict"] == "handoff":
         # The step holds no token for a handoff, so the head check
         # waits for respond, which has the pull request token.
@@ -144,10 +150,12 @@ def run_push(
             # before this read is refused here, before any write.
             moved = moved_branch(check)
             if moved is not None:
-                raise Rejection(moved)
+                raise Superseded(moved)
             result["commits"] = move_branch(args.workdir / "clone", check)
     except Rejection as exc:
         result["verdict"] = "rejected"
+        # Lost to another run's push: the footer marks the round stale.
+        result["superseded"] = isinstance(exc, Superseded)
         cast("list[str]", result["reasons"]).append(str(exc))
         warnings.extend(added_warnings(check, len(carried)))
         return result
@@ -186,9 +194,10 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     selection has nothing left to answer, and replies written against
     code a maintainer has since replaced answer the wrong head, while
     the handoff's footer would pause the rounds on a head the agent
-    never weighed: either is a rejection. A state or head that cannot
-    be read is a failure, not a handoff taken on trust; the result
-    records it before the raise.
+    never weighed: either is a rejection, and a moved head, lost to
+    another run's push, marks the round superseded. A state or head
+    that cannot be read is a failure, not a handoff taken on trust; the
+    result records it before the raise.
     """
     expected = str(check["head_sha"])
     repository = str(check["repository"])
@@ -206,6 +215,8 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
         return True
     result["verdict"] = "rejected"
     result["pull_request_url"] = None
+    if closed is None:
+        result["superseded"] = True
     cast("list[str]", result["reasons"]).append(
         closed
         or f"head moved from {expected[:7]} to {str(head)[:7]} since selection; "

@@ -73,6 +73,12 @@ class Check:
     # The round's place in its antagonistic segment, which the cap
     # reads; ``round`` stays the global number.
     segment_round: int = 0
+    # Superseded rounds before this one: the ceiling reads them with
+    # ``round`` (DESIGN.md 20.1).
+    stale_rounds: int = 0
+    # When the pull request opened: the publisher's recount of the
+    # round history scopes its footers there, as the selector did.
+    pull_opened_at: str = ""
     threads: list[dict[str, Any]] = field(
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
@@ -89,6 +95,11 @@ class Check:
     # Whether the selection found the head conflicting with the default
     # branch: the round exists, in part, to rebase it.
     conflicted: bool = False
+    # Whether the author job stood the revision round down because
+    # another run moved the branch first: its footer then marks the
+    # round stale, outside every segment's cap. Only the stand-down
+    # sets the manifest field; the bundle step strips the agent's.
+    superseded: bool = False
     # The antagonistic review that handed the pull request back, as the
     # selection read it (``review_id``, ``round``, ``url``), or None.
     antagonistic_review: dict[str, Any] | None = None
@@ -136,6 +147,9 @@ class Check:
             segment = entry.get("segment_round")
             # An entry without one caps as the global round did.
             check.segment_round = segment if type(segment) is int else check.round
+            stale = entry.get("stale_rounds")
+            check.stale_rounds = stale if type(stale) is int else 0
+            check.pull_opened_at = str(pull.get("created_at") or "")
             check.conflicted = pull.get("mergeable") is False
             check.threads = [
                 {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
@@ -192,11 +206,14 @@ class Check:
             "round": self.round,
             "max_rounds": self.max_rounds,
             "segment_round": self.segment_round,
+            "stale_rounds": self.stale_rounds,
+            "pull_opened_at": self.pull_opened_at,
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,
             "checks_unsettled": self.checks_unsettled,
             "conflicted": self.conflicted,
+            "superseded": self.superseded,
             "antagonistic_review": self.antagonistic_review,
             "collected_at": self.collected_at,
             "session": self.session,

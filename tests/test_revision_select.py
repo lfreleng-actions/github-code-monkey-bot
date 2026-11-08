@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import unittest
 from importlib import import_module
@@ -1023,6 +1024,66 @@ class SegmentCapTest(RevisionCase):
             self.scan()
         threads.assert_not_called()
         self.assertEqual(self.listings, 1)
+
+
+class SupersededGuardTest(RevisionCase):
+    """Rounds lost to another run's push stop at their own limit (issue #154)."""
+
+    def setUp(self) -> None:
+        """Work outstanding, no hand-back, nine rounds counted."""
+        super().setUp()
+        self.threads = [thread()]
+        self.rounds = (9, no_rounds(), "2026-10-04T00:00:00Z", "proposed")
+        self.stale = 0
+        patch.object(github, "api_list", return_value=[]).start()
+
+    def rounds_of(self, *args: Any) -> Any:
+        """The fixture history with ``stale`` superseded footers beside it."""
+        return dataclasses.replace(super().rounds_of(*args), stale=self.stale)
+
+    def scan(self) -> dict[str, Any]:
+        """The entry a scan builds."""
+        return select.build_entry(
+            select.Inputs("org", BOT, FORK_ORGS), "alpha", 41, explicit=False
+        )
+
+    def test_superseded_rounds_skip_at_their_limit(self) -> None:
+        """Below the limit the round goes ahead; at it, a human must look."""
+        self.stale = revisions.MAX_STALE_ROUNDS - 1
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (10, 10))
+        self.stale = revisions.MAX_STALE_ROUNDS
+        with self.assertRaisesRegex(
+            select.Skip, "too many superseded rounds; a human must look"
+        ):
+            self.scan()
+        with self.assertRaisesRegex(select.Skip, "too many superseded rounds"):
+            self.build(explicit=True)
+
+    def test_the_ceiling_still_comes_first(self) -> None:
+        """Sixty counted rounds skip with the ceiling's reason, whatever the rest."""
+        self.rounds = (revisions.MAX_TOTAL_ROUNDS, no_rounds(), None, "proposed")
+        self.stale = revisions.MAX_STALE_ROUNDS
+        with self.assertRaisesRegex(select.Skip, "round cap of 60 reached"):
+            self.scan()
+
+    def test_the_ceiling_counts_superseded_rounds(self) -> None:
+        """Counted and superseded rounds share the ceiling of sixty."""
+        self.segment = 1
+        self.rounds = (55, no_rounds(), "2026-10-04T00:00:00Z", "proposed")
+        self.stale = 4
+        entry = self.scan()
+        self.assertEqual((entry["round"], entry["segment_round"]), (56, 2))
+        self.stale = 5
+        with self.assertRaisesRegex(
+            select.Skip, "round cap of 60 reached; a human must take over"
+        ):
+            self.scan()
+
+    def test_the_entry_carries_the_superseded_rounds(self) -> None:
+        """The publisher reads them beside ``round`` against the ceiling."""
+        self.stale = 4
+        self.assertEqual(self.scan()["stale_rounds"], 4)
 
 
 class ConflictSelectionTest(RevisionCase):

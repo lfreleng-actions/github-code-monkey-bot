@@ -21,7 +21,7 @@ from typing import Any, cast
 import bot_github as github
 import branch_refs as refs
 import issue_reads as reads
-from proposal_policy import PublishError, Rejection
+from proposal_policy import PublishError, Rejection, Superseded
 
 UPDATE_REFS = """
 mutation($input: UpdateRefsInput!) {
@@ -178,12 +178,14 @@ def reconcile_swap(
     new tip means the move stands and publication goes on, with a
     warning; at the recorded head it means the move did not happen
     and the branch is unchanged. Elsewhere, the compare-and-swap
-    refusal means someone moved the branch, a rejection; any other
-    error there, or no answer at all, is an outcome this run cannot
-    name, and it says so rather than claim the branch unchanged.
+    refusal means someone moved the branch, a superseded rejection;
+    any other error there, or no answer at all, is an outcome this run
+    cannot name, and it says so rather than claim the branch unchanged.
     """
     refused = MISMATCH.search(str(exc)) is not None
-    moved = Rejection(f"head moved from {expected[:7]} since selection; nothing forced")
+    moved = Superseded(
+        f"head moved from {expected[:7]} since selection; nothing forced"
+    )
     try:
         head = reads.branch_head(fork, branch)
     except github.GitHubError as lookup:

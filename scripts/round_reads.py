@@ -27,7 +27,7 @@ FOOTER = re.compile(
     r"(?: checks=(?:passing|failing|running|none|unknown)(?:/[0-9a-f]{12})?)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
     r"(?: handback=(?P<handback>\d+))?(?: antagonistic=(?P<antagonistic>\d+))?"
-    r" -->\s*\Z"
+    r"(?: stale=(?P<stale>1))? -->\s*\Z"
 )
 # Pages of issue comments the round history may span before the
 # read fails closed rather than trust a partial count.
@@ -59,6 +59,10 @@ class RoundHistory:
     # of these opens no new segment, however its time reads against
     # the watermark.
     anchored: frozenset[int] = frozenset()
+    # Rounds that lost a race with another run's push (``stale=1``):
+    # they count toward no segment's cap, only the sixty-round
+    # ceiling, so a guard bounds them on their own.
+    stale: int = 0
 
 
 def round_history(
@@ -67,6 +71,7 @@ def round_history(
     bot_login: str,
     opened_at: str | None = None,
     pull_number: int | None = None,
+    exclude: tuple[str, str | None] | None = None,
 ) -> RoundHistory:
     """Read the bot's footers on the issue: rounds, summaries, watermark, last verdict.
 
@@ -93,11 +98,23 @@ def round_history(
     that failed records too. A later round naming a review already
     carried, as a resumed handoff or a retried failure on the same
     head does, opens no segment.
+
+    A footer marked ``stale=1`` belongs to a round another run's push
+    superseded before it could publish: it is counted in ``stale``
+    alone. It raises no round number, opens and lengthens no segment,
+    anchors no review and adds no summary, so the race costs the pull
+    request none of its segment's cap. The selector still adds
+    ``stale`` to ``highest`` against the sixty-round ceiling.
+
+    ``exclude``, a run URL and the ``since`` its footer records, leaves
+    out that one attempt's footers, so the publisher can count the
+    other rounds and add its own exactly once, posted yet or not.
     """
     highest = 0
     # Each antagonistic review's first round, by review id.
     answered: dict[int, int] = {}
     summaries: list[dict[str, Any]] = []
+    stale = 0
     # since, created, verdict: handled rounds order by the read time
     # they record, so a retry of an older round posted after a newer
     # handoff rewinds nothing; creation orders two posts of one read.
@@ -123,6 +140,11 @@ def round_history(
             created = entry.get("created_at")
             if not in_scope(found, created, opened_at, pull_number):
                 continue
+            if exclude is not None and exclude == (
+                found.group("run"),
+                found.group("since"),
+            ):
+                continue
             verdict = found.group("verdict")
             # An attempt that published nothing handled no request: it
             # counts toward the cap below, but moves no watermark.
@@ -130,6 +152,9 @@ def round_history(
                 key = (found.group("since") or created, created)
                 if latest is None or key > (latest[0], latest[1]):
                     latest = (key[0], created, verdict)
+            if found.group("stale") is not None:
+                stale += 1
+                continue
             if found.group("round") is None:
                 continue
             number = int(found.group("round"))
@@ -155,6 +180,7 @@ def round_history(
                 latest[2] if latest else None,
                 highest - segment_start + 1 if segment_start else highest,
                 frozenset(answered),
+                stale,
             )
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"

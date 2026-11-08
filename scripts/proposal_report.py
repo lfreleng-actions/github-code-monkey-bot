@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import antagonistic_request as antagonistic
-import issue_comment as comments
 import proposal_model as model
 import proposal_policy as policy
 import report_outputs as outputs
 import review_outcome
 import revision_reads as revisions
+import round_caps as caps
 from proposal_policy import PublishError
 
 SCHEMA = 1
@@ -105,12 +105,17 @@ MERGE_NAMES = {
 
 def cap_detail(item: dict[str, Any]) -> str:
     """The report's word for a capped round, as the issue comment's notice has it."""
-    if not comments.capped(item):
+    if not caps.capped(item):
         return ""
-    if comments.round_of(item) >= revisions.MAX_TOTAL_ROUNDS:
+    if caps.spent_of(item) >= revisions.MAX_TOTAL_ROUNDS:
         return (
             f"; round cap of {revisions.MAX_TOTAL_ROUNDS} reached in all,"
             " a human must take over"
+        )
+    if caps.guard_reached(item):
+        return (
+            f"; {revisions.MAX_STALE_ROUNDS} superseded rounds reached,"
+            " a human must look"
         )
     return (
         "; round cap reached for this antagonistic review round, a human must take over"
