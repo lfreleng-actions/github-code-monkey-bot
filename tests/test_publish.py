@@ -1094,6 +1094,36 @@ class RunPushRevisionTest(NoNetworkCase):
         for name in ("create", "replay", "graphql"):
             writes[name].assert_not_called()
 
+    @unittest.expectedFailure
+    def test_a_branch_moved_since_selection_is_superseded(self) -> None:
+        """The round lost a race: its result says so, for the footer's token.
+
+        A pull request closed since selection is a rejection the round
+        did not lose to another run's push, and is not marked.
+        """
+        result, _ = self.push_untouched({"state": "open"}, "b" * 40)
+        self.assertIs(result["superseded"], True)
+        result, _ = self.push_untouched(CLOSED_PULL, HEAD)
+        self.assertIs(result["superseded"], False)
+
+    @unittest.expectedFailure
+    def test_a_swap_refused_for_a_moved_head_is_superseded(self) -> None:
+        """The compare-and-swap's own refusal marks the round, as the pre-read does."""
+        path = self.write_check(revision_check())
+        with (
+            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(
+                publish.revision_publish,
+                "move_branch",
+                side_effect=policy.Superseded("head moved from e since selection"),
+            ),
+        ):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIs(result["superseded"], True)
+
     def test_a_merged_pull_request_is_a_rejection(self) -> None:
         """Merged, its branch deleted: rejected, nothing written, nothing raised."""
         result, writes = self.push_untouched(MERGED_PULL, GONE)
@@ -1262,6 +1292,48 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertIsNone(result["pull_request_url"])
 
 
+class SupersededResultTest(NoNetworkCase):
+    """The check's superseded stand-down reaches the result (issue #154)."""
+
+    @unittest.expectedFailure
+    def test_a_stood_down_abstention_is_superseded(self) -> None:
+        """The push reads nothing for an abstention and carries the flag on."""
+        stood_down = revision_check(
+            verdict="abstain", reasons=[MOVED_REASON], commits=[], superseded=True
+        )
+        result = publish.run_push(self.push_args(self.write_check(stood_down)))
+        self.assertEqual(result["verdict"], "abstain")
+        self.assertIs(result["superseded"], True)
+        plain = revision_check(verdict="abstain", reasons=["no"], commits=[])
+        result = publish.run_push(self.push_args(self.write_check(plain)))
+        self.assertIs(result["superseded"], False)
+
+    @unittest.expectedFailure
+    def test_the_superseded_rounds_before_reach_the_result(self) -> None:
+        """The ceiling's readers find the stale count beside the round."""
+        stood_down = revision_check(
+            verdict="abstain", reasons=["no"], commits=[], stale_rounds=5
+        )
+        result = publish.run_push(self.push_args(self.write_check(stood_down)))
+        self.assertEqual((result["round"], result["stale_rounds"]), (2, 5))
+        plain = revision_check(verdict="abstain", reasons=["no"], commits=[])
+        result = publish.run_push(self.push_args(self.write_check(plain)))
+        self.assertEqual(result["stale_rounds"], 0)
+
+    @unittest.expectedFailure
+    def test_the_pull_request_opening_reaches_the_result(self) -> None:
+        """The comment step recounts the history from where the selector did."""
+        opened = "2026-11-01T00:00:00Z"
+        stood_down = revision_check(
+            verdict="abstain", reasons=["no"], commits=[], pull_opened_at=opened
+        )
+        result = publish.run_push(self.push_args(self.write_check(stood_down)))
+        self.assertEqual(result["pull_opened_at"], opened)
+        plain = revision_check(verdict="abstain", reasons=["no"], commits=[])
+        result = publish.run_push(self.push_args(self.write_check(plain)))
+        self.assertIsNone(result["pull_opened_at"])
+
+
 class HandoffTest(NoNetworkCase):
     """A handoff writes replies and nothing else; the gate and the move are skipped."""
 
@@ -1383,6 +1455,13 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(stored["verdict"], "publish-failed")
         self.assertEqual(stored["_replied"], 0)
         self.assertIsInstance(stored["_error"], SystemExit)
+
+    @unittest.expectedFailure
+    def test_a_handoff_for_a_moved_head_is_superseded(self) -> None:
+        """A handoff refused for a moved head lost a race; a closed one did not."""
+        self.assertIs(self.respond_handoff("f" * 40)["superseded"], True)
+        self.assertIs(self.respond_handoff(HEAD, CLOSED_PULL).get("superseded"), None)
+        self.assertIs(self.respond_handoff(HEAD).get("superseded"), None)
 
     def test_a_handoff_on_a_merged_pull_request_is_refused(self) -> None:
         """Merged at the selected head: rejected, no reply, nothing raised."""
