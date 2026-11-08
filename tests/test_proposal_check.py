@@ -623,7 +623,6 @@ class RunCheckOutcomeTest(GitCase):
         self.assertEqual(check.reasons, ["issue needs a design"])
         self.assertEqual(check.commits, [])
 
-    @unittest.expectedFailure
     def test_an_issue_abstention_is_never_superseded(self) -> None:
         """Only a revision round can lose a race to another run's push."""
         self.fixture.manifest(outcome="abstain", reason="r", superseded=True)
@@ -1257,7 +1256,6 @@ class RevisionCheckTest(GitCase):
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertLessEqual(len(check.round_summary), 2000)
 
-    @unittest.expectedFailure
     def test_a_stood_down_abstention_is_superseded(self) -> None:
         """The stand-down's ``superseded: true`` reaches check.json (issue #154)."""
         self.fixture.manifest(outcome="abstain", reason="moved", superseded=True)
@@ -1266,7 +1264,6 @@ class RevisionCheckTest(GitCase):
         self.assertIs(check.superseded, True)
         self.assertIs(check.to_json()["superseded"], True)
 
-    @unittest.expectedFailure
     def test_only_a_revision_abstention_is_superseded(self) -> None:
         """Any other outcome, or a value but ``true``, leaves the round counted."""
         for outcome, value in (

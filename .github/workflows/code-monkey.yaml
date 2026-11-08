@@ -1237,14 +1237,22 @@ jobs:
           # shellcheck disable=SC2016  # jq variables, not shell expansions
           if [ "$MOVED" = true ]; then
             # The round stood down before any session: the branch is
-            # another round's work, or gone.
+            # another round's work, or gone. The round lost a race, so
+            # it counts toward no segment's cap (DESIGN.md section 20.1).
             jq -n --arg repo "$REPOSITORY" --argjson issue "$ISSUE" \
               --arg base "$BASE_SHA" --arg branch "$BRANCH" \
               --arg reason "$MOVED_REASON" '{
                 schema: 1, outcome: "abstain",
                 repository: $repo, issue: $issue, base_sha: $base,
-                branch: $branch, reason: $reason
+                branch: $branch, reason: $reason, superseded: true
               }' > artefacts/manifest.json
+          elif jq -e 'type == "object" and has("superseded")' \
+              artefacts/manifest.json > /dev/null 2>&1; then
+            # Only the stand-down above marks a round superseded; the
+            # agent's manifest may not claim it.
+            jq 'del(.superseded)' artefacts/manifest.json \
+              > artefacts/manifest.json.tmp
+            mv artefacts/manifest.json.tmp artefacts/manifest.json
           elif [ ! -s artefacts/manifest.json ]; then
             jq -n --arg repo "$REPOSITORY" --argjson issue "$ISSUE" \
               --arg base "$BASE_SHA" --arg branch "$BRANCH" \

@@ -26,8 +26,7 @@ from typing import Any, cast
 
 import proposal_model as model
 import review_outcome
-import revision_reads as revisions
-from issue_comment import capped, round_of
+from round_caps import AT_CAP, at_cap
 
 STATES = ("requested", "off", "skipped", "dry-run")
 # The checks a nomination accepts: the antagonistic mode does not wait for CI.
@@ -59,8 +58,8 @@ def unmet(item: dict[str, Any]) -> str | None:
         return "the head has failing checks"
     if review_outcome.checks_state(item) not in ACCEPTED_CHECKS:
         return "the head's checks are unknown"
-    if round_of(item) >= revisions.MAX_TOTAL_ROUNDS or capped(item):
-        return "the round is at the cap where a human takes over"
+    if at_cap(item):
+        return AT_CAP
     return None
 
 

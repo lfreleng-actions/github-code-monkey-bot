@@ -14,10 +14,9 @@ import bot_github as github
 import issue_reads as reads
 import proposal_model as model
 import proposal_policy as policy
-import revision_reads as revisions
+import round_recount
 import write_recovery as recovery
 from review_outcome import (
-    checks_failed,
     checks_sentence,
     checks_token,
     merge_sentence,
@@ -28,6 +27,7 @@ from review_outcome import (
     review_verdict,
     unsettled_at_selection,
 )
+from round_caps import cap_notice, capped, round_of, superseded
 
 
 def outcome_text(opening: str, result: dict[str, Any]) -> str:
@@ -41,65 +41,6 @@ def outcome_text(opening: str, result: dict[str, Any]) -> str:
     if token == "false" and not capped(result):
         text += " The next round rebases it."
     return text
-
-
-def cap_of(result: dict[str, Any]) -> int:
-    """The rounds per segment the selection ran with; the default when unrecorded."""
-    value = result.get("max_rounds")
-    return value if type(value) is int and value > 0 else revisions.MAX_ROUNDS
-
-
-def round_of(result: dict[str, Any]) -> int:
-    """The revision round a result records, or 0 for a first proposal."""
-    value = result.get("round")
-    return value if type(value) is int and value > 0 else 0
-
-
-def segment_of(result: dict[str, Any]) -> int:
-    """The round's place in its antagonistic segment, as the selection counted it.
-
-    A result that records none caps on the global round, as it did
-    before segments, so a missing count never lifts the cap.
-    """
-    value = result.get("segment_round")
-    return value if type(value) is int and value > 0 else round_of(result)
-
-
-def capped(result: dict[str, Any]) -> bool:
-    """Whether the round leaves the pull request at the cap with work undone.
-
-    The selector skips a pull request at the cap, the run's rounds in
-    an antagonistic segment (ten by default) or sixty in all, until
-    the next hand-back starts a segment, so every outcome at the cap
-    but a clean proposal that can merge with no known failing check
-    needs a human; that one is finished.
-    """
-    if not revisions.round_cap_reached(
-        round_of(result), segment_of(result), cap_of(result)
-    ):
-        return False
-    return (
-        result.get("verdict") != "proposed"
-        or review_verdict(result) != "clean"
-        or result.get("mergeable") is False
-        or checks_failed(result)
-    )
-
-
-def cap_notice(result: dict[str, Any]) -> str:
-    """The notice for a capped round: the segment's cap, or the ceiling's."""
-    if round_of(result) >= revisions.MAX_TOTAL_ROUNDS:
-        return (
-            f" This was the round cap of {revisions.MAX_TOTAL_ROUNDS} over every"
-            " antagonistic review round: the workflow selects this pull request"
-            " no further, and a human must take over."
-        )
-    return (
-        f" This was the round cap of {cap_of(result)} per antagonistic review"
-        " round: the workflow selects this pull request no further until the"
-        " next antagonistic review hands it back, and until then a human must"
-        " take over."
-    )
 
 
 def published_head(result: dict[str, Any]) -> str:
@@ -278,6 +219,11 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     if len(reasons) > policy.MAX_COMMENT_REASON:
         reasons = reasons[: policy.MAX_COMMENT_REASON - 1] + "…"
     text = template(result, reasons, run_url)
+    if text is not None and superseded(result):
+        text += (
+            " This round does not count toward the round cap of its antagonistic"
+            " review round: the branch moved after this run selected it."
+        )
     if text is not None and capped(result):
         text += cap_notice(result)
     return text
@@ -295,9 +241,11 @@ def run_comment(args: argparse.Namespace) -> None:
     if result.get("dry_run"):
         print("dry run: no comment")
         return
+    round_recount.recount(result, args.run_url)
     body = comment_body(result, args.run_url)
     if body is None:
         print("nothing to comment")
+        args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return
     repository = github.require_str(result, "repository", "result")
     issue = github.require_int(result, "issue", "result")
@@ -335,6 +283,9 @@ def run_comment(args: argparse.Namespace) -> None:
         # The receiving side's key for an idempotent hand-back: which
         # antagonistic review this round consumed.
         suffix += f" antagonistic={handback}"
+    if superseded(result):
+        # The round history counts this round apart from every cap.
+        suffix += " stale=1"
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
 

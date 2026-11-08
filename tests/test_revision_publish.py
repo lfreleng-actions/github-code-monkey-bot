@@ -183,7 +183,6 @@ class MoveBranchTest(unittest.TestCase):
         data, commits = self.swap_lost(NEW, mismatch)
         self.assertEqual(commits, [NEW])
 
-    @unittest.expectedFailure
     def test_a_refused_swap_is_superseded(self) -> None:
         """Only the refusal for a moved head says another run won (issue #154)."""
         mismatch = (

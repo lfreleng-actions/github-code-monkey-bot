@@ -1135,12 +1135,12 @@ class RevisionContracts(ReusableWorkflowCase):
                 "base_sha": "a" * 40,
                 "branch": "code-monkey/issue-7",
                 "reason": reason,
+                "superseded": True,
             },
         )
         self.assertEqual(proc.stdout, "Manifest outcome: abstain\n")
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_only_a_stood_down_round_is_superseded(self) -> None:
         """The stand-down marks its manifest; an agent's mark is removed (issue #154)."""
         bundle = self.step("author", "Bundle proposed commits")

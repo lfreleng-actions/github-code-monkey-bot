@@ -1047,7 +1047,6 @@ class SupersededGuardTest(RevisionCase):
             select.Inputs("org", BOT, FORK_ORGS), "alpha", 41, explicit=False
         )
 
-    @unittest.expectedFailure
     def test_superseded_rounds_skip_at_their_limit(self) -> None:
         """Below the limit the round goes ahead; at it, a human must look."""
         self.stale = revisions.MAX_STALE_ROUNDS - 1
@@ -1061,7 +1060,6 @@ class SupersededGuardTest(RevisionCase):
         with self.assertRaisesRegex(select.Skip, "too many superseded rounds"):
             self.build(explicit=True)
 
-    @unittest.expectedFailure
     def test_the_ceiling_still_comes_first(self) -> None:
         """Sixty counted rounds skip with the ceiling's reason, whatever the rest."""
         self.rounds = (revisions.MAX_TOTAL_ROUNDS, no_rounds(), None, "proposed")
@@ -1069,7 +1067,6 @@ class SupersededGuardTest(RevisionCase):
         with self.assertRaisesRegex(select.Skip, "round cap of 60 reached"):
             self.scan()
 
-    @unittest.expectedFailure
     def test_the_ceiling_counts_superseded_rounds(self) -> None:
         """Counted and superseded rounds share the ceiling of sixty."""
         self.segment = 1
@@ -1083,7 +1080,6 @@ class SupersededGuardTest(RevisionCase):
         ):
             self.scan()
 
-    @unittest.expectedFailure
     def test_the_entry_carries_the_superseded_rounds(self) -> None:
         """The publisher reads them beside ``round`` against the ceiling."""
         self.stale = 4

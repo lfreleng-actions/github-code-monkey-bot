@@ -1094,7 +1094,6 @@ class RunPushRevisionTest(NoNetworkCase):
         for name in ("create", "replay", "graphql"):
             writes[name].assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_branch_moved_since_selection_is_superseded(self) -> None:
         """The round lost a race: its result says so, for the footer's token.
 
@@ -1106,7 +1105,6 @@ class RunPushRevisionTest(NoNetworkCase):
         result, _ = self.push_untouched(CLOSED_PULL, HEAD)
         self.assertIs(result["superseded"], False)
 
-    @unittest.expectedFailure
     def test_a_swap_refused_for_a_moved_head_is_superseded(self) -> None:
         """The compare-and-swap's own refusal marks the round, as the pre-read does."""
         path = self.write_check(revision_check())
@@ -1295,7 +1293,6 @@ class RunPushRevisionTest(NoNetworkCase):
 class SupersededResultTest(NoNetworkCase):
     """The check's superseded stand-down reaches the result (issue #154)."""
 
-    @unittest.expectedFailure
     def test_a_stood_down_abstention_is_superseded(self) -> None:
         """The push reads nothing for an abstention and carries the flag on."""
         stood_down = revision_check(
@@ -1308,7 +1305,6 @@ class SupersededResultTest(NoNetworkCase):
         result = publish.run_push(self.push_args(self.write_check(plain)))
         self.assertIs(result["superseded"], False)
 
-    @unittest.expectedFailure
     def test_the_superseded_rounds_before_reach_the_result(self) -> None:
         """The ceiling's readers find the stale count beside the round."""
         stood_down = revision_check(
@@ -1320,7 +1316,6 @@ class SupersededResultTest(NoNetworkCase):
         result = publish.run_push(self.push_args(self.write_check(plain)))
         self.assertEqual(result["stale_rounds"], 0)
 
-    @unittest.expectedFailure
     def test_the_pull_request_opening_reaches_the_result(self) -> None:
         """The comment step recounts the history from where the selector did."""
         opened = "2026-11-01T00:00:00Z"
@@ -1456,7 +1451,6 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(stored["_replied"], 0)
         self.assertIsInstance(stored["_error"], SystemExit)
 
-    @unittest.expectedFailure
     def test_a_handoff_for_a_moved_head_is_superseded(self) -> None:
         """A handoff refused for a moved head lost a race; a closed one did not."""
         self.assertIs(self.respond_handoff("f" * 40)["superseded"], True)

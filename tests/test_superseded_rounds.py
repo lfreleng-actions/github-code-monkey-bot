@@ -67,7 +67,6 @@ STALE = (
 class StaleFooterTest(unittest.TestCase):
     """``round_history`` counts a superseded round apart."""
 
-    @unittest.expectedFailure
     def test_a_stale_footer_raises_nothing(self) -> None:
         """Round 9 stays the highest and the segment; the stale round is counted apart."""
         found = history([*ROUNDS, STALE])
@@ -77,7 +76,6 @@ class StaleFooterTest(unittest.TestCase):
         # The watermark stays the last handled round's read time.
         self.assertEqual(found.since, "2026-11-01T09:00:00Z")
 
-    @unittest.expectedFailure
     def test_a_stale_footer_opens_no_segment(self) -> None:
         """A stale round sent with a hand-back anchors nothing and resets nothing."""
         carried = STALE.replace(" stale=1", " handback=502 stale=1")
@@ -101,7 +99,6 @@ class StaleFooterTest(unittest.TestCase):
         found = history([*ROUNDS, rejected])
         self.assertEqual((found.highest, found.segment), (10, 10))
 
-    @unittest.expectedFailure
     def test_the_stale_count_is_per_pull_request(self) -> None:
         """A stale footer of another pull request is not this one's."""
         other = STALE.replace("pr=41", "pr=40")
@@ -113,7 +110,6 @@ class StaleFooterTest(unittest.TestCase):
             found = round_reads.round_history(REPO, 7, BOT, None, 41)
         self.assertEqual(found.stale, 0)
 
-    @unittest.expectedFailure
     def test_the_footer_reads_the_token(self) -> None:
         """The footer pattern names the token, after every other field."""
         found = round_reads.FOOTER.search(
@@ -169,7 +165,6 @@ def posted(data: dict[str, Any]) -> str:
 class StaleCommentTest(unittest.TestCase):
     """The publisher's comment marks a superseded round and reads well."""
 
-    @unittest.expectedFailure
     def test_a_superseded_rejection_writes_the_token(self) -> None:
         """The footer ends ``stale=1``, and the history counts it apart."""
         body = posted(result())
@@ -186,7 +181,6 @@ class StaleCommentTest(unittest.TestCase):
         found = history([*ROUNDS, body.rpartition("\n\n")[2]])
         self.assertEqual((found.highest, found.stale), (9, 1))
 
-    @unittest.expectedFailure
     def test_a_stood_down_abstention_writes_the_token(self) -> None:
         """The author job's stand-down reads as a skip that does not count."""
         reason = "code-monkey/issue-7 in forks/alpha moved from 3e819d2 to 79d8341."
@@ -207,7 +201,6 @@ class StaleCommentTest(unittest.TestCase):
         self.assertIn("round cap of 10", body)
         self.assertNotIn("does not count", body)
 
-    @unittest.expectedFailure
     def test_a_superseded_round_is_never_capped(self) -> None:
         """Its round number is the next round's too: no cap notice for it."""
         self.assertFalse(comments.capped(result()))
@@ -281,7 +274,6 @@ class CeilingConsumersTest(unittest.TestCase):
     nothing downstream may offer it another round.
     """
 
-    @unittest.expectedFailure
     def test_the_entry_carries_the_stale_count_to_the_result(self) -> None:
         """Selection, check and result keep the superseded rounds before this one."""
         check = model.Check.from_entry("alpha-7", entry(stale_rounds=5))
@@ -293,7 +285,6 @@ class CeilingConsumersTest(unittest.TestCase):
             model.Check.from_entry("alpha-7", entry()).to_json()["stale_rounds"], 0
         )
 
-    @unittest.expectedFailure
     def test_the_entry_shape_is_checked(self) -> None:
         """The count is an integer below its guard, within the ceiling."""
         for good in (0, 5, revisions.MAX_STALE_ROUNDS - 1):
@@ -308,7 +299,6 @@ class CeilingConsumersTest(unittest.TestCase):
         with self.assertRaises(revision_check.PublishError):
             revision_check.check_entry(entry(stale_rounds=6))
 
-    @unittest.expectedFailure
     def test_no_review_is_requested_at_the_ceiling(self) -> None:
         """A clean round 55 after five superseded rounds asks for no hand-back."""
         self.assertIsNone(antagonistic.unmet(published(round=55, stale_rounds=4)))
@@ -317,7 +307,6 @@ class CeilingConsumersTest(unittest.TestCase):
             "the round is at the cap where a human takes over",
         )
 
-    @unittest.expectedFailure
     def test_the_comment_and_report_state_the_ceiling(self) -> None:
         """A round with findings at the shared ceiling says a human must take over."""
         findings = published(
@@ -332,7 +321,6 @@ class CeilingConsumersTest(unittest.TestCase):
         self.assertFalse(comments.capped(below))
         self.assertEqual(reporting.cap_detail(below), "")
 
-    @unittest.expectedFailure
     def test_a_superseded_round_at_a_limit_says_so(self) -> None:
         """The ceiling or the superseded rounds' guard stops the next round."""
         ceiling = result(round=56, segment_round=1, stale_rounds=4)
@@ -401,7 +389,6 @@ class RacingRoundsTest(unittest.TestCase):
     comment, whichever posts second, says a human must take over.
     """
 
-    @unittest.expectedFailure
     def test_a_loser_after_a_counted_winner_states_the_ceiling(self) -> None:
         """The loser counts the winner's round 55 and its own superseded one."""
         loser = result(round=55, segment_round=1, stale_rounds=4)
@@ -412,7 +399,6 @@ class RacingRoundsTest(unittest.TestCase):
         self.assertTrue(body.endswith(" stale=1 -->"), body)
         self.assertIn("round cap of 60 reached in all", reporting.cap_detail(written))
 
-    @unittest.expectedFailure
     def test_a_winner_after_a_superseded_loser_states_the_ceiling(self) -> None:
         """The winner counts the loser's superseded round and its own round 55."""
         findings = published(
@@ -425,7 +411,6 @@ class RacingRoundsTest(unittest.TestCase):
         self.assertIn("round cap of 60 over every", body)
         self.assertIn("round cap of 60 reached in all", reporting.cap_detail(written))
 
-    @unittest.expectedFailure
     def test_a_clean_winner_withdraws_its_nomination(self) -> None:
         """A hand-back the selector would refuse is neither offered nor said."""
         clean = published(
@@ -437,7 +422,10 @@ class RacingRoundsTest(unittest.TestCase):
         body, written = recounted(clean, [*SPENT_59, LOSER], "win")
         self.assertEqual(
             written["antagonistic"],
-            {"state": "skipped", "reason": "the round is at the cap where a human takes over"},
+            {
+                "state": "skipped",
+                "reason": "the round is at the cap where a human takes over",
+            },
         )
         self.assertNotIn("antagonistic review was requested", body)
         self.assertEqual(
@@ -445,7 +433,6 @@ class RacingRoundsTest(unittest.TestCase):
             "the round is at the cap where a human takes over",
         )
 
-    @unittest.expectedFailure
     def test_the_round_counts_once_posted_or_not(self) -> None:
         """A retry that finds its own footer posted counts it once, not twice."""
         loser = result(round=55, segment_round=1, stale_rounds=4)
@@ -455,7 +442,6 @@ class RacingRoundsTest(unittest.TestCase):
                 self.assertEqual(written["rounds_spent"], 59)
                 self.assertEqual(written["stale_rounds"], 4)
 
-    @unittest.expectedFailure
     def test_no_race_leaves_the_count_as_selected(self) -> None:
         """Below the ceiling, the recount agrees with the selection."""
         findings = published(
@@ -467,19 +453,17 @@ class RacingRoundsTest(unittest.TestCase):
         self.assertEqual(written["rounds_spent"], 59)
         self.assertNotIn("round cap of 60", body)
 
-    @unittest.expectedFailure
     def test_a_failed_read_keeps_the_selection_count(self) -> None:
         """No history to read is a warning, and the selection's count stands."""
         loser = result(round=56, segment_round=1, stale_rounds=4)
         with patch.object(
             round_reads, "round_history", side_effect=github.GitHubError("boom")
         ):
-            comments.recount(loser, "https://r/lose")
+            import_module("round_recount").recount(loser, "https://r/lose")
         self.assertNotIn("rounds_spent", loser)
         self.assertIn("not recounted", loser["warnings"][-1])
         self.assertTrue(comments.capped(loser))
 
-    @unittest.expectedFailure
     def test_the_history_leaves_out_one_attempt(self) -> None:
         """``exclude`` drops the footers of that run's selection alone."""
         entries = [
@@ -512,7 +496,6 @@ class StaleGuardTest(unittest.TestCase):
     downstream may offer it another round, whatever the outcome.
     """
 
-    @unittest.expectedFailure
     def test_a_counted_round_at_the_guard_says_so(self) -> None:
         """A round with findings after ten superseded rounds needs a human."""
         findings = published(
@@ -527,7 +510,6 @@ class StaleGuardTest(unittest.TestCase):
         self.assertFalse(comments.capped(below))
         self.assertEqual(reporting.cap_detail(below), "")
 
-    @unittest.expectedFailure
     def test_a_clean_round_at_the_guard_asks_for_no_review(self) -> None:
         """A clean proposal is finished, but no hand-back is offered."""
         clean = published(round=6, stale_rounds=10)
@@ -538,7 +520,6 @@ class StaleGuardTest(unittest.TestCase):
         )
         self.assertIsNone(antagonistic.unmet(published(round=6, stale_rounds=9)))
 
-    @unittest.expectedFailure
     def test_a_winner_after_the_tenth_loser_withdraws_its_nomination(self) -> None:
         """The recount sees the loser's tenth superseded round."""
         clean = published(
@@ -552,7 +533,6 @@ class StaleGuardTest(unittest.TestCase):
         self.assertEqual(written["stale_rounds"], 10)
         self.assertEqual(written["antagonistic"]["state"], "skipped")
 
-    @unittest.expectedFailure
     def test_a_handoff_at_the_guard_promises_no_round(self) -> None:
         """No maintainer's comment brings a round the guard refuses."""
         handoff = published(
