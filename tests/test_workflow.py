@@ -2186,6 +2186,87 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         with_ = cast(dict[str, Any], self.step("select", "app-token")["with"])
         self.assertEqual(with_["permission-checks"], "read")
 
+    @unittest.expectedFailure
+    def test_selection_skips_targets_other_runs_hold(self) -> None:
+        """The native token reads other runs' selections first (DESIGN.md 6).
+
+        The caller's runs and their evidence live in the caller
+        repository, which the App may not cover; the script fails open
+        itself, so the step carries no continue-on-error to hide a bug.
+        """
+        held = self.step("select", "Find targets other runs hold")
+        env = cast(dict[str, Any], held["env"])
+        self.assert_expression(env["GH_TOKEN"], "github.token")
+        self.assert_expression(env["REPOSITORY"], "github.repository")
+        self.assert_expression(env["RUN_ID"], "github.run_id")
+        run = flatten(held["run"])
+        self.assertIn("monkey-assets/scripts/run_overlap.py", run)
+        self.assertIn("--output held-targets.json", run)
+        self.assertNotIn("continue-on-error", held)
+        self.assertLess(
+            self.position("select", "Find targets other runs hold"),
+            self.position("select", "Select issues"),
+        )
+        select = flatten(self.step("select", "Select issues")["run"])
+        self.assertIn("--held-file held-targets.json", select)
+        self.assertEqual(self.jobs["select"]["permissions"]["actions"], "read")
+
+    @unittest.expectedFailure
+    def test_select_job_vouches_for_its_evidence(self) -> None:
+        """Only a notice on the select job's check run vouches (DESIGN.md 6).
+
+        The author job holds the runtime token and can upload a
+        look-alike, so a later run trusts an artifact only when this
+        job's check run names its id and digest. That run finds the job
+        by name, so no other job may share it, and reads annotations
+        rather than the log, whose storage host block mode refuses. No
+        job may write check runs, and the caller grants the read.
+        """
+        vouch = self.step("select", "Vouch for selection evidence")
+        self.assertLess(
+            self.position("select", "Publish selection evidence"),
+            self.position("select", "Vouch for selection evidence"),
+        )
+        env = cast(dict[str, Any], vouch["env"])
+        self.assert_expression(env["ARTIFACT_ID"], "steps.evidence.outputs.artifact-id")
+        self.assert_expression(env["DIGEST"], "steps.evidence.outputs.artifact-digest")
+        evidence = cast(dict[str, Any], self.step("select", "evidence")["with"])
+        self.assertEqual(env["NAME"], evidence["name"])
+        run = flatten(vouch["run"])
+        self.assertIn(
+            "printf '::notice title=monkey-evidence-vouch::%s %s sha256:%s\\n'", run
+        )
+        self.assertIn('[[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]', run)
+        self.assertNotIn("continue-on-error", vouch)
+        self.assertEqual(self.jobs["select"]["name"], "Select")
+        for job, spec in self.jobs.items():
+            if job != "select":
+                self.assertNotEqual(str(spec.get("name", job)), "Select", job)
+        self.assertTrue(str(self.jobs["author"]["name"]).startswith("Author ("))
+        self.assertEqual(self.jobs["select"]["permissions"]["checks"], "read")
+        for job, spec in self.jobs.items():
+            self.assertNotEqual(spec.get("permissions", {}).get("checks"), "write", job)
+        # GitHub rejects a reusable-workflow call whose caller grants less
+        # than any callee job asks for, so every local caller must grant
+        # the union of the callee's job permissions.
+        needed: dict[str, str] = {}
+        for spec in self.jobs.values():
+            needed.update(spec.get("permissions", {}))
+        self.assertEqual(needed.get("checks"), "read")
+        callers = 0
+        for path in sorted(WORKFLOWS.glob("*.yaml")):
+            workflow = cast(
+                dict[str | bool, Any], yaml.safe_load(path.read_text(encoding="utf-8"))
+            )
+            for job, spec in cast(dict[str, Any], workflow["jobs"]).items():
+                if not str(spec.get("uses", "")).endswith(f"/{REUSABLE.name}"):
+                    continue
+                callers += 1
+                granted = cast(dict[str, Any], spec.get("permissions", {}))
+                for scope, level in needed.items():
+                    self.assertEqual(granted.get(scope), level, f"{path.name}:{job}")
+        self.assertGreaterEqual(callers, 3)
+
     def test_select_resolves_fork_organisations(self) -> None:
         """Selection carries the committed fork mapping into every entry."""
         script = flatten(self.step("select", "Select issues")["run"])

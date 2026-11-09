@@ -21,6 +21,7 @@ revisions = import_module("revision_reads")
 round_reads = import_module("round_reads")
 thread_reads = import_module("thread_reads")
 select = import_module("revision_select")
+scanning = import_module("revision_scan")
 github = import_module("bot_github")
 
 HEAD = "a" * 40
@@ -648,6 +649,78 @@ class ScanTest(RevisionCase):
         entries = [entry for _, build in builders if (entry := build()) is not None]
         self.assertEqual(len(entries), 1)
         self.assertEqual(reads_made, [41])
+
+    @unittest.expectedFailure
+    def test_scan_passes_over_a_held_round_before_its_packet(self) -> None:
+        """A hit another run holds, by pull request or issue, gets no builder.
+
+        The ranking reads name both numbers; the packet's many reads,
+        and any failure among them, never happen for a held round.
+        """
+        hits = [
+            {"repository": "org/alpha", "number": 41, "created_at": "t1"},
+            {"repository": "org/beta", "number": 9, "created_at": "t2"},
+            {"repository": "org/gamma", "number": 50, "created_at": "t3"},
+        ]
+        self.threads = [thread()]
+        asked: list[tuple[str, tuple[int, ...], str]] = []
+
+        def per_pull(_repo: str, number: int, *_a: Any) -> dict[str, Any] | None:
+            return pull(number=number, issue=number - 33)
+
+        def held(repository: str, numbers: tuple[int, ...], reference: str) -> bool:
+            asked.append((repository, numbers, reference))
+            return repository != "org/gamma" and (8 in numbers or 9 in numbers)
+
+        patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
+        with (
+            patch.object(revisions, "search_bot_pull_requests", return_value=hits),
+            patch.object(scanning, "build_entry", wraps=select.build_entry) as built,
+        ):
+            builders = select.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped={"revision": 0},
+                skipped_issues=[],
+                held=held,
+            )
+            self.assertEqual([repository for repository, _ in builders], ["org/gamma"])
+            built.assert_not_called()
+            self.assertIsNotNone(builders[0][1]())
+            self.assertEqual(built.call_args.args[1:3], ("gamma", 50))
+        self.assertEqual(
+            asked,
+            [
+                ("org/alpha", (41, 8), "org/alpha#41"),
+                ("org/beta", (9, -24), "org/beta#9"),
+                ("org/gamma", (50, 17), "org/gamma#50"),
+            ],
+        )
+
+    @unittest.expectedFailure
+    def test_rounds_hand_their_hold_to_the_scan(self) -> None:
+        """``Rounds.scan`` passes the hold it is given on to the scan."""
+
+        def held(_repository: str, _numbers: tuple[int, ...], _reference: str) -> bool:
+            return False
+
+        rounds = select.Rounds(
+            "org",
+            bot=BOT,
+            fork_orgs=FORK_ORGS,
+            enabled=True,
+            explicit=False,
+            skips=({"revision": 0}, []),
+        )
+        with (
+            patch.object(revisions, "search_bot_pull_requests", return_value=[]),
+            patch.object(select, "scan", wraps=select.scan) as scanned,
+        ):
+            rounds.scan(held)
+            rounds.scan()
+        self.assertIs(scanned.call_args_list[0].kwargs["held"], held)
+        self.assertIsNone(scanned.call_args_list[1].kwargs["held"])
 
     def test_scan_skips_an_untrusted_authors_round(self) -> None:
         """A scanned round on an unapproved external issue is a named skip."""
