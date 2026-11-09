@@ -265,7 +265,8 @@ jobs:
       issues: read  # Candidate scan without an App (dry-run plumbing)
       contents: read  # Checkout trusted assets; read public repositories
       # A rejecting run's publish result, read for the next attempt (§6)
-      actions: read  # Read this run's creation time for comment markers
+      actions: read  # This run's creation time; other runs' selections
+      checks: read  # Other runs' select jobs vouch in check run notices
     outputs:
       assets_sha: "${{ steps.pinned.outputs.sha }}"
       run_created_at: "${{ steps.identity.outputs.created_at }}"
@@ -762,6 +763,26 @@ jobs:
           python3 monkey-assets/scripts/preflight.py token \
             --repository "$REPOSITORY"
 
+      # A scan and a named dispatch hold different concurrency groups,
+      # so both can select one target. The caller workflow's other
+      # active runs and their selection evidence live in this
+      # repository, which the native token reads and the App may not.
+      # Only evidence a select job vouched for on its own check run
+      # counts.
+      # Fails open: a failed read or unvouched evidence warns and holds
+      # nothing, and the script's own five-minute deadline keeps the
+      # job's timeout away (docs/DESIGN.md section 6 "Overlapping
+      # runs").
+      - name: 'Find targets other runs hold'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          REPOSITORY: "${{ github.repository }}"
+          RUN_ID: "${{ github.run_id }}"
+        run: |
+          python3 monkey-assets/scripts/run_overlap.py \
+            --repository "$REPOSITORY" --run-id "$RUN_ID" \
+            --output held-targets.json
+
       - name: 'Select issues'
         env:
           GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
@@ -826,7 +847,7 @@ jobs:
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \
-            --bot-slug "$BOT_SLUG" \
+            --bot-slug "$BOT_SLUG" --held-file held-targets.json \
             --results-repository "$RESULTS_REPOSITORY" "${extra[@]}"
           cat artefacts/selection-summary.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -870,6 +891,26 @@ jobs:
           path: 'artefacts/'
           retention-days: 7
           if-no-files-found: 'error'
+
+      # A later run reads this run's evidence to skip what it holds,
+      # with no job outputs to go on. An upload proves its run, not
+      # its job: the author job holds the runtime token and can upload
+      # a look-alike. A notice on this job's own check run, which no
+      # other job writes, names the one artifact it uploaded, and only
+      # evidence vouched for here holds a target. The API serves
+      # annotations itself; a log redirects to a storage host that
+      # block-mode egress refuses (docs/DESIGN.md section 6).
+      - name: 'Vouch for selection evidence'
+        env:
+          NAME: "monkey-evidence-${{ steps.identity.outputs.namespace }}"
+          ARTIFACT_ID: "${{ steps.evidence.outputs.artifact-id }}"
+          DIGEST: "${{ steps.evidence.outputs.artifact-digest }}"
+        run: |
+          [[ "$NAME" =~ ^monkey-evidence-[0-9]+-[0-9]+-[0-9a-f]{32}$ ]]
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          printf '::notice title=monkey-evidence-vouch::%s %s sha256:%s\n' \
+            "$NAME" "$ARTIFACT_ID" "$DIGEST"
 
   author:
     name: 'Author (${{ matrix.key }})'

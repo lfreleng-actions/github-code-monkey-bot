@@ -388,19 +388,15 @@ class Rounds:
                     return build_entry(self.inputs, repo_name, number, explicit=True)
                 except Skip as exc:
                     self.skipped["revision"] += 1
-                    self.skipped_issues.append(
-                        {
-                            "issue": f"{self.org}/{repo_name}#{number}",
-                            "reason": str(exc),
-                        }
-                    )
+                    reference = f"{self.org}/{repo_name}#{number}"
+                    self.skipped_issues.append({"issue": reference, "reason": str(exc)})
                     return None
 
             builders.append((f"{self.org}/{repo_name}", build))
         return builders
 
-    def scan(self) -> list[Round]:
-        """Builders for the owner's bot pull requests, when enabled."""
+    def scan(self, held: Hold | None = None) -> list[Round]:
+        """Builders for the owner's bot pull requests, when enabled, skipping ``held``."""
         if not self.enabled:
             return []
         return scan(
@@ -412,6 +408,7 @@ class Rounds:
             allowed=self.allowed,
             reviewers=self.inputs.reviewers,
             max_rounds=self.inputs.max_rounds,
+            held=held,
         )
 
     def for_issue(
@@ -435,6 +432,6 @@ class Rounds:
 
 # The scan builds entries through this module, so it imports after
 # the names it needs exist; ``scan`` is reached from here as before.
-from revision_scan import scan  # noqa: E402
+from revision_scan import Hold, scan  # noqa: E402
 
 __all__ = ["Inputs", "Prefetch", "Round", "Rounds", "Skip", "build_entry", "scan"]

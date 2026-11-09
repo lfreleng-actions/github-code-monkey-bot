@@ -47,6 +47,7 @@ jobs:
       issues: read  # Candidate scan
       contents: read  # Asset checkout and public repository reads
       actions: read  # Report job artifact lookup
+      checks: read  # Select reads other runs' evidence vouches
     uses: $/.github/workflows/code-monkey.yaml
     with:
       org: "${{ github.repository_owner }}"
@@ -74,6 +75,7 @@ jobs:
       issues: read  # Candidate scan
       contents: read  # Asset checkout and public repository reads
       actions: read  # Publish and report jobs locate artifacts
+      checks: read  # Select reads other runs' evidence vouches
     uses: $/.github/workflows/code-monkey.yaml
     with:
       org: "${{ github.repository_owner }}"

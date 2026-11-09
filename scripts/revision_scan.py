@@ -21,6 +21,10 @@ from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 from revision_select import Inputs, Prefetch, Round, Skip, build_entry, read_issue
 
+# Whether another active run holds any of the numbers in the
+# repository; it records the skip under the reference it is given.
+Hold = Callable[[str, tuple[int, ...], str], bool]
+
 
 def scan(
     org: str,
@@ -32,6 +36,7 @@ def scan(
     allowed: Callable[[str], bool] | None = None,
     reviewers: frozenset[str] = frozenset(),
     max_rounds: int = revisions.MAX_ROUNDS,
+    held: Hold | None = None,
 ) -> list[Round]:
     """A builder per bot pull request in the owner, ranked, built on demand.
 
@@ -45,7 +50,9 @@ def scan(
     repository unread. ``allowed`` is the run's repository policy, by
     lower-cased name; a hit outside it gets no builder. ``reviewers``
     are the antagonistic review Apps whose findings count, and
-    ``max_rounds`` the cap each build applies.
+    ``max_rounds`` the cap each build applies. ``held`` passes over a
+    hit whose pull request or issue another run holds, once the
+    ranking reads name both and before any packet read.
     """
     inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds)
     slug = str(bot["login"]).removesuffix("[bot]")
@@ -62,6 +69,9 @@ def scan(
         except Skip as exc:
             skipped["revision"] += 1
             skipped_issues.append({"issue": reference, "reason": str(exc)})
+            continue
+        numbers = (number, int(prefetched.pull["issue"]))
+        if held is not None and held(str(hit["repository"]), numbers, reference):
             continue
         rank = (
             priority_rank(prefetched.details.get("priority")),
