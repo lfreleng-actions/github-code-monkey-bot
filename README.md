@@ -102,6 +102,7 @@ jobs:
       issues: read
       contents: read
       actions: read
+      checks: read
     uses: lfreleng-actions/github-code-monkey-bot/.github/workflows/code-monkey.yaml@<sha>
     with:
       org: my-org

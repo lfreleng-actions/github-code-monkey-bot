@@ -2186,7 +2186,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         with_ = cast(dict[str, Any], self.step("select", "app-token")["with"])
         self.assertEqual(with_["permission-checks"], "read")
 
-    @unittest.expectedFailure
     def test_selection_skips_targets_other_runs_hold(self) -> None:
         """The native token reads other runs' selections first (DESIGN.md 6).
 
@@ -2211,7 +2210,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertIn("--held-file held-targets.json", select)
         self.assertEqual(self.jobs["select"]["permissions"]["actions"], "read")
 
-    @unittest.expectedFailure
     def test_select_job_vouches_for_its_evidence(self) -> None:
         """Only a notice on the select job's check run vouches (DESIGN.md 6).
 

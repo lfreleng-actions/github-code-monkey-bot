@@ -650,7 +650,6 @@ class ScanTest(RevisionCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(reads_made, [41])
 
-    @unittest.expectedFailure
     def test_scan_passes_over_a_held_round_before_its_packet(self) -> None:
         """A hit another run holds, by pull request or issue, gets no builder.
 
@@ -698,7 +697,6 @@ class ScanTest(RevisionCase):
             ],
         )
 
-    @unittest.expectedFailure
     def test_rounds_hand_their_hold_to_the_scan(self) -> None:
         """``Rounds.scan`` passes the hold it is given on to the scan."""
 

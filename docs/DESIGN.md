@@ -143,6 +143,14 @@ content the agent reads. A prompt-injected issue can waste model
 spend and produce a bad diff. It cannot push, cannot open a pull
 request, and cannot reach another repository.
 
+The runtime token can upload artifacts to its run, so an artifact's
+name, producer run and upload digest prove the run, never the job
+that made it. A trusted job reads an artifact by an id and digest a
+trusted job vouched for, and by nothing less: within a run, the
+select job's outputs; across runs, a notice on the select job's own
+check run (§6 "Overlapping runs"). The selector disregards evidence nothing trusted
+vouches for, so it never makes selection skip work.
+
 ### 4.2 What the design trusts the caller with
 
 The calling workflow supplies both the App key and the
@@ -523,6 +531,83 @@ check refuses it beside `issues` or `repositories`, in a mode other
 than `pull-requests`, or with `revise` off. Beside named
 `pull_requests` it changes nothing, since a named run scans nothing
 and works what it names and nothing else.
+
+**Overlapping runs.** Scans share one concurrency group, but a live
+dispatch naming `issues` or `pull_requests` locks on its own run
+(§11), since a group built from its target list would pass GitHub's
+400-character limit. So nothing stops a scheduled scan, the 02:00 run
+or a `revise_only` slot, from running beside a named dispatch, or two
+dispatches beside each other, and both can select one issue or pull
+request. One of them is then wasted: a revision stands down at the
+author job when the other has already pushed (§20.2), and a new issue
+spends a whole session the publish job then refuses. Before it
+selects, the select job lists the caller workflow's other runs that
+are `in_progress` or `queued`, with the native token, which holds
+`actions: read` and `checks: read` on the caller repository the runs,
+their artifacts and their check runs live in; a caller grants both.
+For each it reads the `monkey-evidence-*` artifacts that run's
+select jobs published, found through every page of that run's
+own artifact listing: the name must carry the run's id and the
+listing must name the run as its producer. A run id and an upload
+digest prove which run uploaded an artifact, not which job, and the
+untrusted author job holds that run's Actions runtime token (§4.1),
+so it can upload a look-alike whose name, producer and digest all
+check out. An artifact counts when a select job of that run vouches
+for it, and not otherwise. After its upload, the select job prints one
+`::notice` titled `monkey-evidence-vouch` naming the artifact, its id
+and the digest `upload-artifact` reported, and the check reads the
+check run annotations of the run's jobs named `Select`, or
+`<caller job> / Select`, that succeeded, in every attempt. No job
+holds `checks: write`, so a job's own workflow commands alone
+annotate its check run, which must carry one such notice,
+no more, for the job's own run and attempt; a job with none, or with
+two or more, vouches for nothing. The check reads annotations rather
+than the job's log: the API serves them itself, while a log
+download redirects to a rotating storage host that the block-mode
+egress allow-list refuses, which would leave the check failing open
+on every run. The check disregards evidence no select job vouches
+for, or whose id or digest differs from the vouch, with a
+`::warning::` naming it, and that
+evidence holds nothing, so a forged or unverifiable artifact can
+never make selection skip work:
+the worst it costs is the duplicate attempt the publish job's locks
+and compare-and-swap already stop. The zip's bytes must then match
+the vouched digest. Every
+attempt's evidence counts: a rerun of failed jobs may reselect one
+caller leg while another leg's author jobs retry on its first
+selection, and no name ties evidence to its leg, so a full rerun's
+superseded selection holds a little longer rather than a leg's work
+going unheld. That run holds every issue and pull request in its
+`selection.json`, a revision's issue and its pull request both,
+unless the selection is a dry run or a `select`-mode run, which
+publish nothing. The selector skips a held
+target, named or scanned, ahead of the cap, the budget and the
+one-per-repository rule, counts it under `held` and records it in
+`skipped_issues` with a reason naming the run that works it, so the
+summary shows it like any other skip. The selector records a round
+under its pull request, whichever of its numbers another run holds,
+and passes over it before reading its packet: a named round by the
+pull request it names, a scanned round by the pull request and issue
+its ranking reads, and a named round whose issue alone another run
+holds after building it. A held scan target frees its
+place for the next candidate, so the run may work a second issue of
+the repository the other run works in. A run whose select job has not
+finished has published nothing and holds nothing: the publish job's
+refusal still covers that window. The check fails open: a run listing,
+an artifact listing, a job listing, a select job's annotations, a
+vouched
+artifact missing from the listing, a download, a digest or a
+selection that fails prints a `::warning::` and holds nothing for
+that run, even where its
+other evidence read cleanly, or for every run when the listing fails,
+and selection proceeds as before. The whole check runs under one
+five-minute deadline, well inside the select job's 20 minutes, since
+a stalled download alone may take five: past it the check warns, the
+runs read in full still hold and the rest hold nothing. The check
+saves wasted work and no more; the publish job's locks and the
+compare-and-swap (§11, §20.3) remain the safety net.
+`scripts/run_overlap.py` holds the check; it reads at most 20 other
+runs.
 
 **Guidance ref.** `guidance_ref` may name a branch, a tag or a
 commit. The selector resolves it to a commit, following an annotated
@@ -1625,7 +1710,9 @@ rotation reminder as the model PAT (§10.2).
   references and fail the run before any job starts. Its scope is
   the named targets alone (§6 "Explicit issues", §20.1), and
   `max_pull_requests` bounds it. Two dispatches naming the same or
-  overlapping targets run together; the publish job's locks below
+  overlapping targets run together, as do a scan and a dispatch; the
+  later one's selector skips a target the earlier one already
+  selected (§6 "Overlapping runs"), and the publish job's locks below
   serialise their writes to any one pull request or issue, so
   neither can retitle, push or roll back a title under the other
   (§20.3), and the §6 open-pull-request check, the publisher's
@@ -1703,10 +1790,11 @@ conflicts while producer artifacts survive.
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
-| Two runs overlap | Duplicate branches | Caller concurrency group for scans; named-issue dispatches lock per run and rely on the §6 open-pull-request check and branch-exists refusal |
+| Two runs overlap | Duplicate branches, or a wasted session on one target | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected (§6 "Overlapping runs"), failing open, and the §6 open-pull-request check and branch-exists refusal stay behind it |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
+| Selection evidence forged by an author job | A later run skips work it should do | Evidence counts when a select job vouches for it in a notice on its own check run; the check disregards anything else with a warning (§6 "Overlapping runs") |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
@@ -1769,6 +1857,8 @@ scripts/revision_check.py                a revision's offline checks
 scripts/branch_swap.py                   the compare-and-swap branch move
 scripts/revision_publish.py              the push, replies and resolves
 scripts/selection_choose.py              the cap, budget and one-per-repo rule
+scripts/run_overlap.py                   targets other active runs hold (§6)
+scripts/overlap_evidence.py              their vouched selection evidence (§6)
 prompt/revise.md                         the revision task (§20.2)
 tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
@@ -1933,7 +2023,7 @@ cross-checked against the trusted `selection.json`.
               "untrusted_author": 4, "no_type": 3, "closed": 0,
               "category": 0, "assigned": 2, "attempted": 1,
               "linked_pr": 0, "one_per_repo": 30, "cap": 15,
-              "revision": 0, "duplicate": 0},
+              "revision": 0, "duplicate": 0, "held": 0},
   "explicit_repositories": [],
   "explicit_issues": [],
   "skipped_issues": [],
@@ -1971,12 +2061,15 @@ not, and the summary lists each: `pull_request`, `repository`,
 `label`, `untrusted_author` (an author outside `OWNER` and `MEMBER`,
 or an App, without `agent-approved`, §6), `no_type`, `closed`,
 `category`, `assigned`, `attempted`, `linked_pr`, `one_per_repo`,
-`cap`, `revision` and `duplicate`. An issue entry's `author_is_bot`
+`cap`, `revision`, `duplicate` and `held` (another in-progress run
+selected the target, §6 "Overlapping runs"). An issue entry's
+`author_is_bot`
 records whether an App or bot opened the issue. `explicit_issues`
 holds the named issues as `owner/repo#N`, in the order given, and
 `skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
-dropped; both are empty on a scan. `explicit_pull_requests`,
+dropped; both are empty on a scan, but for a target another run
+holds, which `skipped_issues` records on a scan too. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
 selection holds revision entries alone and `candidates_seen` is 0.
 A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
@@ -2460,7 +2553,11 @@ of an issue from an author outside `OWNER` and `MEMBER`, or from an
 App, that lacks the `agent-approved` label, and the reason names the
 label, so its pull request costs no further rounds until a
 maintainer approves the issue. A named round, like a named issue,
-applies no author rule. A scan honours the
+applies no author rule. The selector skips a round, named or scanned,
+whose pull request or issue another in-progress or queued run already
+selected, counts it under `held` and names that run in the reason, so
+two runs do not revise one pull request at once (§6 "Overlapping
+runs"). A scan honours the
 run's repository policy, the named repositories or everything but the
 exclusions, before it reads a hit. The round number continues from the
 bot's own footers on the issue: the last line of each of its comments,

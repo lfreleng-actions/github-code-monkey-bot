@@ -580,7 +580,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         path.write_text(json.dumps({"held": held}), encoding="utf-8")
         return str(path)
 
-    @unittest.expectedFailure
     def test_issues_another_run_holds_are_skipped(self) -> None:
         """Scanned and named issues alike: skipped, recorded, read no further."""
         prior = patch.object(reads, "prior_attempt", return_value=None).start()
@@ -610,7 +609,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 for call in prior.call_args_list:
                     self.assertNotEqual(call.args[0], "org/alpha")
 
-    @unittest.expectedFailure
     def test_named_pull_request_another_run_holds_is_skipped(self) -> None:
         """A named round another run selected costs no session and no packet read.
 
@@ -636,7 +634,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertIn("| org/alpha#41 | being worked by run 4242 |", summary)
         self.assertIn("| held | 1 |", summary)
 
-    @unittest.expectedFailure
     def test_scanned_round_another_run_holds_is_recorded(self) -> None:
         """A scan records a held skip in skipped_issues, unlike its other skips."""
         entry = self.revision("alpha", 41, 7)
@@ -652,7 +649,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
             [{"issue": "org/alpha#41", "reason": "being worked by run 99"}],
         )
 
-    @unittest.expectedFailure
     def test_named_round_whose_issue_alone_is_held_names_the_pull_request(
         self,
     ) -> None:
