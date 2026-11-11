@@ -275,6 +275,31 @@ class BuildEntryTest(RevisionCase):
             self.build(explicit=False)
         self.assertEqual(self.build(explicit=True)["checks"], [{"name": "Excluded"}])
 
+    @unittest.expectedFailure
+    def test_infrastructure_only_failures_skip_as_needing_a_re_run(self) -> None:
+        """Failures at the egress agent alone spend no round (#165)."""
+        agent = {"name": "Lint", "kind": "infrastructure"}
+        self.checks = check_reads.CheckPacket([agent], 0, 0, infrastructure=1)
+        with self.assertRaisesRegex(
+            select.Skip, "^infrastructure-only check failures; needs a re-run$"
+        ):
+            self.build(explicit=False)
+
+    @unittest.expectedFailure
+    def test_infrastructure_failures_ride_along_with_other_work(self) -> None:
+        """With a defect or a thread, the round goes ahead and carries them."""
+        agent = {"name": "Lint", "kind": "infrastructure"}
+        defect = {"name": "Test", "kind": "defect"}
+        self.checks = check_reads.CheckPacket([agent, defect], 0, 1, infrastructure=1)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["failing checks"])
+        self.assertEqual(entry["checks"], [agent, defect])
+        self.threads = [thread()]
+        self.checks = check_reads.CheckPacket([agent], 0, 0, infrastructure=1)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
+        self.assertEqual(entry["checks"], [agent])
+
     def test_failing_checks_do_not_resume_after_a_handoff(self) -> None:
         """After a handoff a maintainer's word, not a failing check, resumes."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")

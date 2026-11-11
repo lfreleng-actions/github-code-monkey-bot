@@ -281,5 +281,143 @@ class BoundsTest(ChecksCase):
         self.assertEqual(packet.outstanding, 5)
 
 
+def agent_note(level: str, message: str, title: str = "") -> dict[str, Any]:
+    """An annotation the harden-runner block action writes."""
+    return {
+        "annotation_level": level,
+        "path": ".github",
+        "start_line": None,
+        "title": title,
+        "message": message,
+    }
+
+
+class InfrastructureTest(ChecksCase):
+    """A run the egress agent failed is infrastructure, not a defect (#165)."""
+
+    @unittest.expectedFailure
+    def test_title_classifies(self) -> None:
+        """The block action's stable title marks the run, whatever the message."""
+        self.runs = [run(1, "Lint", annotations=1)]
+        self.notes[1] = [agent_note("failure", "x", checks.AGENT_TITLE)]
+        packet = self.read()
+        self.assertEqual(packet.checks[0]["kind"], "infrastructure")
+        self.assertEqual(
+            packet.checks[0]["annotations"][0]["title"], checks.AGENT_TITLE
+        )
+        self.assertEqual((packet.outstanding, packet.infrastructure), (0, 1))
+
+    @unittest.expectedFailure
+    def test_each_message_prefix_classifies(self) -> None:
+        """Each of the three wordings, after stripping, marks the run."""
+        for prefix in checks.AGENT_MESSAGES:
+            with self.subTest(prefix=prefix):
+                self.runs[:] = [run(1, "Lint", annotations=1)]
+                self.notes[1] = [agent_note("failure", f"  {prefix} after 0.0 s ❌")]
+                packet = self.read()
+                self.assertEqual(packet.checks[0]["kind"], "infrastructure")
+                self.assertEqual((packet.outstanding, packet.infrastructure), (0, 1))
+
+    @unittest.expectedFailure
+    def test_defect_beside_infrastructure(self) -> None:
+        """Each run is classified on its own; only the defect is outstanding.
+
+        The defect comes first: the bounds keep it ahead of an agent failure.
+        """
+        self.runs = [run(1, "Agent", annotations=1), run(2, "Test", annotations=1)]
+        self.notes[1] = [
+            agent_note(
+                "failure",
+                "harden-runner's agent reverted its changes after 0.0 s (see the "
+                "agent log below); the job has no egress filtering ❌",
+            )
+        ]
+        self.notes[2] = [note("failure")]
+        packet = self.read()
+        self.assertEqual(
+            [(c["name"], c["kind"]) for c in packet.checks],
+            [("Test", "defect"), ("Agent", "infrastructure")],
+        )
+        self.assertEqual((packet.outstanding, packet.infrastructure), (1, 1))
+
+    @unittest.expectedFailure
+    def test_warning_level_does_not_classify(self) -> None:
+        """The wording at warning level is the block action's warning path."""
+        self.runs = [run(1, "Lint", annotations=2)]
+        self.notes[1] = [
+            agent_note("warning", "harden-runner's agent reported an error"),
+            agent_note("warning", "x", checks.AGENT_TITLE),
+        ]
+        packet = self.read()
+        self.assertEqual(packet.checks[0]["kind"], "defect")
+        self.assertEqual((packet.outstanding, packet.infrastructure), (1, 0))
+
+    @unittest.expectedFailure
+    def test_wording_mid_text_does_not_classify(self) -> None:
+        """Only a message that starts with the wording counts."""
+        self.runs = [run(1, "Lint", annotations=1)]
+        self.notes[1] = [
+            agent_note("failure", "note: harden-runner's agent did not report ready")
+        ]
+        packet = self.read()
+        self.assertEqual(packet.checks[0]["kind"], "defect")
+        self.assertEqual((packet.outstanding, packet.infrastructure), (1, 0))
+
+    @unittest.expectedFailure
+    def test_runs_past_the_run_bound_are_classified(self) -> None:
+        """Every failing run is classified before the 30-run bound cuts it."""
+        message = "harden-runner's agent reverted its changes after 0.0 s"
+        count = checks.MAX_CHECKS + 1
+        self.runs = [run(i, f"r{i:02}", annotations=1) for i in range(1, count + 1)]
+        for i in range(1, count + 1):
+            self.notes[i] = [agent_note("failure", message)]
+        packet = self.read()
+        self.assertEqual(len(packet.checks), checks.MAX_CHECKS)
+        self.assertEqual(packet.dropped, 1)
+        self.assertEqual((packet.outstanding, packet.infrastructure), (0, count))
+        self.notes[count] = [note("failure")]
+        packet = self.read()
+        self.assertEqual((packet.outstanding, packet.infrastructure), (1, count - 1))
+
+    @unittest.expectedFailure
+    def test_defect_kept_ahead_of_infrastructure_by_the_bounds(self) -> None:
+        """A defect sorted after a full packet of agent failures still reaches it.
+
+        The run that brings the round is the one the session must see:
+        the run bound and the byte bound cut infrastructure runs first.
+        """
+        message = "harden-runner's agent reverted its changes after 0.0 s"
+        self.runs = [
+            run(i, f"a{i:02}", annotations=1) for i in range(1, checks.MAX_CHECKS + 1)
+        ]
+        for i in range(1, checks.MAX_CHECKS + 1):
+            self.notes[i] = [agent_note("failure", message)]
+        self.runs.append(run(99, "zz-lint", annotations=1))
+        self.notes[99] = [note("failure")]
+        packet = self.read()
+        self.assertEqual((packet.outstanding, packet.infrastructure), (1, 30))
+        self.assertEqual(len(packet.checks), checks.MAX_CHECKS)
+        self.assertEqual(packet.checks[0]["name"], "zz-lint")
+        self.assertEqual(packet.checks[0]["kind"], "defect")
+        self.assertEqual(packet.checks[0]["annotations"][0]["level"], "failure")
+        self.assertEqual(packet.dropped, 1)
+        long = "x" * checks.MAX_TEXT
+        for entry in self.runs[:-1]:
+            entry["output"]["summary"] = long
+        packet = self.read()
+        self.assertLess(len(packet.checks), checks.MAX_CHECKS)
+        self.assertEqual(packet.checks[0]["name"], "zz-lint")
+        names = [entry["name"] for entry in packet.checks[1:]]
+        self.assertEqual(names, sorted(names))
+
+    @unittest.expectedFailure
+    def test_title_is_bounded(self) -> None:
+        """An annotation's title is cut as its message is."""
+        self.runs = [run(1, "Lint", annotations=1)]
+        self.notes[1] = [agent_note("failure", "m", "t" * (checks.MAX_TEXT + 9))]
+        title = self.read().checks[0]["annotations"][0]["title"]
+        self.assertEqual(len(title), checks.MAX_TEXT)
+
+
 if __name__ == "__main__":
     unittest.main()
