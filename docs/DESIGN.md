@@ -1227,11 +1227,29 @@ For each selected issue:
     annotations under the same bound (`check_reads.py`, as the
     revision round's packet does), and reads the head once more: a
     push since, or any read that fails, records `unknown`, never
-    passing. The state is `passing`, `failing` (a run concluded
-    `failure`, `timed_out` or `startup_failure`), `running` (a run
-    still unsettled at the deadline, with any failures so far),
-    `none` (no runs at all) or `unknown`. Failing names bounded and
-    escaped reach a `::warning title=Checks::` annotation on the run.
+    passing. The state is `passing`, `infrastructure` (every
+    failing run failed at harden-runner's egress agent, below),
+    `failing` (a run concluded `failure`, `timed_out` or
+    `startup_failure`, and at least one is a defect), `running` (a
+    run still unsettled at the deadline, with any failures so far),
+    `none` (no runs at all) or `unknown`. A failing run is
+    `infrastructure` when one of its failure-level annotations has
+    the title `harden-runner agent did not start`, or a message that
+    starts, after stripping, with `harden-runner's agent reverted its
+    changes`, `harden-runner's agent did not report ready` or
+    `harden-runner's agent reported an error` (the block action's
+    wordings, `check_reads.AGENT_TITLE` and `AGENT_MESSAGES`); every
+    other failing run, and one whose annotations go unread because
+    the wait ran out, is a `defect`. The reader classifies every
+    failing run before the 30-run bound applies, so the counts of
+    both kinds are whole whatever the record keeps, and the bounds
+    keep defect runs first, by name, and then infrastructure ones,
+    so a run that brings a round is never left out for one that
+    does not. Such a run failed before
+    the job ran its own steps: it needs a re-run, not a fix. Failing
+    names bounded and escaped reach a `::warning title=Checks::`
+    annotation on the run, which says when the failures are
+    infrastructure and need a re-run.
     The record goes into `result.json` as `checks` (§18.4); the
     revision scan (§20.1) of a later run acts on the failures, since
     this round has ended.
@@ -1291,8 +1309,10 @@ For each selected issue:
     unsettled answer says GitHub did not confirm whether the pull
     request can merge. Failing checks on the head add a sentence
     naming them, bounded and escaped, as do failures among checks
-    still running when the wait ended; passing, absent or unread
-    checks add nothing. A pull request nominated for an antagonistic
+    still running when the wait ended; failures at the egress agent
+    add their own, `N check(s) failed at the egress agent and need a
+    re-run`, named the same way; passing, absent or unread checks
+    add nothing. A pull request nominated for an antagonistic
     review (§20.5) adds a sentence saying the workflow requested one
     from the review bot; when the switch is off, the comment says
     nothing of it. A conflict or a known failing check, settled
@@ -1303,7 +1323,10 @@ For each selected issue:
     `pending/not-requested`, then the probe's answer as `mergeable=`
     `true`, `false` or `unknown` when it ran, then the checks' state
     as `checks=` when the record exists, with a short hash of the
-    failing checks' names when it names any (`checks=running/<hex>`),
+    failing checks' names when it names any (`checks=running/<hex>`;
+    infrastructure failures join the hash as a second list, and the
+    whole `defects` and `infrastructure` counts join it when they
+    exceed the names kept, even when the record keeps none),
     so a rerun whose wait ended differently or whose failures changed,
     resolved a thread under the same verdict, or requested the review
     a first attempt could not, posts again
@@ -1326,7 +1349,10 @@ For each selected issue:
     over, counts the head checks' states (`not read` for a result
     with no record and no review), lists each pull request with
     known failing checks, settled or still running, and their names
-    and, at the round cap, that a human must take over, and states,
+    and, at the round cap, that a human must take over, lists apart
+    each pull request with checks that failed at the egress agent and
+    need a re-run, counted in `report.json` as
+    `infrastructure_check_failures`, and states,
     once, how a later round answers review findings. A
     report covers one
     selection, its namespace: a retried entry shows its latest
@@ -1798,6 +1824,7 @@ conflicts while producer artifacts survive.
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
+| A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
 | Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, the report and a count in the Slack digest; the revision scan picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
 
 <!-- markdownlint-enable MD013 -->
@@ -2096,13 +2123,15 @@ thread before the bound trims the replies), `threads_dropped`,
 run, head_sha, url, author, submitted_at, body, body_truncated}`, or
 null),
 `checks` (the head's failing check runs, as `{name, conclusion,
-app, details_url, title, summary, annotations}`, each annotation
-`{level, path, line, message}` at level `failure` or `warning`;
+app, details_url, title, summary, annotations, kind}`, each annotation
+`{level, path, line, title, message}` at level `failure` or `warning`,
+and `kind` `defect` or `infrastructure` (§8 step 11);
 empty when none failed), `checks_dropped` (the failing runs, and
 the annotations of carried runs, the bounds left out: at most 30
 runs, 10 annotations each, 2 KiB per title, summary and message,
-32 KiB in all; annotations past the third page of a run count
-unread, whatever their level), `checks_unsettled` (the head's runs
+32 KiB in all, defect runs kept before infrastructure ones;
+annotations past the third page of a run count unread, whatever
+their level), `checks_unsettled` (the head's runs
 whose `status` is not `completed`, queued, in progress or waiting,
 counted over every run whatever the bounds keep: an empty `checks`
 beside a non-zero count says CI had not finished, not that it
@@ -2262,12 +2291,21 @@ failed), `mergeable_state` (GitHub's short word, or `null`),
 else: the comment, the report and the outputs read `null` as
 unconfirmed.
 On a published pull request with `request_review` on, the wait
-(§8 step 11) adds `checks`: `state` (`passing`, `failing`,
-`running`, `none` or `unknown`), `commit_id` (the head it read),
-`failing` (at most 30 runs and 32 KiB, each with `name`, `conclusion`, `app`,
-`details_url`, `title`, `summary` and bounded `annotations`, as the
-revision packet carries them), `dropped` (failing runs left out),
-`unsettled` (runs not yet completed), `read_at` and `reason` (why
+(§8 step 11) adds `checks`: `state` (`passing`, `infrastructure`,
+`failing`, `running`, `none` or `unknown`), `commit_id` (the head it
+read), `failing` (at most 30 runs and 32 KiB, each with `name`,
+`conclusion`, `app`, `details_url`, `title`, `summary`, bounded
+`annotations`, each with `level`, `path`, `line`, `title` and
+`message`, and `kind`, `defect` or `infrastructure`, as the revision
+packet carries them; an entry without `kind` reads as a defect),
+`dropped` (failing runs left out),
+`unsettled` (runs not yet completed), `infrastructure` (failing runs
+the egress agent failed, kept or left out, so the comment and the
+report count those the bounds dropped; a record without it counts
+the entries marked so), `defects` (the other failing runs, kept or
+left out, so a defect the bounds dropped still marks a `running`
+head failed; a record without it counts the entries not marked
+`infrastructure`), `read_at` and `reason` (why
 the state is `unknown`, or `null`). Check names come from the code
 under review: the comment and the report bound and escape them.
 The comment and the report read a `checks` record of the wrong
@@ -2374,7 +2412,9 @@ the results whose `mergeable` is `false` through the same filter:
 it never names a link `pull_requests` would refuse, and
 `failing_check_pull_requests` does the same for the results whose
 `checks` record shows a known failure: state `failing`, or `running`
-with failures already recorded. A dry-run
+with defect failures already recorded (its whole `defects` count,
+names kept or not); failures at the egress agent
+(`infrastructure`) are not among them. A dry-run
 result, or one without a `pull_request_url`, contributes nothing.
 The script leaves any other value out and never copies it; it counts
 them in `report.json` (`excluded_pull_request_urls`, beside the
@@ -2504,7 +2544,8 @@ Three ways in, all through the select job and its read token:
   antagonistic review that handed the head back after the bot's
   latest footer, recorded as `antagonistic review round N handed
   back`; a check run on the head whose conclusion is
-  `failure`, `timed_out` or `startup_failure`, recorded as `failing
+  `failure`, `timed_out` or `startup_failure` and whose kind is
+  `defect` (§8 step 11), recorded as `failing
   checks` among the round's reasons (the publish job's `checks`
   record, §18.4, reports the same failures on the round that
   published the head, but selection reads them afresh); a head that
@@ -2529,8 +2570,18 @@ Three ways in, all through the select job and its read token:
   and the report tell it from a green head and the next scan reads it
   again, since the select job waits for no CI; with other work
   outstanding the round goes ahead and the entry's `checks_unsettled`
-  tells it CI had not finished; a clean head with nothing else needs
-  no round; and after a handoff (§20.3) neither the disputed threads
+  tells it CI had not finished; a head whose failures are all
+  `infrastructure`, settled, with nothing else outstanding, skips
+  with the reason `revision_select.INFRASTRUCTURE_ONLY` (failures
+  at the egress agent alone; it needs a re-run), not `nothing
+  outstanding`, so the skipped-issues record, the summary and the
+  digest show it, and a re-run or the next push clears it; with
+  other work outstanding the round goes ahead and the packet carries
+  those entries marked `infrastructure` (`CheckPacket.infrastructure`
+  counts them whole, each failing run read and classified before
+  the bounds, as `outstanding` counts the defects); a clean head
+  with nothing else needs no round; and
+  after a handoff (§20.3) neither the disputed threads
   nor a failing check nor a hand-back brings a round on its own, a
   maintainer's comment does. Revisions come
   before new issues, ranked by the originating issue's priority and
@@ -3024,8 +3075,10 @@ rather than wait for the review bot's own schedule. The rule
 nominates a live `proposed` result with a pull request when
 Copilot's review is `clean` and judged the published head, the
 probe did not find a conflict, the head has no known failing check
-and its checks are `passing`, `running` or `none` (never
-`unknown`), and the round is below the sixty-round ceiling. The rule
+and its checks are `passing`, `infrastructure`, `running` or `none`
+(never `unknown`; the mode does not wait for CI, and a re-run of a
+job the egress agent failed is no reason to withhold it), and the
+round is below the sixty-round ceiling. The rule
 nominates a clean head at a segment's cap: the next hand-back opens
 a new segment. `scripts/antagonistic_request.py` holds the rule.
 

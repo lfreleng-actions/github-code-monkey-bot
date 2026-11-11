@@ -8,7 +8,9 @@ review's verdict is known, it polls the head's check runs until none
 is queued or in progress, within the deadline and reserve the review
 wait already had, never past it. A red check fails nothing here; it
 is recorded as ``checks`` in ``result.json`` for the comment, the
-report and the next revision scan (section 20.1) to read.
+report and the next revision scan (section 20.1) to read. A head whose
+every failure is one the egress agent caused (``check_reads``) is
+``infrastructure``: it needs a re-run, not a fix.
 
 The check-runs listing answers the job's own token on a public
 repository, so this needs no mint. Names, titles and summaries come
@@ -28,9 +30,19 @@ import check_reads as checks
 import issue_reads as reads
 import proposal_policy as policy
 
-STATES = ("passing", "failing", "running", "none", "unknown")
+STATES = ("passing", "infrastructure", "failing", "running", "none", "unknown")
 FIELDS = frozenset(
-    {"state", "commit_id", "failing", "dropped", "unsettled", "read_at", "reason"}
+    {
+        "state",
+        "commit_id",
+        "failing",
+        "dropped",
+        "unsettled",
+        "infrastructure",
+        "defects",
+        "read_at",
+        "reason",
+    }
 )
 POLL_SECONDS = 30
 # Failing check names the annotation lists; the record keeps the rest.
@@ -83,6 +95,12 @@ class HeadChecks:
     # Runs still queued or in progress when the wait ended.
     unsettled: int = 0
     reason: str | None = None
+    # Failing runs the egress agent failed, kept or dropped: whole,
+    # so a count past the bounds is not taken from the names kept.
+    infrastructure: int = 0
+    # Failing runs that are no infrastructure, kept or dropped: whole,
+    # so a defect the bounds left out still marks the head failed.
+    defects: int = 0
 
     def to_json(
         self, commit_id: str | None, read_at: str | None = None
@@ -94,6 +112,8 @@ class HeadChecks:
             "failing": self.failing,
             "dropped": self.dropped,
             "unsettled": self.unsettled,
+            "infrastructure": self.infrastructure,
+            "defects": self.defects,
             "read_at": read_at or now(),
             "reason": self.reason,
         }
@@ -119,7 +139,9 @@ def await_checks(
     worst case, so the wait never overruns. Only runs whose
     ``head_sha`` is ``head_sha`` count. A read that fails, or a head
     that moved, is ``unknown``; runs still going when time runs out
-    are ``running``.
+    are ``running``. Settled failures that the egress agent alone
+    caused are ``infrastructure``; any other failure makes the head
+    ``failing``.
     """
     fits = window.fits
     runs: list[dict[str, Any]] | None = None
@@ -163,34 +185,77 @@ def await_checks(
         state = "running"
     elif not runs:
         state = "none"
+    elif not failed:
+        state = "passing"
     else:
-        state = "failing" if failed else "passing"
-    return HeadChecks(state, packet.checks, packet.dropped, unsettled)
+        state = "infrastructure" if failed == packet.infrastructure else "failing"
+    return HeadChecks(
+        state,
+        packet.checks,
+        packet.dropped,
+        unsettled,
+        infrastructure=packet.infrastructure,
+        defects=failed - packet.infrastructure,
+    )
+
+
+def is_infrastructure(entry: dict[str, Any]) -> bool:
+    """Whether a recorded failing run is one the egress agent caused."""
+    return entry.get("kind") == checks.INFRASTRUCTURE
+
+
+def named_checks(entries: list[dict[str, Any]], total: int = 0) -> str:
+    """Check names for the log: flattened, defused, bounded, counted past the cap.
+
+    Check names come from the code under review. ``total`` counts runs
+    the record's bounds left out as well, when it exceeds the entries.
+    """
+    if not entries and total > 0:
+        return f"{total} left out of the record by its bounds"
+    names = [
+        policy.log_safe(str(entry.get("name") or ""))[: policy.MAX_CHECK_NAME]
+        for entry in entries[:MAX_ANNOTATED_CHECKS]
+    ]
+    named = ", ".join(name for name in names if name) or "unnamed"
+    more = max(total, len(entries)) - len(names)
+    return f"{named} and {more} more" if more > 0 else named
 
 
 def annotation(found: HeadChecks, head: str) -> str | None:
     """The ``Checks`` warning for a head with failing runs, or None.
 
-    Check names come from the code under review: each is flattened
-    and defused for the log, and bounded, before it is named; the
-    escapes GitHub's workflow command syntax defines keep the line
-    whole.
+    Failures the egress agent caused are named apart, as needing a
+    re-run. The escapes GitHub's workflow command syntax defines keep
+    the line whole.
     """
-    if found.state != "failing" and not found.failing:
+    failed = found.failing or found.defects or found.infrastructure
+    if found.state not in ("failing", "infrastructure") and not failed:
         return None
-    names = [
-        policy.log_safe(str(entry.get("name") or ""))[: policy.MAX_CHECK_NAME]
-        for entry in found.failing[:MAX_ANNOTATED_CHECKS]
-    ]
-    named = ", ".join(name for name in names if name) or "unnamed"
-    more = len(found.failing) - MAX_ANNOTATED_CHECKS
-    if more > 0:
-        named += f" and {more} more"
+    agent = [entry for entry in found.failing if is_infrastructure(entry)]
+    defects = [entry for entry in found.failing if not is_infrastructure(entry)]
+    count = max(found.infrastructure, len(agent))
     still = "; checks still running at the end of the wait" if found.unsettled else ""
-    text = (
-        f"failing checks on {head[:12]}: {named}{still}. The pull request is "
-        "published regardless; a revision round reads them."
-    )
+    if found.state == "infrastructure" or (
+        found.state == "running" and not defects and not found.defects
+    ):
+        named = named_checks(agent, found.infrastructure)
+        text = (
+            f"checks on {head[:12]} failed at the egress agent and need a "
+            f"re-run: {named}{still}. This is infrastructure, not the change; "
+            "the pull request is published regardless."
+        )
+    else:
+        also = (
+            f"; {count} more failed at the egress agent and need a re-run"
+            if count
+            else ""
+        )
+        text = (
+            f"failing checks on {head[:12]}: "
+            f"{named_checks(defects, found.defects)}{also}"
+            f"{still}. The pull request is published regardless; a revision "
+            "round reads them."
+        )
     data = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     return f"::warning title=Checks::{data}"
 

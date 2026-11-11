@@ -275,7 +275,6 @@ class BuildEntryTest(RevisionCase):
             self.build(explicit=False)
         self.assertEqual(self.build(explicit=True)["checks"], [{"name": "Excluded"}])
 
-    @unittest.expectedFailure
     def test_infrastructure_only_failures_skip_as_needing_a_re_run(self) -> None:
         """Failures at the egress agent alone spend no round (#165)."""
         agent = {"name": "Lint", "kind": "infrastructure"}
@@ -285,7 +284,6 @@ class BuildEntryTest(RevisionCase):
         ):
             self.build(explicit=False)
 
-    @unittest.expectedFailure
     def test_infrastructure_failures_ride_along_with_other_work(self) -> None:
         """With a defect or a thread, the round goes ahead and carries them."""
         agent = {"name": "Lint", "kind": "infrastructure"}

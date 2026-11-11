@@ -1450,7 +1450,6 @@ class RevisionCheckTest(GitCase):
         )
         self.assertEqual(check.to_json()["failing_checks"], check.failing_checks)
 
-    @unittest.expectedFailure
     def test_round_note_leaves_infrastructure_failures_out(self) -> None:
         """A run the egress agent failed is not one the round set out to fix."""
         self.fixture.bundle()

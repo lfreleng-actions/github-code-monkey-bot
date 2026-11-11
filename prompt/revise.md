@@ -143,9 +143,10 @@ round summary.
 
 The packet's `checks` lists the check runs that failed on the pull
 request's head: each with its `name`, `conclusion`, the `app` that
-ran it, a `details_url`, the run's `title` and `summary`, and its
-`annotations` (`level`, `path`, `line`, `message`, failures and
-warnings alone). `checks_dropped` counts the failing runs and
+ran it, a `details_url`, the run's `title` and `summary`, its
+`annotations` (`level`, `path`, `line`, `title`, `message`, failures
+and warnings alone), and its `kind`, `defect` or `infrastructure`.
+`checks_dropped` counts the failing runs and
 annotations the packet's bounds left out; an empty `checks` with a
 zero count means no check failed. `checks_unsettled > 0` means CI had
 not finished when the selection read the head, so the absence of a
@@ -167,6 +168,13 @@ finding. A failure you cannot reproduce or cannot attribute to the
 change, such as a registry outage or a platform you cannot run, goes
 in the `pr_body` as a note for the reviewer and in the round summary;
 do not change code for it blind.
+
+An entry whose `kind` is `infrastructure` failed at harden-runner's
+egress agent, before the job ran its own steps: nothing in the change
+caused it, and a re-run clears it. Do not change code for it and do
+not try to reproduce it. Say so in one line of the round summary,
+naming the check, and run the repository's own tests as you would
+anyway.
 
 ## Antagonistic review
 

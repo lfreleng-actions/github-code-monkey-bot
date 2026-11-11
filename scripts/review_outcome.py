@@ -195,10 +195,25 @@ def review_after_merge(result: dict[str, Any]) -> str:
     return f" {body[:1].upper()}{body[1:]}"
 
 
-CHECK_STATES = ("passing", "failing", "running", "none", "unknown")
+CHECK_STATES = ("passing", "infrastructure", "failing", "running", "none", "unknown")
+# A failing run's kind when the egress agent, not the change, failed it.
+INFRASTRUCTURE = "infrastructure"
 CHECK_FIELDS = frozenset(
-    {"state", "commit_id", "failing", "dropped", "unsettled", "read_at", "reason"}
+    {
+        "state",
+        "commit_id",
+        "failing",
+        "dropped",
+        "unsettled",
+        "infrastructure",
+        "defects",
+        "read_at",
+        "reason",
+    }
 )
+# A record written before the whole failing-run counts existed; one
+# may carry either count without the other.
+LEGACY_CHECK_FIELDS = CHECK_FIELDS - {"infrastructure", "defects"}
 # Failing checks the comment names; the record and the report keep the rest.
 MAX_NAMED_CHECKS = 10
 # Hex digits of the failing checks' hash in the comment marker.
@@ -227,7 +242,9 @@ def checks_state(result: dict[str, Any]) -> str | None:
     if not isinstance(record, dict):
         return "unknown"
     data = cast("dict[str, Any]", record)
-    if frozenset(data) != CHECK_FIELDS or data.get("state") not in CHECK_STATES:
+    if not LEGACY_CHECK_FIELDS <= frozenset(data) <= CHECK_FIELDS:
+        return "unknown"
+    if data.get("state") not in CHECK_STATES:
         return "unknown"
     head = published_commit(result)
     if head is None or data.get("commit_id") != head:
@@ -235,23 +252,63 @@ def checks_state(result: dict[str, Any]) -> str | None:
     return str(data["state"])
 
 
-def failing_check_names(result: dict[str, Any]) -> list[str]:
-    """The failing check names the record keeps, unescaped; empty when unread."""
-    if checks_state(result) not in ("failing", "running"):
+def recorded_check_names(result: dict[str, Any], *, infrastructure: bool) -> list[str]:
+    """The record's failing check names of one kind, unescaped; empty when unread.
+
+    An entry without a ``kind``, as an older record's, is a defect.
+    """
+    if checks_state(result) not in ("failing", INFRASTRUCTURE, "running"):
         return []
     entries = cast("dict[str, Any]", result["checks"]).get("failing")
     if not isinstance(entries, list):
         return []
     names: list[str] = []
     for entry in cast("list[Any]", entries):
-        name = (
-            cast("dict[str, Any]", entry).get("name")
-            if isinstance(entry, dict)
-            else None
-        )
+        if not isinstance(entry, dict):
+            continue
+        data = cast("dict[str, Any]", entry)
+        if (data.get("kind") == INFRASTRUCTURE) != infrastructure:
+            continue
+        name = data.get("name")
         if isinstance(name, str) and name.strip():
             names.append(name)
     return names
+
+
+def failing_check_names(result: dict[str, Any]) -> list[str]:
+    """The failing defect check names the record keeps, unescaped."""
+    return recorded_check_names(result, infrastructure=False)
+
+
+def infrastructure_check_names(result: dict[str, Any]) -> list[str]:
+    """The check names the egress agent failed, unescaped; they need a re-run."""
+    return recorded_check_names(result, infrastructure=True)
+
+
+def infrastructure_count(result: dict[str, Any]) -> int:
+    """How many checks failed at the egress agent, kept or left out."""
+    return recorded_count(result, infrastructure=True)
+
+
+def defect_count(result: dict[str, Any]) -> int:
+    """How many checks failed for a reason other than the egress agent."""
+    return recorded_count(result, infrastructure=False)
+
+
+def recorded_count(result: dict[str, Any], *, infrastructure: bool) -> int:
+    """How many failing checks of one kind the record counts, kept or left out.
+
+    The record's whole count, which the bounds on its names do not
+    cut, or the names it kept when that is larger or absent, as in a
+    record written before the count existed.
+    """
+    names = recorded_check_names(result, infrastructure=infrastructure)
+    if checks_state(result) not in ("failing", INFRASTRUCTURE, "running"):
+        return 0
+    key = INFRASTRUCTURE if infrastructure else "defects"
+    value = cast("dict[str, Any]", result["checks"]).get(key)
+    whole = value if type(value) is int and 0 <= value <= MAX_UNSETTLED else 0
+    return max(whole, len(names))
 
 
 def checks_token(result: dict[str, Any]) -> str | None:
@@ -261,31 +318,52 @@ def checks_token(result: dict[str, Any]) -> str | None:
     adds nothing, so markers posted before it existed still match.
     When the record names failing checks, the word carries a short
     hash of them, ``<state>/<hex>``: a retry whose state held but
-    whose failures changed is a new outcome and posts again.
+    whose failures changed is a new outcome and posts again. Defect
+    names alone hash as they always have; infrastructure ones join
+    them as a second list. When the whole counts exceed the names
+    kept, the counts join as well, so a failure past the bounds that
+    appears or clears posts again.
     """
     if "checks" not in result:
         return None
     state = checks_state(result)
     names = failing_check_names(result)
-    if not names:
+    agent = infrastructure_check_names(result)
+    counts = [defect_count(result), infrastructure_count(result)]
+    beyond = counts[0] > len(names) or counts[1] > len(agent)
+    if not names and not agent and not beyond:
         return state
-    encoded = json.dumps(sorted(names)).encode("utf-8")
+    hashed: Any = [sorted(names), sorted(agent)] if agent else sorted(names)
+    if beyond:
+        hashed = [hashed, counts]
+    encoded = json.dumps(hashed).encode("utf-8")
     return f"{state}/{hashlib.sha256(encoded).hexdigest()[:CHECKS_HASH_LENGTH]}"
 
 
 def checks_failed(result: dict[str, Any]) -> bool:
-    """Whether the record shows a failing check on the head, settled or not."""
+    """Whether the record shows a failing defect check on the head, settled or not.
+
+    A ``running`` head counts by the record's whole defect count, so a
+    defect the bounds left out of its names still marks it failed.
+    """
     state = checks_state(result)
-    return state == "failing" or (
-        state == "running" and bool(failing_check_names(result))
-    )
+    return state == "failing" or (state == "running" and defect_count(result) > 0)
 
 
 def failing_checks_named(result: dict[str, Any]) -> str:
-    """The failing checks as one comment-safe list, bounded, or empty."""
-    names = failing_check_names(result)
-    text = policy.failing_checks_text(list(names[:MAX_NAMED_CHECKS]))
-    more = len(names) - MAX_NAMED_CHECKS
+    """The failing defect checks as one comment-safe list, bounded, or empty."""
+    return checks_named(failing_check_names(result), defect_count(result))
+
+
+def checks_named(names: list[str], total: int = 0) -> str:
+    """Check names as one comment-safe list, bounded, or empty.
+
+    ``total`` counts checks the record left out as well, when it
+    exceeds the names.
+    """
+    shown = names[:MAX_NAMED_CHECKS]
+    text = policy.failing_checks_text(list(shown))
+    more = max(total, len(names)) - len(shown)
     return f"{text} and {more} more" if text and more > 0 else text
 
 
@@ -314,19 +392,37 @@ def checks_sentence(result: dict[str, Any]) -> str:
     """What the comment says of the head's CI: failing checks, or nothing.
 
     The publish job reports CI and gates on nothing but the review, so
-    a passing, absent or unread result adds no words.
+    a passing, absent or unread result adds no words. Failures the
+    egress agent caused are named apart, as needing a re-run.
     """
     state = checks_state(result)
     named = failing_checks_named(result)
+    sentence = ""
     if state == "failing":
-        return (
+        sentence = (
             f" Checks failed on its head: {named}."
             if named
             else " Checks failed on its head."
         )
-    if state == "running" and named:
-        return (
+    elif state == "running" and defect_count(result):
+        sentence = (
             f" Checks were still running on its head when the wait ended, and"
             f" some had failed: {named}."
+            if named
+            else f" Checks were still running on its head when the wait ended,"
+            f" and {defect_count(result)} had failed."
         )
-    return ""
+    return sentence + infrastructure_sentence(result)
+
+
+def infrastructure_sentence(result: dict[str, Any]) -> str:
+    """The comment's word on failures the egress agent caused, or empty."""
+    count = infrastructure_count(result)
+    if not count:
+        if checks_state(result) == INFRASTRUCTURE:
+            return " Checks failed at the egress agent and need a re-run."
+        return ""
+    named = checks_named(infrastructure_check_names(result), count)
+    return f" {count} check(s) failed at the egress agent and need a re-run" + (
+        f": {named}." if named else "."
+    )

@@ -4064,8 +4064,8 @@ class HeadChecksTest(unittest.TestCase):
             text = md.read_text(encoding="utf-8")
             report = json.loads(out.read_text(encoding="utf-8"))
         self.assertIn(
-            "Head checks: passing 1, failing 1, running 0, none 0, unknown 1, "
-            "not read 1.",
+            "Head checks: passing 1, infrastructure 0, failing 1, running 0, "
+            "none 0, unknown 1, not read 1.",
             text,
         )
         self.assertEqual(report["check_totals"]["unknown"], 1)
@@ -4199,7 +4199,6 @@ def infrastructure_record(
 class InfrastructureChecksTest(unittest.TestCase):
     """Failures at the egress agent are reported apart from defects (#165)."""
 
-    @unittest.expectedFailure
     def test_state_reads_and_is_not_a_failure(self) -> None:
         """``infrastructure`` is a state of its own, and no failing check."""
         data = result_json(
@@ -4212,7 +4211,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         self.assertEqual(review_outcome.infrastructure_check_names(data), ["Lint"])
         self.assertFalse(comments.capped({**data, "round": 10, "mergeable": True}))
 
-    @unittest.expectedFailure
     def test_comment_names_them_apart_and_safely(self) -> None:
         """The sentence counts and names them; hostile names are defused."""
         data = result_json(
@@ -4229,7 +4227,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         self.assertNotIn("\n", text)
         self.assertNotIn("<!--", text)
 
-    @unittest.expectedFailure
     def test_mixed_failures_stay_failing_and_name_both(self) -> None:
         """A defect beside an infrastructure failure is still a failing head."""
         data = result_json(
@@ -4244,7 +4241,6 @@ class InfrastructureChecksTest(unittest.TestCase):
             " 1 check(s) failed at the egress agent and need a re-run: Agent.", text
         )
 
-    @unittest.expectedFailure
     def test_marker_word_carries_the_new_state(self) -> None:
         """A rerun that turned a failing head into an infrastructure one posts."""
         clean = review_record("clean")
@@ -4265,7 +4261,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         assert found is not None
         self.assertEqual(found.group("round"), "4")
 
-    @unittest.expectedFailure
     def test_report_counts_them_and_outputs_leave_them_out(self) -> None:
         """Their own total and list; the failing-check output keeps defects."""
         url = f"https://github.com/{REPOSITORY}/pull/8"
@@ -4309,7 +4304,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         listed = [line for line in text.splitlines() if line.startswith("- ")]
         self.assertTrue(any("Lint, Build" in line for line in listed))
 
-    @unittest.expectedFailure
     def test_whole_count_outlasts_the_names_kept(self) -> None:
         """Runs the packet bound left out count in the comment and the report."""
         data = result_json(
@@ -4351,7 +4345,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         self.assertTrue(any("Lint and 2 more" in line for line in listed))
         self.assertTrue(any(line.endswith(": 2 not named") for line in listed))
 
-    @unittest.expectedFailure
     def test_a_bad_count_falls_back_to_the_names(self) -> None:
         """A count that is no whole number reads as the names the record kept."""
         for value in (-1, "3", True, 10_000):
@@ -4363,7 +4356,6 @@ class InfrastructureChecksTest(unittest.TestCase):
             )
             self.assertEqual(review_outcome.infrastructure_count(data), 1, value)
 
-    @unittest.expectedFailure
     def test_a_record_without_the_count_still_reads(self) -> None:
         """An older record, before the whole count, keeps its state."""
         data = result_json(
@@ -4373,7 +4365,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         self.assertEqual(review_outcome.checks_state(data), "infrastructure")
         self.assertEqual(review_outcome.infrastructure_count(data), 1)
 
-    @unittest.expectedFailure
     def test_a_defect_left_out_still_fails_a_running_head(self) -> None:
         """A whole defect count outlasts names the bounds cut (#174 review)."""
         agent = [f"a{i:02}" for i in range(30)]
@@ -4404,7 +4395,6 @@ class InfrastructureChecksTest(unittest.TestCase):
             text = md.read_text(encoding="utf-8")
         self.assertIn(f"{url}: 1 not named", text)
 
-    @unittest.expectedFailure
     def test_marker_word_follows_the_whole_counts(self) -> None:
         """A count past the names kept changes the word (#174 review)."""
         clean = review_record("clean")
@@ -4436,7 +4426,6 @@ class InfrastructureChecksTest(unittest.TestCase):
             token(infrastructure_record("infrastructure", ["Lint"])),
         )
 
-    @unittest.expectedFailure
     def test_a_record_without_the_defect_count_reads_its_names(self) -> None:
         """An older running record fails on the defect names it kept alone."""
         agent_only = result_json(

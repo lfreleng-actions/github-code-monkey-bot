@@ -792,6 +792,7 @@ class AwaitChecksTest(unittest.TestCase):
                 "title",
                 "summary",
                 "annotations",
+                "kind",
             },
         )
         self.assertGreaterEqual(found.dropped, 6)
@@ -910,7 +911,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         ):
             return review.head_checks.await_checks(REPO, HEAD, lambda: HEAD, window)
 
-    @unittest.expectedFailure
     def test_all_failures_at_the_agent_are_infrastructure(self) -> None:
         """The entries stay under ``failing``, marked, and the warning says so."""
         runs = [
@@ -931,7 +931,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         self.assertIn("need a re-run", warning)
         self.assertIn("infrastructure", found.to_json(HEAD)["state"])
 
-    @unittest.expectedFailure
     def test_a_defect_among_them_stays_failing(self) -> None:
         """A mix of defect and infrastructure failures is ``failing``."""
         runs = [
@@ -950,7 +949,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         self.assertIn("Test", warning)
         self.assertIn("1 more failed at the egress agent", warning)
 
-    @unittest.expectedFailure
     def test_the_record_keeps_the_whole_count(self) -> None:
         """Runs the packet bound left out still count, in the record and warning."""
         runs = [
@@ -977,7 +975,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         assert warning is not None
         self.assertIn("need a re-run: Lint and 2 more.", warning)
 
-    @unittest.expectedFailure
     def test_a_mixed_head_counts_the_agent_runs_left_out(self) -> None:
         """The defect warning counts every agent failure, kept or not."""
         defect = {"name": "Test", "kind": "defect"}
@@ -992,7 +989,6 @@ class InfrastructureChecksTest(unittest.TestCase):
         assert warning is not None
         self.assertIn("re-run: 2 left out of the record by its bounds.", warning)
 
-    @unittest.expectedFailure
     def test_a_defect_past_the_bounds_still_fails_the_head(self) -> None:
         """The record counts defects whole; the warning counts one left out."""
         runs = [
@@ -1635,6 +1631,8 @@ class HandlersTest(unittest.TestCase):
                 "failing",
                 "dropped",
                 "unsettled",
+                "infrastructure",
+                "defects",
                 "read_at",
                 "reason",
             },

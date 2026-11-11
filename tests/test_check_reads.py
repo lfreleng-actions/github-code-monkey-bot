@@ -135,6 +135,7 @@ class SelectionTest(ChecksCase):
                 "title",
                 "summary",
                 "annotations",
+                "kind",
             },
         )
         self.assertEqual(first["conclusion"], "startup_failure")
@@ -204,8 +205,20 @@ class AnnotationTest(ChecksCase):
         self.assertEqual(
             packet.checks[0]["annotations"],
             [
-                {"level": "warning", "path": ".github", "line": 198, "message": "w"},
-                {"level": "failure", "path": ".github", "line": 198, "message": "f"},
+                {
+                    "level": "warning",
+                    "path": ".github",
+                    "line": 198,
+                    "title": "",
+                    "message": "w",
+                },
+                {
+                    "level": "failure",
+                    "path": ".github",
+                    "line": 198,
+                    "title": "",
+                    "message": "f",
+                },
             ],
         )
         self.assertEqual(packet.dropped, 0)
@@ -295,7 +308,6 @@ def agent_note(level: str, message: str, title: str = "") -> dict[str, Any]:
 class InfrastructureTest(ChecksCase):
     """A run the egress agent failed is infrastructure, not a defect (#165)."""
 
-    @unittest.expectedFailure
     def test_title_classifies(self) -> None:
         """The block action's stable title marks the run, whatever the message."""
         self.runs = [run(1, "Lint", annotations=1)]
@@ -307,7 +319,6 @@ class InfrastructureTest(ChecksCase):
         )
         self.assertEqual((packet.outstanding, packet.infrastructure), (0, 1))
 
-    @unittest.expectedFailure
     def test_each_message_prefix_classifies(self) -> None:
         """Each of the three wordings, after stripping, marks the run."""
         for prefix in checks.AGENT_MESSAGES:
@@ -318,7 +329,6 @@ class InfrastructureTest(ChecksCase):
                 self.assertEqual(packet.checks[0]["kind"], "infrastructure")
                 self.assertEqual((packet.outstanding, packet.infrastructure), (0, 1))
 
-    @unittest.expectedFailure
     def test_defect_beside_infrastructure(self) -> None:
         """Each run is classified on its own; only the defect is outstanding.
 
@@ -340,7 +350,6 @@ class InfrastructureTest(ChecksCase):
         )
         self.assertEqual((packet.outstanding, packet.infrastructure), (1, 1))
 
-    @unittest.expectedFailure
     def test_warning_level_does_not_classify(self) -> None:
         """The wording at warning level is the block action's warning path."""
         self.runs = [run(1, "Lint", annotations=2)]
@@ -352,7 +361,6 @@ class InfrastructureTest(ChecksCase):
         self.assertEqual(packet.checks[0]["kind"], "defect")
         self.assertEqual((packet.outstanding, packet.infrastructure), (1, 0))
 
-    @unittest.expectedFailure
     def test_wording_mid_text_does_not_classify(self) -> None:
         """Only a message that starts with the wording counts."""
         self.runs = [run(1, "Lint", annotations=1)]
@@ -363,7 +371,6 @@ class InfrastructureTest(ChecksCase):
         self.assertEqual(packet.checks[0]["kind"], "defect")
         self.assertEqual((packet.outstanding, packet.infrastructure), (1, 0))
 
-    @unittest.expectedFailure
     def test_runs_past_the_run_bound_are_classified(self) -> None:
         """Every failing run is classified before the 30-run bound cuts it."""
         message = "harden-runner's agent reverted its changes after 0.0 s"
@@ -379,7 +386,6 @@ class InfrastructureTest(ChecksCase):
         packet = self.read()
         self.assertEqual((packet.outstanding, packet.infrastructure), (1, count - 1))
 
-    @unittest.expectedFailure
     def test_defect_kept_ahead_of_infrastructure_by_the_bounds(self) -> None:
         """A defect sorted after a full packet of agent failures still reaches it.
 
@@ -410,7 +416,6 @@ class InfrastructureTest(ChecksCase):
         names = [entry["name"] for entry in packet.checks[1:]]
         self.assertEqual(names, sorted(names))
 
-    @unittest.expectedFailure
     def test_title_is_bounded(self) -> None:
         """An annotation's title is cut as its message is."""
         self.runs = [run(1, "Lint", annotations=1)]

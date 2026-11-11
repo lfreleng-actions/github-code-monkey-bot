@@ -24,7 +24,8 @@ from thread_reads import MAX_THREAD_BODY
 FOOTER = re.compile(
     r"(?:^|\n)<!-- code-monkey (?P<run>\S+) (?P<verdict>\S+)(?: review=\S+)?"
     r"(?: mergeable=(?:true|false|unknown))?"
-    r"(?: checks=(?:passing|failing|running|none|unknown)(?:/[0-9a-f]{12})?)?"
+    r"(?: checks=(?:passing|infrastructure|failing|running|none|unknown)"
+    r"(?:/[0-9a-f]{12})?)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
     r"(?: handback=(?P<handback>\d+))?(?: antagonistic=(?P<antagonistic>\d+))?"
     r"(?: stale=(?P<stale>1))? -->\s*\Z"

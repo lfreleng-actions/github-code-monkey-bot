@@ -34,6 +34,8 @@ from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 
 TASK = "revise"
+# The skip for a head whose only failures need a re-run, not a round.
+INFRASTRUCTURE_ONLY = "infrastructure-only check failures; needs a re-run"
 
 
 class Skip(Exception):
@@ -124,7 +126,8 @@ def outstanding(
     maintainer is unresolved, when Copilot's review of the head has
     findings, when an antagonistic review of the head handed it back
     after the last round's watermark, when a check on the head
-    failed, outside the exclusion list, when the head conflicts with
+    failed, outside the exclusion list and not at the egress agent
+    (``check_reads``), when the head conflicts with
     the default branch, so no CI ran on it, or when a maintainer
     commented on the issue or the pull request after the bot's last
     round. A maintainer's word on a review thread after that round,
@@ -133,7 +136,8 @@ def outstanding(
     reads heard it over every thread, the packet's bounds aside. A
     head with no review yet is left for the gate to await, and a clean
     head with nothing else is done, or skips as still running while
-    its checks have yet to finish. A ``mergeable`` that never settled
+    its checks have yet to finish, or as needing a re-run when its
+    only failures are infrastructure. A ``mergeable`` that never settled
     is no work on its own, so a GitHub hiccup cannot spend rounds.
     """
     packet, verdict = findings.threads, findings.verdict
@@ -309,8 +313,11 @@ def scan_reasons(
     """Why a scan gives the pull request a round, or ``Skip`` when it does not."""
     reasons = outstanding(pull, findings, repository=repository, since=history.since)
     if not reasons:
-        running = findings.checks.unsettled
-        raise Skip("checks still running" if running else "nothing outstanding")
+        if findings.checks.unsettled:
+            raise Skip("checks still running")
+        if findings.checks.infrastructure:
+            raise Skip(INFRASTRUCTURE_ONLY)
+        raise Skip("nothing outstanding")
     # After a handoff the threads the agent disputed stay open on
     # purpose; a maintainer's word, not the threads or the checks,
     # resumes rounds.

@@ -91,7 +91,6 @@ class NominationRuleTest(unittest.TestCase):
                 self.assertIsNone(antagonistic.unmet(with_checks(state=state)))
         self.assertIsNone(antagonistic.unmet(clean(mergeable=None)))
 
-    @unittest.expectedFailure
     def test_infrastructure_checks_are_nominated(self) -> None:
         """A re-run of a job the egress agent failed is no reason to wait (#165)."""
         agent = {"name": "lint", "kind": "infrastructure"}
