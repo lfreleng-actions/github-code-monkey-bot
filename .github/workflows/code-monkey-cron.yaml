@@ -15,6 +15,23 @@
 # live too unless its form asks for a dry run, and posts nothing.
 # Disabling this workflow in the Actions UI is the kill switch.
 name: 'Code Monkey ⏰'
+# Name each run by what it works, keeping the workflow name as prefix.
+# A schedule names the cron that fired; a dispatch names its pull
+# requests, else its issues, else its repositories, else its scan. The
+# lists are the operator's raw input; GitHub truncates a long name.
+run-name: >-
+  ${{ format('Code Monkey ⏰: {0}{1}',
+  github.event_name == 'schedule'
+  && (github.event.schedule == '0 2 * * 1-5'
+  && 'full scan' || 'revise-only scan')
+  || inputs.pull_requests != ''
+  && format('revise {0}', inputs.pull_requests)
+  || inputs.issues != '' && format('work {0}', inputs.issues)
+  || inputs.repositories != ''
+  && format('scan {0}', inputs.repositories)
+  || inputs.revise_only && 'revise-only scan'
+  || 'scan',
+  inputs.dry_run && ' (dry run)' || '') }}
 
 # yamllint disable-line rule:truthy
 on:

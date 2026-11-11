@@ -1399,7 +1399,13 @@ outside the stated ranges.
 
 Two schedules, `'0 2 * * 1-5'` (the full scan) and
 `'17 * * * *'` (`revise_only`, §11), and `workflow_dispatch`
-with:
+with the inputs below. A `run-name` keeps the `Code Monkey ⏰` prefix
+and adds what the run works, so the Actions list tells runs apart: a
+schedule names the full scan or the `revise_only` scan by the cron
+that fired; a dispatch names its `pull_requests`, else its `issues`,
+else its `repositories`, as the form's raw text, else a `revise_only`
+or plain scan, and marks a dry run. GitHub truncates a long name, and
+nothing reads it back.
 
 | Input | Type | Default |
 | ----- | ---- | ------- |

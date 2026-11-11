@@ -3167,7 +3167,6 @@ class CronCallerContracts(WorkflowCase):
         self.assertIs(concurrency["cancel-in-progress"], False)
         self.assertEqual(concurrency["queue"], "max")
 
-    @unittest.expectedFailure
     def test_run_name_says_what_the_run_works(self) -> None:
         """The Actions list tells a full scan, a slot and each dispatch apart.
 

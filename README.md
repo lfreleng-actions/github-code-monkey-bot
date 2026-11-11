@@ -91,7 +91,9 @@ schedule, with `revise_only`, runs every hour, every day, at 17
 minutes past: it revises the bot's open pull requests with work
 outstanding, takes no new issue, and stays silent in Slack unless it
 selected something or failed. The form's `revise_only` dispatches the
-same.
+same. Each run's name in the Actions list says what it works: the
+scan a schedule fired, or the pull requests, issues or repositories a
+dispatch named, and marks a dry run.
 
 ## Reusable workflow
 
