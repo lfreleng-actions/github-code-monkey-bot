@@ -3167,6 +3167,44 @@ class CronCallerContracts(WorkflowCase):
         self.assertIs(concurrency["cancel-in-progress"], False)
         self.assertEqual(concurrency["queue"], "max")
 
+    @unittest.expectedFailure
+    def test_run_name_says_what_the_run_works(self) -> None:
+        """The Actions list tells a full scan, a slot and each dispatch apart.
+
+        The name keeps the workflow's own as its prefix so the sidebar
+        still groups by workflow. A schedule names which cron fired; a
+        dispatch names its pull requests, else its issues, else its
+        repositories, else a revise-only or plain scan, and a dry run
+        says so.
+        """
+        name = str(self.workflow["name"])
+        full_scan = cast(list[dict[str, str]], self.triggers["schedule"])[0]["cron"]
+        run_name = unwrap(str(self.workflow["run-name"]))
+        self.assertTrue(run_name.startswith(f"format('{name}: "), run_name)
+        for reference in (
+            "inputs.pull_requests",
+            "inputs.issues",
+            "inputs.repositories",
+            "github.event.schedule",
+        ):
+            with self.subTest(reference=reference):
+                self.assertIn(reference, run_name)
+        self.assert_expression(
+            run_name,
+            f"format('{name}: {{0}}{{1}}',"
+            " github.event_name == 'schedule'"
+            f" && (github.event.schedule == '{full_scan}'"
+            " && 'full scan' || 'revise-only scan')"
+            " || inputs.pull_requests != ''"
+            " && format('revise {0}', inputs.pull_requests)"
+            " || inputs.issues != '' && format('work {0}', inputs.issues)"
+            " || inputs.repositories != ''"
+            " && format('scan {0}', inputs.repositories)"
+            " || inputs.revise_only && 'revise-only scan'"
+            " || 'scan',"
+            " inputs.dry_run && ' (dry run)' || '')",
+        )
+
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
