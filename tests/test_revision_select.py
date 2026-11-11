@@ -124,6 +124,8 @@ class RevisionCase(unittest.TestCase):
         self.segment: int | None = None
         # The review ids the history's footers carried.
         self.anchored: frozenset[int] = frozenset()
+        # The runs whose footers record a published, counted round.
+        self.published: frozenset[str] = frozenset()
         self.newer = False
         patch.object(
             repository_reads, "repository_meta", side_effect=self.meta_of
@@ -186,7 +188,13 @@ class RevisionCase(unittest.TestCase):
         highest, summaries, since, verdict = self.rounds
         segment = highest if self.segment is None else self.segment
         return round_reads.RoundHistory(
-            highest, summaries, since, verdict, segment, self.anchored
+            highest,
+            summaries,
+            since,
+            verdict,
+            segment,
+            self.anchored,
+            published=self.published,
         )
 
     def newer_of(self, *_args: Any) -> bool:
@@ -499,7 +507,6 @@ class RequireOutstandingTest(RevisionCase):
             require_outstanding=True,
         )
 
-    @unittest.expectedFailure
     def test_nothing_outstanding_skips_with_the_scan_reason(self) -> None:
         """No session for a pull request whose state changed since the dispatch."""
         with self.assertRaisesRegex(select.Skip, "^nothing outstanding$"):
@@ -508,14 +515,12 @@ class RequireOutstandingTest(RevisionCase):
         with self.assertRaisesRegex(select.Skip, "^checks still running$"):
             self.build_outstanding()
 
-    @unittest.expectedFailure
     def test_work_outstanding_gives_the_scan_reasons(self) -> None:
         """The round's reasons are the scan's, not the operator's word."""
         self.threads = [thread()]
         entry = self.build_outstanding()
         self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
 
-    @unittest.expectedFailure
     def test_handoff_pause_holds(self) -> None:
         """A handed-back pull request waits for a maintainer, as in a scan."""
         self.threads = [thread()]
@@ -524,7 +529,6 @@ class RequireOutstandingTest(RevisionCase):
             self.build_outstanding()
         self.assertEqual(self.build(explicit=True)["round"], 3)
 
-    @unittest.expectedFailure
     def test_the_scan_author_rule_and_the_cap_apply(self) -> None:
         """A continuation's target comes from an unauthenticated result.
 
@@ -552,6 +556,86 @@ class RequireOutstandingTest(RevisionCase):
         self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")
         with self.assertRaisesRegex(select.Skip, "round cap of 10"):
             self.build_outstanding()
+
+
+PARENT = "https://github.com/org/bot/actions/runs/42"
+
+
+class ContinuedRoundTest(RevisionCase):
+    """A continuation runs only after its parent's round was counted (#179)."""
+
+    def build_continued(self, parent: str = PARENT) -> dict[str, Any]:
+        """Build the fixture pull request as a continuation of ``parent``."""
+        return select.build_entry(
+            select.Inputs("org", BOT, FORK_ORGS),
+            "alpha",
+            41,
+            explicit=True,
+            require_outstanding=True,
+            continues=parent,
+        )
+
+    def test_a_parent_with_no_counted_round_skips(self) -> None:
+        """A forged result whose round posted no footer starts no session."""
+        self.threads = [thread()]
+        self.published = frozenset({"https://github.com/org/bot/actions/runs/41"})
+        with self.assertRaisesRegex(
+            select.Skip, "dispatched this continuation published no round here"
+        ):
+            self.build_continued()
+
+    def test_a_parent_that_published_continues(self) -> None:
+        """The parent's footer is on the pull request: the round goes ahead."""
+        self.threads = [thread()]
+        self.published = frozenset({PARENT})
+        self.assertEqual(self.build_continued()["round"], 1)
+
+    def test_no_parent_asks_for_no_footer(self) -> None:
+        """A named run that continues nothing reads no parent."""
+        self.threads = [thread()]
+        self.assertEqual(self.build_continued(parent="")["round"], 1)
+
+
+class PublishedRunsTest(unittest.TestCase):
+    """The round history names the runs whose round the publisher counted."""
+
+    def history(self, *footers: str) -> Any:
+        """The history of the bot's footers on the issue, in order."""
+        entries = [
+            {
+                "user": {"login": BOT["login"]},
+                "body": f"r{n}\n\n{footer}",
+                "created_at": f"2026-11-01T{n:02d}:00:00Z",
+            }
+            for n, footer in enumerate(footers)
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            return round_reads.round_history("org/alpha", 7, BOT["login"], None, 41)
+
+    def test_published_holds_proposed_rounds_of_this_pull_request(self) -> None:
+        """Not a rejection, a superseded round or another pull request's round."""
+        found = self.history(
+            "<!-- code-monkey https://r/0 proposed -->",
+            "<!-- code-monkey https://r/1 proposed round=1 pr=41 -->",
+            "<!-- code-monkey https://r/2 rejected round=2 pr=41 -->",
+            "<!-- code-monkey https://r/3 proposed round=3 pr=41 stale=1 -->",
+            "<!-- code-monkey https://r/4 proposed round=4 pr=40 -->",
+            "<!-- code-monkey https://r/5 handoff round=5 pr=41 -->",
+        )
+        self.assertEqual(found.published, frozenset({"https://r/0", "https://r/1"}))
+
+    def test_a_marker_in_another_users_comment_is_text(self) -> None:
+        """Only the bot's own footer names a published run."""
+        entries = [
+            {
+                "user": {"login": "someone"},
+                "body": "x\n\n<!-- code-monkey https://r/9 proposed round=9 pr=41 -->",
+                "created_at": "2026-11-01T00:00:00Z",
+            }
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            found = round_reads.round_history("org/alpha", 7, BOT["login"], None, 41)
+        self.assertEqual(found.published, frozenset())
 
 
 class ScanTest(RevisionCase):

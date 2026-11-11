@@ -3057,7 +3057,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
 class OutstandingOnlyContracts(ReusableWorkflowCase):
     """A continuation names pull requests and asks for the scan's test (#167)."""
 
-    @unittest.expectedFailure
     def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
         """A boolean, off by default, passed to select_issues.py as a flag."""
         inputs = cast(
@@ -3074,8 +3073,33 @@ class OutstandingOnlyContracts(ReusableWorkflowCase):
         budget = cast(dict[str, Any], self.step("select", "budget")["env"])
         self.assert_expression(budget["OUTSTANDING_ONLY"], "inputs.outstanding_only")
 
+    def test_continues_run_reaches_the_selector_as_a_run_url(self) -> None:
+        """A string, empty by default, passed as the footer's run URL (#179)."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["continues_run"]["type"], "string")
+        self.assertEqual(inputs["continues_run"]["default"], "")
+        select = self.step("select", "Select issues")
+        env = cast(dict[str, Any], select["env"])
+        self.assert_expression(env["CONTINUES_RUN"], "inputs.continues_run")
+        self.assert_expression(env["RESULTS_REPOSITORY"], "github.repository")
+        run = flatten(select["run"])
+        self.assertIn(
+            'run_url="$GITHUB_SERVER_URL/$RESULTS_REPOSITORY/actions/runs"', run
+        )
+        self.assertIn('extra+=(--continues-run "$run_url/$CONTINUES_RUN")', run)
+        # The footer the publisher posts names the run by the same URL.
+        publish = flatten(dumped(self.jobs["publish"]))
+        self.assertIn(
+            "${{ github.server_url }}/${{ github.repository }}"
+            "/actions/runs/${{ github.run_id }}",
+            publish,
+        )
+        budget = cast(dict[str, Any], self.step("select", "budget")["env"])
+        self.assert_expression(budget["CONTINUES_RUN"], "inputs.continues_run")
+
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_check_inputs_needs_pull_requests_alone(self) -> None:
         """Accepted beside pull_requests alone; refused without them or with targets."""
         budget = self.step("select", "budget")
@@ -3093,6 +3117,13 @@ class OutstandingOnlyContracts(ReusableWorkflowCase):
             ({"PULL_COUNT": ""}, error),
             ({**pulls, "ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"}, error),
             ({"REPOSITORIES_RAW": "a", "REPOSITORY_COUNT": "1"}, error),
+            ({**pulls, "CONTINUES_RUN": "42"}, None),
+            (
+                {**pulls, "CONTINUES_RUN": "42", "OUTSTANDING_ONLY": "false"},
+                "continues_run needs outstanding_only",
+            ),
+            ({**pulls, "CONTINUES_RUN": "4 2"}, "continues_run must be a run ID"),
+            ({**pulls, "CONTINUES_RUN": "0"}, "continues_run must be a run ID"),
         )
         for overrides, expected in cases:
             with (
@@ -3325,7 +3356,6 @@ class ContinueJobContracts(WorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
-    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3344,6 +3374,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "revise",
                 "revise_only",
                 "outstanding_only",
+                "continues_run",
                 "max_runtime_minutes",
                 "max_rounds",
                 "max_concurrent_agents",
@@ -3382,7 +3413,6 @@ class InterfaceContracts(ReusableWorkflowCase):
             with self.subTest(secret=name):
                 self.assertIs(secret["required"], False)
 
-    @unittest.expectedFailure
     def test_input_defaults(self) -> None:
         """Defaults keep an unconfigured call dry, bounded and sub-agent aware."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3407,6 +3437,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "revise": True,
             "revise_only": False,
             "outstanding_only": False,
+            "continues_run": "",
             "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.

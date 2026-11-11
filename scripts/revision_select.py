@@ -169,14 +169,26 @@ def build_entry(
     pull_number: int,
     *,
     explicit: bool,
+    require_outstanding: bool = False,
+    continues: str = "",
     prefetched: Prefetch | None = None,
 ) -> dict[str, Any]:
     """The selection entry for one bot pull request, or raise ``Skip``.
 
     ``explicit`` means an operator named it: the work-outstanding
     test and the author rule do not apply, since the operator decided,
-    but the other safety tests and the round cap do. ``prefetched``
-    carries the pull request and issue a scan read to rank it.
+    but the other safety tests and the round cap do.
+    ``require_outstanding`` puts a named pull request through the
+    scan's work-outstanding test, the handoff pause included, and its
+    author rule all the same, as a continuation asks: its target comes
+    from an unauthenticated result, not an operator (DESIGN.md section
+    20.6).
+    ``continues``, the URL of the run that dispatched a continuation,
+    must have published a counted round on this pull request: a
+    forged result whose round posted no outcome would otherwise start
+    rounds that advance no cap.
+    ``prefetched`` carries the pull request and issue a scan read to
+    rank it.
     """
     org, bot, fork_orgs = inputs.org, inputs.bot, inputs.fork_orgs
     meta = repositories.repository_meta(org, repo_name)
@@ -208,6 +220,8 @@ def build_entry(
         repository, issue, str(bot["login"]), str(pull["created_at"]), pull_number
     )
     highest, rounds, since = history.highest, history.summaries, history.since
+    if continues and continues not in history.published:
+        raise Skip("the run that dispatched this continuation published no round here")
     # Skips a capped pull request before the packet's reads.
     next_segment_round(repository, pull, history, inputs, None)
     findings = read_findings(repository, pull, since, inputs.reviewers)
@@ -216,13 +230,13 @@ def build_entry(
     segment_round = next_segment_round(repository, pull, history, inputs, findings)
     reasons = (
         ["named by the operator"]
-        if explicit
+        if explicit and not require_outstanding
         else scan_reasons(pull, findings, history, repository=repository)
     )
     details = packet_of(
         read_issue(repository, issue) if prefetched is None else prefetched.details,
         issue,
-        explicit=explicit,
+        explicit=explicit and not require_outstanding,
     )
     rebase_sha = reads.branch_head(repository, str(meta["default_branch"]))
     return {

@@ -64,6 +64,9 @@ class RoundHistory:
     # they count toward no segment's cap, only the sixty-round
     # ceiling, so a guard bounds them on their own.
     stale: int = 0
+    # The run URLs whose footer records a published, counted round: a
+    # continuation runs only when the run that dispatched it is here.
+    published: frozenset[str] = frozenset()
 
 
 def round_history(
@@ -107,6 +110,9 @@ def round_history(
     request none of its segment's cap. The selector still adds
     ``stale`` to ``highest`` against the sixty-round ceiling.
 
+    ``published`` holds the run of every ``proposed`` footer that is
+    not stale: the runs whose round the publisher counted.
+
     ``exclude``, a run URL and the ``since`` its footer records, leaves
     out that one attempt's footers, so the publisher can count the
     other rounds and add its own exactly once, posted yet or not.
@@ -116,6 +122,7 @@ def round_history(
     answered: dict[int, int] = {}
     summaries: list[dict[str, Any]] = []
     stale = 0
+    published: set[str] = set()
     # since, created, verdict: handled rounds order by the read time
     # they record, so a retry of an older round posted after a newer
     # handoff rewinds nothing; creation orders two posts of one read.
@@ -156,6 +163,8 @@ def round_history(
             if found.group("stale") is not None:
                 stale += 1
                 continue
+            if verdict == "proposed":
+                published.add(found.group("run"))
             if found.group("round") is None:
                 continue
             number = int(found.group("round"))
@@ -182,6 +191,7 @@ def round_history(
                 highest - segment_start + 1 if segment_start else highest,
                 frozenset(answered),
                 stale,
+                frozenset(published),
             )
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"

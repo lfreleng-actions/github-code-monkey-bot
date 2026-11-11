@@ -1479,6 +1479,8 @@ For each selected issue:
 | `pull_requests` | string | `''` | Bot pull requests to revise (§20) |
 | `revise` | boolean | `true` | §20: revise before working new issues |
 | `revise_only` | boolean | `false` | §6: revise, work no new issue |
+| `outstanding_only` | boolean | `false` | §20.6: named pull requests take the scan's tests |
+| `continues_run` | string | `''` | §20.6: the dispatching run, which must have published |
 | `exclude_repos` | string | `''` | Same form; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |

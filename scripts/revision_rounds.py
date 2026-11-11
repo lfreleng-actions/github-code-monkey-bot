@@ -36,8 +36,18 @@ class Rounds:
         allowed: Callable[[str], bool] | None = None,
         reviewers: frozenset[str] = frozenset(),
         max_rounds: int = revisions.MAX_ROUNDS,
+        outstanding_only: bool = False,
+        continues: str = "",
     ) -> None:
-        """Remember what every build needs; ``skips`` are the counters and the named list."""
+        """Remember what every build needs; ``skips`` are the counters and the named list.
+
+        ``outstanding_only`` gives a named pull request the scan's
+        tests: the repository policy, the author rule and work
+        outstanding. A continuation names it from an unauthenticated
+        result, so it earns no operator waiver. ``continues``, the URL
+        of the run that dispatched it, must have published a counted
+        round on the pull request.
+        """
         self.org = org
         self.bot = bot
         self.fork_orgs = fork_orgs
@@ -46,6 +56,8 @@ class Rounds:
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
         self.allowed = allowed
+        self.outstanding_only = outstanding_only
+        self.continues = continues
 
     def named(self, pulls: list[tuple[str, int]]) -> list[Round]:
         """A builder per pull request the operator named; a miss is a named skip."""
@@ -56,7 +68,16 @@ class Rounds:
                 repo_name: str = repo_name, number: int = number
             ) -> dict[str, Any] | None:
                 try:
-                    return build_entry(self.inputs, repo_name, number, explicit=True)
+                    if self.outstanding_only and not self.permits(repo_name):
+                        raise Skip("repository is outside the run's policy")
+                    return build_entry(
+                        self.inputs,
+                        repo_name,
+                        number,
+                        explicit=True,
+                        require_outstanding=self.outstanding_only,
+                        continues=self.continues,
+                    )
                 except Skip as exc:
                     self.skipped["revision"] += 1
                     reference = f"{self.org}/{repo_name}#{number}"
@@ -65,6 +86,10 @@ class Rounds:
 
             builders.append((f"{self.org}/{repo_name}", build))
         return builders
+
+    def permits(self, repo_name: str) -> bool:
+        """Whether the run's repository policy admits ``repo_name``, as a scan's would."""
+        return self.allowed is None or self.allowed(repo_name.lower())
 
     def scan(self, held: Hold | None = None) -> list[Round]:
         """Builders for the owner's bot pull requests, when enabled, skipping ``held``."""
