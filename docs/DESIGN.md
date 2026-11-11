@@ -523,10 +523,10 @@ issues by the rules above. A **`revise_only`** scan (§9.1) does the
 first half alone: it reads no issue, so no candidate,
 ranking or category applies, and the revision scan runs under the
 full `max_pull_requests` cap and the one-per-repository rule as it
-does in a full scan. The caller's second schedule runs one every four
-hours on weekdays (§11), so a published pull request's findings,
-failing checks and maintainer comments come back within hours rather
-than at the next 02:00. A `revise_only` scan names nothing: the input
+does in a full scan. The caller's second schedule runs one every hour,
+every day (§11), so a published pull request's findings, failing
+checks and maintainer comments reach the next slot rather than wait
+for the next 02:00. A `revise_only` scan names nothing: the input
 check refuses it beside `issues` or `repositories`, in a mode other
 than `pull-requests`, or with `revise` off. Beside named
 `pull_requests` it changes nothing, since a named run scans nothing
@@ -1398,7 +1398,7 @@ outside the stated ranges.
 ### 9.2 Dispatch caller (`code-monkey-cron.yaml`)
 
 Two schedules, `'0 2 * * 1-5'` (the full scan) and
-`'0 6,10,14,18 * * 1-5'` (`revise_only`, §11), and `workflow_dispatch`
+`'17 * * * *'` (`revise_only`, §11), and `workflow_dispatch`
 with:
 
 | Input | Type | Default |
@@ -1442,7 +1442,7 @@ GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
 
 `revise_only` is the second schedule or the form's choice: the
-caller passes `github.event.schedule == '0 6,10,14,18 * * 1-5' ||
+caller passes `github.event.schedule == '17 * * * *' ||
 inputs.revise_only == true`, since GitHub sets `github.event.schedule`
 to the cron string that fired. The schedule entry and the two
 expressions that test it, in the `code-monkey` job and the Slack
@@ -1643,14 +1643,17 @@ rotation reminder as the model PAT (§10.2).
 
 ## 11. Scheduling and Concurrency
 
-- Cron `0 6,10,14,18 * * 1-5`, live, with `revise_only` (§6 "Two
-  scans"): every four hours on weekdays it revises the bot's open pull
-  requests with work outstanding and works no new issue. Each slot
+- Cron `17 * * * *`, live, with `revise_only` (§6 "Two
+  scans"): every hour, every day, at 17 minutes past (GitHub advises
+  against `:00`, when scheduled load peaks and GitHub delays or drops
+  runs), it revises the bot's open pull requests with work
+  outstanding and works no new issue. Each slot
   costs one select job, which reads the bot's open pull requests, and
   an agent session for each pull request with work outstanding; a
   slot with nothing to do ends after selection. This is how a pull
   request published with a failing check or a review with findings,
-  or one a maintainer commented on, gets its next round the same day.
+  or one a maintainer commented on, gets its next round from the next
+  slot, weekends included.
 - Cron `0 2 * * 1-5`, live. At 02:00 UTC the run's pull requests
   are ready for review by the start of the European working day. It
   reads the previous working day's triage, which runs at 07:00 UTC
@@ -1679,7 +1682,7 @@ rotation reminder as the model PAT (§10.2).
   still reported says so under the list. A `revise_only` run says so
   in its title and under the list, and stays quiet when the
   `selected_count` output is `0`, it raised nothing, refused no link
-  and every job succeeded: a slot with nothing to do every four hours
+  and every job succeeded: a slot with nothing to do every hour
   should not post. A slot that selected a revision and published no
   link, its proposal refused offline or its round abstained, posts,
   as does one whose count is missing or anything but `0`. `notify-failure`
@@ -2498,9 +2501,9 @@ Three ways in, all through the select job and its read token:
 - A scan with `revise` on, the default, searches the owner for the
   App's open pull requests and selects those with **work
   outstanding**, and a `revise_only` scan (§6 "Two scans") does that
-  and nothing else; the caller runs one every four hours on weekdays
-  (§11), so a published pull request's findings and failing checks
-  come back within hours, not at the next 02:00 run. Work
+  and nothing else; the caller runs one every hour, every day (§11),
+  so a published pull request's findings and failing checks reach the
+  next slot, not the next 02:00 run. Work
   outstanding is: an unresolved review thread whose opening comment
   comes from Copilot, a listed antagonistic review App or an
   `OWNER`/`MEMBER`; a Copilot review of the head with findings; an

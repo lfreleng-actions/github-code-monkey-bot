@@ -87,8 +87,8 @@ an App, waits for a maintainer to label it `agent-approved`.
 of the bot's open pull requests runs a revision round on each; an issue whose earlier
 attempt is still open gets a round too, and scheduled runs revise
 before they take new issues unless `revise` is off. A second
-schedule, with `revise_only`, runs every four hours from 06:00 UTC on
-weekdays: it revises the bot's open pull requests with work
+schedule, with `revise_only`, runs every hour, every day, at 17
+minutes past: it revises the bot's open pull requests with work
 outstanding, takes no new issue, and stays silent in Slack unless it
 selected something or failed. The form's `revise_only` dispatches the
 same.

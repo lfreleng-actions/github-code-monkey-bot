@@ -2722,7 +2722,7 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
                 self.assertIn(message, output)
 
 
-REVISE_ONLY_CRON = "0 6,10,14,18 * * 1-5"
+REVISE_ONLY_CRON = "17 * * * *"
 REVISE_ONLY = (
     f"github.event.schedule == '{REVISE_ONLY_CRON}' || inputs.revise_only == true"
 )
@@ -2821,7 +2821,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
     WORKFLOW = CRON
 
     def test_second_schedule_sets_revise_only(self) -> None:
-        """The 02:00 scan stays; a four-hourly slot revises alone."""
+        """The weekday 02:00 scan stays; an hourly slot revises alone."""
         self.assertEqual(
             self.triggers["schedule"],
             [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],

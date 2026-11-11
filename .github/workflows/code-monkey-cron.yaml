@@ -8,8 +8,8 @@
 # requests are ready for review by the start of the European working
 # day, and posts them to Slack. It reads the previous working day's
 # triage (github-issues-triage, 07:00 UTC weekdays), so Priority and
-# Type are in place before selection. A second schedule, every four
-# hours from 06:00 UTC on weekdays, is revise-only: it revises the
+# Type are in place before selection. A second schedule, every hour,
+# every day, at 17 minutes past, is revise-only: it revises the
 # bot's open pull requests with work outstanding, takes no new issue,
 # and posts only when it selected something. A manual dispatch is
 # live too unless its form asks for a dry run, and posts nothing.
@@ -20,9 +20,10 @@ name: 'Code Monkey ⏰'
 on:
   schedule:
     - cron: '0 2 * * 1-5'
-    # Revise-only; the caller tests github.event.schedule for this
-    # exact string, so change all three together.
-    - cron: '0 6,10,14,18 * * 1-5'
+    # Revise-only, hourly at :17 to miss the peak in GitHub's
+    # scheduled load at :00. The caller tests github.event.schedule
+    # for this exact string, so change all three together.
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -239,7 +240,7 @@ jobs:
         ${{ github.event_name != 'workflow_dispatch' || inputs.revise }}
       # The revise-only schedule, or the form's choice on a dispatch.
       revise_only: >-
-        ${{ github.event.schedule == '0 6,10,14,18 * * 1-5'
+        ${{ github.event.schedule == '17 * * * *'
             || inputs.revise_only == true }}
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
@@ -319,7 +320,7 @@ jobs:
           RUN_RESULT: "${{ needs.code-monkey.result }}"
           SELECTED: "${{ needs.code-monkey.outputs.selected_count }}"
           REVISE_ONLY: >-
-            ${{ github.event.schedule == '0 6,10,14,18 * * 1-5'
+            ${{ github.event.schedule == '17 * * * *'
                 || inputs.revise_only == true }}
         run: |
           set -euo pipefail
@@ -448,7 +449,7 @@ jobs:
           if [ "$count" -eq 1 ]; then
             noun='pull request'
           fi
-          # A revise-only slot runs every four hours; one that selected
+          # A revise-only slot runs every hour; one that selected
           # nothing, raised nothing, refused nothing and failed nothing
           # stays quiet. A selected revision that came to no link, its
           # proposal refused or its round abstained, still posts, as
