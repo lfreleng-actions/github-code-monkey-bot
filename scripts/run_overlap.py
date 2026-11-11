@@ -18,7 +18,9 @@ digest
 run, not the job, and the untrusted author job can upload a
 look-alike. Evidence no select job vouches for holds nothing. A run
 that has not published and vouched for evidence yet holds nothing;
-the publish job's refusal covers that window.
+the publish job's re-read covers that window. So does a tie-break on
+the run id: a run first waits, under a bound, for each older
+in-progress run still selecting (``overlap_wait``).
 
 The check only saves wasted work; the publisher's compare-and-swap is
 the safety net. So it fails open: a listing or a read that fails
@@ -34,53 +36,23 @@ from __future__ import annotations
 
 import argparse
 import json
-import signal
-import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, cast
 
-import artifact_fetch as fetch
 import bot_github as github
 from overlap_evidence import evidence_of, read_selection, warn
+from overlap_wait import FAILURES, MAX_RUNS, Wait, await_older, bounded, listed_runs
 
-STATUSES = ("in_progress", "queued")
-# Runs read at most; a busier workflow has a problem no skip can fix.
-MAX_RUNS = 20
 # The whole check's deadline, well inside the select job's 20 minutes;
 # one stalled download alone may otherwise take 300 seconds.
 BUDGET_SECONDS = 300
 Held = dict[tuple[str, int], int]
 
 
-class Deadline(Exception):
-    """The check ran past its deadline."""
-
-
 def other_runs(repository: str, run_id: int) -> list[int]:
     """The ids of this workflow's other queued or in-progress runs."""
-    run = github.api_object(f"repos/{repository}/actions/runs/{run_id}")
-    workflow = github.require_int(run, "workflow_id", "this run")
-    found: list[int] = []
-    for status in STATUSES:
-        listing = github.api_object(
-            f"repos/{repository}/actions/workflows/{workflow}/runs"
-            f"?status={status}&per_page=100&exclude_pull_requests=true"
-        )
-        runs = listing.get("workflow_runs")
-        if not isinstance(runs, list):
-            raise github.GitHubError(f"{status} run listing carried no runs")
-        for raw in cast("list[Any]", runs):
-            if not isinstance(raw, dict):
-                raise github.GitHubError(f"{status} run listing entry is not an object")
-            entry = cast("dict[str, Any]", raw)
-            other = github.require_int(entry, "id", f"{status} run")
-            # The filter is the API's; a run that finished since holds nothing.
-            if entry.get("status") not in STATUSES:
-                continue
-            if other != run_id and other not in found:
-                found.append(other)
-    return found
+    return list(listed_runs(repository, run_id))
 
 
 def targets_of(selection: dict[str, Any]) -> list[tuple[str, int]]:
@@ -108,15 +80,6 @@ def targets_of(selection: dict[str, Any]) -> list[tuple[str, int]]:
             )
             found.append((repository.lower(), number))
     return found
-
-
-FAILURES = (
-    OSError,
-    ValueError,
-    subprocess.SubprocessError,
-    github.GitHubError,
-    fetch.Refused,
-)
 
 
 def run_targets(repository: str, run_id: int) -> list[tuple[str, int]]:
@@ -148,29 +111,15 @@ def collect(
 def held_targets(repository: str, run_id: int, budget: float = BUDGET_SECONDS) -> Held:
     """Map each target another run selected to that run; fail open throughout.
 
-    An alarm ends the check at ``budget`` seconds wherever it waits:
-    gh and the download are killed on the way out. The runs read in
-    full by then still hold their targets.
+    An alarm ends the check at ``budget`` seconds wherever it waits.
+    The runs read in full by then still hold their targets.
     """
     complete: list[tuple[int, list[tuple[str, int]]]] = []
-
-    def expire(_signum: int, _frame: object) -> None:
-        raise Deadline
-
-    previous = signal.signal(signal.SIGALRM, expire)
-    try:
-        try:
-            signal.setitimer(signal.ITIMER_REAL, budget)
-            collect(repository, run_id, complete)
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-    except Deadline:
+    if not bounded(budget, lambda: collect(repository, run_id, complete)):
         warn(
             f"the check ran past {budget:g} seconds; only the {len(complete)}"
             " run(s) read in full hold targets"
         )
-    finally:
-        signal.signal(signal.SIGALRM, previous)
     held: Held = {}
     for other, targets in complete:
         for target in targets:
@@ -178,13 +127,14 @@ def held_targets(repository: str, run_id: int, budget: float = BUDGET_SECONDS) -
     return held
 
 
-def write_held(path: Path, held: Held) -> None:
-    """Write the held targets for the selector."""
+def write_held(path: Path, held: Held, waits: Iterable[Wait] = ()) -> None:
+    """Write the held targets, and the waits for older runs, for the selector."""
     document = {
         "held": [
             {"repository": repository, "number": number, "run_id": run}
             for (repository, number), run in sorted(held.items())
-        ]
+        ],
+        "waits": [wait._asdict() for wait in waits],
     }
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
@@ -297,8 +247,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    waits = await_older(args.repository, args.run_id)
     held = held_targets(args.repository, args.run_id)
-    write_held(args.output, held)
+    write_held(args.output, held, waits)
+    for wait in waits:
+        print(f"Waited {wait.seconds}s for run {wait.run_id} to publish its selection")
     print(f"Other runs hold {len(held)} target(s)")
 
 

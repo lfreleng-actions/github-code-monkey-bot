@@ -83,19 +83,38 @@ def artifacts_of(repository: str, run_id: int) -> list[Any]:
     )
 
 
-def is_select_job(job: dict[str, Any]) -> bool:
-    """Whether the job is a select job that finished cleanly.
+def is_select_name(job: dict[str, Any]) -> bool:
+    """Whether the job is a select job by name, whatever its state.
 
     Job names come from the trusted workflows, never from the author
     job, and an author job's name always starts ``Author (``.
     """
     name = job.get("name")
+    return isinstance(name, str) and (
+        name == SELECT_JOB or name.endswith(f" / {SELECT_JOB}")
+    )
+
+
+def is_select_job(job: dict[str, Any]) -> bool:
+    """Whether the job is a select job that finished cleanly."""
     return (
-        isinstance(name, str)
-        and (name == SELECT_JOB or name.endswith(f" / {SELECT_JOB}"))
+        is_select_name(job)
         and job.get("status") == "completed"
         and job.get("conclusion") == "success"
     )
+
+
+def select_jobs(repository: str, run_id: int) -> list[dict[str, Any]]:
+    """Every select job of the run, in every attempt and any state."""
+    jobs = pages_of(
+        f"repos/{repository}/actions/runs/{run_id}/jobs?filter=all&per_page=100",
+        "jobs",
+    )
+    return [
+        cast("dict[str, Any]", raw)
+        for raw in jobs
+        if isinstance(raw, dict) and is_select_name(cast("dict[str, Any]", raw))
+    ]
 
 
 def annotations_of(repository: str, job: dict[str, Any]) -> list[dict[str, Any]]:
@@ -137,14 +156,9 @@ def vouched(repository: str, run_id: int) -> dict[int, tuple[str, str]]:
     another run or attempt than the job's own is disregarded.
     """
     found: dict[int, tuple[str, str]] = {}
-    jobs = pages_of(
-        f"repos/{repository}/actions/runs/{run_id}/jobs?filter=all&per_page=100",
-        "jobs",
-    )
-    for raw in jobs:
-        if not isinstance(raw, dict) or not is_select_job(cast("dict[str, Any]", raw)):
+    for job in select_jobs(repository, run_id):
+        if not is_select_job(job):
             continue
-        job = cast("dict[str, Any]", raw)
         job_id = github.require_int(job, "id", "select job")
         vouches = [
             VOUCH_RE.fullmatch(str(note.get("message", "")))

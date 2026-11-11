@@ -581,6 +581,10 @@ class RunPushTest(NoNetworkCase):
             publish, "ensure_fork", return_value=None
         ).start()
         self.sync_fork = patch.object(publish, "sync_fork", return_value=None).start()
+        # The issue still stands; RecheckPushTest covers the re-read itself.
+        self.recheck = patch.object(
+            publish.recheck, "stale_selection", return_value=None
+        ).start()
         self.addCleanup(patch.stopall)
 
     def test_rejected_verdict_touches_nothing(self) -> None:
@@ -656,6 +660,7 @@ class RunPushTest(NoNetworkCase):
         self.assertIsNone(result["pull_request_url"])
         self.assertEqual(result["warnings"], [])
         self.assertFalse(publish.needs_pull_request(result))
+        self.recheck.assert_called_once()
 
     def test_pull_requests_mode_leaves_the_pr_to_open(self) -> None:
         """Push never opens the pull request: that needs the target token."""
@@ -1045,6 +1050,92 @@ def target_reads(pull: dict[str, Any] | None = None, head: Any = HEAD) -> Any:
 MERGED_PULL = {"state": "closed", "merged_at": "2026-11-05T02:20:00Z"}
 CLOSED_PULL = {"state": "closed", "merged_at": None}
 GONE = github.GitHubError("gh: Not Found (HTTP 404)", status=404)
+
+
+class RecheckPushTest(NoNetworkCase):
+    """``run_push`` re-reads the issue before it writes anything."""
+
+    def setUp(self) -> None:
+        """Watch the fork writes; each test sets the re-read's answer."""
+        super().setUp()
+        self.ensure_fork = patch.object(publish, "ensure_fork").start()
+        self.sync_fork = patch.object(publish, "sync_fork").start()
+        self.create = patch.object(publish, "create_branch").start()
+        self.addCleanup(patch.stopall)
+
+    def assert_no_write(self) -> None:
+        """Neither the fork nor the branch was touched."""
+        self.ensure_fork.assert_not_called()
+        self.sync_fork.assert_not_called()
+        self.create.assert_not_called()
+
+    def test_closed_issue_refuses_before_any_write(self) -> None:
+        """A closed issue is a rejection with no write and no comment."""
+        refusal = publish.recheck.Refusal(
+            "issue #7 was closed by pull request #304 (u) after this run "
+            "selected it; nothing published",
+            issue_closed=True,
+        )
+        path = self.write_check(check_json())
+        for mode in ("pull-requests", "branches"):
+            with (
+                self.subTest(mode=mode),
+                patch.object(
+                    publish.recheck, "stale_selection", return_value=refusal
+                ) as reread,
+            ):
+                result = publish.run_push(self.push_args(path, mode=mode))
+                reread.assert_called_once()
+                self.assert_no_write()
+                self.assertEqual(result["verdict"], "rejected")
+                self.assertEqual(result["reasons"], [refusal.reason])
+                self.assertTrue(result["issue_closed"])
+                self.assertIsNone(result["branch_url"])
+                self.assertFalse(publish.needs_pull_request(result))
+                self.assertIsNone(comments.comment_body(result, "https://run"))
+
+    def test_open_issue_refusal_comments_as_a_rejection(self) -> None:
+        """A refusal on an open issue keeps the usual rejection comment."""
+        refusal = publish.recheck.Refusal(
+            "pull request #304 (u) from code-monkey/issue-7 is open; nothing published"
+        )
+        path = self.write_check(check_json())
+        with patch.object(publish.recheck, "stale_selection", return_value=refusal):
+            result = publish.run_push(self.push_args(path))
+        self.assert_no_write()
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertNotIn("issue_closed", result)
+        body = comments.comment_body(result, "https://run")
+        assert body is not None
+        self.assertIn("failed a policy check", body)
+        self.assertIn("#304", body)
+
+    def test_failed_reread_fails_the_step(self) -> None:
+        """A re-read that fails is a failed step, never a publish on trust."""
+        path = self.write_check(check_json())
+        with (
+            patch.object(
+                publish.recheck,
+                "stale_selection",
+                side_effect=github.GitHubError("boom (HTTP 502)"),
+            ),
+            self.assertRaisesRegex(policy.PublishError, "could not re-read issue #7"),
+        ):
+            publish.run_push(self.push_args(path, mode="branches"))
+        self.assert_no_write()
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertIn("nothing written", written["reasons"][-1])
+
+    def test_no_reread_without_a_write(self) -> None:
+        """Dry runs, select mode and other verdicts read nothing."""
+        path = self.write_check(check_json())
+        rejected = self.write_check(check_json(verdict="abstain"))
+        with patch.object(publish.recheck, "stale_selection") as reread:
+            publish.run_push(self.push_args(path, dry_run=True))
+            publish.run_push(self.push_args(path, mode="select"))
+            publish.run_push(self.push_args(rejected))
+        reread.assert_not_called()
 
 
 class RunPushRevisionTest(NoNetworkCase):
@@ -2411,6 +2502,35 @@ class RunOpenTest(NoNetworkCase):
         self.assertIn("fork branch kept for the next run", written["reasons"][-1])
         self.assertEqual(written["branch_url"], FORK_BRANCH_URL)
         self.assertIsNone(written["pull_request_url"])
+
+    def test_pull_request_already_exists_is_a_rejection(self) -> None:
+        """A 422 naming an existing pull request that is not the bot's rejects."""
+        check = self.write_check(check_json())
+        exists = github.GitHubError(
+            "gh: Validation Failed (HTTP 422): PullRequest custom: A pull request "
+            "already exists for lfreleng-bot-forks:code-monkey/issue-7.",
+            422,
+        )
+        with (
+            patch.object(publish, "open_pull_request", side_effect=exists),
+            patch.object(publish, "existing_pull_request", return_value=None),
+            patch.object(publish, "delete_branch") as delete,
+        ):
+            result = publish.run_open(
+                self.open_args(result_json(pull_request_url=None), check)
+            )
+        delete.assert_not_called()
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn("already exists", result["reasons"][-1])
+        self.assertIn("fork branch kept", result["reasons"][-1])
+        self.assertIsNone(result["pull_request_url"])
+        other = github.GitHubError("gh: Validation Failed (HTTP 422): base invalid")
+        with (
+            patch.object(publish, "open_pull_request", side_effect=other),
+            patch.object(publish, "existing_pull_request", return_value=None),
+            self.assertRaisesRegex(policy.PublishError, "fork branch kept"),
+        ):
+            publish.run_open(self.open_args(result_json(pull_request_url=None), check))
 
     def test_unknown_pr_state_keeps_the_branch(self) -> None:
         """PR call and lookup both failing: keep the branch, record the failure."""

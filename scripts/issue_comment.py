@@ -172,7 +172,10 @@ def _abstain_comment(_result: dict[str, Any], reasons: str, _run_url: str) -> st
     return f"🐒 An AI agent looked at this issue and did not attempt it: {reasons}"
 
 
-def _rejected_comment(_result: dict[str, Any], reasons: str, run_url: str) -> str:
+def _rejected_comment(result: dict[str, Any], reasons: str, run_url: str) -> str | None:
+    if result.get("issue_closed"):
+        # A finished issue leaves a human nothing to do; the report keeps the reason.
+        return None
     return (
         "🐒 An AI agent attempted this issue but its proposal failed a policy "
         f"check ({reasons}). Run: {run_url or 'n/a'}"

@@ -676,6 +676,19 @@ class RevisionIntegrationTest(NoSubprocessCase):
         )
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
 
+    def test_overlap_wait_is_summarised(self) -> None:
+        """A wait for an older run's selection shows in the selection summary."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        path = Path(self.held_file())
+        waits = [{"run_id": 50, "seconds": 20, "vouched": True}]
+        path.write_text(json.dumps({"held": [], "waits": waits}), encoding="utf-8")
+        selection, _ = select.build_selection(
+            self.args("--pull-requests", "org/alpha#41", "--held-file", str(path))
+        )
+        line = "waited 20s for run 50 to publish its selection"
+        self.assertEqual(selection["overlap_waits"], [line])
+        self.assertIn(line, outputs.summary_markdown(selection))
+
     def test_named_pull_requests_need_pull_requests_mode(self) -> None:
         """A round names a live pull request; a branches run cannot publish one."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)

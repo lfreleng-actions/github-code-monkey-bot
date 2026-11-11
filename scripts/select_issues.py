@@ -35,6 +35,7 @@ import fork_orgs as forks
 import issue_authors as authors
 import issue_categories as categories
 import issue_reads as reads
+import overlap_wait
 import previous_rejection
 import repository_reads as repositories
 import revision_select
@@ -372,6 +373,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         lists=(explicit, targets, pulls, exclusions),
         outcome=(seen, skipped, skipped_issues, chosen),
     )
+    selection["overlap_waits"] = overlap_wait.load_waits(args.held_file, holds.held)
     return selection, guidance
 
 

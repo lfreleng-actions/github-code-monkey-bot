@@ -60,6 +60,10 @@ def summary_markdown(selection: dict[str, Any]) -> str:
                 else "unknown"
             )
             lines.append(f"| {issue['repo_name']}#{issue['number']} | {shown} |")
+    waits = cast("list[str]", selection.get("overlap_waits") or [])
+    if waits:
+        # The overlap check's own text: a run id and a count of seconds.
+        lines += ["", *(f"Overlap: {wait}." for wait in waits)]
     skipped_issues = cast("list[dict[str, str]]", selection.get("skipped_issues") or [])
     if skipped_issues:
         lines += ["", "| Skipped issue | Reason |", "| --- | --- |"]
