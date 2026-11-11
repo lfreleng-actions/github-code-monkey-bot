@@ -676,7 +676,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         )
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
 
-    @unittest.expectedFailure
     def test_overlap_wait_is_summarised(self) -> None:
         """A wait for an older run's selection shows in the selection summary."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)

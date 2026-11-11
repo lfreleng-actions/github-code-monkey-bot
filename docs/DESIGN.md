@@ -592,8 +592,32 @@ its ranking reads, and a named round whose issue alone another run
 holds after building it. A held scan target frees its
 place for the next candidate, so the run may work a second issue of
 the repository the other run works in. A run whose select job has not
-finished has published nothing and holds nothing: the publish job's
-refusal still covers that window. The check fails open: a run listing,
+finished has published nothing and holds nothing, so two runs that
+select at nearly the same time would both pass the check. The run
+id breaks that tie: before it applies holds, the check lists the
+other `in_progress` runs with a **lower** id and polls each one's jobs
+every 10 seconds until every one of its select jobs, in every attempt
+and caller leg, has finished: a select job vouches in its last step,
+so a finished one has vouched or never will, and one that succeeded
+says nothing of another still running. A wait cut short by the shared
+bound may last 0 seconds, and the summary records it all the same.
+Those waits share one five-minute bound of their own, beside the check's
+deadline below, and both sit well inside the select job's 20 minutes.
+At the bound, or on a failed read of its jobs, the check stops
+waiting for a run still selecting, warns with a `::warning::`, and
+that run holds nothing unless it has vouched by the time the check
+reads it; the summary records the time already spent either way, and
+for a wait cut short it states what that run holds once the check has
+read its evidence (`the wait ended before it finished, and it holds
+nothing`, or the count of targets a select job had already vouched
+for).
+The check does not wait for
+a run with a higher id, since that run waits for this one, and a
+`queued` run holds nothing until it starts.
+The selection summary records each wait (`waited 20s for run <id> to
+publish its selection`), and `selection.json` carries the same lines
+as `overlap_waits`. The publish job's re-read (§8 step 8) still covers
+what the tie-break cannot. The check fails open: a run listing,
 an artifact listing, a job listing, a select job's annotations, a
 vouched
 artifact missing from the listing, a download, a digest or a
@@ -606,8 +630,9 @@ a stalled download alone may take five: past it the check warns, the
 runs read in full still hold and the rest hold nothing. The check
 saves wasted work and no more; the publish job's locks and the
 compare-and-swap (§11, §20.3) remain the safety net.
-`scripts/run_overlap.py` holds the check; it reads at most 20 other
-runs.
+`scripts/run_overlap.py` holds the check, and `scripts/overlap_wait.py`
+the tie-break wait and the run listing both share; each reads at most
+20 other runs.
 
 **Guidance ref.** `guidance_ref` may name a branch, a tag or a
 commit. The selector resolves it to a commit, following an annotated
@@ -1712,7 +1737,10 @@ rotation reminder as the model PAT (§10.2).
   `max_pull_requests` bounds it. Two dispatches naming the same or
   overlapping targets run together, as do a scan and a dispatch; the
   later one's selector skips a target the earlier one already
-  selected (§6 "Overlapping runs"), and the publish job's locks below
+  selected (§6 "Overlapping runs"), and when both select within the
+  same five minutes the run with the higher id waits, up to five
+  minutes, for the lower one to publish its selection first, so the
+  tie goes to the older run. The publish job's locks below
   serialise their writes to any one pull request or issue, so
   neither can retitle, push or roll back a title under the other
   (§20.3), and the §6 open-pull-request check, the publisher's
@@ -1859,6 +1887,7 @@ scripts/revision_publish.py              the push, replies and resolves
 scripts/selection_choose.py              the cap, budget and one-per-repo rule
 scripts/run_overlap.py                   targets other active runs hold (§6)
 scripts/overlap_evidence.py              their vouched selection evidence (§6)
+scripts/overlap_wait.py                  the tie-break wait for older runs (§6)
 prompt/revise.md                         the revision task (§20.2)
 tests/                                   unittest suite, offline
 pyproject.toml, uv.lock                  Python tooling
@@ -2027,6 +2056,7 @@ cross-checked against the trusted `selection.json`.
   "explicit_repositories": [],
   "explicit_issues": [],
   "skipped_issues": [],
+  "overlap_waits": [],
   "issues": [
     {
       "key": "sbom-action-40",
@@ -2069,7 +2099,9 @@ holds the named issues as `owner/repo#N`, in the order given, and
 `skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
 dropped; both are empty on a scan, but for a target another run
-holds, which `skipped_issues` records on a scan too. `explicit_pull_requests`,
+holds, which `skipped_issues` records on a scan too. `overlap_waits`
+holds one line per older run the overlap tie-break waited for (§6
+"Overlapping runs"), empty when it waited for none. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
 selection holds revision entries alone and `candidates_seen` is 0.
 A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,

@@ -23,6 +23,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 overlap = import_module("run_overlap")
+wait = import_module("overlap_wait")
 github = import_module("bot_github")
 fetcher = import_module("artifact_fetch")
 
@@ -582,7 +583,7 @@ class MainTest(unittest.TestCase):
                         str(output),
                     ]
                 )
-            self.assertEqual(json.loads(output.read_text()), {"held": []})
+            self.assertEqual(json.loads(output.read_text()), {"held": [], "waits": []})
             self.assertEqual(overlap.load_held(output), {})
         self.assertIn("::warning title=Overlapping runs::", printed.getvalue())
 
@@ -614,19 +615,13 @@ class AwaitOlderTest(unittest.TestCase):
         patch.object(fetcher, "download", side_effect=self.api.download).start()
         self.addCleanup(patch.stopall)
 
-    @property
-    def wait(self) -> Any:
-        """The tie-break module, imported where a test first reaches it."""
-        return import_module("overlap_wait")
-
     def waited(self, **kwargs: Any) -> tuple[list[Any], str]:
         """Run the wait; return the waits and the warnings printed."""
         printed = io.StringIO()
         with redirect_stdout(printed):
-            waits = self.wait.await_older(REPOSITORY, THIS_RUN, **kwargs)
+            waits = wait.await_older(REPOSITORY, THIS_RUN, **kwargs)
         return waits, printed.getvalue()
 
-    @unittest.expectedFailure
     def test_lower_unvouched_run_is_waited_for_then_holds(self) -> None:
         """An older run still selecting is waited for; its holds then apply."""
         self.api.runs["in_progress"].append(run(50))
@@ -636,48 +631,44 @@ class AwaitOlderTest(unittest.TestCase):
             self.api.jobs[50].clear()
             self.api.publish(50, selection(issue("alpha", 3)))
 
-        with patch.object(self.wait.time, "sleep", side_effect=vouch) as sleep:
+        with patch.object(wait.time, "sleep", side_effect=vouch) as sleep:
             waits, warnings = self.waited()
-        sleep.assert_called_once_with(self.wait.POLL_SECONDS)
+        sleep.assert_called_once_with(wait.POLL_SECONDS)
         self.assertEqual([(w.run_id, w.vouched) for w in waits], [(50, True)])
         self.assertEqual(warnings, "")
         held = overlap.held_targets(REPOSITORY, THIS_RUN)
         self.assertEqual(held, {("org/alpha", 3): 50})
 
-    @unittest.expectedFailure
     def test_higher_run_is_not_waited_for(self) -> None:
         """A newer run waits for this one, never the other way round."""
         self.api.runs["in_progress"].append(run(200))
         self.api.job(200, conclusion=None)
-        with patch.object(self.wait.time, "sleep") as sleep:
+        with patch.object(wait.time, "sleep") as sleep:
             waits, warnings = self.waited()
         sleep.assert_not_called()
         self.assertEqual(waits, [])
         self.assertEqual(warnings, "")
         self.assertFalse(any("runs/200/" in e for e in self.api.requested))
 
-    @unittest.expectedFailure
     def test_queued_run_is_not_waited_for(self) -> None:
         """A queued run holds nothing until it starts, so nothing waits for it."""
         self.api.runs["queued"].append(run(50, "queued"))
-        with patch.object(self.wait.time, "sleep") as sleep:
+        with patch.object(wait.time, "sleep") as sleep:
             waits, _ = self.waited()
         sleep.assert_not_called()
         self.assertEqual(waits, [])
 
-    @unittest.expectedFailure
     def test_vouched_or_failed_older_run_is_not_waited_for(self) -> None:
         """An older run whose select job finished, either way, has nothing to wait on."""
         self.api.runs["in_progress"] += [run(50), run(60)]
         self.api.publish(50, selection(issue("alpha", 3)))
         self.api.job(60, conclusion="failure")
-        with patch.object(self.wait.time, "sleep") as sleep:
+        with patch.object(wait.time, "sleep") as sleep:
             waits, warnings = self.waited()
         sleep.assert_not_called()
         self.assertEqual(waits, [])
         self.assertEqual(warnings, "")
 
-    @unittest.expectedFailure
     def test_unfinished_select_job_is_waited_for_beside_a_vouched_one(self) -> None:
         """A select job that succeeded does not end the wait for one still running.
 
@@ -691,13 +682,12 @@ class AwaitOlderTest(unittest.TestCase):
         def finish(_seconds: float) -> None:
             self.api.jobs[50][-1].update(status="completed", conclusion="success")
 
-        with patch.object(self.wait.time, "sleep", side_effect=finish) as sleep:
+        with patch.object(wait.time, "sleep", side_effect=finish) as sleep:
             waits, warnings = self.waited()
-        sleep.assert_called_once_with(self.wait.POLL_SECONDS)
+        sleep.assert_called_once_with(wait.POLL_SECONDS)
         self.assertEqual([(w.run_id, w.vouched) for w in waits], [(50, True)])
         self.assertEqual(warnings, "")
 
-    @unittest.expectedFailure
     def test_read_failure_after_a_poll_keeps_the_wait(self) -> None:
         """A failed read after polling ends the wait yet still records its time."""
         self.api.runs["in_progress"].append(run(50))
@@ -706,20 +696,19 @@ class AwaitOlderTest(unittest.TestCase):
         def fail(_seconds: float) -> None:
             self.api.failing.add("runs/50/jobs")
 
-        with patch.object(self.wait.time, "sleep", side_effect=fail) as sleep:
+        with patch.object(wait.time, "sleep", side_effect=fail) as sleep:
             waits, warnings = self.waited()
-        sleep.assert_called_once_with(self.wait.POLL_SECONDS)
+        sleep.assert_called_once_with(wait.POLL_SECONDS)
         self.assertEqual([(w.run_id, w.vouched) for w in waits], [(50, False)])
         self.assertIn("could not tell whether run 50 has selected", warnings)
 
-    @unittest.expectedFailure
     def test_bound_expires_with_a_warning_and_the_run_proceeds(self) -> None:
         """An older run that never vouches is given up on at the bound."""
         self.api.runs["in_progress"].append(run(50))
         self.api.job(50, conclusion=None)
         handler = signal.getsignal(signal.SIGALRM)
         started = time.monotonic()
-        with patch.object(self.wait, "POLL_SECONDS", 0.05):
+        with patch.object(wait, "POLL_SECONDS", 0.05):
             waits, warnings = self.waited(bound=0.3)
         self.assertLess(time.monotonic() - started, 10)
         self.assertEqual([(w.run_id, w.vouched) for w in waits], [(50, False)])
@@ -729,7 +718,6 @@ class AwaitOlderTest(unittest.TestCase):
         self.assertIs(signal.getsignal(signal.SIGALRM), handler)
         self.assertEqual(overlap.held_targets(REPOSITORY, THIS_RUN), {})
 
-    @unittest.expectedFailure
     def test_bound_expires_beside_a_vouched_select_job(self) -> None:
         """A wait cut short does not deny what the run had already vouched for.
 
@@ -740,7 +728,7 @@ class AwaitOlderTest(unittest.TestCase):
         self.api.runs["in_progress"].append(run(50))
         self.api.publish(50, selection(issue("alpha", 3)))
         self.api.job(50, attempt=2, conclusion=None)
-        with patch.object(self.wait, "POLL_SECONDS", 0.05):
+        with patch.object(wait, "POLL_SECONDS", 0.05):
             waits, warnings = self.waited(bound=0.3)
         self.assertEqual([(w.run_id, w.vouched) for w in waits], [(50, False)])
         self.assertIn("run 50 was still selecting after 0.3 seconds", warnings)
@@ -750,7 +738,7 @@ class AwaitOlderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as holder:
             output = Path(holder) / "held-targets.json"
             overlap.write_held(output, held, waits)
-            [line] = self.wait.load_waits(output, overlap.load_held(output))
+            [line] = wait.load_waits(output, overlap.load_held(output))
         self.assertTrue(line.startswith("waited "), line)
         self.assertTrue(
             line.endswith(
@@ -760,17 +748,15 @@ class AwaitOlderTest(unittest.TestCase):
             line,
         )
 
-    @unittest.expectedFailure
     def test_listing_failure_waits_for_nothing(self) -> None:
         """The wait fails open like the check: a warning and no wait."""
         self.api.failing.add("status=in_progress")
-        with patch.object(self.wait.time, "sleep") as sleep:
+        with patch.object(wait.time, "sleep") as sleep:
             waits, warnings = self.waited()
         sleep.assert_not_called()
         self.assertEqual(waits, [])
         self.assertIn("could not list", warnings)
 
-    @unittest.expectedFailure
     def test_waits_are_written_and_described(self) -> None:
         """The selector reads each wait back as a line for its summary."""
         with tempfile.TemporaryDirectory() as holder:
@@ -779,9 +765,9 @@ class AwaitOlderTest(unittest.TestCase):
                 output,
                 {("org/alpha", 3): 50, ("org/beta", 4): 60, ("org/beta", 5): 60},
                 [
-                    self.wait.Wait(50, 20, True),
-                    self.wait.Wait(60, 300, False),
-                    self.wait.Wait(70, 0, False),
+                    wait.Wait(50, 20, True),
+                    wait.Wait(60, 300, False),
+                    wait.Wait(70, 0, False),
                 ],
             )
             self.assertEqual(
@@ -789,7 +775,7 @@ class AwaitOlderTest(unittest.TestCase):
                 {("org/alpha", 3): 50, ("org/beta", 4): 60, ("org/beta", 5): 60},
             )
             self.assertEqual(
-                self.wait.load_waits(output, overlap.load_held(output)),
+                wait.load_waits(output, overlap.load_held(output)),
                 [
                     "waited 20s for run 50 to publish its selection",
                     "waited 300s for run 60 to publish its selection;"
@@ -805,12 +791,10 @@ class AwaitOlderTest(unittest.TestCase):
                     )
                 )
                 with self.assertRaisesRegex(ValueError, "'seconds'"):
-                    self.wait.load_waits(output, overlap.load_held(output))
+                    wait.load_waits(output, overlap.load_held(output))
             output.write_text(json.dumps({"held": []}))
-            self.assertEqual(
-                self.wait.load_waits(output, overlap.load_held(output)), []
-            )
-        self.assertEqual(self.wait.load_waits(None, {}), [])
+            self.assertEqual(wait.load_waits(output, overlap.load_held(output)), [])
+        self.assertEqual(wait.load_waits(None, {}), [])
 
 
 class HoldsTest(unittest.TestCase):
