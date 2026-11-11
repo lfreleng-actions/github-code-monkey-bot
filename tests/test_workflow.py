@@ -295,9 +295,9 @@ class TopLevelContracts(ReusableWorkflowCase):
     def test_concurrency_is_per_caller_and_owner_without_cancel(self) -> None:
         """Live scans lock per caller and owner; others within their run.
 
-        A group keeps one pending run and a newcomer cancels it, so a
-        dry run that wrote nothing, or a live run naming its issues,
-        must not share the live scan group.
+        Pending runs queue in order rather than a newcomer cancelling
+        the one pending, but a dry run that writes nothing, or a live
+        run naming its issues, must still not wait on the live scan.
         """
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
@@ -309,6 +309,7 @@ class TopLevelContracts(ReusableWorkflowCase):
             " || format('code-monkey-{0}-{1}', github.repository, inputs.org)",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
 
     def test_every_action_is_pinned_to_a_commit(self) -> None:
         """No `uses:` rides a tag or branch that could move underneath us."""
@@ -1354,6 +1355,7 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn("matrix.pull_number", group)
         self.assertIn("matrix.number", group)
         self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
 
     def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
         """head_sha and task are checked before any step reads them."""
@@ -3163,6 +3165,7 @@ class CronCallerContracts(WorkflowCase):
             " || 'code-monkey'",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
 
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""

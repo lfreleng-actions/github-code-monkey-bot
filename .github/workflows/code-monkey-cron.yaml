@@ -123,22 +123,23 @@ on:
 
 permissions: {}
 
-# Serialise scheduled runs and scan dispatches of this caller. A group
-# keeps one pending run and a newcomer cancels it, so this is not a
-# FIFO queue. A dry dispatch writes nothing and takes a group of its
-# own: it neither waits behind the schedule nor cancels a pending
-# live run. A live dispatch that names `issues` or `pull_requests`
-# locks on its own run, a fixed-length key: a group name built from
-# the target lists would grow with them past GitHub's 400-character
-# limit. Two dispatches naming the same or overlapping targets run
-# apart; the reusable workflow's publish locks serialise their writes
-# to any one pull request or issue, and the per-issue pull request
-# check, the branch-exists refusal and the revision's compare-and-swap
-# stop a duplicate. A revise-only run, scheduled or dispatched, is a
-# scan and shares `code-monkey`: it queues behind a full scan and never
-# runs beside it. A revise-only slot pending behind a long full scan
-# may be the run a newcomer cancels; the next slot comes four hours
-# later.
+# Serialise scheduled runs and scan dispatches of this caller. Pending
+# runs wait in a FIFO queue (`queue: max`, up to 100) instead of the
+# default single slot a newcomer would take, so no run is cancelled
+# unseen; `queue` needs `cancel-in-progress: false`. A dry dispatch
+# writes nothing and takes a group of its own: it never waits behind
+# the schedule or a live run. A live dispatch that names `issues` or
+# `pull_requests` locks on its own run, a fixed-length key: a group
+# name built from the target lists would grow with them past GitHub's
+# 400-character limit. Two dispatches naming the same or overlapping
+# targets run apart; the reusable workflow's publish locks serialise
+# their writes to any one pull request or issue, and the per-issue
+# pull request check, the branch-exists refusal and the revision's
+# compare-and-swap stop a duplicate. A revise-only run, scheduled or
+# dispatched, is a scan and shares `code-monkey`: it queues behind a
+# full scan and never runs beside it. Revise-only slots that fire
+# during a long full scan wait their turn; one with nothing to do ends
+# after selection.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
@@ -148,6 +149,7 @@ concurrency:
     && format('code-monkey-named-{0}', github.run_id)
     || 'code-monkey' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   options:

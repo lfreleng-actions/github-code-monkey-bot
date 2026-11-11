@@ -1698,11 +1698,14 @@ rotation reminder as the model PAT (§10.2).
 - Caller concurrency group `code-monkey`, `cancel-in-progress:
   false`, for scheduled runs and live dispatches without `issues`:
   one run at a time, and a dispatch during the scheduled run queues
-  behind it. A group keeps a single pending run and a newcomer
-  cancels it, so this is not a FIFO queue. A dry `workflow_dispatch`
+  behind it. The group sets `queue: max`, so pending runs wait in a
+  FIFO queue of up to 100 rather than GitHub's default single slot,
+  where a newcomer cancels the run already pending and a dispatch an
+  operator made vanishes without trace. GitHub rejects `queue: max`
+  beside `cancel-in-progress: true`. A dry `workflow_dispatch`
   writes nothing and takes `code-monkey-dry-run-<run_id>` instead:
-  it neither waits behind the schedule nor cancels a pending live
-  run. A live dispatch that names `issues` or `pull_requests` takes
+  it never waits behind the schedule or a live run. A live dispatch
+  that names `issues` or `pull_requests` takes
   `code-monkey-named-<run_id>`, keyed on its own run: dispatches run
   apart rather than evict each other without trace, and the group
   name keeps a fixed length, where one built from the target lists
@@ -1723,10 +1726,9 @@ rotation reminder as the model PAT (§10.2).
   A `revise_only` run, scheduled or dispatched, is a scan and keeps it
   too, so it queues behind a running full scan and never runs beside
   it, and the reusable workflow's scan lock below holds it the same
-  way. A `revise_only` slot pending behind a long full scan may be the
-  run GitHub cancels when another arrives, since the group keeps one
-  pending run; that is acceptable, as the next slot comes four hours
-  later.
+  way. `revise_only` slots that fire during a long full scan wait
+  their turn in the queue; each idle one then costs a select job of
+  a minute or two once the scan ends.
 - The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
   A dry run locks on `code-monkey-dry-run-<run_id>-<owner>` and a
@@ -1736,7 +1738,7 @@ rotation reminder as the model PAT (§10.2).
   legs of one caller run queue on their own lock and never cancel or
   wait on an unrelated run. No group name embeds an input list, so
   none can grow past GitHub's limit. All three groups set
-  `cancel-in-progress: false`.
+  `cancel-in-progress: false` and `queue: max`.
 - The publish job locks once more, on the pull request it revises
   (`code-monkey-publish-<repository>-pull-<n>`) or the issue it
   publishes (`…-issue-<n>`), across named and scanned runs. These
@@ -1745,9 +1747,11 @@ rotation reminder as the model PAT (§10.2).
   or a scan and a named run, reach it together, and a revision's
   retitle, push, restore and respond must not interleave with
   another run's (§20.3).
-  A dry run writes nothing and locks within its own run. A group
-  keeps one pending job, so a third run on one pull request waits for
-  neither; the next scan selects it again.
+  A dry run writes nothing and locks within its own run. The lock
+  sets `queue: max`, so a third run on one pull request waits its
+  turn, where the default queue would cancel it with no result, issue
+  comment or report row; the revision's compare-and-swap refuses a
+  push whose pull request moved while it waited (§20.3).
 - `testing.yaml` keys pull request runs on the ref, so a newer push
   cancels a stale run, and gives each manual dispatch a group of its
   own.

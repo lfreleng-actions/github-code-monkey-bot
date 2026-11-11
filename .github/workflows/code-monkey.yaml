@@ -235,10 +235,11 @@ permissions: {}
 
 # Live scans hold one lock per caller repository and owner across the
 # whole pipeline; different caller repositories need external
-# coordination if they target the same estate. A group keeps one
-# pending run and a newcomer cancels it, so dry runs, which write
-# nothing, lock within their own caller run and never cancel or wait
-# on a live run or another caller run's dry run. Live runs that name
+# coordination if they target the same estate. Pending runs wait in a
+# FIFO queue (`queue: max`, up to 100), never cancelled by a newcomer;
+# `queue` needs `cancel-in-progress: false`. Dry runs, which write
+# nothing, lock within their own caller run and never wait on a live
+# run or another caller run's dry run. Live runs that name
 # `issues` or `pull_requests` lock within their own caller run too, a
 # fixed-length key: a group name built from the target lists would
 # grow with them past GitHub's 400-character limit. Runs naming the
@@ -255,6 +256,7 @@ concurrency:
     && format('code-monkey-named-{0}-{1}', github.run_id, inputs.org)
     || format('code-monkey-{0}-{1}', github.repository, inputs.org) }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   select:
@@ -1417,9 +1419,11 @@ jobs:
     # retitle, push, restore and respond must not interleave with
     # another run's, so a revision locks on the pull request it revises
     # and a new issue's publish on its issue, which also owns the
-    # branch. A dry run writes nothing and locks within its own run. A
-    # group keeps one pending job, so a third run on one pull request
-    # waits for neither; its selection is redone next time.
+    # branch. A dry run writes nothing and locks within its own run.
+    # Pending jobs wait in a FIFO queue (`queue: max`), so a third run
+    # on one pull request waits its turn instead of being cancelled
+    # without a verdict; the revision's compare-and-swap refuses a
+    # push whose pull request moved while it waited.
     concurrency:
       group: >-
         ${{ inputs.dry_run
@@ -1431,6 +1435,7 @@ jobs:
         || format('code-monkey-publish-{0}-issue-{1}',
         matrix.repository, matrix.number) }}
       cancel-in-progress: false
+      queue: max
     # Twenty minutes for the publish itself, plus the Copilot review
     # wait and the read reserve copilot_review.py keeps for it.
     timeout-minutes: 60
