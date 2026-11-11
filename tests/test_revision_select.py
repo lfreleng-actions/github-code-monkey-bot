@@ -22,6 +22,7 @@ round_reads = import_module("round_reads")
 thread_reads = import_module("thread_reads")
 select = import_module("revision_select")
 scanning = import_module("revision_scan")
+rounding = import_module("revision_rounds")
 github = import_module("bot_github")
 
 HEAD = "a" * 40
@@ -274,6 +275,29 @@ class BuildEntryTest(RevisionCase):
             self.build(explicit=False)
         self.assertEqual(self.build(explicit=True)["checks"], [{"name": "Excluded"}])
 
+    def test_infrastructure_only_failures_skip_as_needing_a_re_run(self) -> None:
+        """Failures at the egress agent alone spend no round (#165)."""
+        agent = {"name": "Lint", "kind": "infrastructure"}
+        self.checks = check_reads.CheckPacket([agent], 0, 0, infrastructure=1)
+        with self.assertRaisesRegex(
+            select.Skip, "^infrastructure-only check failures; needs a re-run$"
+        ):
+            self.build(explicit=False)
+
+    def test_infrastructure_failures_ride_along_with_other_work(self) -> None:
+        """With a defect or a thread, the round goes ahead and carries them."""
+        agent = {"name": "Lint", "kind": "infrastructure"}
+        defect = {"name": "Test", "kind": "defect"}
+        self.checks = check_reads.CheckPacket([agent, defect], 0, 1, infrastructure=1)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["failing checks"])
+        self.assertEqual(entry["checks"], [agent, defect])
+        self.threads = [thread()]
+        self.checks = check_reads.CheckPacket([agent], 0, 0, infrastructure=1)
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
+        self.assertEqual(entry["checks"], [agent])
+
     def test_failing_checks_do_not_resume_after_a_handoff(self) -> None:
         """After a handoff a maintainer's word, not a failing check, resumes."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
@@ -497,7 +521,7 @@ class ScanTest(RevisionCase):
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
         self.threads = [thread()]
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -527,7 +551,7 @@ class ScanTest(RevisionCase):
         skipped = {"revision": 0}
         named: list[dict[str, str]] = []
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -540,7 +564,7 @@ class ScanTest(RevisionCase):
             assert entry is not None
             self.assertEqual((entry["round"], entry["max_rounds"]), (11, 12))
             # The default cap stops the same pull request.
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -550,7 +574,7 @@ class ScanTest(RevisionCase):
             self.assertIsNone(builders[0][1]())
         self.assertIn("round cap of 10", named[-1]["reason"])
         # Rounds hands its cap to the scan.
-        rounds = select.Rounds(
+        rounds = rounding.Rounds(
             "org",
             bot=BOT,
             fork_orgs=FORK_ORGS,
@@ -561,7 +585,7 @@ class ScanTest(RevisionCase):
         )
         with (
             patch.object(revisions, "search_bot_pull_requests", return_value=hits),
-            patch.object(select, "scan", wraps=select.scan) as scanned,
+            patch.object(rounding, "scan", wraps=scanning.scan) as scanned,
         ):
             rounds.scan()
         self.assertEqual(scanned.call_args.kwargs["max_rounds"], 12)
@@ -608,7 +632,7 @@ class ScanTest(RevisionCase):
         patch.object(reads, "issue_details", side_effect=per_issue).start()
         self.threads = [thread()]
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -638,7 +662,7 @@ class ScanTest(RevisionCase):
 
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -676,7 +700,7 @@ class ScanTest(RevisionCase):
             patch.object(revisions, "search_bot_pull_requests", return_value=hits),
             patch.object(scanning, "build_entry", wraps=select.build_entry) as built,
         ):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -703,7 +727,7 @@ class ScanTest(RevisionCase):
         def held(_repository: str, _numbers: tuple[int, ...], _reference: str) -> bool:
             return False
 
-        rounds = select.Rounds(
+        rounds = rounding.Rounds(
             "org",
             bot=BOT,
             fork_orgs=FORK_ORGS,
@@ -713,7 +737,7 @@ class ScanTest(RevisionCase):
         )
         with (
             patch.object(revisions, "search_bot_pull_requests", return_value=[]),
-            patch.object(select, "scan", wraps=select.scan) as scanned,
+            patch.object(rounding, "scan", wraps=scanning.scan) as scanned,
         ):
             rounds.scan(held)
             rounds.scan()
@@ -740,7 +764,7 @@ class ScanTest(RevisionCase):
         named: list[dict[str, str]] = []
         patch.object(reads, "issue_details", return_value=details).start()
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -763,7 +787,7 @@ class PullRequestForBranchTest(unittest.TestCase):
             {"user": {"login": BOT["login"]}, "number": 6},
         ]
         with patch.object(reads, "api_page", return_value=entries) as page:
-            number = select.pull_request_for_branch(
+            number = revisions.pull_request_for_branch(
                 "org/alpha", "lfreleng-bot-forks", "code-monkey/issue-7", BOT["login"]
             )
         self.assertEqual(number, 6)
@@ -772,7 +796,7 @@ class PullRequestForBranchTest(unittest.TestCase):
         )
         with patch.object(reads, "api_page", return_value=[]):
             self.assertIsNone(
-                select.pull_request_for_branch("org/alpha", "f", "b", BOT["login"])
+                revisions.pull_request_for_branch("org/alpha", "f", "b", BOT["login"])
             )
 
 

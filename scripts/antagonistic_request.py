@@ -29,8 +29,9 @@ import review_outcome
 from round_caps import AT_CAP, at_cap
 
 STATES = ("requested", "off", "skipped", "dry-run")
-# The checks a nomination accepts: the antagonistic mode does not wait for CI.
-ACCEPTED_CHECKS = ("passing", "running", "none")
+# The checks a nomination accepts: the antagonistic mode does not wait for
+# CI, and a re-run of a job the egress agent failed is no reason to wait.
+ACCEPTED_CHECKS = ("passing", "infrastructure", "running", "none")
 PULL_URL = re.compile(
     r"https://github\.com/(?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
     r"/pull/(?P<number>[1-9][0-9]*)",

@@ -792,6 +792,7 @@ class AwaitChecksTest(unittest.TestCase):
                 "title",
                 "summary",
                 "annotations",
+                "kind",
             },
         )
         self.assertGreaterEqual(found.dropped, 6)
@@ -873,6 +874,145 @@ class AwaitChecksTest(unittest.TestCase):
         found = review.head_checks.await_checks(REPO, HEAD, lambda: HEAD, window)
         self.assertEqual(found.state, "unknown")
         self.assertIn("no time left", str(found.reason))
+
+
+AGENT_MESSAGE = (
+    "harden-runner's agent reverted its changes after 0.0 s (see the agent log "
+    "below); the job has no egress filtering"
+)
+
+
+class InfrastructureChecksTest(unittest.TestCase):
+    """Runs the egress agent failed make an ``infrastructure`` head (#165)."""
+
+    def await_with(self, runs: list[dict[str, Any]], failed_at_agent: set[int]) -> Any:
+        """Await the checks of ``runs``, the given ids failing at the agent."""
+        for item in runs:
+            item["output"]["annotations_count"] = 1
+
+        def notes(endpoint: str) -> list[dict[str, Any]]:
+            identity = int(endpoint.split("/check-runs/")[1].split("/")[0])
+            message = AGENT_MESSAGE if identity in failed_at_agent else "exit 2"
+            return [
+                {"annotation_level": "failure", "path": ".github", "message": message}
+            ]
+
+        clock = Clock()
+        window = review.head_checks.Window.of(
+            20, review.READ_BUDGET_SECONDS, clock, clock.sleep
+        )
+        with (
+            patch.object(
+                github,
+                "api_object",
+                return_value={"total_count": len(runs), "check_runs": runs},
+            ),
+            patch.object(reads, "api_page", side_effect=notes),
+        ):
+            return review.head_checks.await_checks(REPO, HEAD, lambda: HEAD, window)
+
+    def test_all_failures_at_the_agent_are_infrastructure(self) -> None:
+        """The entries stay under ``failing``, marked, and the warning says so."""
+        runs = [
+            check_run(1, "Semantic Pull Request", conclusion="failure"),
+            check_run(2, "Repository Metadata", conclusion="failure"),
+            check_run(3, "ok"),
+        ]
+        found = self.await_with(runs, {1, 2})
+        self.assertEqual(found.state, "infrastructure")
+        self.assertEqual(
+            [entry["kind"] for entry in found.failing],
+            ["infrastructure", "infrastructure"],
+        )
+        warning = review.head_checks.annotation(found, HEAD)
+        assert warning is not None
+        self.assertTrue(warning.startswith("::warning title=Checks::"))
+        self.assertIn("failed at the egress agent", warning)
+        self.assertIn("need a re-run", warning)
+        self.assertIn("infrastructure", found.to_json(HEAD)["state"])
+
+    def test_a_defect_among_them_stays_failing(self) -> None:
+        """A mix of defect and infrastructure failures is ``failing``."""
+        runs = [
+            check_run(1, "Agent", conclusion="failure"),
+            check_run(2, "Test", conclusion="failure"),
+        ]
+        found = self.await_with(runs, {1})
+        self.assertEqual(found.state, "failing")
+        self.assertEqual(
+            [(entry["name"], entry["kind"]) for entry in found.failing],
+            [("Test", "defect"), ("Agent", "infrastructure")],
+        )
+        warning = review.head_checks.annotation(found, HEAD)
+        assert warning is not None
+        self.assertIn("failing checks on", warning)
+        self.assertIn("Test", warning)
+        self.assertIn("1 more failed at the egress agent", warning)
+
+    def test_the_record_keeps_the_whole_count(self) -> None:
+        """Runs the packet bound left out still count, in the record and warning."""
+        runs = [
+            check_run(1, "Lint", conclusion="failure"),
+            check_run(2, "Build", conclusion="failure"),
+            check_run(3, "Test", conclusion="failure"),
+        ]
+        kept: dict[str, Any] = {
+            "name": "Lint",
+            "conclusion": "failure",
+            "app": "github-actions",
+            "details_url": "",
+            "title": "",
+            "summary": "",
+            "annotations": [],
+            "kind": "infrastructure",
+        }
+        packet = review.head_checks.checks.CheckPacket([kept], 2, 0, infrastructure=3)
+        with patch.object(review.head_checks.checks, "failing_of", return_value=packet):
+            found = self.await_with(runs, set())
+        self.assertEqual(found.state, "infrastructure")
+        self.assertEqual(found.to_json(HEAD)["infrastructure"], 3)
+        warning = review.head_checks.annotation(found, HEAD)
+        assert warning is not None
+        self.assertIn("need a re-run: Lint and 2 more.", warning)
+
+    def test_a_mixed_head_counts_the_agent_runs_left_out(self) -> None:
+        """The defect warning counts every agent failure, kept or not."""
+        defect = {"name": "Test", "kind": "defect"}
+        found = review.head_checks.HeadChecks(
+            "failing", [defect], dropped=2, infrastructure=2
+        )
+        warning = review.head_checks.annotation(found, HEAD)
+        assert warning is not None
+        self.assertIn("Test; 2 more failed at the egress agent", warning)
+        bare = review.head_checks.HeadChecks("infrastructure", [], infrastructure=2)
+        warning = review.head_checks.annotation(bare, HEAD)
+        assert warning is not None
+        self.assertIn("re-run: 2 left out of the record by its bounds.", warning)
+
+    def test_a_defect_past_the_bounds_still_fails_the_head(self) -> None:
+        """The record counts defects whole; the warning counts one left out."""
+        runs = [
+            check_run(i, f"a{i:02}", conclusion="failure")
+            for i in range(1, review.head_checks.checks.MAX_CHECKS + 1)
+        ]
+        runs.append(check_run(99, "zz", conclusion="failure"))
+        found = self.await_with(runs, {run["id"] for run in runs[:-1]})
+        self.assertEqual(found.state, "failing")
+        self.assertEqual(len(found.failing), review.head_checks.checks.MAX_CHECKS)
+        first = found.failing[0]
+        self.assertEqual((first["name"], first["kind"]), ("zz", "defect"))
+        record = found.to_json(HEAD)
+        self.assertEqual((record["defects"], record["infrastructure"]), (1, 30))
+        # A running record that kept agent failures alone still counts
+        # the defect its bounds left out.
+        agent = found.failing[1:]
+        running = review.head_checks.HeadChecks(
+            "running", agent, 2, 1, infrastructure=30, defects=1
+        )
+        warning = review.head_checks.annotation(running, HEAD)
+        assert warning is not None
+        self.assertIn("failing checks on", warning)
+        self.assertIn("1 left out of the record by its bounds; 30 more", warning)
 
 
 class HandlersTest(unittest.TestCase):
@@ -1491,6 +1631,8 @@ class HandlersTest(unittest.TestCase):
                 "failing",
                 "dropped",
                 "unsettled",
+                "infrastructure",
+                "defects",
                 "read_at",
                 "reason",
             },

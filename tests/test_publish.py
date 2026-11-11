@@ -4184,8 +4184,8 @@ class HeadChecksTest(unittest.TestCase):
             text = md.read_text(encoding="utf-8")
             report = json.loads(out.read_text(encoding="utf-8"))
         self.assertIn(
-            "Head checks: passing 1, failing 1, running 0, none 0, unknown 1, "
-            "not read 1.",
+            "Head checks: passing 1, infrastructure 0, failing 1, running 0, "
+            "none 0, unknown 1, not read 1.",
             text,
         )
         self.assertEqual(report["check_totals"]["unknown"], 1)
@@ -4304,6 +4304,262 @@ class HeadChecksTest(unittest.TestCase):
             outputs.failing_check_lines([url]),
             f'failing_check_pull_requests=["{url}"]\n',
         )
+
+
+def infrastructure_record(
+    state: str, agent: list[str], defects: list[str] | None = None, **overrides: Any
+) -> dict[str, Any]:
+    """A ``checks`` record whose entries the egress agent failed, or not (#165)."""
+    record = checks_record(state, *agent, *(defects or []), **overrides)
+    for entry in record["failing"]:
+        entry["kind"] = "infrastructure" if entry["name"] in agent else "defect"
+    return record
+
+
+class InfrastructureChecksTest(unittest.TestCase):
+    """Failures at the egress agent are reported apart from defects (#165)."""
+
+    def test_state_reads_and_is_not_a_failure(self) -> None:
+        """``infrastructure`` is a state of its own, and no failing check."""
+        data = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("infrastructure", ["Lint"]),
+        )
+        self.assertEqual(review_outcome.checks_state(data), "infrastructure")
+        self.assertFalse(review_outcome.checks_failed(data))
+        self.assertEqual(review_outcome.failing_check_names(data), [])
+        self.assertEqual(review_outcome.infrastructure_check_names(data), ["Lint"])
+        self.assertFalse(comments.capped({**data, "round": 10, "mergeable": True}))
+
+    def test_comment_names_them_apart_and_safely(self) -> None:
+        """The sentence counts and names them; hostile names are defused."""
+        data = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("infrastructure", [HOSTILE_CHECK, "Lint"]),
+        )
+        text = comments.comment_body(data, "") or ""
+        self.assertIn(
+            " 2 check(s) failed at the egress agent and need a re-run: Select ## "
+            "&lt;!-- x --&gt;",
+            text,
+        )
+        self.assertNotIn("Checks failed on its head", text)
+        self.assertNotIn("\n", text)
+        self.assertNotIn("<!--", text)
+
+    def test_mixed_failures_stay_failing_and_name_both(self) -> None:
+        """A defect beside an infrastructure failure is still a failing head."""
+        data = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("failing", ["Agent"], ["Test"]),
+        )
+        self.assertTrue(review_outcome.checks_failed(data))
+        self.assertEqual(review_outcome.failing_check_names(data), ["Test"])
+        text = comments.comment_body(data, "") or ""
+        self.assertIn(" Checks failed on its head: Test.", text)
+        self.assertIn(
+            " 1 check(s) failed at the egress agent and need a re-run: Agent.", text
+        )
+
+    def test_marker_word_carries_the_new_state(self) -> None:
+        """A rerun that turned a failing head into an infrastructure one posts."""
+        clean = review_record("clean")
+        agent = review_outcome.checks_token(
+            result_json(
+                review=clean, checks=infrastructure_record("infrastructure", ["Lint"])
+            )
+        )
+        failing = review_outcome.checks_token(
+            result_json(review=clean, checks=checks_record("failing", "Lint"))
+        )
+        assert agent is not None
+        self.assertRegex(agent, r"\Ainfrastructure/[0-9a-f]{12}\Z")
+        self.assertNotEqual(agent, failing)
+        found = round_reads.FOOTER.search(
+            f"x\n<!-- code-monkey https://run proposed checks={agent} round=4 -->"
+        )
+        assert found is not None
+        self.assertEqual(found.group("round"), "4")
+
+    def test_report_counts_them_and_outputs_leave_them_out(self) -> None:
+        """Their own total and list; the failing-check output keeps defects."""
+        url = f"https://github.com/{REPOSITORY}/pull/8"
+        agent_only = result_json(
+            key="a-1",
+            review=review_record("clean"),
+            checks=infrastructure_record("infrastructure", ["Lint", "Build"]),
+        )
+        mixed = result_json(
+            key="b-2",
+            review=review_record("clean"),
+            checks=infrastructure_record("failing", ["Agent"], ["Test"]),
+            pull_request_url=url,
+        )
+        self.assertEqual(
+            outputs.failing_check_urls([agent_only, mixed], "owner"), [url]
+        )
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            results = root / "results"
+            for data in (agent_only, mixed):
+                directory = results / str(data["key"])
+                directory.mkdir(parents=True)
+                (directory / "result.json").write_text(
+                    json.dumps(data), encoding="utf-8"
+                )
+            md, out = root / "report.md", root / "report.json"
+            reporting.run_report(
+                argparse.Namespace(results=results, output_md=md, output_json=out)
+            )
+            text = md.read_text(encoding="utf-8")
+            report = json.loads(out.read_text(encoding="utf-8"))
+        self.assertIn(
+            "Head checks: passing 0, infrastructure 1, failing 1, running 0, "
+            "none 0, unknown 0, not read 0.",
+            text,
+        )
+        self.assertEqual(report["check_totals"]["infrastructure"], 1)
+        self.assertEqual(report["infrastructure_check_failures"], 3)
+        self.assertIn("failed at the egress agent and need a re-run", text)
+        listed = [line for line in text.splitlines() if line.startswith("- ")]
+        self.assertTrue(any("Lint, Build" in line for line in listed))
+
+    def test_whole_count_outlasts_the_names_kept(self) -> None:
+        """Runs the packet bound left out count in the comment and the report."""
+        data = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("infrastructure", ["Lint"], infrastructure=3),
+        )
+        self.assertEqual(review_outcome.infrastructure_count(data), 3)
+        text = comments.comment_body(data, "") or ""
+        self.assertIn(
+            " 3 check(s) failed at the egress agent and need a re-run: Lint and 2 "
+            "more.",
+            text,
+        )
+        bare = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("infrastructure", [], infrastructure=2),
+        )
+        self.assertIn(
+            " 2 check(s) failed at the egress agent and need a re-run.",
+            comments.comment_body(bare, "") or "",
+        )
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            results = root / "results"
+            for item in (data, {**bare, "key": "b-2"}):
+                directory = results / str(item["key"])
+                directory.mkdir(parents=True)
+                (directory / "result.json").write_text(
+                    json.dumps(item), encoding="utf-8"
+                )
+            md, out = root / "report.md", root / "report.json"
+            reporting.run_report(
+                argparse.Namespace(results=results, output_md=md, output_json=out)
+            )
+            text = md.read_text(encoding="utf-8")
+            report = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(report["infrastructure_check_failures"], 5)
+        listed = [line for line in text.splitlines() if line.startswith("- ")]
+        self.assertTrue(any("Lint and 2 more" in line for line in listed))
+        self.assertTrue(any(line.endswith(": 2 not named") for line in listed))
+
+    def test_a_bad_count_falls_back_to_the_names(self) -> None:
+        """A count that is no whole number reads as the names the record kept."""
+        for value in (-1, "3", True, 10_000):
+            data = result_json(
+                review=review_record("clean"),
+                checks=infrastructure_record(
+                    "infrastructure", ["Lint"], infrastructure=value
+                ),
+            )
+            self.assertEqual(review_outcome.infrastructure_count(data), 1, value)
+
+    def test_a_record_without_the_count_still_reads(self) -> None:
+        """An older record, before the whole count, keeps its state."""
+        data = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("infrastructure", ["Lint"]),
+        )
+        self.assertEqual(review_outcome.checks_state(data), "infrastructure")
+        self.assertEqual(review_outcome.infrastructure_count(data), 1)
+
+    def test_a_defect_left_out_still_fails_a_running_head(self) -> None:
+        """A whole defect count outlasts names the bounds cut (#174 review)."""
+        agent = [f"a{i:02}" for i in range(30)]
+        url = f"https://github.com/{REPOSITORY}/pull/8"
+        record = infrastructure_record("running", agent, unsettled=1, infrastructure=30)
+        record["defects"] = 1
+        data = result_json(
+            review=review_record("clean"), checks=record, pull_request_url=url
+        )
+        self.assertEqual(review_outcome.failing_check_names(data), [])
+        self.assertEqual(review_outcome.defect_count(data), 1)
+        self.assertTrue(review_outcome.checks_failed(data))
+        self.assertEqual(outputs.failing_check_urls([data], "owner"), [url])
+        self.assertIn(
+            " Checks were still running on its head when the wait ended, and 1 "
+            "had failed.",
+            comments.comment_body(data, "") or "",
+        )
+        with tempfile.TemporaryDirectory() as work:
+            results = Path(work) / "results"
+            directory = results / str(data["key"])
+            directory.mkdir(parents=True)
+            (directory / "result.json").write_text(json.dumps(data), encoding="utf-8")
+            md, out = Path(work) / "report.md", Path(work) / "report.json"
+            reporting.run_report(
+                argparse.Namespace(results=results, output_md=md, output_json=out)
+            )
+            text = md.read_text(encoding="utf-8")
+        self.assertIn(f"{url}: 1 not named", text)
+
+    def test_marker_word_follows_the_whole_counts(self) -> None:
+        """A count past the names kept changes the word (#174 review)."""
+        clean = review_record("clean")
+
+        def token(record: dict[str, Any]) -> str | None:
+            return review_outcome.checks_token(result_json(review=clean, checks=record))
+
+        agent = [f"a{i:02}" for i in range(30)]
+        self.assertNotEqual(
+            token(infrastructure_record("infrastructure", agent, infrastructure=31)),
+            token(infrastructure_record("infrastructure", agent, infrastructure=32)),
+        )
+        running = infrastructure_record("running", agent, unsettled=1)
+        self.assertNotEqual(
+            token({**running, "defects": 1}), token({**running, "defects": 2})
+        )
+        hidden = token(checks_record("running", unsettled=1, defects=1))
+        assert hidden is not None
+        self.assertRegex(hidden, r"\Arunning/[0-9a-f]{12}\Z")
+        self.assertNotEqual(
+            hidden, token(checks_record("running", unsettled=1, defects=2))
+        )
+        self.assertEqual(
+            token(checks_record("failing", "Test", defects=1)),
+            token(checks_record("failing", "Test")),
+        )
+        self.assertEqual(
+            token(infrastructure_record("infrastructure", ["Lint"], infrastructure=1)),
+            token(infrastructure_record("infrastructure", ["Lint"])),
+        )
+
+    def test_a_record_without_the_defect_count_reads_its_names(self) -> None:
+        """An older running record fails on the defect names it kept alone."""
+        agent_only = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("running", ["Lint"], unsettled=1),
+        )
+        self.assertEqual(review_outcome.checks_state(agent_only), "running")
+        self.assertFalse(review_outcome.checks_failed(agent_only))
+        mixed = result_json(
+            review=review_record("clean"),
+            checks=infrastructure_record("running", ["Lint"], ["Test"], unsettled=1),
+        )
+        self.assertEqual(review_outcome.defect_count(mixed), 1)
+        self.assertTrue(review_outcome.checks_failed(mixed))
 
 
 if __name__ == "__main__":

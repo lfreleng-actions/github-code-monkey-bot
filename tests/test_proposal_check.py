@@ -1450,6 +1450,18 @@ class RevisionCheckTest(GitCase):
         )
         self.assertEqual(check.to_json()["failing_checks"], check.failing_checks)
 
+    def test_round_note_leaves_infrastructure_failures_out(self) -> None:
+        """A run the egress agent failed is not one the round set out to fix."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        check = self.run_revision(
+            checks=[
+                {"name": "Agent", "conclusion": "failure", "kind": "infrastructure"},
+                {"name": "Test", "conclusion": "failure", "kind": "defect"},
+            ]
+        )
+        self.assertEqual(check.failing_checks, ["Test"])
+
     def test_round_note_names_checks_still_running_at_selection(self) -> None:
         """The description says how many checks had not finished at selection."""
         self.fixture.bundle()

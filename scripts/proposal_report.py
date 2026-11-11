@@ -174,11 +174,44 @@ def failing_check_lines(results: list[dict[str, Any]]) -> list[str]:
         label = cell(f"{item.get('repository')}#{item.get('issue')}")
         url = cell(item.get("pull_request_url") or "—")
         names = review_outcome.failing_check_names(item)
-        listed = policy.failing_checks_text(list(names[:MAX_LISTED_CHECKS]))
-        if len(names) > MAX_LISTED_CHECKS:
-            listed += f" and {len(names) - MAX_LISTED_CHECKS} more"
+        shown = names[:MAX_LISTED_CHECKS]
+        listed = policy.failing_checks_text(list(shown))
+        more = review_outcome.defect_count(item) - len(shown)
+        if more > 0:
+            listed += f" and {more} more" if listed else f"{more} not named"
         detail = f": {cell(listed)}" if listed else ""
         detail += cap_detail(item)
+        lines.append(f"- {label}: {url}{detail}")
+    return [*lines, ""]
+
+
+def infrastructure_check_lines(results: list[dict[str, Any]]) -> list[str]:
+    """The pull requests whose checks failed at the egress agent, with the names.
+
+    Those runs failed before the job ran its own steps, so they need a
+    re-run, not a fix; a head that also failed a defect is listed here
+    and among the failing checks. Names are bounded and escaped as
+    ``failing_check_lines`` bounds and escapes them.
+    """
+    listed = [item for item in results if review_outcome.infrastructure_count(item)]
+    if not listed:
+        return []
+    lines = [
+        "Pull requests with checks that failed at the egress agent and need a "
+        "re-run: infrastructure, not a defect of the change, so they spend no "
+        "revision round.",
+        "",
+    ]
+    for item in listed:
+        label = cell(f"{item.get('repository')}#{item.get('issue')}")
+        url = cell(item.get("pull_request_url") or "—")
+        names = review_outcome.infrastructure_check_names(item)
+        shown = names[:MAX_LISTED_CHECKS]
+        text = policy.failing_checks_text(list(shown))
+        more = review_outcome.infrastructure_count(item) - len(shown)
+        if more > 0:
+            text += f" and {more} more" if text else f"{more} not named"
+        detail = f": {cell(text)}" if text else ""
         lines.append(f"- {label}: {url}{detail}")
     return [*lines, ""]
 
@@ -301,12 +334,14 @@ def run_report(args: argparse.Namespace) -> None:
     review_totals: dict[str, int] = dict.fromkeys(REVIEW_COLUMNS, 0)
     merge_totals: dict[str, int] = dict.fromkeys(MERGE_COLUMNS, 0)
     check_totals: dict[str, int] = dict.fromkeys(CHECK_COLUMNS, 0)
+    infrastructure_failures = 0
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
         review_totals[review_outcome.review_verdict(item) or "none"] += 1
         merge_totals[review_outcome.merge_token(item) or "none"] += 1
         check_totals[review_outcome.checks_state(item) or "not read"] += 1
+        infrastructure_failures += review_outcome.infrastructure_count(item)
         lines.append(report_row(item))
     spend = total_spend(every, results)
     for problem in unreadable:
@@ -337,6 +372,7 @@ def run_report(args: argparse.Namespace) -> None:
         "",
         *conflict_lines(results),
         *failing_check_lines(results),
+        *infrastructure_check_lines(results),
         policy.REVISION_DISCLOSURE,
         "",
     ]
@@ -351,6 +387,7 @@ def run_report(args: argparse.Namespace) -> None:
                 "review_totals": review_totals,
                 "merge_totals": merge_totals,
                 "check_totals": check_totals,
+                "infrastructure_check_failures": infrastructure_failures,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "results": results,

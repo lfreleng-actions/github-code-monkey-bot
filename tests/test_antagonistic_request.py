@@ -91,6 +91,12 @@ class NominationRuleTest(unittest.TestCase):
                 self.assertIsNone(antagonistic.unmet(with_checks(state=state)))
         self.assertIsNone(antagonistic.unmet(clean(mergeable=None)))
 
+    def test_infrastructure_checks_are_nominated(self) -> None:
+        """A re-run of a job the egress agent failed is no reason to wait (#165)."""
+        agent = {"name": "lint", "kind": "infrastructure"}
+        item = with_checks(state="infrastructure", failing=[agent])
+        self.assertIsNone(antagonistic.unmet(item))
+
     def test_everything_else_is_not_nominated(self) -> None:
         """Findings, pending, absent, failing, conflicting and the rest."""
         failing = with_checks(state="failing", failing=[{"name": "lint"}])

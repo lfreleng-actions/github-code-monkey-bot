@@ -160,9 +160,11 @@ class Check:
                 {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
                 for t in cast("list[dict[str, Any]]", entry.get("threads") or [])
             ]
+            # A run the egress agent failed is not one the round fixes.
             check.failing_checks = [
                 str(c["name"])
                 for c in cast("list[dict[str, Any]]", entry.get("checks") or [])
+                if c.get("kind") != "infrastructure"
             ]
             check.checks_unsettled = outcome.unsettled_count(
                 entry.get("checks_unsettled")

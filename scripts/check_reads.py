@@ -10,6 +10,12 @@ session recovers the cause by running the failing job's commands in
 its checkout (DESIGN.md section 20). Names, titles, summaries and
 annotation messages come from code under review: data, bounded here
 as the threads are.
+
+A failing run whose failure-level annotation shows harden-runner's
+egress agent never came up failed before the job ran its own steps:
+it is ``infrastructure``, which needs a re-run, not a defect of the
+change, and it brings no round. A repository that fakes the wording
+can at most make its own failure count as one, which spends nothing.
 """
 
 from __future__ import annotations
@@ -29,6 +35,17 @@ LEVELS = frozenset({"failure", "warning"})
 # Check names whose failure the head's own round cannot influence, so
 # they bring no round on their own. None at present.
 EXCLUDED: frozenset[str] = frozenset()
+# What harden-runner-block-action writes on a failure-level annotation
+# when the egress agent did not start: a stable title, and the three
+# wordings its message opens with. Matched exactly, case and all.
+AGENT_TITLE = "harden-runner agent did not start"
+AGENT_MESSAGES = (
+    "harden-runner's agent reverted its changes",
+    "harden-runner's agent did not report ready",
+    "harden-runner's agent reported an error",
+)
+DEFECT = "defect"
+INFRASTRUCTURE = "infrastructure"
 MAX_CHECKS = 30
 MAX_ANNOTATIONS = 10
 MAX_TEXT = 2 * 1024
@@ -51,20 +68,22 @@ class CheckPacket:
     checks: list[dict[str, Any]]
     # Failing runs, and annotations of kept runs, the bounds left out.
     dropped: int
-    # Failing runs, kept or dropped, that are not on the exclusion list.
+    # Failing defect runs, kept or dropped, not on the exclusion list.
     outstanding: int
     # Runs not yet completed: queued, in progress or waiting. Whole,
     # whatever the bounds keep; their absence from ``checks`` proves
     # nothing about whether they will pass.
     unsettled: int = 0
+    # Failing runs the egress agent failed, kept or dropped.
+    infrastructure: int = 0
 
 
 def failing_checks(repository: str, head_sha: str) -> CheckPacket:
     """The head's failing check runs with their annotations, bounded.
 
-    Every run is read before the bounds apply, so the count of
-    failing runs that bring a round, and of runs yet to finish, is
-    whole whatever the packet keeps.
+    Every run is read before the bounds apply, so the counts of
+    failing runs that bring a round, of infrastructure failures and of
+    runs yet to finish are whole whatever the packet keeps.
     """
     return failing_of(repository, check_runs(repository, head_sha))
 
@@ -78,20 +97,36 @@ def failing_of(
     """The failing runs among ``runs`` with their annotations, bounded.
 
     With ``fits``, an annotation page that would not fit the caller's
-    wait is not read: its annotations count as dropped.
+    wait is not read: its annotations count as dropped. Every failing
+    run is classified on every annotation read, before the bounds cut
+    runs or annotations, so a run past the run bound counts by its
+    kind too; one whose annotations went unread counts as a defect.
+    Defect runs take the bounds first, by name, and infrastructure
+    runs fill what is left: the run that brings a round is the one
+    the session has to see.
     """
     failing = sorted(
         (run for run in runs if is_failing(run)),
         key=lambda run: (str(run.get("name") or ""), run_id(run) or 0),
     )
-    outstanding = sum(1 for run in failing if run.get("name") not in EXCLUDED)
     unsettled = sum(1 for run in runs if is_unsettled(run))
+    classified: list[tuple[dict[str, Any], list[dict[str, Any]], int, str]] = []
+    outstanding = 0
+    infrastructure = 0
+    for run in failing:
+        annotations, unread = run_annotations(repository, run, fits=fits)
+        kind = kind_of(annotations)
+        if kind == INFRASTRUCTURE:
+            infrastructure += 1
+        elif run.get("name") not in EXCLUDED:
+            outstanding += 1
+        classified.append((run, annotations, unread, kind))
+    classified.sort(key=lambda item: item[3] == INFRASTRUCTURE)
     kept: list[dict[str, Any]] = []
     dropped = max(0, len(failing) - MAX_CHECKS)
     total = 0
-    for run in failing[:MAX_CHECKS]:
-        annotations, unread = run_annotations(repository, run, fits=fits)
-        entry = check_entry(run, annotations[:MAX_ANNOTATIONS])
+    for run, annotations, unread, kind in classified[:MAX_CHECKS]:
+        entry = check_entry(run, annotations[:MAX_ANNOTATIONS], kind)
         while total + entry_size(entry) > MAX_CHECK_BYTES and entry["annotations"]:
             entry["annotations"].pop()
         size = entry_size(entry)
@@ -102,7 +137,7 @@ def failing_of(
         dropped += unread + len(annotations) - len(entry["annotations"])
         total += size
         kept.append(entry)
-    return CheckPacket(kept, dropped, outstanding, unsettled)
+    return CheckPacket(kept, dropped, outstanding, unsettled, infrastructure)
 
 
 def check_runs(
@@ -196,6 +231,23 @@ def run_annotations(
     return found, max(0, count - read)
 
 
+def kind_of(annotations: list[dict[str, Any]]) -> str:
+    """``infrastructure`` when a failure-level annotation shows the agent failed.
+
+    A warning carrying the wording is the block action's warning
+    path, and the wording part-way through a message is not its own:
+    neither classifies.
+    """
+    for item in annotations:
+        if item["level"] != "failure":
+            continue
+        if item.get("title", "").strip() == AGENT_TITLE:
+            return INFRASTRUCTURE
+        if item["message"].strip().startswith(AGENT_MESSAGES):
+            return INFRASTRUCTURE
+    return DEFECT
+
+
 def annotation(item: dict[str, Any]) -> dict[str, Any] | None:
     """One annotation in packet form, or None for a notice or a malformed one."""
     level = item.get("annotation_level")
@@ -206,6 +258,7 @@ def annotation(item: dict[str, Any]) -> dict[str, Any] | None:
         "level": level,
         "path": text(item.get("path")),
         "line": line if type(line) is int else None,
+        "title": text(item.get("title")),
         "message": text(item.get("message")),
     }
 
@@ -216,9 +269,9 @@ def text(value: Any) -> str:
 
 
 def check_entry(
-    run: dict[str, Any], annotations: list[dict[str, Any]]
+    run: dict[str, Any], annotations: list[dict[str, Any]], kind: str = DEFECT
 ) -> dict[str, Any]:
-    """One failing run in packet form."""
+    """One failing run in packet form, with its ``kind``."""
     output = output_of(run)
     app = run.get("app")
     slug = cast("dict[str, Any]", app).get("slug") if isinstance(app, dict) else None
@@ -230,6 +283,7 @@ def check_entry(
         "title": text(output.get("title")),
         "summary": text(output.get("summary")),
         "annotations": annotations,
+        "kind": kind,
     }
 
 
@@ -237,5 +291,5 @@ def entry_size(entry: dict[str, Any]) -> int:
     """The bytes a failing run costs the packet: its text and its annotations."""
     fields = [entry["name"], entry["details_url"], entry["title"], entry["summary"]]
     for item in cast("list[dict[str, Any]]", entry["annotations"]):
-        fields += [item["path"], item["message"]]
+        fields += [item["path"], item["title"], item["message"]]
     return sum(len(str(field).encode("utf-8")) for field in fields)

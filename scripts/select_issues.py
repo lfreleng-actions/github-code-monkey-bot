@@ -38,7 +38,7 @@ import issue_reads as reads
 import overlap_wait
 import previous_rejection
 import repository_reads as repositories
-import revision_select
+import revision_rounds
 import run_overlap
 import selection_outputs as outputs
 from fork_orgs import ForkOrgError
@@ -312,7 +312,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             return name in explicit
         return name not in lowered and (name != ".github" or args.include_dotgithub)
 
-    rounds = revision_select.Rounds(
+    rounds = revision_rounds.Rounds(
         args.org,
         bot=bot,
         fork_orgs=fork_orgs,
