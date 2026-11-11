@@ -29,6 +29,11 @@ def load_json(path: Path, context: str) -> dict[str, Any]:
     return cast("dict[str, Any]", parsed)
 
 
+def fork_tree_url(check: dict[str, Any]) -> str:
+    """Where the bot branch lives: in the fork, never the target."""
+    return f"https://github.com/{check['fork_repository']}/tree/{check['branch']}"
+
+
 @dataclass
 class Check:
     """Accumulates the verdict for one proposal."""

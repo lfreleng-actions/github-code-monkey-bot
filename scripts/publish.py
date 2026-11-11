@@ -47,6 +47,7 @@ from typing import Any, NoReturn, cast
 import bot_github as github
 import copilot_review as review
 import issue_comment as comments
+import issue_recheck as recheck
 import proposal_check as checks
 import proposal_model as model
 import proposal_policy as policy
@@ -68,11 +69,6 @@ from proposal_policy import PublishError, Rejection
 from stale_branch import ClosedAttempt, create_fresh_branch, restore_closed_attempt
 
 SCHEMA = 1
-
-
-def fork_tree_url(check: dict[str, Any]) -> str:
-    """Where the bot branch lives: in the fork, never the target."""
-    return f"https://github.com/{check['fork_repository']}/tree/{check['branch']}"
 
 
 def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, Any]:
@@ -122,6 +118,8 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
         if check.get("task") == "revise":
             return revision_publish.run_push(args, check, result, fail=fail)
         if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
+            return result
+        if recheck.rejected(args, check, result, fail=fail):
             return result
         target = str(check["repository"])
         fork = str(check["fork_repository"])
@@ -178,7 +176,7 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
                 str(exc) + (f"; {leftover}" if leftover else "; branch removed"),
                 exc,
             )
-        result["branch_url"] = fork_tree_url(check)
+        result["branch_url"] = model.fork_tree_url(check)
         return result
 
 
@@ -226,7 +224,7 @@ def reconcile(
     result["commits"] = chain
     earlier = existing_pull_request(str(check["repository"]), branch, bot, fork)
     warnings = cast("list[str]", result["warnings"])
-    result["branch_url"] = fork_tree_url(check)
+    result["branch_url"] = model.fork_tree_url(check)
     result["pull_request_url"] = earlier
     if earlier is not None or args.mode != "pull-requests":
         warnings.append("an earlier attempt already published this work")
@@ -280,6 +278,8 @@ def run_open(args: argparse.Namespace) -> dict[str, Any]:
                 exc,
             )
         if earlier is None:
+            if recheck.already_exists(exc, result):
+                return result
             fail(args, result, f"{exc}; fork branch kept for the next run", exc)
         url = earlier
         warning = f"the pull request call reported {exc} but the pull request exists"

@@ -235,6 +235,10 @@ class RecoveryCase(unittest.TestCase):
         blobs = patch.object(checks, "git", return_value=b"one")
         blobs.start()
         self.addCleanup(blobs.stop)
+        # The issue re-read has tests of its own; here the issue stands.
+        fresh = patch.object(publish.recheck, "stale_selection", return_value=None)
+        fresh.start()
+        self.addCleanup(fresh.stop)
 
     def push(self, check: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run ``publish.py push`` in pull-requests mode; return the result."""

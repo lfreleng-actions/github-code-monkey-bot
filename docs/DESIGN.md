@@ -427,7 +427,11 @@ Consequences the implementation has to handle:
   reports an adopted branch without a new pull request, or in
   `pull-requests` mode opens the pull request an earlier attempt
   never opened; the outcome comment's marker keeps any comment from
-  repeating. Any other existing branch is a rejection.
+  repeating. Any other existing branch is a rejection. A maintainer
+  may delete the branch after a merge, though, so
+  before any write the publisher re-reads the issue and every pull
+  request from the branch (§8 step 8) and refuses on a closed issue
+  or a pull request another run published meanwhile.
 - **Payload size.** GitHub does not document the mutation's request
   limit. The publisher caps total added bytes at 4 MiB and rejects
   binaries over 512 KiB; the rollout (§15) confirms the cap holds.
@@ -679,6 +683,9 @@ again, and the run works the issue afresh on the same
 closed attempt's head to the base (§5 "An existing branch"). A merged one
 does: the work landed, and redoing it takes a new issue. An open one
 becomes a revision round where §20.1 allows, and a skip otherwise.
+The publisher re-makes these checks, on a scan and a named run
+alike, before it writes (§8 step 8): the selection's reads may be an
+hour old by the time the author session ends.
 A named run reads each distinct repository on its own and never
 lists the owner, so an owner at the listing ceiling can still have
 an issue named; a skip never stops the issues beside it, while a
@@ -1079,12 +1086,33 @@ For each selected issue:
    can set its title first (§20.3); the push step itself holds the
    fork token alone, and `open` and `respond` wait for the push to
    succeed.
-8. **Push to the fork.** Find or create the fork (§4.3), sync its
-   default branch, create `code-monkey/issue-<n>` there at the base
-   SHA (an existing branch is a rejection unless it holds this
-   proposal's own chain, or is a named retry's closed attempt the
-   publisher resets to the base, §5), then replay commits per §5.
-   The sync, the create, each commit and a rollback's delete ride
+8. **Push to the fork.** First re-read the issue with the fork
+   token, since the target is public and an author session may take
+   an hour: its state and labels, every pull request in any state
+   from `<fork-org>:code-monkey/issue-<n>` on the target, and the
+   open pull requests linked to close it (`issue_recheck`). A
+   closed issue (the reason names the pull request or commit that
+   closed it, from the timeline), a `no-agent` label, an open or
+   merged pull request from the branch, a closed one the entry's
+   `retry_of` does not name, or another linked open pull request is
+   a `rejected` verdict with no write to the fork, as for a revision
+   whose pull request closed (§20.3). The one open pull request it
+   lets through is the bot's own carrying this proposal's chain: a
+   rerun after an earlier attempt opened it, which the adoption
+   below records. The re-read takes the fork's name as GitHub
+   holds it now, before anything renames it: a fork kept from before
+   a rename of the target still carries the old name, so the re-read
+   finds it by parent as `ensure_fork` does and counts its pull
+   requests and chain under that name. A read by name that GitHub
+   redirects to a renamed fork takes the name its reply carries. A
+   failed read is a failed step: nothing publishes on trust. A
+   `branches` run makes the same reads. Then find or create the fork
+   (§4.3), sync its default branch, create
+   `code-monkey/issue-<n>` there at the base SHA (an existing branch
+   is a rejection unless it holds this proposal's own chain, or is a
+   named retry's closed attempt the publisher resets to the base,
+   §5), then replay commits per §5. The sync, the create, each
+   commit and a rollback's delete ride
    out a transient `5xx`: each reads itself back and goes again when
    it did not land (§5).
 9. **Open the pull request** (`pull-requests` mode) against the
@@ -1104,7 +1132,10 @@ For each selected issue:
    GitHub's documentation limits ruleset-driven automatic review to
    pull requests "created by a Copilot user", and this App is not
    one, so a target's `copilot_code_review` ruleset leaves a bot
-   pull request unreviewed; step 10 asks for one. A failure
+   pull request unreviewed; step 10 asks for one. A `422` that
+   says a pull request already exists, when none of the bot's own
+   is open from the branch, is a `rejected` verdict, as at step 8:
+   someone else got there first. Any other failure
    here keeps the fork branch and records `publish-failed`, since a
    pushed branch is not a publication; the next run's selection sees
    the orphan, selects the issue with `resume` set, and its publisher
@@ -1281,7 +1312,9 @@ For each selected issue:
     a warning and stops nothing.
 12. **Comment on the issue** with one line: the pull request URL on
     success; on `abstain`, the agent's reason; on a policy or
-    provenance rejection, which check failed and the run URL. The
+    provenance rejection, which check failed and the run URL; on a
+    rejection because the issue closed after selection (step 8),
+    nothing, since a comment on a finished issue is noise. The
     reason descends from the untrusted manifest; the publisher cuts
     it to 2,000 characters when recording and again when rendering,
     which keeps the comment inside GitHub's limit with the run URL
@@ -1818,7 +1851,7 @@ conflicts while producer artifacts survive.
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
-| Two runs overlap | Duplicate branches, or a wasted session on one target | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected (§6 "Overlapping runs"), failing open, and the §6 open-pull-request check and branch-exists refusal stay behind it |
+| Two runs overlap | A wasted session on one target; never a second pull request | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected and waits for an older run still selecting (§6 "Overlapping runs"), failing open; the publisher re-reads the issue and the branch's pull requests before any write (§8 step 8), so a run that loses the race publishes nothing |
 | Model PAT expired | Every agent fails at start | Prefix guard cannot detect; rotation owner (§10.2) |
 | Runaway spend | Long sessions in parallel | `max_runtime_minutes` × `max_concurrent_agents` bounds wall-clock; usage report per run |
 | Bundle forged by agent | Publisher replays attacker commits | Provenance by artifact ID; policy checks; per-repo token; human review |
@@ -1860,6 +1893,7 @@ scripts/proposal_model.py                verdict record and its rendering
 scripts/publish.py                       replay, open PR, reconcile
 scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/stale_branch.py                  a closed attempt's branch (§5)
+scripts/issue_recheck.py                 the issue re-read before a push (§8)
 scripts/branch_chain.py                  a branch read back as replayed work
 scripts/git_bounded.py                   git with capped output
 scripts/issue_comment.py                 one-line outcome comment
@@ -2280,7 +2314,10 @@ URLs are `null` where the mode or a rejection stopped short, and
 `author_session` where no proposal arrived. `reasons` starts as the
 check's, at most 20, each cut to 2,000 characters: a rejection quotes
 the proposal it refused, and the next selection carries them to the
-agent (§6). `review` is present on
+agent (§6). `issue_closed` is `true` on a rejection because
+the issue closed after selection (§8 step 8), and absent otherwise:
+the comment step then posts nothing on the finished issue, and the
+report row still shows the reason. `review` is present on
 a published pull request when `request_review` is on: `requested`
 says whether the request landed (§8 step 10), `verdict` is `clean`,
 `findings` or `pending`, `assessment` is `approval`, `closer-look`,
