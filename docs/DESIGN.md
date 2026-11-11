@@ -629,7 +629,31 @@ artifact missing from the listing, a download, a digest or a
 selection that fails prints a `::warning::` and holds nothing for
 that run, even where its
 other evidence read cleanly, or for every run when the listing fails,
-and selection proceeds as before. The whole check runs under one
+and selection proceeds as before.
+A run **past its report** holds nothing: before it reads a run's
+evidence, the check lists that run's jobs with `filter=latest`, and
+when they include a job named `Report`, or `<caller job> / Report`,
+every such job has started (`in_progress` or `completed`, any
+conclusion), there are no fewer of them than `Select` jobs, and
+every `Select`, `Author (…)` and `Publish (…)` job has completed, the
+run holds nothing. The report job needs every publish job of its
+leg, so such a run has nothing left to write to any target; a caller
+that calls the reusable workflow more than once holds until every
+leg is past its report, never released by one leg's report while
+another still publishes;
+the parent of a continuation (§20.6) is past its report by
+construction, since its `continue` job needs the whole call. The
+listing is `filter=latest`, never `filter=all`: it lists the jobs of
+the run's latest attempt, where jobs the attempt did not re-run
+appear as finished copies and a job it will re-run appears
+once GitHub creates it. So a re-run that publishes again holds until
+its own report starts, and a re-run of the `continue` job alone
+holds nothing; `filter=all` would show an earlier attempt's finished
+report while a later attempt still publishes. A job listing that
+fails warns and that run holds nothing, as above. Job names and
+states come from GitHub, which takes the names from the trusted
+workflows, so the author job can change neither.
+The whole check runs under one
 five-minute deadline, well inside the select job's 20 minutes, since
 a stalled download alone may take five: past it the check warns, the
 runs read in full still hold and the rest hold nothing. The check

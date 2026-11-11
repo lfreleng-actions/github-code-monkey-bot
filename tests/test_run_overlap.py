@@ -264,7 +264,6 @@ class PastReportTest(unittest.TestCase):
             held = overlap.held_targets(REPOSITORY, THIS_RUN)
         return held, printed.getvalue()
 
-    @unittest.expectedFailure
     def test_listing_asks_for_the_latest_attempt(self) -> None:
         """Never ``filter=all``, which lists an earlier attempt's finished report."""
         self.held()
@@ -274,7 +273,6 @@ class PastReportTest(unittest.TestCase):
             listings,
         )
 
-    @unittest.expectedFailure
     def test_started_report_holds_nothing(self) -> None:
         """In progress or completed, any conclusion: the run writes nothing more."""
         for status in ("in_progress", "completed"):
@@ -297,7 +295,6 @@ class PastReportTest(unittest.TestCase):
                 held, _ = self.held()
                 self.assertEqual(held, {("org/alpha", 3): 200})
 
-    @unittest.expectedFailure
     def test_bare_report_name_matches(self) -> None:
         """A report job outside a reusable call is named ``Report``."""
         self.api.latest[200] = [{"name": "Report", "status": "completed"}]
@@ -307,7 +304,6 @@ class PastReportTest(unittest.TestCase):
         held, _ = self.held()
         self.assertEqual(held, {("org/alpha", 3): 200})
 
-    @unittest.expectedFailure
     def test_every_report_must_have_started(self) -> None:
         """With two report jobs the run holds until both have started."""
         self.api.report(200, "completed")
@@ -318,7 +314,45 @@ class PastReportTest(unittest.TestCase):
         held, _ = self.held()
         self.assertEqual(held, {})
 
-    @unittest.expectedFailure
+    def test_another_leg_still_publishing_holds(self) -> None:
+        """One leg's started report releases nothing while another leg writes."""
+        self.api.report(200, "completed")
+        for name in ("Leg B / Select", "Leg B / Author (b-1)", "Leg B / Publish (b-1)"):
+            for status in ("queued", "in_progress", "waiting"):
+                with self.subTest(name=name, status=status):
+                    self.api.latest[200] = [
+                        self.api.latest[200][0],
+                        {"name": name, "status": status},
+                    ]
+                    held, _ = self.held()
+                    self.assertEqual(held, {("org/alpha", 3): 200})
+
+    def test_leg_without_a_listed_report_holds(self) -> None:
+        """Two legs selected, one report listed: the other leg may publish."""
+        self.api.latest[200] = [
+            {"name": "Leg A / Select", "status": "completed"},
+            {"name": "Leg B / Select", "status": "completed"},
+            {"name": "Leg A / Report", "status": "completed"},
+        ]
+        held, _ = self.held()
+        self.assertEqual(held, {("org/alpha", 3): 200})
+        self.api.latest[200].append({"name": "Leg B / Report", "status": "in_progress"})
+        held, _ = self.held()
+        self.assertEqual(held, {})
+
+    def test_finished_writers_and_later_jobs_hold_nothing(self) -> None:
+        """Finished legs and the caller's own later jobs release the run."""
+        self.api.latest[200] = [
+            {"name": "Code Monkey / Select", "status": "completed"},
+            {"name": "Code Monkey / Author (a-1)", "status": "completed"},
+            {"name": "Code Monkey / Publish (a-1)", "status": "completed"},
+            {"name": "Code Monkey / Report", "status": "completed"},
+            {"name": "Continue rounds", "status": "in_progress"},
+            {"name": "Notify Slack", "status": "queued"},
+        ]
+        held, _ = self.held()
+        self.assertEqual(held, {})
+
     def test_failed_job_listing_holds_nothing_and_warns(self) -> None:
         """The check fails open for that run, as it does throughout."""
         self.api.failing.add("runs/200/jobs?filter=latest")

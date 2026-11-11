@@ -22,6 +22,14 @@ the publish job's re-read covers that window. So does a tie-break on
 the run id: a run first waits, under a bound, for each older
 in-progress run still selecting (``overlap_wait``).
 
+A run past its report holds nothing either: once the jobs of its
+latest attempt include a ``Report`` job, every one of them has
+started, no select, author or publish job is unfinished and there
+are no fewer reports than select jobs, every publish job has ended,
+so the run has nothing left to write. A caller with several legs is
+past its report only when every leg is. The parent of a continuation
+is such a run (DESIGN.md section 20.6).
+
 The check only saves wasted work; the publisher's compare-and-swap is
 the safety net. So it fails open: a listing or a read that fails
 prints a ``::warning::`` and holds nothing for that run, or for every
@@ -41,18 +49,66 @@ from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
-from overlap_evidence import evidence_of, read_selection, warn
+from overlap_evidence import SELECT_JOB, evidence_of, pages_of, read_selection, warn
 from overlap_wait import FAILURES, MAX_RUNS, Wait, await_older, bounded, listed_runs
 
 # The whole check's deadline, well inside the select job's 20 minutes;
 # one stalled download alone may otherwise take 300 seconds.
 BUDGET_SECONDS = 300
 Held = dict[tuple[str, int], int]
+REPORT_JOB = "Report"
+STARTED = ("in_progress", "completed")
+# Matrix jobs that may still write to a target, by name within their leg.
+MATRIX_JOBS = ("Author (", "Publish (")
 
 
 def other_runs(repository: str, run_id: int) -> list[int]:
     """The ids of this workflow's other queued or in-progress runs."""
     return list(listed_runs(repository, run_id))
+
+
+def leg_name(job: dict[str, Any]) -> str:
+    """The job's name within its leg: ``Report`` of ``<caller job> / Report``."""
+    name = job.get("name")
+    return name.rpartition(" / ")[2] if isinstance(name, str) else ""
+
+
+def is_report_name(job: dict[str, Any]) -> bool:
+    """Whether the job is a report job by name, as ``is_select_name`` matches."""
+    return leg_name(job) == REPORT_JOB
+
+
+def is_writing(job: dict[str, Any]) -> bool:
+    """Whether the job is a select, author or publish job not yet finished."""
+    name = leg_name(job)
+    stage = name == SELECT_JOB or name.startswith(MATRIX_JOBS)
+    return stage and job.get("status") != "completed"
+
+
+def past_report(repository: str, run_id: int) -> bool:
+    """Whether every leg of the run's latest attempt has started its report.
+
+    The report job needs every publish job of its leg, so a leg past it
+    writes nothing more. A caller may call the reusable workflow more
+    than once, so one leg's report releases nothing while another leg
+    still selects, authors or publishes, or has selected but lists no
+    report yet. ``filter=latest`` lists the latest attempt alone, so an
+    earlier attempt's finished report never releases a re-run still
+    publishing, and a job the attempt will re-run is not listed yet.
+    """
+    listed = pages_of(
+        f"repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
+        "jobs",
+    )
+    jobs = [cast("dict[str, Any]", raw) for raw in listed if isinstance(raw, dict)]
+    reports = [job for job in jobs if is_report_name(job)]
+    selects = sum(1 for job in jobs if leg_name(job) == SELECT_JOB)
+    return (
+        bool(reports)
+        and len(reports) >= selects
+        and all(job.get("status") in STARTED for job in reports)
+        and not any(is_writing(job) for job in jobs)
+    )
 
 
 def targets_of(selection: dict[str, Any]) -> list[tuple[str, int]]:
@@ -102,6 +158,12 @@ def collect(
     if len(runs) > MAX_RUNS:
         warn(f"{len(runs)} other runs are active; reading the first {MAX_RUNS}")
     for other in runs[:MAX_RUNS]:
+        try:
+            if past_report(repository, other):
+                continue
+        except FAILURES as exc:
+            warn(f"could not list the jobs of run {other}: {exc}")
+            continue
         try:
             complete.append((other, run_targets(repository, other)))
         except FAILURES as exc:
