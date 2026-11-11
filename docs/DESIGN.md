@@ -61,6 +61,9 @@ them.
   reports the verdict (§8); a revision round in a later run
   answers it (§20), one round per run, so the trusted jobs never
   push on the strength of a review the same agent session produced.
+  The same run never acts on its own review; the next run does, and
+  the caller may start that run itself (§20.6), with a fresh select
+  job that re-reads everything and a fresh session.
 - **Working the `.github` repository.** Its issues track
   organisation-wide tasks that span repositories. It stays out of
   scope unless a dispatcher opts in.
@@ -1537,6 +1540,8 @@ nothing reads it back.
 | `pull_requests` | string | `''` |
 | `revise` | boolean | `true` |
 | `revise_only` | boolean | `false` |
+| `outstanding_only` | boolean | `false` |
+| `continues_run` | string | `''` |
 | `categories` | string | `'all'` |
 
 The `model` choice shows display names and the caller maps them to
@@ -1554,7 +1559,7 @@ entries, worked in parallel, and at most ten pull requests.
 limit; anything non-numeric or negative fails the select job.
 `categories` passes straight through: `docs` for a run that fixes
 documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 19 inputs, within
+schedule, passing no inputs, gets. The form holds 21 inputs, within
 GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
 
@@ -1566,6 +1571,12 @@ expressions that test it, in the `code-monkey` job and the Slack
 digest, change together. A `revise_only` dispatch must leave `issues`
 and `repositories` empty, keep `pull-requests` mode and `revise` on;
 the input check refuses it otherwise (§6).
+
+`outstanding_only` is the continuation's input (§20.6): it needs
+named `pull_requests` and neither `issues` nor `repositories`, and
+the input check refuses it otherwise. `continues_run`, which the
+`continue` job sets to its own run's ID, needs `outstanding_only`
+and must be a run ID; an operator leaves it empty.
 
 ### 9.3 Mode and dry-run matrix
 
@@ -1771,6 +1782,15 @@ rotation reminder as the model PAT (§10.2).
   request published with a failing check or a review with findings,
   or one a maintainer commented on, gets its next round from the next
   slot, weekends included.
+- Continuation (§20.6): once a run's report lists pull requests whose
+  round left work outstanding, its `continue` job dispatches this
+  caller once for each of them, so the next round starts within
+  minutes rather than at the next slot. Each continuation, a live
+  dispatch naming one pull request, runs as a named run and locks on
+  `code-monkey-named-<run_id>`, below: continuations run in parallel,
+  and the publish locks and the overlap check (§6 "Overlapping runs")
+  keep two runs off one pull request. Like any dispatch, a
+  continuation posts nothing to Slack.
 - Cron `0 2 * * 1-5`, live. At 02:00 UTC the run's pull requests
   are ready for review by the start of the European working day. It
   reads the previous working day's triage, which runs at 07:00 UTC
@@ -1968,6 +1988,7 @@ scripts/review_outcome.py                its review sentence and marker token
 scripts/merge_state.py                   whether a pull request can merge
 scripts/proposal_report.py               merge results into the report
 scripts/report_outputs.py                the run's pull request links (§18.6)
+scripts/continuation.py                  which rounds continue (§20.6)
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
 scripts/review_sections.py               its suppressed and unchanged-code counts
 scripts/review_text.py                   what one line of it the classifier reads
@@ -2038,10 +2059,6 @@ switch.
 
 ## 16. Later Capabilities
 
-- **Rounds without a run between them.** §20 performs one round per
-  run; a caller job that re-dispatches while a pull request has work
-  outstanding would close the loop within the day rather than at the
-  next schedule.
 - **A comment at the round cap from the select job.** The publisher
   of a segment's last round says a human must take over; the selector names
   a pull request it skips at the cap later in the summary alone.
@@ -2494,7 +2511,7 @@ operational failures alone.
 ### 18.6 Workflow outputs (report → caller)
 
 A caller cannot read `report.json` without the run's namespace, so
-the reusable workflow declares six `workflow_call` outputs. Four
+the reusable workflow declares seven `workflow_call` outputs. Five
 come from the report job's `Build report` step through
 `publish.py report --org ORG --github-output PATH`; `selected_count`
 is the select job's own `count`, the length of the trusted matrix,
@@ -2509,6 +2526,10 @@ antagonistic job's `requested`, the nominees it dispatched (§20.5):
 | `failing_check_pull_requests` | Those with failing checks (§8 step 11) |
 | `selected_count` | Entries selected, issues and revisions, as a string |
 | `antagonistic_pull_requests` | `owner/repo#N` of each request (§20.5) |
+| `continue_pull_requests` | `owner/repo#N` of each to continue (§20.6) |
+
+Outside a live `pull-requests` run, `continue_pull_requests` is
+always `[]`.
 
 Results are not yet authenticated (§18.4), so `report_outputs.py`
 treats each field as hostile. A URL counts when the whole value
@@ -2535,8 +2556,9 @@ name pull requests, and nothing may write to a repository on the
 strength of them. The scheduled caller's Slack digest (§11) is their
 one consumer; a forged result can at most add a link to another pull
 request in the organisation. The report's
-`antagonistic_pull_requests` output, the request job's input, is the
-one exception, and §20.5 bounds it.
+`antagonistic_pull_requests` output, the request job's input, and
+the `continue_pull_requests` output, the caller's `continue` job's
+input, are the two exceptions; §20.5 and §20.6 bound them.
 
 ## 19. Activity Log and Blockers
 
@@ -3214,3 +3236,135 @@ its own round cap and whether it already reviewed that head, so a
 forged nomination at most spends one skipped selection. The request
 never counts as a hand-back; the review bot's marker does
 (§20.1).
+
+### 20.6 Continuation
+
+A run performs one round per pull request and ends (§2). The
+publish job already knows whether the round left work outstanding,
+so the scheduled caller starts the next round itself rather than
+leave it to the next `revise_only` slot or a person. The next round is a
+new run, with a fresh select job that re-reads everything from
+GitHub, a fresh session and the same trusted publish.
+
+**The rule.** `scripts/continuation.py` continues a live `proposed`
+result whose `pull_request_url` the report accepted (§18.6) when at
+least one of these holds: Copilot's review has `findings` and judged
+the published head; the head has defect check failures
+(`review_outcome.checks_failed`, so failures at the egress agent
+alone do not continue); or `mergeable` is `false`. It does not
+continue any other verdict (`abstain`, `handoff`, `rejected` and the
+failures fall back to the schedule), a result with no `comment_url`,
+since the round history counts rounds by their outcome comments and
+a round with none would leave the next one the same number, so no
+cap would advance (the result's word alone proves nothing, so the
+continuation's select job checks the comment itself; see
+`continues_run` below), a review still `pending`, which
+the next `revise_only` scan picks up, a result whose antagonistic
+review the run requested, since the review bot's hand-back dispatches that round
+and a continuation would race it, or a round at a cap
+(`round_caps.at_cap`: the segment's cap or the sixty-round ceiling).
+The report emits the continuing pull requests as `owner/repo#N`,
+validated and deduplicated as the antagonistic nominees are, in the
+`continue_pull_requests` output (§18.6) of a live `pull-requests`
+run: the report job gives `[]` in any other, since no other mode
+moves a pull request's head.
+
+**The job.** The cron caller's `continue` job needs the whole
+`code-monkey` call and runs when that output is neither empty nor
+`[]`, the run is not a dry dispatch, its mode is `pull-requests`
+(a schedule's, or the form's choice), and the repository variable
+`CODE_MONKEY_CONTINUE` is not `false`. Every continuation is a
+`pull-requests` run, so the parent's own mode, a trusted input, must
+be too: a forged output of a `branches` run must not move a live
+pull request's head. It gates on the output, not
+on the call's result, so one entry's failed publish does not stop
+another's round. It loads the allow-list and hardens the runner in
+block mode, checks out nothing and reads no artifact, re-validates
+the list against the organisation (one bad entry refuses it all),
+and runs once per pull request:
+
+```bash
+gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY" \
+  -f dry_run=false -f mode=pull-requests -f max_pull_requests=0 \
+  -f pull_requests="$pull" -f outstanding_only=true \
+  -f continues_run="$PARENT_RUN" \
+  -f model="$MODEL" -f max_runtime_minutes="$RUNTIME" \
+  -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS" \
+  -f request_review="$REVIEW" \
+  -f request_antagonistic_review="$ANTAGONISTIC" \
+  -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"
+```
+
+naming its own run as `continues_run` and
+forwarding the run's own model, runtime, round cap, sub-agent choice,
+review switches, `load_repo_skills` and `include_dotgithub`, the form
+defaults on a schedule, so a dispatch that turned Copilot's or the
+antagonistic review off keeps it off for every round it continues,
+and one that trusted checkout skills or the `.github` repository
+keeps that trust. One pull request per
+dispatch keeps a failure to that pull request, and each loop at its
+own pace: a continuation continues as soon as its own round ends,
+not when the slowest round of a shared run does. The cost is that
+sibling continuations select one after another under the overlap
+check's tie-break wait (§6 "Overlapping runs"), at most five minutes
+in all. A failed dispatch is a `::warning::` naming the pull request,
+and the job succeeds; the step summary lists what it dispatched.
+
+**`outstanding_only`.** A continuation names its pull request, but
+the name comes from a result the report cannot authenticate, not
+from an operator, so it earns none of a named round's waivers.
+`outstanding_only` puts it through the scan's tests (§20.1): the
+run's repository policy (the exclusions and the `.github` rule), the
+author rule and the work-outstanding test, the handoff pause
+included, in place of `named by the operator`; the round cap applies
+too. A pull request that fails them, its threads
+resolved by hand or its checks re-run green after the dispatch, its
+repository excluded or its issue's author unapproved, is a named skip
+with the scan's reason and costs one select job and no session.
+
+**`continues_run`.** A result's `comment_url` is the result's word,
+so a forged result whose round posted no outcome, its publish job
+failed, could still name a continuation, and the next round would
+repeat the same number with neither cap advancing, as often as
+forging and failing repeat. So the continuation names its parent run, and
+its select job skips each pull request unless the bot's own footers
+on the issue, scoped to that pull request as the round history
+scopes them, carry a published round from that run: a `proposed`
+footer, not stale, whose run URL is
+`<server>/<this repository>/actions/runs/<continues_run>`. The
+publisher alone posts that footer, so every continued round follows
+a counted one.
+
+**The credential.** The job's own `GITHUB_TOKEN` with `actions:
+write` on this repository and nothing else. GitHub's rule that a
+workflow token's events start no run exempts `workflow_dispatch`, so
+the dispatch starts a run with no stored secret. `workflow_run`
+could not serve, since GitHub stops its chains at three levels.
+
+**Never held by its parent.** The continuation's select job runs the
+overlap check about a minute after the dispatch, while the parent
+run may still be `in_progress`. The parent is past its report by
+construction, since `continue` needs the whole call, so the check
+releases it (§6 "Overlapping runs") and the continuation is never
+held by the run that dispatched it.
+
+**Termination.** No timer bounds the loop; counts do. Ten rounds per
+segment and sixty in all (§20.1), three antagonistic rounds on the
+review bot's side, a `handoff` pausing until a maintainer comments,
+and the rule continuing published rounds alone, checked against the
+publisher's own footer, so a run that fails never dispatches itself,
+whatever its results read, and an outage cannot loop. Setting
+`CODE_MONKEY_CONTINUE` to `false` stops the loop without a commit;
+disabling the workflow stops everything.
+
+**Trust.** Results are not yet authenticated (§18.4), so a forged
+result could name another bot pull request in the organisation. The
+dispatched run's select job re-reads everything from GitHub and,
+with `outstanding_only`, works no pull request the scan itself would
+not, under the same repository policy, author rule and
+work-outstanding test, nor one without the parent run's own counted
+round on it. A forged entry costs one select job, the bound
+§20.5 accepts, or brings forward a round the next scan would run
+anyway; a forged list from a dry or non-`pull-requests` run
+dispatches nothing. The change
+leaves the author job alone, and the publish job gains nothing.

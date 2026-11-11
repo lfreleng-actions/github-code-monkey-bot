@@ -175,7 +175,6 @@ class RunReportOutputsTest(unittest.TestCase):
             reporting.run_report(args)
         return printed.getvalue()
 
-    @unittest.expectedFailure
     def test_outputs_follow_the_report(self) -> None:
         """Links in report order are appended; a refused one is a warning."""
         self.write("a", result(pull("repo", 8), key="a-1"))

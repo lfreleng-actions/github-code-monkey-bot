@@ -239,6 +239,13 @@ on:
           antagonistic review this run requested; empty when the
           request job did not run
         value: "${{ jobs.antagonistic.outputs.requested }}"
+      continue_pull_requests:
+        description: >-
+          Compact JSON array of owner/repo#N, the published pull
+          requests whose round left work outstanding below every cap;
+          a caller may dispatch their next round (docs/DESIGN.md
+          section 20.6). Always [] outside a live pull-requests run
+        value: "${{ jobs.report.outputs.continue_pull_requests }}"
       selected_count:
         description: >-
           Entries the select job chose, issues and revisions together,
@@ -2140,6 +2147,11 @@ jobs:
       failing_check_pull_requests: "${{ steps.report.outputs.failing_check_pull_requests }}"
       # yamllint disable-line rule:line-length
       antagonistic_pull_requests: "${{ steps.report.outputs.antagonistic_pull_requests }}"
+      # Only a live pull-requests run moves a pull request's head, so
+      # no other run names one to continue, whatever its results say.
+      continue_pull_requests: >-
+        ${{ !inputs.dry_run && inputs.mode == 'pull-requests'
+        && steps.report.outputs.continue_pull_requests || '[]' }}
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'

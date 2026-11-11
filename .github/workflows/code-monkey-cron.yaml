@@ -132,6 +132,18 @@ on:
           leave issues and repositories empty
         type: boolean
         default: false
+      outstanding_only:
+        description: >-
+          Revise each named pull request only if it has work
+          outstanding; needs pull_requests alone
+        type: boolean
+        default: false
+      continues_run:
+        description: >-
+          Set by the continue job: the run that dispatched this one,
+          which must have published a round on each pull request
+        type: string
+        default: ''
       categories:
         description: >-
           Issue categories to work: all, or any of bugs, features, docs,
@@ -259,6 +271,8 @@ jobs:
       revise_only: >-
         ${{ github.event.schedule == '17 * * * *'
             || inputs.revise_only == true }}
+      outstanding_only: ${{ inputs.outstanding_only || false }}
+      continues_run: "${{ inputs.continues_run || '' }}"
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       harden_runner_egress: 'block'
@@ -272,6 +286,148 @@ jobs:
       github_app_private_key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
       copilot_review_token: "${{ secrets.COPILOT_REVIEW_TOKEN }}"
       antagonistic_dispatch_token: "${{ secrets.CODE_REVIEW_DISPATCH_TOKEN }}"
+
+  # Dispatch the next round of each pull request whose round left work
+  # outstanding (docs/DESIGN.md section 20.6). The job holds one
+  # credential, its own token with Actions write on this repository,
+  # in one step; it reads no artifact and checks out nothing. A
+  # dispatch with the workflow token starts a run: GitHub's rule
+  # against recursive runs exempts workflow_dispatch. Each dispatch
+  # is a named run that re-reads everything with outstanding_only and
+  # applies the scan's repository policy, author rule and work test,
+  # so a forged or stale entry costs one select job, or brings
+  # forward a round the scan would run. Each names this run as
+  # continues_run, and its select job skips a pull request on which
+  # this run published no counted round. Only a pull-requests run
+  # continues: no other mode moves a live pull request's head, so a
+  # forged output of a branches run must start no round. Setting the
+  # repository variable CODE_MONKEY_CONTINUE to 'false' stops the loop.
+  continue:
+    name: 'Continue rounds'
+    needs: [code-monkey]
+    # Gated on the output, not the call's result: another entry's
+    # failed publish must not stop this one's round.
+    if: >-
+      ${{ !cancelled()
+      && needs.code-monkey.outputs.continue_pull_requests != ''
+      && needs.code-monkey.outputs.continue_pull_requests != '[]'
+      && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+      && (inputs.mode || 'pull-requests') == 'pull-requests'
+      && vars.CODE_MONKEY_CONTINUE != 'false' }}
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 10
+    permissions:
+      actions: write  # Dispatch this workflow for the next round
+    steps:
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      # Every entry is checked as a JSON string literal, so one holding
+      # a newline cannot pass as two, and one bad entry refuses the
+      # whole list before any dispatch. One pull request per dispatch
+      # keeps a failure to that pull request, and each loop at its own
+      # pace. A failed dispatch is a warning: the hourly scan still
+      # finds the pull request. The run's own switches go with it, so a
+      # dispatch that turned a review off keeps it off for the loop, and
+      # one that trusted checkout skills or .github keeps them on.
+      - name: 'Dispatch next rounds'
+        id: dispatch
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          ORG: "${{ github.repository_owner }}"
+          PULLS: "${{ needs.code-monkey.outputs.continue_pull_requests }}"
+          PARENT_RUN: "${{ github.run_id }}"
+          # A schedule passes no inputs; it forwards the form defaults.
+          MODEL: "${{ inputs.model || 'Claude Opus 5.5' }}"
+          RUNTIME: "${{ inputs.max_runtime_minutes || '180' }}"
+          ROUNDS: "${{ inputs.max_rounds || '10' }}"
+          SUBAGENTS: >-
+            ${{ github.event_name != 'workflow_dispatch'
+                || inputs.allow_subagents }}
+          REVIEW: >-
+            ${{ github.event_name != 'workflow_dispatch'
+                || inputs.request_review }}
+          ANTAGONISTIC: >-
+            ${{ github.event_name != 'workflow_dispatch'
+                || inputs.request_antagonistic_review }}
+          SKILLS: "${{ inputs.load_repo_skills || false }}"
+          DOTGITHUB: "${{ inputs.include_dotgithub || false }}"
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          case "$MODEL" in
+            'Claude Opus 5.5'|'Claude Fable 5.1'|'Claude Sonnet 5.5') ;;
+            'GPT-6 Astra') ;;
+            *) echo "::error::Unknown model $MODEL"; exit 1 ;;
+          esac
+          if ! [[ "$RUNTIME" =~ ^[1-9][0-9]*$ && "$ROUNDS" =~ ^[1-9][0-9]*$ &&
+            "$PARENT_RUN" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::max_runtime_minutes, max_rounds and the run ID' \
+              'must be numbers'
+            exit 1
+          fi
+          for switch in "$SUBAGENTS" "$REVIEW" "$ANTAGONISTIC" "$SKILLS" \
+            "$DOTGITHUB"; do
+            case "$switch" in
+              true|false) ;;
+              *) echo '::error::The forwarded switches must be true or false'
+                exit 1 ;;
+            esac
+          done
+          if ! items=$(jq -r 'if type == "array" then .[] | @json
+              else error("not an array") end' <<< "$PULLS"); then
+            echo '::error::The continuing pull requests are not a JSON array'
+            exit 1
+          fi
+          pattern='^"([A-Za-z0-9-]+)/[A-Za-z0-9_.-]+#[1-9][0-9]*"$'
+          pulls=()
+          while IFS= read -r item; do
+            [ -n "$item" ] || continue
+            if ! [[ "$item" =~ $pattern ]] ||
+              [ "${BASH_REMATCH[1],,}" != "${ORG,,}" ]; then
+              echo "::error::Refused an entry outside $ORG or not owner/repo#N"
+              exit 1
+            fi
+            pulls+=("${item:1:${#item}-2}")
+          done <<< "$items"
+          dispatched=()
+          failed=()
+          for pull in "${pulls[@]}"; do
+            if gh workflow run code-monkey-cron.yaml \
+              --repo "$GITHUB_REPOSITORY" \
+              -f dry_run=false -f mode=pull-requests -f max_pull_requests=0 \
+              -f pull_requests="$pull" -f outstanding_only=true \
+              -f continues_run="$PARENT_RUN" \
+              -f model="$MODEL" -f max_runtime_minutes="$RUNTIME" \
+              -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS" \
+              -f request_review="$REVIEW" \
+              -f request_antagonistic_review="$ANTAGONISTIC" \
+              -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"
+            then
+              dispatched+=("$pull")
+            else
+              echo "::warning::Next round dispatch failed: $pull"
+              failed+=("$pull")
+            fi
+          done
+          {
+            echo '## Next rounds'
+            echo
+            for pull in "${dispatched[@]}"; do echo "- dispatched: $pull"; done
+            for pull in "${failed[@]}"; do echo "- failed: $pull"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Post the scheduled run's pull requests to Slack. Dispatches never
   # post. The links come from the report, which cannot yet

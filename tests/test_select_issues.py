@@ -603,7 +603,12 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 self.assertEqual(self.entry_kwargs, [])
                 self.assertEqual(
                     selection["skipped_issues"],
-                    [{"issue": named, "reason": "repository is outside the run's policy"}],
+                    [
+                        {
+                            "issue": named,
+                            "reason": "repository is outside the run's policy",
+                        }
+                    ],
                 )
                 selection, _ = select.build_selection(
                     self.args("--pull-requests", named, *extra)
