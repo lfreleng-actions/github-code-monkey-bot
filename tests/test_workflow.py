@@ -295,9 +295,9 @@ class TopLevelContracts(ReusableWorkflowCase):
     def test_concurrency_is_per_caller_and_owner_without_cancel(self) -> None:
         """Live scans lock per caller and owner; others within their run.
 
-        A group keeps one pending run and a newcomer cancels it, so a
-        dry run that wrote nothing, or a live run naming its issues,
-        must not share the live scan group.
+        Pending runs queue in order rather than a newcomer cancelling
+        the one pending, but a dry run that writes nothing, or a live
+        run naming its issues, must still not wait on the live scan.
         """
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
@@ -309,6 +309,7 @@ class TopLevelContracts(ReusableWorkflowCase):
             " || format('code-monkey-{0}-{1}', github.repository, inputs.org)",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
 
     def test_every_action_is_pinned_to_a_commit(self) -> None:
         """No `uses:` rides a tag or branch that could move underneath us."""
@@ -1354,6 +1355,7 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIn("matrix.pull_number", group)
         self.assertIn("matrix.number", group)
         self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
 
     def test_matrix_carries_the_revision_fields_shape_checked(self) -> None:
         """head_sha and task are checked before any step reads them."""
@@ -2720,7 +2722,7 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
                 self.assertIn(message, output)
 
 
-REVISE_ONLY_CRON = "0 6,10,14,18 * * 1-5"
+REVISE_ONLY_CRON = "17 * * * *"
 REVISE_ONLY = (
     f"github.event.schedule == '{REVISE_ONLY_CRON}' || inputs.revise_only == true"
 )
@@ -2819,7 +2821,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
     WORKFLOW = CRON
 
     def test_second_schedule_sets_revise_only(self) -> None:
-        """The 02:00 scan stays; a four-hourly slot revises alone."""
+        """The weekday 02:00 scan stays; an hourly slot revises alone."""
         self.assertEqual(
             self.triggers["schedule"],
             [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],
@@ -3163,6 +3165,44 @@ class CronCallerContracts(WorkflowCase):
             " || 'code-monkey'",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
+
+    def test_run_name_says_what_the_run_works(self) -> None:
+        """The Actions list tells a full scan, a slot and each dispatch apart.
+
+        The name keeps the workflow's own as its prefix so the sidebar
+        still groups by workflow. A schedule names which cron fired; a
+        dispatch names its pull requests, else its issues, else its
+        repositories, else a revise-only or plain scan, and a dry run
+        says so.
+        """
+        name = str(self.workflow["name"])
+        full_scan = cast(list[dict[str, str]], self.triggers["schedule"])[0]["cron"]
+        run_name = unwrap(str(self.workflow["run-name"]))
+        self.assertTrue(run_name.startswith(f"format('{name}: "), run_name)
+        for reference in (
+            "inputs.pull_requests",
+            "inputs.issues",
+            "inputs.repositories",
+            "github.event.schedule",
+        ):
+            with self.subTest(reference=reference):
+                self.assertIn(reference, run_name)
+        self.assert_expression(
+            run_name,
+            f"format('{name}: {{0}}{{1}}',"
+            " github.event_name == 'schedule'"
+            f" && (github.event.schedule == '{full_scan}'"
+            " && 'full scan' || 'revise-only scan')"
+            " || inputs.pull_requests != ''"
+            " && format('revise {0}', inputs.pull_requests)"
+            " || inputs.issues != '' && format('work {0}', inputs.issues)"
+            " || inputs.repositories != ''"
+            " && format('scan {0}', inputs.repositories)"
+            " || inputs.revise_only && 'revise-only scan'"
+            " || 'scan',"
+            " inputs.dry_run && ' (dry run)' || '')",
+        )
 
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""

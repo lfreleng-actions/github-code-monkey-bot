@@ -8,21 +8,39 @@
 # requests are ready for review by the start of the European working
 # day, and posts them to Slack. It reads the previous working day's
 # triage (github-issues-triage, 07:00 UTC weekdays), so Priority and
-# Type are in place before selection. A second schedule, every four
-# hours from 06:00 UTC on weekdays, is revise-only: it revises the
+# Type are in place before selection. A second schedule, every hour,
+# every day, at 17 minutes past, is revise-only: it revises the
 # bot's open pull requests with work outstanding, takes no new issue,
 # and posts only when it selected something. A manual dispatch is
 # live too unless its form asks for a dry run, and posts nothing.
 # Disabling this workflow in the Actions UI is the kill switch.
 name: 'Code Monkey ⏰'
+# Name each run by what it works, keeping the workflow name as prefix.
+# A schedule names the cron that fired; a dispatch names its pull
+# requests, else its issues, else its repositories, else its scan. The
+# lists are the operator's raw input; GitHub truncates a long name.
+run-name: >-
+  ${{ format('Code Monkey ⏰: {0}{1}',
+  github.event_name == 'schedule'
+  && (github.event.schedule == '0 2 * * 1-5'
+  && 'full scan' || 'revise-only scan')
+  || inputs.pull_requests != ''
+  && format('revise {0}', inputs.pull_requests)
+  || inputs.issues != '' && format('work {0}', inputs.issues)
+  || inputs.repositories != ''
+  && format('scan {0}', inputs.repositories)
+  || inputs.revise_only && 'revise-only scan'
+  || 'scan',
+  inputs.dry_run && ' (dry run)' || '') }}
 
 # yamllint disable-line rule:truthy
 on:
   schedule:
     - cron: '0 2 * * 1-5'
-    # Revise-only; the caller tests github.event.schedule for this
-    # exact string, so change all three together.
-    - cron: '0 6,10,14,18 * * 1-5'
+    # Revise-only, hourly at :17 to miss the peak in GitHub's
+    # scheduled load at :00. The caller tests github.event.schedule
+    # for this exact string, so change all three together.
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -123,22 +141,23 @@ on:
 
 permissions: {}
 
-# Serialise scheduled runs and scan dispatches of this caller. A group
-# keeps one pending run and a newcomer cancels it, so this is not a
-# FIFO queue. A dry dispatch writes nothing and takes a group of its
-# own: it neither waits behind the schedule nor cancels a pending
-# live run. A live dispatch that names `issues` or `pull_requests`
-# locks on its own run, a fixed-length key: a group name built from
-# the target lists would grow with them past GitHub's 400-character
-# limit. Two dispatches naming the same or overlapping targets run
-# apart; the reusable workflow's publish locks serialise their writes
-# to any one pull request or issue, and the per-issue pull request
-# check, the branch-exists refusal and the revision's compare-and-swap
-# stop a duplicate. A revise-only run, scheduled or dispatched, is a
-# scan and shares `code-monkey`: it queues behind a full scan and never
-# runs beside it. A revise-only slot pending behind a long full scan
-# may be the run a newcomer cancels; the next slot comes four hours
-# later.
+# Serialise scheduled runs and scan dispatches of this caller. Pending
+# runs wait in a FIFO queue (`queue: max`, up to 100) instead of the
+# default single slot a newcomer would take, so no run is cancelled
+# unseen; `queue` needs `cancel-in-progress: false`. A dry dispatch
+# writes nothing and takes a group of its own: it never waits behind
+# the schedule or a live run. A live dispatch that names `issues` or
+# `pull_requests` locks on its own run, a fixed-length key: a group
+# name built from the target lists would grow with them past GitHub's
+# 400-character limit. Two dispatches naming the same or overlapping
+# targets run apart; the reusable workflow's publish locks serialise
+# their writes to any one pull request or issue, and the per-issue
+# pull request check, the branch-exists refusal and the revision's
+# compare-and-swap stop a duplicate. A revise-only run, scheduled or
+# dispatched, is a scan and shares `code-monkey`: it queues behind a
+# full scan and never runs beside it. Revise-only slots that fire
+# during a long full scan wait their turn; one with nothing to do ends
+# after selection.
 concurrency:
   group: >-
     ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
@@ -148,6 +167,7 @@ concurrency:
     && format('code-monkey-named-{0}', github.run_id)
     || 'code-monkey' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   options:
@@ -237,7 +257,7 @@ jobs:
         ${{ github.event_name != 'workflow_dispatch' || inputs.revise }}
       # The revise-only schedule, or the form's choice on a dispatch.
       revise_only: >-
-        ${{ github.event.schedule == '0 6,10,14,18 * * 1-5'
+        ${{ github.event.schedule == '17 * * * *'
             || inputs.revise_only == true }}
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
@@ -317,7 +337,7 @@ jobs:
           RUN_RESULT: "${{ needs.code-monkey.result }}"
           SELECTED: "${{ needs.code-monkey.outputs.selected_count }}"
           REVISE_ONLY: >-
-            ${{ github.event.schedule == '0 6,10,14,18 * * 1-5'
+            ${{ github.event.schedule == '17 * * * *'
                 || inputs.revise_only == true }}
         run: |
           set -euo pipefail
@@ -446,7 +466,7 @@ jobs:
           if [ "$count" -eq 1 ]; then
             noun='pull request'
           fi
-          # A revise-only slot runs every four hours; one that selected
+          # A revise-only slot runs every hour; one that selected
           # nothing, raised nothing, refused nothing and failed nothing
           # stays quiet. A selected revision that came to no link, its
           # proposal refused or its round abstained, still posts, as
