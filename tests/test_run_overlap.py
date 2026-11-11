@@ -86,6 +86,19 @@ class Recorded:
         self.stalled: set[int] = set()
         self.jobs: dict[int, list[dict[str, Any]]] = {}
         self.notes: dict[int, list[dict[str, Any]]] = {}
+        # The jobs ``filter=latest`` lists: the latest attempt's alone.
+        self.latest: dict[int, list[dict[str, Any]]] = {}
+
+    def report(self, run_id: int, status: str) -> None:
+        """Record a report job of the run's latest attempt in ``status``."""
+        completed = status == "completed"
+        self.latest.setdefault(run_id, []).append(
+            {
+                "name": "Code Monkey / Report",
+                "status": status,
+                "conclusion": "failure" if completed else None,
+            }
+        )
 
     def job(
         self,
@@ -180,10 +193,15 @@ class Recorded:
             # Without --paginate gh returns the first page alone.
             return json.dumps(pages if "--paginate" in args else pages[0])
         if endpoint.startswith(prefix) and "/jobs?" in endpoint:
-            if "--paginate" not in args or "filter=all" not in endpoint:
-                raise AssertionError(f"jobs of every attempt and page: {args}")
+            if "--paginate" not in args:
+                raise AssertionError(f"jobs of every page: {args}")
             run_id = int(endpoint[len(prefix) :].partition("/")[0])
-            jobs = self.jobs.get(run_id, [])
+            if "filter=latest" in endpoint:
+                jobs = self.latest.get(run_id, [])
+            elif "filter=all" in endpoint:
+                jobs = self.jobs.get(run_id, [])
+            else:
+                raise AssertionError(f"jobs without an attempt filter: {args}")
             return json.dumps([{"total_count": len(jobs), "jobs": jobs}])
         prefix = f"repos/{REPOSITORY}/check-runs/"
         if endpoint.startswith(prefix) and "/annotations?" in endpoint:
@@ -225,6 +243,89 @@ def vouch_note(name: str, artifact_id: int, digest: str) -> dict[str, Any]:
 def run(run_id: int, status: str = "in_progress", attempt: int = 1) -> dict[str, Any]:
     """One entry of the workflow's run listing."""
     return {"id": run_id, "status": status, "run_attempt": attempt}
+
+
+class PastReportTest(unittest.TestCase):
+    """A run whose report has started holds nothing (#167)."""
+
+    def setUp(self) -> None:
+        """Serve every gh call and download from a fresh recording."""
+        self.api = Recorded()
+        patch.object(github, "run_gh", side_effect=self.api.reply).start()
+        patch.object(fetcher, "download", side_effect=self.api.download).start()
+        self.addCleanup(patch.stopall)
+        self.api.runs["in_progress"].append(run(200))
+        self.api.publish(200, selection(issue("alpha", 3)))
+
+    def held(self) -> tuple[dict[tuple[str, int], int], str]:
+        """Run the check; return the held targets and the warnings printed."""
+        printed = io.StringIO()
+        with redirect_stdout(printed):
+            held = overlap.held_targets(REPOSITORY, THIS_RUN)
+        return held, printed.getvalue()
+
+    @unittest.expectedFailure
+    def test_listing_asks_for_the_latest_attempt(self) -> None:
+        """Never ``filter=all``, which lists an earlier attempt's finished report."""
+        self.held()
+        listings = [e for e in self.api.requested if "runs/200/jobs?" in e]
+        self.assertIn(
+            f"repos/{REPOSITORY}/actions/runs/200/jobs?filter=latest&per_page=100",
+            listings,
+        )
+
+    @unittest.expectedFailure
+    def test_started_report_holds_nothing(self) -> None:
+        """In progress or completed, any conclusion: the run writes nothing more."""
+        for status in ("in_progress", "completed"):
+            with self.subTest(status=status):
+                self.api.latest = {}
+                self.api.report(200, status)
+                downloaded = len(self.api.downloaded)
+                held, warnings = self.held()
+                self.assertEqual(held, {})
+                self.assertEqual(warnings, "")
+                self.assertEqual(len(self.api.downloaded), downloaded)
+
+    def test_report_not_started_holds_as_before(self) -> None:
+        """Queued, waiting or not yet listed: the run may still publish."""
+        for status in ("queued", "waiting", None):
+            with self.subTest(status=status):
+                self.api.latest = {}
+                if status is not None:
+                    self.api.report(200, status)
+                held, _ = self.held()
+                self.assertEqual(held, {("org/alpha", 3): 200})
+
+    @unittest.expectedFailure
+    def test_bare_report_name_matches(self) -> None:
+        """A report job outside a reusable call is named ``Report``."""
+        self.api.latest[200] = [{"name": "Report", "status": "completed"}]
+        held, _ = self.held()
+        self.assertEqual(held, {})
+        self.api.latest[200] = [{"name": "Author (Report)", "status": "completed"}]
+        held, _ = self.held()
+        self.assertEqual(held, {("org/alpha", 3): 200})
+
+    @unittest.expectedFailure
+    def test_every_report_must_have_started(self) -> None:
+        """With two report jobs the run holds until both have started."""
+        self.api.report(200, "completed")
+        self.api.report(200, "queued")
+        held, _ = self.held()
+        self.assertEqual(held, {("org/alpha", 3): 200})
+        self.api.latest[200][1]["status"] = "in_progress"
+        held, _ = self.held()
+        self.assertEqual(held, {})
+
+    @unittest.expectedFailure
+    def test_failed_job_listing_holds_nothing_and_warns(self) -> None:
+        """The check fails open for that run, as it does throughout."""
+        self.api.failing.add("runs/200/jobs?filter=latest")
+        held, warnings = self.held()
+        self.assertEqual(held, {})
+        self.assertIn("::warning title=Overlapping runs::", warnings)
+        self.assertIn("could not list the jobs of run 200", warnings)
 
 
 class HeldTargetsTest(unittest.TestCase):

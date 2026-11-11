@@ -486,6 +486,74 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual([r["round"] for r in entry["rounds"]], [1, 2])
 
 
+class RequireOutstandingTest(RevisionCase):
+    """A continuation names a pull request but asks for the scan's test (#167)."""
+
+    def build_outstanding(self) -> dict[str, Any]:
+        """Build the fixture pull request as a named continuation would."""
+        return select.build_entry(
+            select.Inputs("org", BOT, FORK_ORGS),
+            "alpha",
+            41,
+            explicit=True,
+            require_outstanding=True,
+        )
+
+    @unittest.expectedFailure
+    def test_nothing_outstanding_skips_with_the_scan_reason(self) -> None:
+        """No session for a pull request whose state changed since the dispatch."""
+        with self.assertRaisesRegex(select.Skip, "^nothing outstanding$"):
+            self.build_outstanding()
+        self.checks = check_reads.CheckPacket([], 0, 0, 2)
+        with self.assertRaisesRegex(select.Skip, "^checks still running$"):
+            self.build_outstanding()
+
+    @unittest.expectedFailure
+    def test_work_outstanding_gives_the_scan_reasons(self) -> None:
+        """The round's reasons are the scan's, not the operator's word."""
+        self.threads = [thread()]
+        entry = self.build_outstanding()
+        self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
+
+    @unittest.expectedFailure
+    def test_handoff_pause_holds(self) -> None:
+        """A handed-back pull request waits for a maintainer, as in a scan."""
+        self.threads = [thread()]
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+        with self.assertRaisesRegex(select.Skip, "handed back to a maintainer"):
+            self.build_outstanding()
+        self.assertEqual(self.build(explicit=True)["round"], 3)
+
+    @unittest.expectedFailure
+    def test_the_scan_author_rule_and_the_cap_apply(self) -> None:
+        """A continuation's target comes from an unauthenticated result.
+
+        So it earns no operator waiver: an unapproved external issue is
+        skipped as the scan skips it, and the cap still applies.
+        """
+        self.threads = [thread()]
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "NONE",
+        }
+        with patch.object(reads, "issue_details", return_value=details):
+            with self.assertRaisesRegex(select.Skip, "agent-approved"):
+                self.build_outstanding()
+            details["labels"] = ["bug", "agent-approved"]
+            self.assertEqual(self.build_outstanding()["number"], 7)
+        self.rounds = (revisions.MAX_ROUNDS, [], "t", "proposed")
+        with self.assertRaisesRegex(select.Skip, "round cap of 10"):
+            self.build_outstanding()
+
+
 class ScanTest(RevisionCase):
     """The owner-wide scan keeps the pull requests with work, oldest first."""
 

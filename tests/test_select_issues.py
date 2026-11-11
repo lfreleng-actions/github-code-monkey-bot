@@ -482,6 +482,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         """Patch the issue path to select nothing and the revision path to answer."""
         super().setUp()
         self.entries: dict[tuple[str, int], dict[str, Any]] = {}
+        self.entry_kwargs: list[dict[str, Any]] = []
         patch.object(
             repository_reads,
             "list_repositories",
@@ -500,6 +501,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self, org: str, repo_name: str, pull_number: int, **kwargs: Any
     ) -> dict[str, Any]:
         """A revision entry for a known pull request, or a Skip."""
+        self.entry_kwargs.append(kwargs)
         found = self.entries.get((repo_name, pull_number))
         if found is None:
             raise revision_rounds.Skip("not an open pull request the bot opened")
@@ -567,6 +569,38 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(skip["issue"], "org/alpha#99")
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
+
+    @unittest.expectedFailure
+    def test_outstanding_only_asks_for_the_scan_test(self) -> None:
+        """A continuation's named pull request is built with the scan's test (#167)."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        select.build_selection(self.args("--pull-requests", "org/alpha#41"))
+        self.assertIs(self.entry_kwargs[-1]["require_outstanding"], False)
+        select.build_selection(
+            self.args("--pull-requests", "org/alpha#41", "--outstanding-only")
+        )
+        self.assertIs(self.entry_kwargs[-1]["require_outstanding"], True)
+
+    @unittest.expectedFailure
+    def test_outstanding_only_needs_pull_requests_alone(self) -> None:
+        """Without named pull requests, or beside named issues, it is refused."""
+        for extra in (
+            ("--outstanding-only",),
+            (
+                "--outstanding-only",
+                "--pull-requests",
+                "org/alpha#41",
+                "--issues",
+                "org/alpha#3",
+            ),
+        ):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(
+                    select.SelectionError, "outstanding_only needs pull_requests alone"
+                ),
+            ):
+                select.build_selection(self.args(*extra))
 
     def held_file(self, *targets: tuple[str, int, int]) -> str:
         """Write a held-targets file as ``run_overlap.py`` does; return its path."""

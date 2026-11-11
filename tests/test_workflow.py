@@ -2336,6 +2336,7 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertTrue(is_action(final, UPLOAD))
         self.assertEqual(final["with"]["retention-days"], 90)
 
+    @unittest.expectedFailure
     def test_pull_request_outputs_come_from_the_report(self) -> None:
         """The workflow's outputs are the report script's, validated by org."""
         declared = dict(cast(dict[str, Any], self.triggers["workflow_call"]["outputs"]))
@@ -2359,6 +2360,7 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "pull_request_count",
                 "unmergeable_pull_requests",
                 "failing_check_pull_requests",
+                "continue_pull_requests",
             },
         )
         for name, body in declared.items():
@@ -2748,6 +2750,7 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         "PULL_COUNT": "0",
         "REVISE": "true",
         "REVISE_ONLY": "true",
+        "OUTSTANDING_ONLY": "false",
         "ORG": "o",
         "GUIDANCE_REPOSITORY": "o/.github",
     }
@@ -2831,6 +2834,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         env = cast(dict[str, Any], self.step("notify", "digest")["env"])
         self.assert_expression(env["REVISE_ONLY"], REVISE_ONLY)
 
+    @unittest.expectedFailure
     def test_dispatch_form_offers_revise_only(self) -> None:
         """A boolean, off by default; the form stays inside GitHub's 25."""
         inputs = cast(
@@ -2838,7 +2842,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 19)
+        self.assertEqual(len(inputs), 20)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -3050,9 +3054,278 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertEqual(calls, [])
 
 
+class OutstandingOnlyContracts(ReusableWorkflowCase):
+    """A continuation names pull requests and asks for the scan's test (#167)."""
+
+    @unittest.expectedFailure
+    def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
+        """A boolean, off by default, passed to select_issues.py as a flag."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["outstanding_only"]["type"], "boolean")
+        self.assertIs(inputs["outstanding_only"]["default"], False)
+        select = self.step("select", "Select issues")
+        env = cast(dict[str, Any], select["env"])
+        self.assert_expression(env["OUTSTANDING_ONLY"], "inputs.outstanding_only")
+        run = flatten(select["run"])
+        self.assertIn('if [ "$OUTSTANDING_ONLY" = true ]; then', run)
+        self.assertIn("extra+=(--outstanding-only)", run)
+        budget = cast(dict[str, Any], self.step("select", "budget")["env"])
+        self.assert_expression(budget["OUTSTANDING_ONLY"], "inputs.outstanding_only")
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.expectedFailure
+    def test_check_inputs_needs_pull_requests_alone(self) -> None:
+        """Accepted beside pull_requests alone; refused without them or with targets."""
+        budget = self.step("select", "budget")
+        base = {
+            **ReviseOnlyContracts.BUDGET_ENV,
+            "REVISE_ONLY": "false",
+            "OUTSTANDING_ONLY": "true",
+        }
+        pulls = {"PULL_REQUESTS_RAW": "a#2", "PULL_COUNT": "1"}
+        error = "outstanding_only needs pull_requests alone"
+        cases: tuple[tuple[dict[str, str], str | None], ...] = (
+            (pulls, None),
+            ({"OUTSTANDING_ONLY": "false"}, None),
+            ({}, error),
+            ({"PULL_COUNT": ""}, error),
+            ({**pulls, "ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"}, error),
+            ({"REPOSITORIES_RAW": "a", "REPOSITORY_COUNT": "1"}, error),
+        )
+        for overrides, expected in cases:
+            with (
+                self.subTest(**overrides),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        "PATH": os.environ["PATH"],
+                        **base,
+                        **overrides,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if expected is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1, proc.stdout)
+                    self.assertIn(f"::error::{expected}", proc.stdout)
+                    self.assertFalse(output.exists())
+
+
+CONTINUE_DISPATCH = (
+    'gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY"'
+    " -f dry_run=false -f mode=pull-requests -f max_pull_requests=0"
+    ' -f pull_requests="$pull" -f outstanding_only=true'
+    ' -f model="$MODEL" -f max_runtime_minutes="$RUNTIME"'
+    ' -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS"'
+)
+
+
+class ContinueJobContracts(WorkflowCase):
+    """The caller dispatches the next round of a pull request left with work (#167)."""
+
+    WORKFLOW = CRON
+
+    @unittest.expectedFailure
+    def test_form_offers_outstanding_only_and_forwards_it(self) -> None:
+        """A boolean, off by default, reaching the reusable workflow."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["outstanding_only"]["type"], "boolean")
+        self.assertIs(inputs["outstanding_only"]["default"], False)
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["outstanding_only"]), "inputs.outstanding_only || false"
+        )
+
+    @unittest.expectedFailure
+    def test_job_holds_actions_write_alone(self) -> None:
+        """One grant, no checkout, no artifact and no stored secret."""
+        job = self.jobs["continue"]
+        self.assertEqual(job["needs"], ["code-monkey"])
+        self.assertEqual(job["permissions"], {"actions": "write"})
+        self.assertEqual(self.actions("continue", CHECKOUT), [])
+        self.assertEqual(self.actions("continue", DOWNLOAD), [])
+        self.assertEqual(SECRET_REFERENCE.findall(dumped(job)), [])
+        step = self.step("continue", "dispatch")
+        self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
+        self.assert_expression(
+            step["env"]["PULLS"], "needs.code-monkey.outputs.continue_pull_requests"
+        )
+
+    @unittest.expectedFailure
+    def test_job_is_gated_on_the_output_and_the_switch(self) -> None:
+        """Not on the call's result; never on a dry run; a variable stops it."""
+        self.assert_expression(
+            self.jobs["continue"]["if"],
+            "!cancelled()"
+            " && needs.code-monkey.outputs.continue_pull_requests != ''"
+            " && needs.code-monkey.outputs.continue_pull_requests != '[]'"
+            " && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)"
+            " && vars.CODE_MONKEY_CONTINUE != 'false'",
+        )
+
+    @unittest.expectedFailure
+    def test_dispatch_runs_after_harden_runner_in_block_mode(self) -> None:
+        """The allow-list loads, then the runner is hardened, then the dispatch."""
+        steps = self.steps("continue")
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        self.assertEqual(steps[1]["with"]["egress-policy"], "block")
+        forwarded = self.jobs["code-monkey"]["with"]["harden_runner_allowlist"]
+        self.assertEqual(steps[0]["with"]["config"], forwarded)
+        self.assertEqual(self.position("continue", "dispatch"), 2)
+        self.assertEqual(len(steps), 3)
+        self.assertIn(CONTINUE_DISPATCH, flatten(str(steps[2]["run"])))
+
+    @unittest.expectedFailure
+    def test_options_are_forwarded_with_the_form_defaults(self) -> None:
+        """The loop keeps the operator's model, runtime, rounds and sub-agents."""
+        env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
+        self.assert_expression(env["MODEL"], "inputs.model || 'Claude Opus 5.5'")
+        self.assert_expression(env["RUNTIME"], "inputs.max_runtime_minutes || '180'")
+        self.assert_expression(env["ROUNDS"], "inputs.max_rounds || '10'")
+        self.assert_expression(
+            env["SUBAGENTS"],
+            "github.event_name != 'workflow_dispatch' || inputs.allow_subagents",
+        )
+
+    def dispatch(
+        self, pulls: object, fail: str = "", **overrides: str
+    ) -> tuple[int, list[str], str, str]:
+        """Run the dispatch step with a fake gh; return status, calls, stdout, summary."""
+        step = self.step("continue", "dispatch")
+        with tempfile.TemporaryDirectory() as holder:
+            work = Path(holder)
+            fake = work / "bin"
+            fake.mkdir()
+            calls = work / "calls"
+            calls.touch()
+            (fake / "gh").write_text(
+                "#!/bin/bash\n"
+                f'printf "%s\\n" "$*" >> "{calls}"\n'
+                f'case "$*" in *"{fail or "never"}"*) exit 1 ;; esac\n',
+                encoding="utf-8",
+            )
+            (fake / "gh").chmod(0o755)
+            summary = work / "summary"
+            summary.touch()
+            env = {
+                "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}",
+                "GH_TOKEN": "t",
+                "GITHUB_REPOSITORY": "lfreleng-actions/github-code-monkey-bot",
+                "ORG": "lfreleng-actions",
+                "PULLS": pulls if isinstance(pulls, str) else json.dumps(pulls),
+                "MODEL": "Claude Opus 5.5",
+                "RUNTIME": "180",
+                "ROUNDS": "10",
+                "SUBAGENTS": "true",
+                "GITHUB_STEP_SUMMARY": str(summary),
+                **overrides,
+            }
+            run = subprocess.run(
+                ["bash", "-c", str(step["run"])],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return (
+                run.returncode,
+                calls.read_text(encoding="utf-8").splitlines(),
+                run.stdout,
+                summary.read_text(encoding="utf-8"),
+            )
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_one_dispatch_per_pull_request(self) -> None:
+        """Each pull request is its own live, outstanding-only named run."""
+        pulls = ["lfreleng-actions/a#1", "LFReleng-Actions/b#2"]
+        status, calls, _, summary = self.dispatch(pulls)
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            calls,
+            [
+                "workflow run code-monkey-cron.yaml --repo"
+                " lfreleng-actions/github-code-monkey-bot -f dry_run=false"
+                " -f mode=pull-requests -f max_pull_requests=0"
+                f" -f pull_requests={pull} -f outstanding_only=true"
+                " -f model=Claude Opus 5.5 -f max_runtime_minutes=180"
+                " -f max_rounds=10 -f allow_subagents=true"
+                for pull in pulls
+            ],
+        )
+        self.assertIn("dispatched: lfreleng-actions/a#1", summary)
+        self.assertIn("dispatched: LFReleng-Actions/b#2", summary)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_a_failed_dispatch_is_a_warning(self) -> None:
+        """Three pull requests, one failing: all tried, one warned, success."""
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2", "lfreleng-actions/c#3"]
+        status, calls, stdout, summary = self.dispatch(pulls, fail="b#2")
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(stdout.count("::warning::"), 1)
+        self.assertIn("lfreleng-actions/b#2", stdout)
+        self.assertIn("failed: lfreleng-actions/b#2", summary)
+        self.assertIn("dispatched: lfreleng-actions/c#3", summary)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_malformed_list_is_refused_before_any_dispatch(self) -> None:
+        """Another owner, bad syntax or a newline refuses the whole list."""
+        good = "lfreleng-actions/a#1"
+        for bad in (
+            "elsewhere/a#2",
+            "lfreleng-actions/a#0",
+            "lfreleng-actions/a",
+            "lfreleng-actions/a#2\nlfreleng-actions/b#3",
+            "lfreleng-actions/a b#2",
+            "{}",
+        ):
+            with self.subTest(entry=bad):
+                status, calls, _, _ = self.dispatch([good, bad])
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+        for pulls in ("not json", json.dumps({"a": 1}), json.dumps([good, 3])):
+            with self.subTest(pulls=pulls):
+                status, calls, _, _ = self.dispatch(pulls)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_forwarded_options_are_validated(self) -> None:
+        """An unknown model or a malformed number refuses before any dispatch."""
+        for overrides in (
+            {"MODEL": "gpt; rm -rf"},
+            {"RUNTIME": "1 -f x=y"},
+            {"ROUNDS": "0"},
+            {"SUBAGENTS": "yes"},
+        ):
+            with self.subTest(**overrides):
+                status, calls, _, _ = self.dispatch(
+                    ["lfreleng-actions/a#1"], **overrides
+                )
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+
+
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
+    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3070,6 +3343,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "pull_requests",
                 "revise",
                 "revise_only",
+                "outstanding_only",
                 "max_runtime_minutes",
                 "max_rounds",
                 "max_concurrent_agents",
@@ -3108,6 +3382,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             with self.subTest(secret=name):
                 self.assertIs(secret["required"], False)
 
+    @unittest.expectedFailure
     def test_input_defaults(self) -> None:
         """Defaults keep an unconfigured call dry, bounded and sub-agent aware."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3131,6 +3406,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "antagonistic_repository": "lfreleng-actions/github-code-review-bot",
             "revise": True,
             "revise_only": False,
+            "outstanding_only": False,
             "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
@@ -3204,6 +3480,7 @@ class CronCallerContracts(WorkflowCase):
             " inputs.dry_run && ' (dry run)' || '')",
         )
 
+    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
@@ -3238,6 +3515,7 @@ class CronCallerContracts(WorkflowCase):
             "issues": "",
             "categories": "all",
             "revise_only": False,
+            "outstanding_only": False,
         }
         for name, default in defaults.items():
             with self.subTest(input=name):
