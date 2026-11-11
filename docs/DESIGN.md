@@ -379,15 +379,16 @@ Consequences the implementation has to handle:
   commit's parent, tree and message, is the commit landing, taken
   without a second copy; any other head, a vanished branch, or a
   read-back that fails, fails the replay as before. The fork sync
-  is idempotent and retries a `5xx` on its own backoff, and records
-  the incident even when the sync then ends on a tolerated `409` or
-  `422`. A create read back as the branch at the base counts as
-  created, but not as this run's, since a branch standing there
-  before reads the same: a later failure keeps it, as for any create
-  without a clear answer. A delete read back as no branch counts as
-  done. A create or delete not found goes again. Every write
-  recovered this way adds a line to the result's `warnings`, so the
-  report shows the incident the run rode out.
+  is idempotent and retries a `5xx`, or one of gh's status-less
+  wordings (`bot_github.TRANSIENT_WORDINGS`), on its own backoff,
+  and records the incident even when the sync then ends on a
+  tolerated `409` or `422`. A create read back as the branch at the
+  base counts as created, but not as this run's, since a branch
+  standing there before reads the same: a later failure keeps it, as
+  for any create without a clear answer. A delete read back as no
+  branch counts as done. A create or delete not found goes again.
+  Every write recovered this way adds a line to the result's
+  `warnings`, so the report shows the incident the run rode out.
 - **An existing branch.** The publisher never deletes a branch it did
   not create. The one existing branch it moves is a closed attempt's,
   when an operator named its issue again (§6) and not otherwise. The

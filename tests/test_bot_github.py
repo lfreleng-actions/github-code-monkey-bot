@@ -109,6 +109,19 @@ class RunGhTest(unittest.TestCase):
             self.assertEqual(github.run_gh(["api", "repos/o/r"]), "ok")
         self.assertEqual(run.call_count, 2)
 
+    def test_a_reply_cut_short_is_retried(self) -> None:
+        """gh's wording for an unreadable error body carries no status."""
+        replies = [
+            completed(stderr="unexpected end of JSON input", code=1),
+            completed("ok"),
+        ]
+        with (
+            patch.object(github.subprocess, "run", side_effect=replies) as run,
+            patch.object(github.time, "sleep"),
+        ):
+            self.assertEqual(github.run_gh(["api", "repos/o/r"]), "ok")
+        self.assertEqual(run.call_count, 2)
+
     def test_writes_run_once(self) -> None:
         """A write that hits a 502 is not repeated: it may have landed."""
         reply = completed(stderr="gh: Bad Gateway (HTTP 502)", code=1)
@@ -409,6 +422,32 @@ class WriteWithRecoveryTest(unittest.TestCase):
             )
         self.assertEqual(len(calls), 2)
 
+    def test_a_reply_cut_short_is_looked_at(self) -> None:
+        """An error body gh could not read may hide a write that landed."""
+        cut = github.GitHubError("unexpected end of JSON input")
+        write, calls = self.fake([cut])
+        with patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(
+                github.write_with_recovery(write, lambda: "x", repeat_safe=False), "x"
+            )
+        self.assertEqual(len(calls), 1)
+
+    def test_graphql_internal_error_is_looked_at_and_retried(self) -> None:
+        """GitHub's "Something went wrong" is a 5xx in all but its status."""
+        failed = github.GitHubError(
+            'GraphQL errors: [{"message": "Something went wrong while executing'
+            ' your query. Please include `D443:353A81` when reporting this issue."}]'
+        )
+        write, calls = self.fake([failed, "ok"])
+        with (
+            patch.object(github.time, "sleep"),
+            patch("sys.stderr", new_callable=io.StringIO),
+        ):
+            self.assertEqual(
+                github.write_with_recovery(write, lambda: None, repeat_safe=True), "ok"
+            )
+        self.assertEqual(len(calls), 2)
+
     def test_attempts_outside_the_budget_are_refused(self) -> None:
         """Zero tries, or more than the delays allow, is a caller error."""
         for attempts in (0, github.WRITE_ATTEMPTS + 1):
@@ -503,6 +542,66 @@ class WriteWithRecoveryTest(unittest.TestCase):
             [call.args[0] for call in sleep.call_args_list],
             [github.WRITE_RETRY_DELAYS_SECONDS[0]],
         )
+
+
+class TransientWordingTest(unittest.TestCase):
+    """``is_transient`` on a failure that carries no HTTP status."""
+
+    # What gh prints, with no status, when a reply or the connection
+    # under it fails: an error body it could not read, a connection
+    # the server closed, a transport timeout, and GitHub's own
+    # internal error on GraphQL, which arrives as a 200.
+    CUT_SHORT = (
+        "unexpected end of JSON input",
+        'Post "https://api.github.com/graphql": EOF',
+        "unexpected EOF",
+        "read tcp 10.1.0.4:53112->140.82.112.6:443: read: connection reset by peer",
+        "dial tcp 140.82.112.6:443: i/o timeout",
+        "net/http: TLS handshake timeout",
+        "net/http: request canceled (Client.Timeout exceeded while awaiting headers)",
+        "context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+        'GraphQL errors: [{"message": "Something went wrong while executing your'
+        ' query. Please include `D443:353A81` when reporting this issue."}]',
+    )
+
+    def test_each_wording_without_a_status_is_transient(self) -> None:
+        """A reply gh could not read is as ambiguous as a 5xx."""
+        for message in self.CUT_SHORT:
+            with self.subTest(message=message):
+                failure = github.GitHubError(message)
+                self.assertIsNone(failure.status)
+                self.assertTrue(github.is_transient(failure))
+
+    def test_a_status_beside_the_wording_decides_alone(self) -> None:
+        """A 422 whose reply ends mid-sentence is still a 422."""
+        for message in (
+            "gh: unexpected end of JSON input (HTTP 422)",
+            "gh: EOF (HTTP 404)",
+            "gh: connection reset by peer (HTTP 403)",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(github.is_transient(github.GitHubError(message)))
+
+    def test_a_wrong_or_closed_endpoint_stays_fatal(self) -> None:
+        """A host nobody resolves, or a port nobody listens on, repeats."""
+        for message in (
+            "dial tcp: lookup api.github.invalid: no such host",
+            "dial tcp 127.0.0.1:443: connect: connection refused",
+            "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN"
+            " environment variable.",
+            "could not run gh: [Errno 2] No such file or directory: 'gh'",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(github.is_transient(github.GitHubError(message)))
+
+    def test_a_wording_is_matched_as_whole_words(self) -> None:
+        """Letters on either side make another word, not a match."""
+        for message in (
+            "gh: the node THEREOF is not valid",
+            "gh: unexpected end of JSON inputs",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(github.is_transient(github.GitHubError(message)))
 
 
 class GitHubErrorTest(unittest.TestCase):
