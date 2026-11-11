@@ -331,6 +331,15 @@ class RefRecoveryTest(RecoveryCase):
         self.assertEqual(self.sleeps[:1], [refs.SYNC_BACKOFF_SECONDS[0]])
         self.assertTrue(any("fork sync" in w for w in result["warnings"]))
 
+    def test_an_unreadable_error_on_merge_upstream_is_retried(self) -> None:
+        """A sync whose error body gh could not read is retried as a 502 is."""
+        self.fake.sync_errors = [github.GitHubError("unexpected end of JSON input")]
+        result = self.push()
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(self.fake.syncs, 2)
+        self.assertEqual(self.sleeps[:1], [refs.SYNC_BACKOFF_SECONDS[0]])
+        self.assertTrue(any("fork sync" in w for w in result["warnings"]))
+
     def test_a_502_on_every_sync_fails(self) -> None:
         """A sync that never gets through still fails the publication."""
         self.fake.sync_errors = [bad_gateway()] * refs.SYNC_ATTEMPTS

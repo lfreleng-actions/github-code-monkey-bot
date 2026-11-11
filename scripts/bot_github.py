@@ -29,6 +29,33 @@ STATUS_RE = re.compile(r"\(HTTP (\d{3})\)$|^gh: HTTP (\d{3})$", re.MULTILINE)
 ABSENT = frozenset({404, 410})
 TIMEOUT_SECONDS = 60
 TRANSIENT = frozenset({500, 502, 503, 504})
+# What gh prints, with no HTTP status, when it could not read a reply:
+# an error body that is empty or cut short ("unexpected end of JSON
+# input"), a connection the server closed before or during the body
+# ("EOF", "unexpected EOF"), a transport that timed out, and GitHub's
+# own internal error on GraphQL, which arrives as a 200 with one
+# message and a request id. "timed out" is run_once's own wording for
+# gh exceeding TIMEOUT_SECONDS. Each is a failure the next call may
+# not meet, so for a failure with no status these count as transient,
+# matched as whole words without regard to case. A wrong host, a
+# refused port and gh's own usage errors are not here: they repeat.
+TRANSIENT_WORDINGS = (
+    "timed out",
+    "unexpected end of JSON input",
+    "EOF",
+    "connection reset by peer",
+    "i/o timeout",
+    "TLS handshake timeout",
+    "net/http: request canceled",
+    "context deadline exceeded",
+    "Something went wrong while executing your query",
+)
+TRANSIENT_WORDING_RE = re.compile(
+    r"(?<![A-Za-z])(?:"
+    + "|".join(re.escape(wording) for wording in TRANSIENT_WORDINGS)
+    + r")(?![A-Za-z])",
+    re.IGNORECASE,
+)
 READ_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 2
 # A recoverable write waits longer between tries than a read does: a
@@ -79,12 +106,13 @@ def is_transient(exc: GitHubError) -> bool:
 
     An HTTP status decides on its own: GitHub's reply text reaches the
     message, so a 422 whose detail mentions a timeout is still a 422.
-    The "timed out" wording counts only for a failure with no status,
-    such as gh's own timeout.
+    The wordings of ``TRANSIENT_WORDINGS`` count only for a failure
+    with no status: gh's own timeout, a reply it could not read, or
+    GitHub's internal error on GraphQL.
     """
     if exc.status is not None:
         return exc.status in TRANSIENT
-    return "timed out" in str(exc)
+    return TRANSIENT_WORDING_RE.search(str(exc)) is not None
 
 
 def is_read(args: list[str]) -> bool:
@@ -169,8 +197,9 @@ def run_gh(
 ) -> str:
     """Run gh with a pinned REST API version, returning stdout or raising.
 
-    Reads retry a transient 5xx or timeout with a short backoff: a
-    selection makes many reads, and one 502 should not cost the run.
+    Reads retry a transient failure (a 5xx, a timeout, a reply cut
+    short) with a short backoff: a selection makes many reads, and one
+    502 should not cost the run.
     Writes run once; a repeated review submission is not harmless. A
     caller that can tell whether a write took effect makes it
     recoverable with :func:`write_with_recovery` instead. ``read``
