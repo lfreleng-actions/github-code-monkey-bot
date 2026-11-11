@@ -25,7 +25,7 @@ repository_reads = import_module("repository_reads")
 select = import_module("select_issues")
 explicit_targets = import_module("explicit_issues")
 inputs = import_module("selection_inputs")
-revision_select = import_module("revision_select")
+revision_rounds = import_module("revision_rounds")
 choose_module = import_module("selection_choose")
 categories = import_module("issue_categories")
 
@@ -241,7 +241,7 @@ class ExplicitIssuesTest(NoSubprocessCase):
             reads, "bot_identity", return_value={"login": "b[bot]", "email": "e"}
         ).start()
         patch.object(
-            revision_select, "pull_request_for_branch", return_value=None
+            revision_rounds, "pull_request_for_branch", return_value=None
         ).start()
         self.addCleanup(patch.stopall)
 
@@ -492,8 +492,8 @@ class RevisionIntegrationTest(NoSubprocessCase):
         patch.object(
             reads, "bot_identity", return_value={"login": "b[bot]", "email": "e"}
         ).start()
-        patch.object(revision_select, "build_entry", side_effect=self.entry).start()
-        patch.object(revision_select, "scan", return_value=[]).start()
+        patch.object(revision_rounds, "build_entry", side_effect=self.entry).start()
+        patch.object(revision_rounds, "scan", return_value=[]).start()
         self.addCleanup(patch.stopall)
 
     def entry(
@@ -502,7 +502,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         """A revision entry for a known pull request, or a Skip."""
         found = self.entries.get((repo_name, pull_number))
         if found is None:
-            raise revision_select.Skip("not an open pull request the bot opened")
+            raise revision_rounds.Skip("not an open pull request the bot opened")
         return {**found, "explicit": kwargs["explicit"]}
 
     @staticmethod
@@ -618,7 +618,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
         held = self.held_file(("org/alpha", 7, 4242), ("org/alpha", 41, 4242))
         with patch.object(
-            revision_select, "build_entry", side_effect=self.entry
+            revision_rounds, "build_entry", side_effect=self.entry
         ) as built:
             selection, _ = select.build_selection(
                 self.args("--pull-requests", "org/alpha#41", "--held-file", held)
@@ -638,7 +638,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         """A scan records a held skip in skipped_issues, unlike its other skips."""
         entry = self.revision("alpha", 41, 7)
         with patch.object(
-            revision_select, "scan", return_value=[("org/alpha", lambda: entry)]
+            revision_rounds, "scan", return_value=[("org/alpha", lambda: entry)]
         ):
             selection, _ = select.build_selection(
                 self.args("--held-file", self.held_file(("org/alpha", 7, 99)))
@@ -719,7 +719,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
             return_value=reads.PriorAttempt("pull_request", "open", 41),
         ).start()
         patch.object(
-            revision_select, "pull_request_for_branch", return_value=41
+            revision_rounds, "pull_request_for_branch", return_value=41
         ).start()
         selection, _ = select.build_selection(self.args("--issues", "org/alpha#7"))
         (entry,) = selection["issues"]
@@ -761,7 +761,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
             return_value=reads.PriorAttempt("pull_request", "open", 41),
         ).start()
         patch.object(
-            revision_select, "pull_request_for_branch", return_value=41
+            revision_rounds, "pull_request_for_branch", return_value=41
         ).start()
         selection, _ = select.build_selection(
             self.args("--pull-requests", "org/alpha#41", "--issues", "org/alpha#7")
@@ -771,7 +771,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
 
     def test_scan_revisions_follow_the_repository_scope(self) -> None:
         """The scan passes the run's repository policy to the revision scan."""
-        with patch.object(revision_select, "scan", return_value=[]) as scan:
+        with patch.object(revision_rounds, "scan", return_value=[]) as scan:
             select.build_selection(self.args("--repositories", "alpha"))
         allowed = scan.call_args.kwargs["allowed"]
         self.assertTrue(allowed("alpha"))
@@ -785,7 +785,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
 
         first = self.revision("alpha", 41, 7)
         patch.object(
-            revision_select, "scan", return_value=[("org/alpha", lambda: built(first))]
+            revision_rounds, "scan", return_value=[("org/alpha", lambda: built(first))]
         ).start()
         selection, _ = select.build_selection(self.args("--session", "39115306869-2"))
         self.assertEqual([e["session"] for e in selection["issues"]], ["39115306869-2"])
@@ -808,7 +808,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
 
         first = self.revision("alpha", 41, 7)
         patch.object(
-            revision_select, "scan", return_value=[("org/alpha", lambda: built(first))]
+            revision_rounds, "scan", return_value=[("org/alpha", lambda: built(first))]
         ).start()
         fixed = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 
@@ -833,7 +833,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
             return build
 
         patch.object(
-            revision_select,
+            revision_rounds,
             "scan",
             return_value=[
                 ("org/alpha", builder(self.revision("alpha", 41, 7))),
@@ -847,7 +847,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         selection, _ = select.build_selection(self.args("--no-revise"))
         self.assertEqual(selection["issues"], [])
         # Revisions publish in pull-requests mode alone; a branches run selects none.
-        with patch.object(revision_select, "scan", return_value=[]) as scan:
+        with patch.object(revision_rounds, "scan", return_value=[]) as scan:
             select.build_selection(self.args_mode("branches"))
         scan.assert_not_called()
 
@@ -868,7 +868,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
 
         first = self.revision("alpha", 41, 7)
         patch.object(
-            revision_select,
+            revision_rounds,
             "scan",
             return_value=[
                 ("org/alpha", lambda: built(first)),
@@ -891,7 +891,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
 
         search = patch.object(reads, "search_open_issues").start()
         patch.object(
-            revision_select,
+            revision_rounds,
             "scan",
             return_value=[
                 ("org/alpha", lambda: built(self.revision("alpha", 41, 7))),
@@ -1693,7 +1693,7 @@ class MainTest(NoSubprocessCase):
         patch.object(reads, "prior_attempt", return_value=None).start()
         patch.object(reads, "has_open_linked_pr", return_value=False).start()
         patch.object(reads, "branch_head", return_value=SHA_B).start()
-        patch.object(revision_select, "scan", return_value=[]).start()
+        patch.object(revision_rounds, "scan", return_value=[]).start()
         patch.object(
             reads, "filtered_comments", return_value=([{"body": "hi"}], 2, False)
         ).start()

@@ -1853,6 +1853,7 @@ scripts/round_caps.py                    the round caps a result reads (§20.1)
 scripts/round_recount.py                 the ceiling's rounds after a race
 scripts/revision_select.py               revision candidates and entries
 scripts/revision_scan.py                 the owner-wide scan, ranked
+scripts/revision_rounds.py               the rounds a run works, built on demand
 scripts/revision_check.py                a revision's offline checks
 scripts/branch_swap.py                   the compare-and-swap branch move
 scripts/revision_publish.py              the push, replies and resolves

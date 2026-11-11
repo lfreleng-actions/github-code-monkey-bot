@@ -19,7 +19,12 @@ import fork_orgs as forks
 import revision_reads as revisions
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
-from revision_select import Inputs, Prefetch, Round, Skip, build_entry, read_issue
+from revision_select import Inputs, Prefetch, Skip, build_entry, read_issue
+
+Builder = Callable[[], dict[str, Any] | None]
+# A round to build, with the repository it belongs to named up front,
+# so the one-per-repository rule applies before the packet is read.
+Round = tuple[str, Builder]
 
 # Whether another active run holds any of the numbers in the
 # repository; it records the skip under the reference it is given.

@@ -22,6 +22,7 @@ round_reads = import_module("round_reads")
 thread_reads = import_module("thread_reads")
 select = import_module("revision_select")
 scanning = import_module("revision_scan")
+rounding = import_module("revision_rounds")
 github = import_module("bot_github")
 
 HEAD = "a" * 40
@@ -497,7 +498,7 @@ class ScanTest(RevisionCase):
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
         self.threads = [thread()]
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -527,7 +528,7 @@ class ScanTest(RevisionCase):
         skipped = {"revision": 0}
         named: list[dict[str, str]] = []
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -540,7 +541,7 @@ class ScanTest(RevisionCase):
             assert entry is not None
             self.assertEqual((entry["round"], entry["max_rounds"]), (11, 12))
             # The default cap stops the same pull request.
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -550,7 +551,7 @@ class ScanTest(RevisionCase):
             self.assertIsNone(builders[0][1]())
         self.assertIn("round cap of 10", named[-1]["reason"])
         # Rounds hands its cap to the scan.
-        rounds = select.Rounds(
+        rounds = rounding.Rounds(
             "org",
             bot=BOT,
             fork_orgs=FORK_ORGS,
@@ -561,7 +562,7 @@ class ScanTest(RevisionCase):
         )
         with (
             patch.object(revisions, "search_bot_pull_requests", return_value=hits),
-            patch.object(select, "scan", wraps=select.scan) as scanned,
+            patch.object(rounding, "scan", wraps=scanning.scan) as scanned,
         ):
             rounds.scan()
         self.assertEqual(scanned.call_args.kwargs["max_rounds"], 12)
@@ -608,7 +609,7 @@ class ScanTest(RevisionCase):
         patch.object(reads, "issue_details", side_effect=per_issue).start()
         self.threads = [thread()]
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -638,7 +639,7 @@ class ScanTest(RevisionCase):
 
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -676,7 +677,7 @@ class ScanTest(RevisionCase):
             patch.object(revisions, "search_bot_pull_requests", return_value=hits),
             patch.object(scanning, "build_entry", wraps=select.build_entry) as built,
         ):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -703,7 +704,7 @@ class ScanTest(RevisionCase):
         def held(_repository: str, _numbers: tuple[int, ...], _reference: str) -> bool:
             return False
 
-        rounds = select.Rounds(
+        rounds = rounding.Rounds(
             "org",
             bot=BOT,
             fork_orgs=FORK_ORGS,
@@ -713,7 +714,7 @@ class ScanTest(RevisionCase):
         )
         with (
             patch.object(revisions, "search_bot_pull_requests", return_value=[]),
-            patch.object(select, "scan", wraps=select.scan) as scanned,
+            patch.object(rounding, "scan", wraps=scanning.scan) as scanned,
         ):
             rounds.scan(held)
             rounds.scan()
@@ -740,7 +741,7 @@ class ScanTest(RevisionCase):
         named: list[dict[str, str]] = []
         patch.object(reads, "issue_details", return_value=details).start()
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
-            builders = select.scan(
+            builders = scanning.scan(
                 "org",
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
@@ -763,7 +764,7 @@ class PullRequestForBranchTest(unittest.TestCase):
             {"user": {"login": BOT["login"]}, "number": 6},
         ]
         with patch.object(reads, "api_page", return_value=entries) as page:
-            number = select.pull_request_for_branch(
+            number = revisions.pull_request_for_branch(
                 "org/alpha", "lfreleng-bot-forks", "code-monkey/issue-7", BOT["login"]
             )
         self.assertEqual(number, 6)
@@ -772,7 +773,7 @@ class PullRequestForBranchTest(unittest.TestCase):
         )
         with patch.object(reads, "api_page", return_value=[]):
             self.assertIsNone(
-                select.pull_request_for_branch("org/alpha", "f", "b", BOT["login"])
+                revisions.pull_request_for_branch("org/alpha", "f", "b", BOT["login"])
             )
 
 
