@@ -22,7 +22,8 @@ from thread_reads import MAX_THREAD_BODY
 # The publisher's footer: the last line of its comment, nothing after
 # it. A marker in the agent's summary text sits mid-body and is text.
 FOOTER = re.compile(
-    r"(?:^|\n)<!-- code-monkey (?P<run>\S+) (?P<verdict>\S+)(?: review=\S+)?"
+    r"(?:^|\n)<!-- code-monkey (?P<run>\S+) (?P<verdict>\S+)"
+    r"(?: review=(?P<review>\S+))?"
     r"(?: mergeable=(?:true|false|unknown))?"
     r"(?: checks=(?:passing|infrastructure|failing|running|none|unknown)"
     r"(?:/[0-9a-f]{12})?)?"
@@ -67,6 +68,9 @@ class RoundHistory:
     # The run URLs whose footer records a published, counted round: a
     # continuation runs only when the run that dispatched it is here.
     published: frozenset[str] = frozenset()
+    # The review token of the footer ``last_verdict`` comes from, or
+    # None: ``pending/not-requested`` says GitHub refused the request.
+    last_review: str | None = None
 
 
 def round_history(
@@ -112,6 +116,8 @@ def round_history(
 
     ``published`` holds the run of every ``proposed`` footer that is
     not stale: the runs whose round the publisher counted.
+    ``last_review`` is the review token of the latest footer, the one
+    ``last_verdict`` names.
 
     ``exclude``, a run URL and the ``since`` its footer records, leaves
     out that one attempt's footers, so the publisher can count the
@@ -123,10 +129,10 @@ def round_history(
     summaries: list[dict[str, Any]] = []
     stale = 0
     published: set[str] = set()
-    # since, created, verdict: handled rounds order by the read time
-    # they record, so a retry of an older round posted after a newer
+    # since, created, verdict, review: handled rounds order by the read
+    # time they record, so a retry of an older round posted after a newer
     # handoff rewinds nothing; creation orders two posts of one read.
-    latest: tuple[str, str, str | None] | None = None
+    latest: tuple[str, str, str | None, str | None] | None = None
     for page in range(1, MAX_HISTORY_PAGES + 1):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
@@ -159,7 +165,7 @@ def round_history(
             if verdict in HANDLED_VERDICTS and isinstance(created, str):
                 key = (found.group("since") or created, created)
                 if latest is None or key > (latest[0], latest[1]):
-                    latest = (key[0], created, verdict)
+                    latest = (key[0], created, verdict, found.group("review"))
             if found.group("stale") is not None:
                 stale += 1
                 continue
@@ -192,6 +198,7 @@ def round_history(
                 frozenset(answered),
                 stale,
                 frozenset(published),
+                latest[3] if latest else None,
             )
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"

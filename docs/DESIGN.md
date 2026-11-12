@@ -2004,6 +2004,7 @@ scripts/round_recount.py                 the ceiling's rounds after a race
 scripts/revision_select.py               revision candidates and entries
 scripts/revision_scan.py                 the owner-wide scan, ranked
 scripts/revision_rounds.py               the rounds a run works, built on demand
+scripts/unreviewed_heads.py              heads with no Copilot review (§20.1)
 scripts/revision_check.py                a revision's offline checks
 scripts/branch_swap.py                   the compare-and-swap branch move
 scripts/revision_publish.py              the push, replies and resolves
@@ -2269,8 +2270,11 @@ a fixed text saying why it could not. Beside it the select job writes
 (`{"include": [{key, repository, repo_name, number, base_sha,
 branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
 head_sha, pull_number}]}`), `agents.md` (the guidance bytes whose
-SHA-256 the `guidance` block records) and `excluded-repos.txt`. The job outputs
-`selection_sha256` and `guidance_sha256` over the exact bytes.
+SHA-256 the `guidance` block records), `excluded-repos.txt` and
+`unreviewed-heads.json` (the `skipped_issues` entries whose reason
+says the head has no Copilot review, §20.1, which the report reads
+from this artifact). The job outputs `selection_sha256`,
+`guidance_sha256` and `unreviewed_sha256` over the exact bytes.
 
 ### 18.2 `manifest.json` (author → publish; untrusted)
 
@@ -2496,14 +2500,15 @@ publish.py respond --result result.json --check check.json
 antagonistic_request.py --result result.json --output result.json
     --switch true|false [--repository O/R]
 publish.py report --results DIR --output-md PATH --output-json PATH
-    [--org ORG --github-output PATH]
+    [--org ORG --github-output PATH] [--unreviewed-heads PATH]
 merge_state.py --result result.json --check check.json
     --output result.json
 ```
 
 `select_issues.py`, `merge_state.py`, `publish.py push`, `open`,
 `respond`, `comment`, `review-request` and `review-await` read
-`GH_TOKEN`. Everything else
+`GH_TOKEN`; `report` reads the select job's `unreviewed-heads.json`
+when given one (§20.1). Everything else
 runs offline. A verdict other than
 `proposed` is data, not an error: the scripts exit non-zero for
 operational failures alone.
@@ -2693,8 +2698,8 @@ Three ways in, all through the select job and its read token:
   so the selection reads a `null` again on the §8 step 11 backoff,
   for the head it selected, before the test, which
   adds up to a minute per such candidate; one that never settles is
-  no work on its own, so a GitHub hiccup spends no round. A head with no
-  review yet waits for the gate; a head with nothing else whose check
+  no work on its own, so a GitHub hiccup spends no round. A head
+  with nothing else whose check
   runs have not all finished (`check_reads.is_unsettled`, the predicate
   the publish job's `running` state uses) skips as `checks still
   running`, not `nothing outstanding`, so the skipped-issues record
@@ -2710,7 +2715,13 @@ Three ways in, all through the select job and its read token:
   other work outstanding the round goes ahead and the packet carries
   those entries marked `infrastructure` (`CheckPacket.infrastructure`
   counts them whole, each failing run read and classified before
-  the bounds, as `outstanding` counts the defects); a clean head
+  the bounds, as `outstanding` counts the defects); a head with
+  nothing else outstanding, its checks settled with no
+  infrastructure failure, and no Copilot review skips with the
+  reason `unreviewed_heads.NO_REVIEW`, or `unreviewed_heads.REFUSED`
+  when the bot's latest footer on the issue records the review as
+  `pending/not-requested` (§8 steps 10–11), not `nothing
+  outstanding` (see "Heads with no review" below); a clean head
   with nothing else needs no round; and
   after a handoff (§20.3) neither the disputed threads
   nor a failing check nor a hand-back brings a round on its own, a
@@ -2725,6 +2736,39 @@ Three ways in, all through the select job and its read token:
   nothing.
   Revisions select in `pull-requests` mode alone, named ones included,
   since a `branches` run publishes none.
+
+**Heads with no review.** A head reaches the scan with no Copilot review
+when the publish job's wait ended `pending`, Copilot not having answered
+within it or GitHub refusing the request because the review token lapsed
+or was never set (`pending (not requested)`, §10.4), or when a
+maintainer pushed to the bot branch and nobody asked for a review of the
+new head. With nothing else outstanding no round has anything to answer.
+Read as `nothing outstanding`, which the scan does not record, a lapsed
+token would turn every new pull request into a silent stall, so the scan
+records the skip in `skipped_issues` like every other.
+`unreviewed_heads.py` lists those heads under their own heading, with
+their count and the count whose request GitHub refused, in the selection
+summary and in `report.md` and `report.json`. The list reaches the
+report as a file, not a job output: a scan may skip hundreds of heads,
+more JSON than one environment string holds (`E2BIG`). The report job
+fetches the select job's evidence artifact by ID, without failing the
+job when the fetch does, and passes `unreviewed-heads.json` on when its
+bytes match the select job's `unreviewed_sha256`; otherwise it warns and
+the report omits the list. The report prints an entry when it names a
+pull request of the owner with one of the two reasons, and counts the
+rest, an unreadable file as one. A skip is not a selection, so the Slack
+digest's quiet rule (§11) holds; the counts in the step summary are what
+tells a human the token lapsed. The scan leaves such a head for
+Copilot's own arrival or for a human: the next scan reads it again, and
+a review that arrives with findings, a thread, a failing check or a
+maintainer's comment brings a round as before. The select job does not
+request a review itself: it mints a token with the read levels alone by
+design (§10.1), and the review token reaches the publish job's
+`Request Copilot review` step and nothing else (§10.4). A re-request path would
+need that token: one shape that fits the trust model is a selection
+entry of a new kind that runs no author session and whose publish job
+runs the request and the wait alone. That is a larger change, left until
+the counts show the case occurs.
 
 Whatever the way in, the candidate must be the bot's own: open, opened
 by the App, head in the designated fork (§4.3) on a

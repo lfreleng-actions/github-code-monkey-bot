@@ -300,6 +300,8 @@ jobs:
       count: "${{ steps.chosen.outputs.count }}"
       matrix: "${{ steps.chosen.outputs.matrix }}"
       run_agent: "${{ steps.chosen.outputs.run_agent }}"
+      # Heads the scan skipped with no Copilot review, for the report.
+      unreviewed_sha256: "${{ steps.digests.outputs.unreviewed }}"
       author_timeout: "${{ steps.budget.outputs.author_timeout }}"
       agent_timeout: "${{ steps.budget.outputs.agent_timeout }}"
       max_parallel: "${{ steps.budget.outputs.max_parallel }}"
@@ -923,7 +925,8 @@ jobs:
           import hashlib, os, pathlib
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for name, path in (('selection', 'selection.json'),
-                                 ('guidance', 'agents.md')):
+                                 ('guidance', 'agents.md'),
+                                 ('unreviewed', 'unreviewed-heads.json')):
                   content = pathlib.Path('artefacts', path).read_bytes()
                   output.write(f'{name}={hashlib.sha256(content).hexdigest()}\n')
           PY
@@ -2136,7 +2139,7 @@ jobs:
     runs-on: 'ubuntu-latest'
     timeout-minutes: 10
     permissions:
-      actions: read  # Gather per-issue result artifacts
+      actions: read  # Gather result and selection evidence artifacts
       contents: read  # Checkout the report script
     outputs:
       pull_requests: "${{ steps.report.outputs.pull_requests }}"
@@ -2194,6 +2197,18 @@ jobs:
           pattern: "monkey-result-${{ needs.select.outputs.namespace }}-*"
           path: 'results'
 
+      # The unreviewed heads travel as a file: a scan may skip hundreds,
+      # more than one environment string holds. A failed fetch costs
+      # the list, not the report; the build step verifies the bytes.
+      - name: 'Fetch selection evidence'
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: "${{ needs.select.outputs.evidence_id }}"
+          merge-multiple: true
+          path: 'evidence'
+
       # The run's pull request links become the workflow's outputs;
       # the script validates each against the organisation.
       - name: 'Build report'
@@ -2202,12 +2217,22 @@ jobs:
           AUTHOR_RESULT: "${{ needs.author.result }}"
           PUBLISH_RESULT: "${{ needs.publish.result }}"
           ORG: "${{ inputs.org }}"
+          UNREVIEWED_SHA: "${{ needs.select.outputs.unreviewed_sha256 }}"
         run: |
           mkdir -p results artefacts
+          # The report validates each entry before it prints one.
+          unreviewed=()
+          if python3 monkey-assets/scripts/bot_evidence.py verify \
+            --directory evidence \
+            --expect "unreviewed-heads.json=$UNREVIEWED_SHA"; then
+            unreviewed=(--unreviewed-heads evidence/unreviewed-heads.json)
+          else
+            echo '::warning::Unreviewed heads unverified; report omits them'
+          fi
           python3 monkey-assets/scripts/publish.py report \
             --results results --output-md artefacts/report.md \
             --output-json artefacts/report.json \
-            --org "$ORG" --github-output "$GITHUB_OUTPUT"
+            --org "$ORG" --github-output "$GITHUB_OUTPUT" "${unreviewed[@]}"
           cat artefacts/report.md >> "$GITHUB_STEP_SUMMARY"
           printf '\nAuthor job: %s; publish job: %s\n' \
             "$AUTHOR_RESULT" "$PUBLISH_RESULT" >> "$GITHUB_STEP_SUMMARY"

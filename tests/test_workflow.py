@@ -2156,6 +2156,7 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "count",
                 "matrix",
                 "run_agent",
+                "unreviewed_sha256",
                 "author_timeout",
                 "agent_timeout",
                 "max_parallel",
@@ -2328,7 +2329,8 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         """The report waits on all jobs, reads this run's results, keeps 90d."""
         report = self.jobs["report"]
         self.assertEqual(report["needs"], ["select", "author", "publish"])
-        gather = self.action("report", DOWNLOAD)
+        gather = self.step("report", "Gather results")
+        self.assertTrue(is_action(gather, DOWNLOAD))
         self.assertEqual(
             gather["with"]["pattern"],
             "monkey-result-${{ needs.select.outputs.namespace }}-*",
@@ -2386,6 +2388,42 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         script = flatten(str(build["run"]))
         self.assertIn("publish.py report", script)
         self.assertIn('--org "$ORG" --github-output "$GITHUB_OUTPUT"', script)
+
+    def test_unreviewed_heads_reach_the_report(self) -> None:
+        """The select job's list of unreviewed heads, as verified evidence.
+
+        A scan may skip hundreds of heads, more than one environment
+        string holds, so the list travels in the evidence artifact and
+        the select job vouches for its digest.
+        """
+        outputs = cast(dict[str, Any], self.jobs["select"]["outputs"])
+        self.assert_expression(
+            str(outputs["unreviewed_sha256"]), "steps.digests.outputs.unreviewed"
+        )
+        digests = flatten(str(self.step("select", "digests")["run"]))
+        self.assertIn("('unreviewed', 'unreviewed-heads.json')", digests)
+        fetch = self.step("report", "Fetch selection evidence")
+        self.assertTrue(fetch.get("continue-on-error"))
+        self.assert_expression(
+            fetch["with"]["artifact-ids"], "needs.select.outputs.evidence_id"
+        )
+        self.assertLess(
+            self.position("report", "Fetch selection evidence"),
+            self.position("report", "Build report"),
+        )
+        build = self.step("report", "report")
+        self.assertNotIn("UNREVIEWED_HEADS", build["env"])
+        self.assert_expression(
+            build["env"]["UNREVIEWED_SHA"], "needs.select.outputs.unreviewed_sha256"
+        )
+        script = flatten(str(build["run"]))
+        self.assertIn(
+            "bot_evidence.py verify --directory evidence"
+            ' --expect "unreviewed-heads.json=$UNREVIEWED_SHA"',
+            script,
+        )
+        self.assertIn("--unreviewed-heads evidence/unreviewed-heads.json", script)
+        self.assertIn('"${unreviewed[@]}"', script)
 
 
 class ListInputContracts(ReusableWorkflowCase):

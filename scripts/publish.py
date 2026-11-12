@@ -413,13 +413,13 @@ def build_parser() -> argparse.ArgumentParser:
     awaiting.set_defaults(handler=review.run_await)
 
     report = commands.add_parser("report", help="merge results into a table")
-    report.add_argument("--results", type=Path, required=True)
-    report.add_argument("--output-md", type=Path, required=True)
-    report.add_argument("--output-json", type=Path, required=True)
+    for flag in ("--results", "--output-md", "--output-json"):
+        report.add_argument(flag, type=Path, required=True)
     report.add_argument("--org", help="owner whose pull request links to output")
     report.add_argument(
         "--github-output", type=Path, help="append the links here ($GITHUB_OUTPUT)"
     )
+    report.add_argument("--unreviewed-heads", type=Path, help="select's evidence file")
     report.set_defaults(handler=reporting.run_report)
     return parser
 

@@ -596,6 +596,78 @@ class ContinuedRoundTest(RevisionCase):
         self.assertEqual(self.build_continued(parent="")["round"], 1)
 
 
+class NoReviewTest(RevisionCase):
+    """A head Copilot never reviewed skips by name, not as nothing outstanding."""
+
+    def setUp(self) -> None:
+        """No review of the head."""
+        super().setUp()
+        self.review = None
+
+    def test_no_review_and_nothing_else_skips_by_name(self) -> None:
+        """No review, threads, failing checks or comments: its own skip."""
+        with self.assertRaisesRegex(select.Skip, "^no Copilot review of the head$"):
+            self.build(explicit=False)
+
+    def test_a_refused_request_says_so(self) -> None:
+        """The latest footer's ``pending/not-requested`` names the refusal."""
+        refused = dataclasses.replace(
+            self.rounds_of(), last_review="pending/not-requested"
+        )
+        with (
+            patch.object(round_reads, "round_history", return_value=refused),
+            self.assertRaisesRegex(
+                select.Skip,
+                "^no Copilot review of the head; the review request was refused$",
+            ),
+        ):
+            self.build(explicit=False)
+
+    def test_a_thread_still_brings_a_round(self) -> None:
+        """Other work outstanding goes ahead as before."""
+        self.threads = [thread()]
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
+        self.assertIsNone(entry["review"])
+
+    def test_running_checks_skip_first(self) -> None:
+        """A head just pushed waits for its checks before it reads as unreviewed."""
+        self.checks = check_reads.CheckPacket([], 0, 0, 1)
+        with self.assertRaisesRegex(select.Skip, "^checks still running$"):
+            self.build(explicit=False)
+
+    def test_a_named_pull_request_still_gets_its_round(self) -> None:
+        """The operator decided."""
+        entry = self.build(explicit=True)
+        self.assertEqual(entry["round_reasons"], ["named by the operator"])
+
+    def test_the_scan_records_the_skip(self) -> None:
+        """Unlike nothing outstanding, the skip reaches ``skipped_issues``."""
+        hits = [
+            {
+                "repository": "org/alpha",
+                "number": 41,
+                "created_at": "2026-10-02T00:00:00Z",
+            }
+        ]
+        skipped = {"revision": 0}
+        named: list[dict[str, str]] = []
+        with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
+            builders = scanning.scan(
+                "org",
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped=skipped,
+                skipped_issues=named,
+            )
+        self.assertEqual([build() for _, build in builders], [None])
+        self.assertEqual(skipped["revision"], 1)
+        self.assertEqual(
+            named,
+            [{"issue": "org/alpha#41", "reason": "no Copilot review of the head"}],
+        )
+
+
 class PublishedRunsTest(unittest.TestCase):
     """The round history names the runs whose round the publisher counted."""
 
@@ -636,6 +708,17 @@ class PublishedRunsTest(unittest.TestCase):
         with patch.object(reads, "api_page", return_value=entries):
             found = round_reads.round_history("org/alpha", 7, BOT["login"], None, 41)
         self.assertEqual(found.published, frozenset())
+
+    def test_last_review_is_the_latest_handled_footers(self) -> None:
+        """A later failed round leaves the published head's review token."""
+        found = self.history(
+            "<!-- code-monkey https://r/0 proposed review=clean -->",
+            "<!-- code-monkey https://r/1 proposed review=pending/not-requested"
+            " round=1 pr=41 -->",
+            "<!-- code-monkey https://r/2 author-failed round=2 pr=41 -->",
+        )
+        self.assertEqual(found.last_review, "pending/not-requested")
+        self.assertIsNone(self.history().last_review)
 
 
 class ScanTest(RevisionCase):
