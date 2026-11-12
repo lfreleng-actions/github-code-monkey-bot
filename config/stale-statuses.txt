@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Commit status contexts that turn stale when still pending past the
+# stale_status_minutes input. One context per line, spaces kept; '#'
+# starts a comment line. Check runs are never stale, whatever their
+# name (docs/DESIGN.md section 13.1).
+pre-commit.ci - pr

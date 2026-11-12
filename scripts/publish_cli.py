@@ -19,6 +19,7 @@ import issue_comment as comments
 import proposal_report as reporting
 import revision_publish
 import revision_title
+import stale_statuses as stale
 
 Handler = Callable[[argparse.Namespace], None]
 
@@ -110,6 +111,8 @@ def build_parser(
     awaiting.add_argument(
         "--wait-minutes", type=int, default=review.DEFAULT_WAIT_MINUTES
     )
+    awaiting.add_argument("--stale-statuses", type=Path)
+    awaiting.add_argument("--stale-status-minutes", default=str(stale.DEFAULT_MINUTES))
     awaiting.set_defaults(handler=review.run_await)
 
     report = commands.add_parser("report", help="merge results into a table")

@@ -1339,6 +1339,15 @@ For each selected issue:
     names bounded and escaped reach a `::warning title=Checks::`
     annotation on the run, which says when the failures are
     infrastructure and need a re-run.
+    A pending commit status whose context `config/stale-statuses.txt`
+    lists (`pre-commit.ci - pr`), last updated more than the run's
+    `stale_status_minutes` ago (default 8; `0` turns the rule off),
+    is **stale** (§13.1): each read sets it apart, so the poll does
+    not wait for it and the state comes from the rest. The record
+    lists it under `stale` and a second `::warning title=Checks::`
+    names it (`pre-commit.ci - pr still pending after 8 minutes; not
+    waited for`). A check run is never stale, whatever its name, and
+    a failing or passing status keeps its result.
     The record goes into `result.json` as `checks` (§18.4); the
     revision scan (§20.1) of a later run acts on the failures, since
     this round has ended.
@@ -1474,6 +1483,7 @@ For each selected issue:
 | `max_pull_requests` | string | `'10'` | `0` = up to the matrix limit |
 | `categories` | string | `'all'` | `all`, or a list from §6 |
 | `max_runtime_minutes` | string | `'180'` | Per agent |
+| `stale_status_minutes` | string | `'8'` | §13.1: a listed pending status older than this is stale; `0` turns it off |
 | `max_concurrent_agents` | string | `'10'` | 1–30, matrix `max-parallel` |
 | `allow_subagents` | boolean | `true` | §7.2 |
 | `include_dotgithub` | boolean | `false` | §6 |
@@ -1533,6 +1543,7 @@ nothing reads it back.
 | `mode` | choice | `pull-requests` |
 | `max_pull_requests` | string | `'10'` |
 | `max_runtime_minutes` | string | `'180'` |
+| `stale_status_minutes` | string | `'8'` |
 | `max_concurrent_agents` | string | `'10'` |
 | `allow_subagents` | boolean | `true` |
 | `include_dotgithub` | boolean | `false` |
@@ -1564,7 +1575,7 @@ entries, worked in parallel, and at most ten pull requests.
 limit; anything non-numeric or negative fails the select job.
 `categories` passes straight through: `docs` for a run that fixes
 documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 21 inputs, within
+schedule, passing no inputs, gets. The form holds 22 inputs, within
 GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
 
@@ -1576,6 +1587,14 @@ expressions that test it, in the `code-monkey` job and the Slack
 digest, change together. A `revise_only` dispatch must leave `issues`
 and `repositories` empty, keep `pull-requests` mode and `revise` on;
 the input check refuses it otherwise (§6).
+
+`stale_status_minutes` bounds the wait on a slow status service
+(§13.1). An operator dispatching against a repository whose hooks are
+slow, or during a pre-commit.ci incident, lifts it for that run
+(`'30'`), or sets `'0'` to wait on the status as on any check; the
+schedule takes the default, and the `continue` job forwards the
+run's value. The input check refuses anything but a non-negative
+integer.
 
 `outstanding_only` is the continuation's input (§20.6): it needs
 named `pull_requests` and neither `issues` nor `repositories`, and
@@ -1951,9 +1970,34 @@ conflicts while producer artifacts survive.
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 | A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
+| A status service (pre-commit.ci) queues for hours and never reports | A pending status holds the head unsettled: the wait runs out and the scan reads `checks still running` round after round | A listed context pending past `stale_status_minutes` is stale (§13.1): not waited for, not failing, named in the record, the comment and the report; the next round runs the hooks itself |
 | Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, the report and a count in the Slack digest; the revision scan picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
 
 <!-- markdownlint-enable MD013 -->
+
+### 13.1 Timers on checks
+
+A timer that gates work applies to the narrowest class that needs it,
+carries a documented default and a per-dispatch override, and on
+expiry degrades to **record and proceed**, never to failure or to an
+indefinite wait. Most mandatory checks in the organisation are fast
+lints, but some linting jobs take tens of minutes, soak tests over
+twenty and some builds thirty; a blanket limit would turn those into
+premature failures. No stale rule covers check runs, then; it covers
+the commit status contexts `config/stale-statuses.txt` lists, one per
+line (`stale_statuses.py`). Its sole entry is `pre-commit.ci - pr`,
+which queues for hours when its infrastructure is slow, often
+without ever reporting. Such a status, `pending` and last updated
+more than `stale_status_minutes` (default 8) before the read, is
+stale: the publish job's poll stops waiting for it (§8 step 11), the
+scan does not read the head as `checks still running` (§20.1), the
+antagonistic nomination does not withhold for it (§20.5), and the
+issue comment, the report and the next round's packet name it so a
+human or a later round can judge it. `0` turns the rule off. A check
+run that needs a timer of its own gets its own configuration entry,
+never a blanket value; when pre-commit.ci gives way to the
+organisation's own linting workflow, a check run, the entry goes and
+the rule with it.
 
 ## 14. Repository Layout
 
@@ -1965,6 +2009,7 @@ prompt/author.md                         agent task (§7.3)
 AGENTS.md                                organisation stub (§12 there)
 config/excluded-repos.txt                repositories to skip
 config/coauthors.json                    model prefix to trailer (§10.3)
+config/stale-statuses.txt                status contexts a timer covers (§13.1)
 scripts/select_issues.py                 selection policy
 scripts/selection_inputs.py              its command line, list and cap parsing
 scripts/explicit_issues.py               named issues (§6)
@@ -2004,6 +2049,7 @@ scripts/review_request.py                the request and its refusal notice
 scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies
 scripts/check_reads.py                   its head's failing checks
+scripts/stale_statuses.py                statuses pending too long (§13.1)
 scripts/round_reads.py                   the issue's rounds and new comments
 scripts/round_caps.py                    the round caps a result reads (§20.1)
 scripts/round_recount.py                 the ceiling's rounds after a race
@@ -2270,7 +2316,10 @@ whose `status` is not `completed`, queued, in progress or waiting,
 and its `pending` statuses,
 counted over every run whatever the bounds keep: an empty `checks`
 beside a non-zero count says CI had not finished, not that it
-passed), `pr_comments`, `new_comments` and
+passed; a stale status, §13.1, is not counted), `checks_stale` (the
+stale statuses, at most 30, each with `context`, `updated_at` and
+the run's `minutes`: the hook service did not report, so the result
+is unknown), `pr_comments`, `new_comments` and
 `new_pr_comments`; an issue entry has `task: "issue"` and
 `checkout_sha` equal to `base_sha`. Either kind adds
 `previous_rejection` when the bot's latest outcome on the issue was
@@ -2448,8 +2497,14 @@ report count those the bounds dropped; a record without it counts
 the entries marked so), `defects` (the other failing runs, kept or
 left out, so a defect the bounds dropped still marks a `running`
 head failed; a record without it counts the entries not marked
-`infrastructure`), `read_at` and `reason` (why
-the state is `unknown`, or `null`). Check names come from the code
+`infrastructure`), `read_at`, `reason` (why
+the state is `unknown`, or `null`) and `stale` (the statuses
+§13.1 stopped waiting for, at most 30, each with `context`,
+`updated_at` and `minutes`; a record without it has none). The
+comment adds one sentence naming them and the minutes, the report
+counts the heads with any, and the marker's `checks=` token folds
+their contexts into its hash, so a rerun that saw them settle posts
+again. Check names come from the code
 under review: the comment and the report bound and escape them.
 The comment and the report read a `checks` record of the wrong
 shape, or for a commit other than the published head, as `unknown`,
@@ -2714,7 +2769,9 @@ Three ways in, all through the select job and its read token:
   no work on its own, so a GitHub hiccup spends no round. A head
   with nothing else whose check
   runs have not all finished (`check_reads.is_unsettled`, the predicate
-  the publish job's `running` state uses) skips as `checks still
+  the publish job's `running` state uses; the reader sets a stale
+  status, §13.1, apart first, so it alone is `nothing outstanding` and is no
+  work, and the entry's `checks_stale` names it) skips as `checks still
   running`, not `nothing outstanding`, so the skipped-issues record
   and the report tell it from a green head and the next scan reads it
   again, since the select job waits for no CI; with other work

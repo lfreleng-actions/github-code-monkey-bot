@@ -37,6 +37,7 @@ import head_checks
 import proposal_model as model
 import review_request
 import review_verdict as verdicts
+import stale_statuses as stale
 from review_request import REVIEWER_LOGIN as REVIEWER_LOGIN
 from review_request import head_review
 from review_verdict import Verdict
@@ -237,8 +238,12 @@ def await_head(
     wait_minutes: int = DEFAULT_WAIT_MINUTES,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    rule: stale.Rule = stale.OFF,
 ) -> tuple[Verdict, int | None, head_checks.HeadChecks]:
-    """Await the review, then the head's checks, within one deadline set first."""
+    """Await the review, then the head's checks, within one deadline set first.
+
+    ``rule`` names the pending statuses the checks wait stops waiting for.
+    """
     window = head_checks.Window.of(wait_minutes, READ_BUDGET_SECONDS, clock, sleep)
     verdict, review_id = await_review(
         repository,
@@ -249,7 +254,7 @@ def await_head(
         sleep=sleep,
     )
     found = head_checks.await_checks(
-        repository, head_sha, lambda: pull_head(repository, number), window
+        repository, head_sha, lambda: pull_head(repository, number), window, rule
     )
     return verdict, review_id, found
 
@@ -346,6 +351,8 @@ def run_await(args: argparse.Namespace) -> None:
     ``UNREQUESTED_WAIT_MINUTES``: long enough for a maintainer's own
     request to bring a review, not the full wait for one nobody asked
     for. A request that landed, or none recorded, keeps the full wait.
+    ``--stale-statuses`` and ``--stale-status-minutes`` give the stale
+    rule; without the file no status is ever stale.
     """
     result = model.load_json(args.result, "result")
     target = published(result)
@@ -353,6 +360,10 @@ def run_await(args: argparse.Namespace) -> None:
         print("no pull request to await a review of")
         return
     repository, number = target
+    rule = stale.load_rule(
+        getattr(args, "stale_statuses", None),
+        str(getattr(args, "stale_status_minutes", stale.DEFAULT_MINUTES)),
+    )
     record = cast("dict[str, Any]", result.get("review") or {})
     review_id: int | None = None
     wait_minutes = int(args.wait_minutes)
@@ -381,7 +392,7 @@ def run_await(args: argparse.Namespace) -> None:
                 )
             else:
                 verdict, review_id, found = await_head(
-                    repository, number, head, wait_minutes=wait_minutes
+                    repository, number, head, wait_minutes=wait_minutes, rule=rule
                 )
                 if unrequested and verdict.verdict == "pending":
                     verdict = dataclasses.replace(

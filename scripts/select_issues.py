@@ -40,6 +40,7 @@ import repository_reads as repositories
 import revision_rounds
 import run_overlap
 import selection_outputs as outputs
+import stale_statuses as stale
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 from selection_choose import choose
@@ -300,6 +301,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     reviewers = load_reviewers(args.antagonistic_reviewers)
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
     max_rounds = parse_max_rounds(args.max_rounds)
+    stale_rule = stale.load_rule(args.stale_statuses, args.stale_status_minutes)
     enabled, fork_orgs = load_policy(args)
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
@@ -330,6 +332,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         max_rounds=max_rounds,
         outstanding_only=args.outstanding_only,
         continues=args.continues_run,
+        stale=stale_rule,
     )
     if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given

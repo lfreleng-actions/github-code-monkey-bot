@@ -20,6 +20,7 @@ repository_reads = import_module("repository_reads")
 revisions = import_module("revision_reads")
 round_reads = import_module("round_reads")
 thread_reads = import_module("thread_reads")
+stale_statuses = import_module("stale_statuses")
 select = import_module("revision_select")
 scanning = import_module("revision_scan")
 rounding = import_module("revision_rounds")
@@ -266,6 +267,27 @@ class BuildEntryTest(RevisionCase):
         named = self.build(explicit=True)
         self.assertEqual(named["round_reasons"], ["named by the operator"])
         self.assertEqual(named["checks_unsettled"], 2)
+
+    def test_stale_statuses_alone_are_nothing_outstanding(self) -> None:
+        """A stale status is not checks still running; the packet names it."""
+        late = [{"context": "pre-commit.ci - pr", "updated_at": "t", "minutes": 8}]
+        self.checks = check_reads.CheckPacket([], 0, 0, stale=late)
+        with self.assertRaisesRegex(select.Skip, "^nothing outstanding$"):
+            self.build(explicit=False)
+        self.threads = [thread()]
+        rule = stale_statuses.Rule(frozenset({"pre-commit.ci - pr"}), 8)
+        with patch.object(
+            check_reads, "failing_checks", return_value=self.checks
+        ) as read:
+            entry = select.build_entry(
+                select.Inputs("org", BOT, FORK_ORGS, stale=rule),
+                "alpha",
+                41,
+                explicit=False,
+            )
+        self.assertEqual(read.call_args.args[2], rule)
+        self.assertEqual(entry["checks_stale"], late)
+        self.assertEqual(entry["checks_unsettled"], 0)
 
     def test_running_checks_ride_along_with_other_work(self) -> None:
         """With another reason the round goes ahead and carries the count."""

@@ -76,6 +76,10 @@ on:
         description: 'Revision rounds a pull request may receive (1-50)'
         type: string
         default: '10'
+      stale_status_minutes:
+        description: 'Minutes before pending pre-commit.ci is stale (0: off)'
+        type: string
+        default: '8'
       max_concurrent_agents:
         description: 'Agents at once (1-30)'
         type: string
@@ -246,6 +250,7 @@ jobs:
       max_pull_requests: "${{ inputs.max_pull_requests || '10' }}"
       max_runtime_minutes: "${{ inputs.max_runtime_minutes || '180' }}"
       max_rounds: "${{ inputs.max_rounds || '10' }}"
+      stale_status_minutes: "${{ inputs.stale_status_minutes || '8' }}"
       max_concurrent_agents: "${{ inputs.max_concurrent_agents || '10' }}"
       allow_subagents: >-
         ${{ github.event_name != 'workflow_dispatch'
@@ -353,6 +358,7 @@ jobs:
           MODEL: "${{ inputs.model || 'Claude Opus 5.5' }}"
           RUNTIME: "${{ inputs.max_runtime_minutes || '180' }}"
           ROUNDS: "${{ inputs.max_rounds || '10' }}"
+          STALE: "${{ inputs.stale_status_minutes || '8' }}"
           SUBAGENTS: >-
             ${{ github.event_name != 'workflow_dispatch'
                 || inputs.allow_subagents }}
@@ -373,9 +379,10 @@ jobs:
             *) echo "::error::Unknown model $MODEL"; exit 1 ;;
           esac
           if ! [[ "$RUNTIME" =~ ^[1-9][0-9]*$ && "$ROUNDS" =~ ^[1-9][0-9]*$ &&
-            "$PARENT_RUN" =~ ^[1-9][0-9]*$ ]]; then
-            echo '::error::max_runtime_minutes, max_rounds and the run ID' \
-              'must be numbers'
+            "$STALE" =~ ^[0-9]+$ && "$PARENT_RUN" =~ ^[1-9][0-9]*$ ]]
+          then
+            echo '::error::max_runtime_minutes, max_rounds,' \
+              'stale_status_minutes and the run ID must be numbers'
             exit 1
           fi
           for switch in "$SUBAGENTS" "$REVIEW" "$ANTAGONISTIC" "$SKILLS" \
@@ -411,7 +418,8 @@ jobs:
               -f pull_requests="$pull" -f outstanding_only=true \
               -f continues_run="$PARENT_RUN" \
               -f model="$MODEL" -f max_runtime_minutes="$RUNTIME" \
-              -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS" \
+              -f max_rounds="$ROUNDS" -f stale_status_minutes="$STALE" \
+              -f allow_subagents="$SUBAGENTS" \
               -f request_review="$REVIEW" \
               -f request_antagonistic_review="$ANTAGONISTIC" \
               -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"

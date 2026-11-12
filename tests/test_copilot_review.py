@@ -1641,6 +1641,7 @@ class HandlersTest(unittest.TestCase):
                 "defects",
                 "read_at",
                 "reason",
+                "stale",
             },
         )
         self.assertEqual(record["state"], "failing")

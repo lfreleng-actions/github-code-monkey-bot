@@ -15,6 +15,7 @@ import json
 from typing import Any, cast
 
 import proposal_policy as policy
+import stale_statuses as stale
 
 REVIEW_VERDICTS = ("clean", "findings", "pending")
 REVIEW_FIELDS = frozenset(
@@ -209,11 +210,12 @@ CHECK_FIELDS = frozenset(
         "defects",
         "read_at",
         "reason",
+        "stale",
     }
 )
-# A record written before the whole failing-run counts existed; one
-# may carry either count without the other.
-LEGACY_CHECK_FIELDS = CHECK_FIELDS - {"infrastructure", "defects"}
+# A record written before the whole failing-run counts and the stale
+# set existed; one may carry any of them without the others.
+LEGACY_CHECK_FIELDS = CHECK_FIELDS - {"infrastructure", "defects", "stale"}
 # Failing checks the comment names; the record and the report keep the rest.
 MAX_NAMED_CHECKS = 10
 # Hex digits of the failing checks' hash in the comment marker.
@@ -322,7 +324,7 @@ def checks_token(result: dict[str, Any]) -> str | None:
     names alone hash as they always have; infrastructure ones join
     them as a second list. When the whole counts exceed the names
     kept, the counts join as well, so a failure past the bounds that
-    appears or clears posts again.
+    appears or clears posts again; so do stale statuses' contexts.
     """
     if "checks" not in result:
         return None
@@ -331,11 +333,14 @@ def checks_token(result: dict[str, Any]) -> str | None:
     agent = infrastructure_check_names(result)
     counts = [defect_count(result), infrastructure_count(result)]
     beyond = counts[0] > len(names) or counts[1] > len(agent)
-    if not names and not agent and not beyond:
+    late = stale.contexts(result, state)
+    if not names and not agent and not beyond and not late:
         return state
     hashed: Any = [sorted(names), sorted(agent)] if agent else sorted(names)
     if beyond:
         hashed = [hashed, counts]
+    if late:
+        hashed = [hashed, late]
     encoded = json.dumps(hashed).encode("utf-8")
     return f"{state}/{hashlib.sha256(encoded).hexdigest()[:CHECKS_HASH_LENGTH]}"
 
@@ -394,7 +399,8 @@ def checks_sentence(result: dict[str, Any]) -> str:
 
     The publish job reports CI and gates on nothing but the review, so
     a passing, absent or unread result adds no words. Failures the
-    egress agent caused are named apart, as needing a re-run.
+    egress agent caused are named apart, as needing a re-run, and a
+    stale status as not waited for, on any read state.
     """
     state = checks_state(result)
     named = failing_checks_named(result)
@@ -413,7 +419,8 @@ def checks_sentence(result: dict[str, Any]) -> str:
             else f" Checks were still running on its head when the wait ended,"
             f" and {defect_count(result)} had failed."
         )
-    return sentence + infrastructure_sentence(result)
+    late = stale.sentence(result, state)
+    return sentence + infrastructure_sentence(result) + late
 
 
 def infrastructure_sentence(result: dict[str, Any]) -> str:

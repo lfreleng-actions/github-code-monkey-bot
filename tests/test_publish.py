@@ -4185,7 +4185,7 @@ class HeadChecksTest(unittest.TestCase):
             report = json.loads(out.read_text(encoding="utf-8"))
         self.assertIn(
             "Head checks: passing 1, infrastructure 0, failing 1, running 0, "
-            "none 0, unknown 1, not read 1.",
+            "none 0, unknown 1, not read 1; with a stale status 0.",
             text,
         )
         self.assertEqual(report["check_totals"]["unknown"], 1)
@@ -4415,7 +4415,7 @@ class InfrastructureChecksTest(unittest.TestCase):
             report = json.loads(out.read_text(encoding="utf-8"))
         self.assertIn(
             "Head checks: passing 0, infrastructure 1, failing 1, running 0, "
-            "none 0, unknown 0, not read 0.",
+            "none 0, unknown 0, not read 0; with a stale status 0.",
             text,
         )
         self.assertEqual(report["check_totals"]["infrastructure"], 1)

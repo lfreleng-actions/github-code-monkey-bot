@@ -18,6 +18,8 @@ annotations: its ``context`` as the name, its ``state`` as the
 conclusion, its ``description`` as the title and its ``target_url``
 as the details link, bounded as a run's are. ``target_url`` is an
 arbitrary link from the repository under review: data, never fetched.
+A pending status the run's ``stale_statuses.Rule`` covers, left too
+long, is stale: set apart, neither unsettled nor failing.
 
 A failing run whose failure-level annotation shows harden-runner's
 egress agent never came up failed before the job ran its own steps:
@@ -29,11 +31,12 @@ can at most make its own failure count as one, which spends nothing.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import bot_github as github
 import issue_reads as reads
+import stale_statuses as stale
 
 # Conclusions that mean the run failed; success, neutral, skipped,
 # cancelled, action_required, stale and runs still going do not. A
@@ -87,17 +90,24 @@ class CheckPacket:
     unsettled: int = 0
     # Failing runs the egress agent failed, kept or dropped.
     infrastructure: int = 0
+    # Pending statuses the stale rule set apart (``stale_statuses``):
+    # not counted as unsettled, their result unknown.
+    stale: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
 
 
-def failing_checks(repository: str, head_sha: str) -> CheckPacket:
+def failing_checks(
+    repository: str, head_sha: str, rule: stale.Rule = stale.OFF
+) -> CheckPacket:
     """The head's failing check runs and statuses, with annotations, bounded.
 
     Every run and status is read before the bounds apply, so the
     counts of failing checks that bring a round, of infrastructure
     failures and of checks yet to finish are whole whatever the packet
-    keeps.
+    keeps. Statuses ``rule`` finds stale are set apart first: they
+    count as neither unsettled nor failing.
     """
-    return failing_of(repository, head_runs(repository, head_sha))
+    live, late = rule.split(head_runs(repository, head_sha))
+    return replace(failing_of(repository, live), stale=rule.entries(late))
 
 
 def head_runs(
@@ -240,7 +250,8 @@ def status_run(status: dict[str, Any], sha: Any) -> dict[str, Any]:
 
     ``pending`` has yet to finish; every other state has. ``check_entry``
     bounds the context and description as it bounds a run's name and
-    title.
+    title. ``commit_status`` and ``updated_at`` let the stale rule tell
+    a status from a check run of the same name, and its age.
     """
     state = status.get("state")
     return {
@@ -250,6 +261,8 @@ def status_run(status: dict[str, Any], sha: Any) -> dict[str, Any]:
         "conclusion": state,
         "details_url": status.get("target_url"),
         "output": {"title": status.get("description")},
+        "commit_status": True,
+        "updated_at": status.get("updated_at"),
     }
 
 

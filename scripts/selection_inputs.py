@@ -9,6 +9,7 @@ import argparse
 import re
 from pathlib import Path
 
+import stale_statuses as stale
 from issue_reads import SelectionError
 
 REPO_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -106,6 +107,8 @@ def selection_parser(description: str | None) -> argparse.ArgumentParser:
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)
     parser.add_argument("--antagonistic-reviewers", type=Path)
+    parser.add_argument("--stale-statuses", type=Path)
+    parser.add_argument("--stale-status-minutes", default=str(stale.DEFAULT_MINUTES))
     parser.add_argument("--include-dotgithub", action="store_true")
     parser.add_argument("--include-assigned", action="store_true")
     parser.add_argument("--max-pull-requests", default="10")
