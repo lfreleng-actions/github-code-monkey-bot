@@ -91,9 +91,21 @@ schedule, with `revise_only`, runs every hour, every day, at 17
 minutes past: it revises the bot's open pull requests with work
 outstanding, takes no new issue, and stays silent in Slack unless it
 selected something or failed. The form's `revise_only` dispatches the
-same. Each run's name in the Actions list says what it works: the
-scan a schedule fired, or the pull requests, issues or repositories a
-dispatch named, and marks a dry run.
+same. When a live `pull-requests` run's round leaves a published pull
+request with work outstanding (review findings on its head, failing
+checks or a conflict), its outcome commented on the issue, below every
+round cap and with no antagonistic review requested, its `continue` job
+dispatches the next round of that pull request at once, one dispatch per
+pull request with `outstanding_only` set, the run's own options and
+switches, and `continues_run` naming the run. The continuation works no
+pull request the scan would not, under the same repository policy,
+author rule and work-outstanding test, nor one on which that run's
+outcome footer is missing, so the review cycle runs unattended until the
+review is clean, the bot hands the pull request back or it reaches a
+cap. Setting the repository variable `CODE_MONKEY_CONTINUE` to `false`
+stops that loop. Each run's name in the Actions list says what it works:
+the scan a schedule fired, or the pull requests, issues or repositories
+a dispatch named, and marks a dry run.
 
 ## Reusable workflow
 

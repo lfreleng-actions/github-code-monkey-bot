@@ -240,6 +240,10 @@ def parse_targets(
         # A round moves a live pull request's head and answers its
         # review; no other mode publishes that.
         raise SelectionError("pull_requests needs pull-requests mode")
+    if args.outstanding_only and (targets or not pulls):
+        raise SelectionError("outstanding_only needs pull_requests alone")
+    if args.continues_run and not args.outstanding_only:
+        raise SelectionError("continues_run needs outstanding_only")
     if args.revise_only:
         # Revisions alone: a scan of the owner's bot pull requests and
         # no issue, so nothing may name issues or narrow the scan.
@@ -324,6 +328,8 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         allowed=allowed,
         reviewers=reviewers,
         max_rounds=max_rounds,
+        outstanding_only=args.outstanding_only,
+        continues=args.continues_run,
     )
     if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given
@@ -393,6 +399,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session", default="")
     parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--revise-only", action="store_true")
+    parser.add_argument("--outstanding-only", action="store_true")
+    parser.add_argument("--continues-run", default="")
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)

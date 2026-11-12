@@ -192,6 +192,7 @@ class RunReportOutputsTest(unittest.TestCase):
                 "unmergeable_pull_requests=[]",
                 "failing_check_pull_requests=[]",
                 "antagonistic_pull_requests=[]",
+                "continue_pull_requests=[]",
             ],
         )
         report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))

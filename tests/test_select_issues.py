@@ -482,6 +482,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         """Patch the issue path to select nothing and the revision path to answer."""
         super().setUp()
         self.entries: dict[tuple[str, int], dict[str, Any]] = {}
+        self.entry_kwargs: list[dict[str, Any]] = []
         patch.object(
             repository_reads,
             "list_repositories",
@@ -500,6 +501,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self, org: str, repo_name: str, pull_number: int, **kwargs: Any
     ) -> dict[str, Any]:
         """A revision entry for a known pull request, or a Skip."""
+        self.entry_kwargs.append(kwargs)
         found = self.entries.get((repo_name, pull_number))
         if found is None:
             raise revision_rounds.Skip("not an open pull request the bot opened")
@@ -567,6 +569,113 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(skip["issue"], "org/alpha#99")
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
+
+    def test_outstanding_only_asks_for_the_scan_test(self) -> None:
+        """A continuation's named pull request is built with the scan's test (#167)."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        select.build_selection(self.args("--pull-requests", "org/alpha#41"))
+        self.assertIs(self.entry_kwargs[-1]["require_outstanding"], False)
+        select.build_selection(
+            self.args("--pull-requests", "org/alpha#41", "--outstanding-only")
+        )
+        self.assertIs(self.entry_kwargs[-1]["require_outstanding"], True)
+
+    def test_outstanding_only_keeps_the_repository_policy(self) -> None:
+        """A forged continuation naming an excluded repository works nothing.
+
+        The continuation's target comes from an unauthenticated result
+        (#179), so it earns no operator waiver: the run's exclusions
+        and the .github rule refuse it before any read. The operator's
+        own named pull request keeps the waiver.
+        """
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        self.entries[(".github", 5)] = self.revision(".github", 5, 3)
+        for named, extra in (
+            ("org/alpha#41", ("--exclude-repos", "alpha")),
+            ("org/.github#5", ()),
+        ):
+            with self.subTest(named=named):
+                self.entry_kwargs.clear()
+                selection, _ = select.build_selection(
+                    self.args("--pull-requests", named, "--outstanding-only", *extra)
+                )
+                self.assertEqual(selection["issues"], [])
+                self.assertEqual(self.entry_kwargs, [])
+                self.assertEqual(
+                    selection["skipped_issues"],
+                    [
+                        {
+                            "issue": named,
+                            "reason": "repository is outside the run's policy",
+                        }
+                    ],
+                )
+                selection, _ = select.build_selection(
+                    self.args("--pull-requests", named, *extra)
+                )
+                self.assertEqual(len(selection["issues"]), 1)
+        selection, _ = select.build_selection(
+            self.args(
+                "--pull-requests",
+                "org/.github#5",
+                "--outstanding-only",
+                "--include-dotgithub",
+            )
+        )
+        self.assertEqual(len(selection["issues"]), 1)
+
+    def test_continues_run_reaches_the_build(self) -> None:
+        """The parent run's URL is handed to every named build (#179)."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        parent = "https://github.com/org/bot/actions/runs/42"
+        select.build_selection(
+            self.args(
+                "--pull-requests",
+                "org/alpha#41",
+                "--outstanding-only",
+                "--continues-run",
+                parent,
+            )
+        )
+        self.assertEqual(self.entry_kwargs[-1]["continues"], parent)
+        select.build_selection(
+            self.args("--pull-requests", "org/alpha#41", "--outstanding-only")
+        )
+        self.assertEqual(self.entry_kwargs[-1]["continues"], "")
+
+    def test_continues_run_needs_outstanding_only(self) -> None:
+        """A parent run means a continuation, which takes the scan's tests."""
+        with self.assertRaisesRegex(
+            select.SelectionError, "continues_run needs outstanding_only"
+        ):
+            select.build_selection(
+                self.args(
+                    "--pull-requests",
+                    "org/alpha#41",
+                    "--continues-run",
+                    "https://github.com/org/bot/actions/runs/42",
+                )
+            )
+
+    def test_outstanding_only_needs_pull_requests_alone(self) -> None:
+        """Without named pull requests, or beside named issues, it is refused."""
+        for extra in (
+            ("--outstanding-only",),
+            (
+                "--outstanding-only",
+                "--pull-requests",
+                "org/alpha#41",
+                "--issues",
+                "org/alpha#3",
+            ),
+        ):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(
+                    select.SelectionError, "outstanding_only needs pull_requests alone"
+                ),
+            ):
+                select.build_selection(self.args(*extra))
 
     def held_file(self, *targets: tuple[str, int, int]) -> str:
         """Write a held-targets file as ``run_overlap.py`` does; return its path."""

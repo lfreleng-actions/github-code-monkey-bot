@@ -120,6 +120,20 @@ on:
           or repositories
         type: boolean
         default: false
+      outstanding_only:
+        description: >-
+          Revise each named pull request only when the scan's
+          work-outstanding test finds work, else skip it; needs
+          pull_requests alone, without issues or repositories
+        type: boolean
+        default: false
+      continues_run:
+        description: >-
+          ID of the run in this repository that dispatched this
+          continuation; each named pull request is skipped unless that
+          run published a counted round on it. Needs outstanding_only
+        type: string
+        default: ''
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -225,6 +239,13 @@ on:
           antagonistic review this run requested; empty when the
           request job did not run
         value: "${{ jobs.antagonistic.outputs.requested }}"
+      continue_pull_requests:
+        description: >-
+          Compact JSON array of owner/repo#N, the published pull
+          requests whose round left work outstanding below every cap;
+          a caller may dispatch their next round (docs/DESIGN.md
+          section 20.6). Always [] outside a live pull-requests run
+        value: "${{ jobs.report.outputs.continue_pull_requests }}"
       selected_count:
         description: >-
           Entries the select job chose, issues and revisions together,
@@ -466,6 +487,8 @@ jobs:
           PULL_REQUESTS_RAW: "${{ inputs.pull_requests }}"
           REVISE: "${{ inputs.revise }}"
           REVISE_ONLY: "${{ inputs.revise_only }}"
+          OUTSTANDING_ONLY: "${{ inputs.outstanding_only }}"
+          CONTINUES_RUN: "${{ inputs.continues_run }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -530,6 +553,19 @@ jobs:
               echo '::error::revise_only needs revise'
               exit 1
             fi
+          fi
+          # A continuation names its pull requests and nothing else.
+          if [ "$OUTSTANDING_ONLY" = true ] &&
+            { [ "${PULL_COUNT:-0}" = 0 ] || [ -n "$ISSUES_RAW" ] ||
+              [ -n "$REPOSITORIES_RAW" ]; }; then
+            echo '::error::outstanding_only needs pull_requests alone'
+            exit 1
+          fi
+          if [ -n "$CONTINUES_RUN" ]; then
+            [[ "$CONTINUES_RUN" =~ ^[1-9][0-9]*$ ]] || {
+              echo '::error::continues_run must be a run ID'; exit 1; }
+            [ "$OUTSTANDING_ONLY" = true ] || {
+              echo '::error::continues_run needs outstanding_only'; exit 1; }
           fi
           repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
           # A scoped token must still reach the guidance repository
@@ -803,6 +839,8 @@ jobs:
           PULL_REQUESTS: "${{ steps.pulls.outputs.csv }}"
           REVISE: "${{ inputs.revise }}"
           REVISE_ONLY: "${{ inputs.revise_only }}"
+          OUTSTANDING_ONLY: "${{ inputs.outstanding_only }}"
+          CONTINUES_RUN: "${{ inputs.continues_run }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
@@ -831,6 +869,14 @@ jobs:
           fi
           if [ "$REVISE_ONLY" = true ]; then
             extra+=(--revise-only)
+          fi
+          if [ "$OUTSTANDING_ONLY" = true ]; then
+            extra+=(--outstanding-only)
+          fi
+          # The publisher's footers name their run by this URL.
+          if [ -n "$CONTINUES_RUN" ]; then
+            run_url="$GITHUB_SERVER_URL/$RESULTS_REPOSITORY/actions/runs"
+            extra+=(--continues-run "$run_url/$CONTINUES_RUN")
           fi
           python3 monkey-assets/scripts/select_issues.py \
             --org "$ORG" --output-dir artefacts \
@@ -2101,6 +2147,11 @@ jobs:
       failing_check_pull_requests: "${{ steps.report.outputs.failing_check_pull_requests }}"
       # yamllint disable-line rule:line-length
       antagonistic_pull_requests: "${{ steps.report.outputs.antagonistic_pull_requests }}"
+      # Only a live pull-requests run moves a pull request's head, so
+      # no other run names one to continue, whatever its results say.
+      continue_pull_requests: >-
+        ${{ !inputs.dry_run && inputs.mode == 'pull-requests'
+        && steps.report.outputs.continue_pull_requests || '[]' }}
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'

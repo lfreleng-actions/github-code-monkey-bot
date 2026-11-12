@@ -22,6 +22,7 @@ import sys
 import tempfile
 import unittest
 from collections import Counter
+from collections.abc import Mapping
 from importlib import import_module
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -2359,13 +2360,22 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "pull_request_count",
                 "unmergeable_pull_requests",
                 "failing_check_pull_requests",
+                "continue_pull_requests",
             },
+        )
+        # Only a live pull-requests run names a pull request to continue.
+        self.assert_expression(
+            str(self.jobs["report"]["outputs"].pop("continue_pull_requests")),
+            "!inputs.dry_run && inputs.mode == 'pull-requests'"
+            " && steps.report.outputs.continue_pull_requests || '[]'",
         )
         for name, body in declared.items():
             with self.subTest(output=name):
                 self.assert_expression(
                     str(body["value"]), f"jobs.report.outputs.{name}"
                 )
+                if name == "continue_pull_requests":
+                    continue
                 self.assert_expression(
                     str(self.jobs["report"]["outputs"][name]),
                     f"steps.report.outputs.{name}",
@@ -2748,6 +2758,7 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         "PULL_COUNT": "0",
         "REVISE": "true",
         "REVISE_ONLY": "true",
+        "OUTSTANDING_ONLY": "false",
         "ORG": "o",
         "GUIDANCE_REPOSITORY": "o/.github",
     }
@@ -2838,7 +2849,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 19)
+        self.assertEqual(len(inputs), 21)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -3050,6 +3061,451 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertEqual(calls, [])
 
 
+class OutstandingOnlyContracts(ReusableWorkflowCase):
+    """A continuation names pull requests and asks for the scan's test (#167)."""
+
+    def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
+        """A boolean, off by default, passed to select_issues.py as a flag."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["outstanding_only"]["type"], "boolean")
+        self.assertIs(inputs["outstanding_only"]["default"], False)
+        select = self.step("select", "Select issues")
+        env = cast(dict[str, Any], select["env"])
+        self.assert_expression(env["OUTSTANDING_ONLY"], "inputs.outstanding_only")
+        run = flatten(select["run"])
+        self.assertIn('if [ "$OUTSTANDING_ONLY" = true ]; then', run)
+        self.assertIn("extra+=(--outstanding-only)", run)
+        budget = cast(dict[str, Any], self.step("select", "budget")["env"])
+        self.assert_expression(budget["OUTSTANDING_ONLY"], "inputs.outstanding_only")
+
+    def test_continues_run_reaches_the_selector_as_a_run_url(self) -> None:
+        """A string, empty by default, passed as the footer's run URL (#179)."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["continues_run"]["type"], "string")
+        self.assertEqual(inputs["continues_run"]["default"], "")
+        select = self.step("select", "Select issues")
+        env = cast(dict[str, Any], select["env"])
+        self.assert_expression(env["CONTINUES_RUN"], "inputs.continues_run")
+        self.assert_expression(env["RESULTS_REPOSITORY"], "github.repository")
+        run = flatten(select["run"])
+        self.assertIn(
+            'run_url="$GITHUB_SERVER_URL/$RESULTS_REPOSITORY/actions/runs"', run
+        )
+        self.assertIn('extra+=(--continues-run "$run_url/$CONTINUES_RUN")', run)
+        # The footer the publisher posts names the run by the same URL.
+        publish = flatten(dumped(self.jobs["publish"]))
+        self.assertIn(
+            "${{ github.server_url }}/${{ github.repository }}"
+            "/actions/runs/${{ github.run_id }}",
+            publish,
+        )
+        budget = cast(dict[str, Any], self.step("select", "budget")["env"])
+        self.assert_expression(budget["CONTINUES_RUN"], "inputs.continues_run")
+
+    def test_only_a_live_pull_requests_run_names_a_continuation(self) -> None:
+        """The report's list is [] in any other run, whatever the results say (#179)."""
+        output = str(self.jobs["report"]["outputs"]["continue_pull_requests"])
+        forged = '["lfreleng-actions/a#1"]'
+        for mode, dry_run, expected in (
+            ("pull-requests", False, forged),
+            ("branches", False, "[]"),
+            ("select", False, "[]"),
+            ("pull-requests", True, "[]"),
+        ):
+            with self.subTest(mode=mode, dry_run=dry_run):
+                context = {
+                    "inputs.mode": mode,
+                    "inputs.dry_run": dry_run,
+                    "steps.report.outputs.continue_pull_requests": forged,
+                }
+                self.assertEqual(evaluate(output, context), expected)
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_check_inputs_needs_pull_requests_alone(self) -> None:
+        """Accepted beside pull_requests alone; refused without them or with targets."""
+        budget = self.step("select", "budget")
+        base = {
+            **ReviseOnlyContracts.BUDGET_ENV,
+            "REVISE_ONLY": "false",
+            "OUTSTANDING_ONLY": "true",
+        }
+        pulls = {"PULL_REQUESTS_RAW": "a#2", "PULL_COUNT": "1"}
+        error = "outstanding_only needs pull_requests alone"
+        cases: tuple[tuple[dict[str, str], str | None], ...] = (
+            (pulls, None),
+            ({"OUTSTANDING_ONLY": "false"}, None),
+            ({}, error),
+            ({"PULL_COUNT": ""}, error),
+            ({**pulls, "ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"}, error),
+            ({"REPOSITORIES_RAW": "a", "REPOSITORY_COUNT": "1"}, error),
+            ({**pulls, "CONTINUES_RUN": "42"}, None),
+            (
+                {**pulls, "CONTINUES_RUN": "42", "OUTSTANDING_ONLY": "false"},
+                "continues_run needs outstanding_only",
+            ),
+            ({**pulls, "CONTINUES_RUN": "4 2"}, "continues_run must be a run ID"),
+            ({**pulls, "CONTINUES_RUN": "0"}, "continues_run must be a run ID"),
+        )
+        for overrides, expected in cases:
+            with (
+                self.subTest(**overrides),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        "PATH": os.environ["PATH"],
+                        **base,
+                        **overrides,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if expected is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1, proc.stdout)
+                    self.assertIn(f"::error::{expected}", proc.stdout)
+                    self.assertFalse(output.exists())
+
+
+def evaluate(expression: str, context: Mapping[str, object]) -> object:
+    """Evaluate a GitHub expression of names, literals, !, ==, !=, && and ||.
+
+    Enough for a job condition: each dotted name is read from
+    ``context``, ``cancelled()`` is false, and the operators keep
+    GitHub's value semantics, which Python's ``and`` and ``or`` share.
+    """
+    body = expression.strip()
+    if body.startswith("${{") and body.endswith("}}"):
+        body = body[3:-2]
+    names: list[str] = []
+
+    def name(match: re.Match[str]) -> str:
+        names.append(match.group(0))
+        return f"_[{len(names) - 1}]"
+
+    body = re.sub(
+        r"'[^']*'|[A-Za-z_][\w-]*(?:\.[\w-]+)+",
+        lambda m: m.group(0) if m.group(0).startswith("'") else name(m),
+        body,
+    )
+    body = body.replace("cancelled()", "False")
+    body = re.sub(r"!(?!=)", " not ", body)
+    body = body.replace("&&", " and ").replace("||", " or ")
+    values = [context[n] for n in names]
+    return eval(body, {"__builtins__": {}}, {"_": values})  # noqa: S307
+
+
+CONTINUE_DISPATCH = (
+    'gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY"'
+    " -f dry_run=false -f mode=pull-requests -f max_pull_requests=0"
+    ' -f pull_requests="$pull" -f outstanding_only=true'
+    ' -f continues_run="$PARENT_RUN"'
+    ' -f model="$MODEL" -f max_runtime_minutes="$RUNTIME"'
+    ' -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS"'
+    ' -f request_review="$REVIEW"'
+    ' -f request_antagonistic_review="$ANTAGONISTIC"'
+    ' -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"'
+)
+
+
+class ContinueJobContracts(WorkflowCase):
+    """The caller dispatches the next round of a pull request left with work (#167)."""
+
+    WORKFLOW = CRON
+
+    def test_form_offers_outstanding_only_and_forwards_it(self) -> None:
+        """A boolean, off by default, reaching the reusable workflow."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["outstanding_only"]["type"], "boolean")
+        self.assertIs(inputs["outstanding_only"]["default"], False)
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["outstanding_only"]), "inputs.outstanding_only || false"
+        )
+
+    def test_form_offers_continues_run_and_forwards_it(self) -> None:
+        """A string, empty by default, reaching the reusable workflow (#179)."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["continues_run"]["type"], "string")
+        self.assertEqual(inputs["continues_run"]["default"], "")
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["continues_run"]), "inputs.continues_run || ''"
+        )
+        env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
+        self.assert_expression(env["PARENT_RUN"], "github.run_id")
+
+    def test_job_holds_actions_write_alone(self) -> None:
+        """One grant, no checkout, no artifact and no stored secret."""
+        job = self.jobs["continue"]
+        self.assertEqual(job["needs"], ["code-monkey"])
+        self.assertEqual(job["permissions"], {"actions": "write"})
+        self.assertEqual(self.actions("continue", CHECKOUT), [])
+        self.assertEqual(self.actions("continue", DOWNLOAD), [])
+        self.assertEqual(SECRET_REFERENCE.findall(dumped(job)), [])
+        step = self.step("continue", "dispatch")
+        self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
+        self.assert_expression(
+            step["env"]["PULLS"], "needs.code-monkey.outputs.continue_pull_requests"
+        )
+
+    def test_job_is_gated_on_the_output_and_the_switch(self) -> None:
+        """Not on the call's result; never on a dry run; a variable stops it."""
+        self.assert_expression(
+            self.jobs["continue"]["if"],
+            "!cancelled()"
+            " && needs.code-monkey.outputs.continue_pull_requests != ''"
+            " && needs.code-monkey.outputs.continue_pull_requests != '[]'"
+            " && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)"
+            " && (inputs.mode || 'pull-requests') == 'pull-requests'"
+            " && vars.CODE_MONKEY_CONTINUE != 'false'",
+        )
+
+    def test_only_a_pull_requests_run_continues(self) -> None:
+        """A forged output of a branches or select run starts no round (#179).
+
+        Every continuation is dispatched in pull-requests mode, so the
+        parent's own mode, trusted input, gates it; a schedule passes
+        none and runs pull-requests mode.
+        """
+        condition = str(self.jobs["continue"]["if"])
+        forged = '["lfreleng-actions/a#1"]'
+        cases = (
+            ("workflow_dispatch", "pull-requests", forged, True),
+            ("workflow_dispatch", "branches", forged, False),
+            ("workflow_dispatch", "select", forged, False),
+            ("schedule", "", forged, True),
+            ("workflow_dispatch", "pull-requests", "[]", False),
+            ("workflow_dispatch", "pull-requests", "", False),
+        )
+        for event, mode, pulls, expected in cases:
+            with self.subTest(event=event, mode=mode, pulls=pulls):
+                context = {
+                    "github.event_name": event,
+                    "inputs.mode": mode,
+                    "inputs.dry_run": False,
+                    "needs.code-monkey.outputs.continue_pull_requests": pulls,
+                    "vars.CODE_MONKEY_CONTINUE": "",
+                }
+                self.assertIs(bool(evaluate(condition, context)), expected)
+        dry = {
+            "github.event_name": "workflow_dispatch",
+            "inputs.mode": "pull-requests",
+            "inputs.dry_run": True,
+            "needs.code-monkey.outputs.continue_pull_requests": '["o/r#1"]',
+            "vars.CODE_MONKEY_CONTINUE": "",
+        }
+        self.assertFalse(evaluate(condition, dry))
+
+    def test_dispatch_runs_after_harden_runner_in_block_mode(self) -> None:
+        """The allow-list loads, then the runner is hardened, then the dispatch."""
+        steps = self.steps("continue")
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        self.assertEqual(steps[1]["with"]["egress-policy"], "block")
+        forwarded = self.jobs["code-monkey"]["with"]["harden_runner_allowlist"]
+        self.assertEqual(steps[0]["with"]["config"], forwarded)
+        self.assertEqual(self.position("continue", "dispatch"), 2)
+        self.assertEqual(len(steps), 3)
+        self.assertIn(CONTINUE_DISPATCH, flatten(str(steps[2]["run"])))
+
+    def test_options_are_forwarded_with_the_form_defaults(self) -> None:
+        """The loop keeps the operator's model, runtime, rounds and switches."""
+        env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
+        self.assert_expression(env["MODEL"], "inputs.model || 'Claude Opus 5.5'")
+        self.assert_expression(env["RUNTIME"], "inputs.max_runtime_minutes || '180'")
+        self.assert_expression(env["ROUNDS"], "inputs.max_rounds || '10'")
+        self.assert_expression(
+            env["SUBAGENTS"],
+            "github.event_name != 'workflow_dispatch' || inputs.allow_subagents",
+        )
+        self.assert_expression(
+            env["REVIEW"],
+            "github.event_name != 'workflow_dispatch' || inputs.request_review",
+        )
+        self.assert_expression(
+            env["ANTAGONISTIC"],
+            "github.event_name != 'workflow_dispatch'"
+            " || inputs.request_antagonistic_review",
+        )
+        self.assert_expression(env["SKILLS"], "inputs.load_repo_skills || false")
+        self.assert_expression(env["DOTGITHUB"], "inputs.include_dotgithub || false")
+
+    def dispatch(
+        self, pulls: object, fail: str = "", **overrides: str
+    ) -> tuple[int, list[str], str, str]:
+        """Run the dispatch step with a fake gh; return status, calls, stdout, summary."""
+        step = self.step("continue", "dispatch")
+        with tempfile.TemporaryDirectory() as holder:
+            work = Path(holder)
+            fake = work / "bin"
+            fake.mkdir()
+            calls = work / "calls"
+            calls.touch()
+            (fake / "gh").write_text(
+                "#!/bin/bash\n"
+                f'printf "%s\\n" "$*" >> "{calls}"\n'
+                f'case "$*" in *"{fail or "never"}"*) exit 1 ;; esac\n',
+                encoding="utf-8",
+            )
+            (fake / "gh").chmod(0o755)
+            summary = work / "summary"
+            summary.touch()
+            env = {
+                "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}",
+                "GH_TOKEN": "t",
+                "GITHUB_REPOSITORY": "lfreleng-actions/github-code-monkey-bot",
+                "ORG": "lfreleng-actions",
+                "PULLS": pulls if isinstance(pulls, str) else json.dumps(pulls),
+                "MODEL": "Claude Opus 5.5",
+                "RUNTIME": "180",
+                "ROUNDS": "10",
+                "PARENT_RUN": "42",
+                "SUBAGENTS": "true",
+                "REVIEW": "true",
+                "ANTAGONISTIC": "true",
+                "SKILLS": "false",
+                "DOTGITHUB": "false",
+                "GITHUB_STEP_SUMMARY": str(summary),
+                **overrides,
+            }
+            run = subprocess.run(
+                ["bash", "-c", str(step["run"])],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return (
+                run.returncode,
+                calls.read_text(encoding="utf-8").splitlines(),
+                run.stdout,
+                summary.read_text(encoding="utf-8"),
+            )
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_one_dispatch_per_pull_request(self) -> None:
+        """Each pull request is its own live, outstanding-only named run."""
+        pulls = ["lfreleng-actions/a#1", "LFReleng-Actions/b#2"]
+        status, calls, _, summary = self.dispatch(pulls)
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            calls,
+            [
+                "workflow run code-monkey-cron.yaml --repo"
+                " lfreleng-actions/github-code-monkey-bot -f dry_run=false"
+                " -f mode=pull-requests -f max_pull_requests=0"
+                f" -f pull_requests={pull} -f outstanding_only=true"
+                " -f continues_run=42"
+                " -f model=Claude Opus 5.5 -f max_runtime_minutes=180"
+                " -f max_rounds=10 -f allow_subagents=true"
+                " -f request_review=true -f request_antagonistic_review=true"
+                " -f load_repo_skills=false -f include_dotgithub=false"
+                for pull in pulls
+            ],
+        )
+        self.assertIn("dispatched: lfreleng-actions/a#1", summary)
+        self.assertIn("dispatched: LFReleng-Actions/b#2", summary)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_disabled_review_switches_stay_off(self) -> None:
+        """A run that turned a review off dispatches its next round with it off."""
+        status, calls, _, _ = self.dispatch(
+            ["lfreleng-actions/a#1"], REVIEW="false", ANTAGONISTIC="false"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(
+            calls[0].endswith(
+                " -f request_review=false -f request_antagonistic_review=false"
+                " -f load_repo_skills=false -f include_dotgithub=false"
+            ),
+            calls[0],
+        )
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_enabled_skills_and_dotgithub_stay_on(self) -> None:
+        """A run that trusted checkout skills or .github keeps them for the loop."""
+        status, calls, _, _ = self.dispatch(
+            ["lfreleng-actions/a#1"], SKILLS="true", DOTGITHUB="true"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(
+            calls[0].endswith(" -f load_repo_skills=true -f include_dotgithub=true"),
+            calls[0],
+        )
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_a_failed_dispatch_is_a_warning(self) -> None:
+        """Three pull requests, one failing: all tried, one warned, success."""
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2", "lfreleng-actions/c#3"]
+        status, calls, stdout, summary = self.dispatch(pulls, fail="b#2")
+        self.assertEqual(status, 0)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(stdout.count("::warning::"), 1)
+        self.assertIn("lfreleng-actions/b#2", stdout)
+        self.assertIn("failed: lfreleng-actions/b#2", summary)
+        self.assertIn("dispatched: lfreleng-actions/c#3", summary)
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_malformed_list_is_refused_before_any_dispatch(self) -> None:
+        """Another owner, bad syntax or a newline refuses the whole list."""
+        good = "lfreleng-actions/a#1"
+        for bad in (
+            "elsewhere/a#2",
+            "lfreleng-actions/a#0",
+            "lfreleng-actions/a",
+            "lfreleng-actions/a#2\nlfreleng-actions/b#3",
+            "lfreleng-actions/a b#2",
+            "{}",
+        ):
+            with self.subTest(entry=bad):
+                status, calls, _, _ = self.dispatch([good, bad])
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+        for pulls in ("not json", json.dumps({"a": 1}), json.dumps([good, 3])):
+            with self.subTest(pulls=pulls):
+                status, calls, _, _ = self.dispatch(pulls)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_forwarded_options_are_validated(self) -> None:
+        """An unknown model or a malformed number refuses before any dispatch."""
+        for overrides in (
+            {"MODEL": "gpt; rm -rf"},
+            {"RUNTIME": "1 -f x=y"},
+            {"ROUNDS": "0"},
+            {"PARENT_RUN": ""},
+            {"PARENT_RUN": "42 -f x=y"},
+            {"SUBAGENTS": "yes"},
+            {"REVIEW": "true -f x=y"},
+            {"ANTAGONISTIC": ""},
+            {"SKILLS": "1"},
+            {"DOTGITHUB": "true -f x=y"},
+        ):
+            with self.subTest(**overrides):
+                status, calls, _, _ = self.dispatch(
+                    ["lfreleng-actions/a#1"], **overrides
+                )
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+
+
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
@@ -3070,6 +3526,8 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "pull_requests",
                 "revise",
                 "revise_only",
+                "outstanding_only",
+                "continues_run",
                 "max_runtime_minutes",
                 "max_rounds",
                 "max_concurrent_agents",
@@ -3131,6 +3589,8 @@ class InterfaceContracts(ReusableWorkflowCase):
             "antagonistic_repository": "lfreleng-actions/github-code-review-bot",
             "revise": True,
             "revise_only": False,
+            "outstanding_only": False,
+            "continues_run": "",
             "pull_requests": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
@@ -3238,6 +3698,8 @@ class CronCallerContracts(WorkflowCase):
             "issues": "",
             "categories": "all",
             "revise_only": False,
+            "outstanding_only": False,
+            "continues_run": "",
         }
         for name, default in defaults.items():
             with self.subTest(input=name):

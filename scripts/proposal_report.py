@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import antagonistic_request as antagonistic
+import continuation
 import proposal_model as model
 import proposal_policy as policy
 import report_outputs as outputs
@@ -283,11 +284,13 @@ def write_outputs(
     unmergeable = outputs.unmergeable_urls(results, org)
     failing = outputs.failing_check_urls(results, org)
     nominated = antagonistic.nominees(results, pulls)
+    continuing = continuation.continuing(results, pulls)
     extra: dict[str, Any] = {
         "pull_requests": pulls,
         "unmergeable_pull_requests": unmergeable,
         "failing_check_pull_requests": failing,
         "antagonistic_pull_requests": nominated,
+        "continue_pull_requests": continuing,
         "excluded_pull_request_urls": excluded,
     }
     if nominated:
@@ -295,6 +298,14 @@ def write_outputs(
             "Pull requests nominated for an antagonistic review, which the "
             "request job asks the review bot for when the switch is on: "
             + ", ".join(cell(pull) for pull in nominated)
+            + ".",
+            "",
+        ]
+    if continuing:
+        lines += [
+            "Pull requests whose round left work outstanding, which the "
+            "caller may continue with their next round: "
+            + ", ".join(cell(pull) for pull in continuing)
             + ".",
             "",
         ]
@@ -318,6 +329,7 @@ def write_outputs(
             handle.write(outputs.unmergeable_lines(unmergeable))
             handle.write(outputs.failing_check_lines(failing))
             handle.write(antagonistic.output_lines(nominated))
+            handle.write(continuation.output_lines(continuing))
     return extra
 
 
