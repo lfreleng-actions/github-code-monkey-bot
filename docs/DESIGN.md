@@ -1296,11 +1296,25 @@ For each selected issue:
     (the listing, the threads page by page, and a second read of the
     head), so it cannot overrun the job's budget by a read's worst
     case. Once a review lands, the publisher reads the head again: a
-    push during the wait makes it a review of the old head. That, a
-    head that moved before the wait began, a review of another head,
-    a read failure the shared wrapper's retries did not cure, a head
-    it could not read at all, and no review within the wait all end
-    as pending, never clean. When step 10 recorded a refusal
+    push during the wait makes it a review of the old head. A read
+    failure the shared wrapper's retries did not cure costs one poll
+    when `bot_github.is_transient` accepts it (a `5xx`, or gh's own
+    timeout or cut-off reply): the wait repeats the read that failed,
+    of the head before the wait, the review, its threads or the
+    confirming head, after 30 seconds or what remains, within the same
+    deadline and reserve (`transient_reads.py`), so a GitHub incident
+    shorter than the wait no longer ends it; the window is the bound
+    and no retry adds a timer. No read, the first head read included,
+    starts unless time is spare beyond the reserve. A
+    wait that rode out such failures adds
+    one line to `result.json` `warnings` with their count and the last
+    error, escaped and bounded, so the report shows the incident even
+    when the round succeeded. A head that moved before the wait
+    began, a review of another head, any other read failure (a `4xx`,
+    or a reply that arrives whole but lacks what the read needs), a
+    wait spent on transient failures, whose reason names the last
+    one, and no review within the wait all end as pending, never
+    clean; §20.3 relies on that for rounds. When step 10 recorded a refusal
     (`requested: false`), nobody asked for the review the full wait
     would poll for, so the wait shrinks to a grace of five minutes'
     polling on top of the reserve, 15 minutes in all, long enough
@@ -1326,8 +1340,17 @@ For each selected issue:
     fit before the deadline. It then reads the failing runs'
     annotations under the same bound (`check_reads.py`, as the
     revision round's packet does), and reads the head once more: a
-    push since, or any read that fails, records `unknown`, never
-    passing. The state is `passing`, `infrastructure` (every
+    push since, or a read that fails for good, records `unknown`, never
+    passing. A transient failure of any of these reads costs one poll
+    within the same bound, as in the review wait, and adds its own
+    `warnings` line, under "the checks wait"; one the bound leaves no
+    time to repeat records `unknown` with the last error. A failed
+    listing drops the runs an earlier poll read, so a window spent
+    retrying the listing is never `running`; a retried annotation
+    read that the bound cuts short is `unknown`, not a partial record;
+    and a failed head read repeats alone, not the annotations before
+    it.
+    The state is `passing`, `infrastructure` (every
     failing run failed at harden-runner's egress agent, below),
     `failing` (a run concluded `failure`, `timed_out` or
     `startup_failure`, or a status is `failure` or `error`, and at
@@ -1980,6 +2003,7 @@ conflicts while producer artifacts survive.
 | Selection evidence forged by an author job | A later run skips work it should do | Evidence counts when a select job vouches for it in a notice on its own check run; the check disregards anything else with a warning (§6 "Overlapping runs") |
 | Bot commits fail DCO check | PR blocked | Trailer matches the API author identity (§5); rollout step 2 confirms against DCOAPP |
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
+| Transient GitHub `5xx` during the review wait | None beyond a later poll | The wait repeats the read at the next poll within the same deadline (§8 step 11); one line in `result.json` `warnings` counts the retries and names the last error. A wait spent on them is `pending` and the checks `unknown`, never clean or passing |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 | A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
 | A status service (pre-commit.ci) queues for hours and never reports | A pending status holds the head unsettled: the wait runs out and the scan reads `checks still running` round after round | A listed context pending past `stale_status_minutes` is stale (§13.1): not waited for, not failing, named in the record, the comment and the report; the next round runs the hooks itself |
@@ -2057,6 +2081,7 @@ scripts/review_sections.py               its suppressed and unchanged-code count
 scripts/review_text.py                   what one line of it the classifier reads
 scripts/copilot_review.py                request and await the review
 scripts/head_checks.py                   the published head's checks (§8 step 11)
+scripts/transient_reads.py               a wait's transient read failures
 scripts/review_request.py                the request and its refusal notice
 scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies

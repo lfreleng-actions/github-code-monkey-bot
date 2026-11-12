@@ -34,6 +34,7 @@ import check_reads as checks
 import issue_reads as reads
 import proposal_policy as policy
 import stale_statuses as stale
+import transient_reads as transient
 
 STATES = ("passing", "infrastructure", "failing", "running", "none", "unknown")
 FIELDS = frozenset(
@@ -144,6 +145,7 @@ def await_checks(
     confirm_head: Callable[[], str],
     window: Window,
     rule: stale.Rule = stale.OFF,
+    retries: transient.Retries | None = None,
 ) -> HeadChecks:
     """Poll the head's check runs and statuses until they settle or time nears.
 
@@ -153,26 +155,35 @@ def await_checks(
     a run (``check_reads.commit_statuses``): pending is unsettled,
     failure and error fail; one ``rule`` finds stale is set apart at
     each read, neither waited for nor counted. Only runs whose
-    ``head_sha`` is ``head_sha`` count. A read that fails, or a head
-    that moved, is ``unknown``; runs still going when time runs out
-    are ``running``. Settled failures that the egress agent alone
-    caused are ``infrastructure``; any other failure makes the head
+    ``head_sha`` is ``head_sha`` count. A transient read failure
+    (``retries``) costs one poll within the window; any other failed
+    read, one the window left no time to repeat, or a head that moved,
+    is ``unknown``; runs still going when time runs out are
+    ``running``. Settled failures that the egress agent alone caused
+    are ``infrastructure``; any other failure makes the head
     ``failing``.
     """
+    retries = retries or transient.Retries("the checks wait")
     fits = window.fits
     runs: list[dict[str, Any]] | None = None
     late: list[dict[str, Any]] = []
     unsettled = 0
+    failure = "no time left in the wait to read the head's check runs"
     while fits():
         try:
             listed = checks.head_runs(repository, head_sha, fits=fits)
         except checks.OutOfTime:
             break
         except (github.GitHubError, reads.SelectionError) as exc:
-            return unknown(
+            failure = (
                 "could not read the head's check runs and statuses: "
-                f"{github.safe_message(exc)}"
+                f"{transient.error_text(exc)}"
             )
+            # A snapshot before the failure is not the head's state now.
+            runs = None
+            if retries.again(exc, window.spare(), window.sleep):
+                continue
+            return unknown(failure)
         runs, late = rule.split(
             [run for run in listed if run.get("head_sha") == head_sha]
         )
@@ -182,20 +193,35 @@ def await_checks(
             break
         window.sleep(min(POLL_SECONDS, spare))
     if runs is None:
-        return unknown("no time left in the wait to read the head's check runs")
-    try:
-        packet = checks.failing_of(repository, runs, fits=fits)
-    except (github.GitHubError, reads.SelectionError) as exc:
-        return unknown(
-            f"could not read the failing checks' annotations: "
-            f"{github.safe_message(exc)}"
-        )
-    if window.deadline - window.clock() < window.read_budget:
-        return unknown("could not confirm the head within the wait")
-    try:
-        current = confirm_head()
-    except github.GitHubError as exc:
-        return unknown(f"could not confirm the head: {github.safe_message(exc)}")
+        return unknown(failure)
+    lapsed: str | None = None
+    while True:
+        gate = transient.Gate(fits)
+        try:
+            packet = checks.failing_of(repository, runs, fits=gate)
+        except (github.GitHubError, reads.SelectionError) as exc:
+            lapsed = (
+                "could not read the failing checks' annotations: "
+                f"{transient.error_text(exc)}"
+            )
+            if retries.again(exc, window.spare(), window.sleep):
+                continue
+            return unknown(lapsed)
+        if lapsed is not None and gate.refused:
+            return unknown(lapsed)
+        break
+    lapsed = None
+    while True:
+        if window.deadline - window.clock() < window.read_budget:
+            return unknown(lapsed or "could not confirm the head within the wait")
+        try:
+            current = confirm_head()
+        except (github.GitHubError, reads.SelectionError) as exc:
+            lapsed = f"could not confirm the head: {transient.error_text(exc)}"
+            if retries.again(exc, window.spare(), window.sleep):
+                continue
+            return unknown(lapsed)
+        break
     if current != head_sha:
         return unknown(
             f"head moved from {head_sha[:7]} to {current[:7]} during the wait"

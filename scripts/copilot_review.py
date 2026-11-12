@@ -38,6 +38,7 @@ import proposal_model as model
 import review_request
 import review_verdict as verdicts
 import stale_statuses as stale
+import transient_reads as transient
 from review_request import REVIEWER_LOGIN as REVIEWER_LOGIN
 from review_request import head_review
 from review_verdict import Verdict
@@ -157,22 +158,30 @@ def await_review(
     wait_minutes: int = DEFAULT_WAIT_MINUTES,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    started: float | None = None,
+    retries: transient.Retries | None = None,
 ) -> tuple[Verdict, int | None]:
     """Poll for Copilot's review of the head, bounded; classify it when it lands.
 
-    The deadline is checked before every read, with a reserve for the
-    reads a hit needs, so the wait can never overrun the budget by a
-    read's worst case. Read failures that outlast the wrapper's own
-    retries end the wait as pending with the reason, never as clean.
+    The deadline, ``wait_minutes`` from ``started`` (default now), is
+    checked before every read, with a reserve for the reads a hit
+    needs, so the wait can never overrun the budget by a read's worst
+    case. A transient read failure (``retries``) costs one poll; any
+    other read failure, or a wait that ends on one, is pending with
+    the reason, never clean.
     """
-    start = clock()
+    retries = retries or transient.Retries("the review wait")
+    start = clock() if started is None else started
     deadline = start + wait_minutes * 60
+    failure: str | None = None
     while True:
         remaining = deadline - clock()
         if remaining <= RESERVE_SECONDS:
             # The reserve cuts polling short of the nominal wait; the
             # reason reports the time actually spent.
             polled = (clock() - start) / 60
+            if failure is not None:
+                return verdicts.pending(failure), None
             return (
                 verdicts.pending(
                     f"no Copilot review of {head_sha[:7]} after polling for "
@@ -180,6 +189,7 @@ def await_review(
                 ),
                 None,
             )
+        step = "read the review"
         try:
             threads = 0
             review = head_review(repository, number, head_sha)
@@ -187,39 +197,29 @@ def await_review(
                 threads = unresolved_threads(
                     repository, number, budget=lambda: deadline - clock()
                 )
-        except WaitExpired as exc:
-            return verdicts.pending(str(exc)), None
-        except github.GitHubError as exc:
-            return (
-                verdicts.pending(
-                    f"could not read the review: {github.safe_message(exc)}"
-                ),
-                None,
-            )
-        if review is not None:
-            # A push during the wait makes this a review of the old head;
-            # confirm the head still stands before accepting the verdict.
-            if deadline - clock() < READ_BUDGET_SECONDS:
-                return (
-                    verdicts.pending("could not confirm the head within the wait"),
-                    None,
-                )
-            try:
+                # A push during the wait makes this a review of the old
+                # head; confirm the head still stands before the verdict.
+                if deadline - clock() < READ_BUDGET_SECONDS:
+                    raise WaitExpired("could not confirm the head within the wait")
+                step = "confirm the head"
                 current = pull_head(repository, number)
-            except github.GitHubError as exc:
-                return (
-                    verdicts.pending(
-                        f"could not confirm the head: {github.safe_message(exc)}"
-                    ),
-                    None,
-                )
-            if current != head_sha:
-                return (
-                    verdicts.pending(
-                        f"head moved from {head_sha[:7]} to {current[:7]} during the wait"
-                    ),
-                    None,
-                )
+                if current != head_sha:
+                    return (
+                        verdicts.pending(
+                            f"head moved from {head_sha[:7]} to {current[:7]} "
+                            "during the wait"
+                        ),
+                        None,
+                    )
+        except WaitExpired as exc:
+            return verdicts.pending(failure or str(exc)), None
+        except github.GitHubError as exc:
+            failure = f"could not {step}: {transient.error_text(exc)}"
+            if retries.again(exc, deadline - clock() - RESERVE_SECONDS, sleep):
+                continue
+            return verdicts.pending(failure), None
+        failure = None
+        if review is not None:
             review_id = review.get("id")
             return (
                 verdicts.classify(review.get("body"), threads),
@@ -239,23 +239,51 @@ def await_head(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     rule: stale.Rule = stale.OFF,
-) -> tuple[Verdict, int | None, head_checks.HeadChecks]:
-    """Await the review, then the head's checks, within one deadline set first.
+    warnings: list[str] | None = None,
+) -> tuple[Verdict, int | None, head_checks.HeadChecks | None]:
+    """Confirm the head, await the review, then the head's checks, in one window.
 
-    ``rule`` names the pending statuses the checks wait stops waiting for.
+    The window is set first and bounds all three. ``rule`` names the
+    pending statuses the checks wait stops waiting for. Each wait that
+    rode out transient read failures adds one line to ``warnings``.
+    The checks are None when the wait never started.
     """
     window = head_checks.Window.of(wait_minutes, READ_BUDGET_SECONDS, clock, sleep)
-    verdict, review_id = await_review(
-        repository,
-        number,
+    started = window.deadline - wait_minutes * 60
+    retries = transient.Retries("the review wait")
+    checked = transient.Retries("the checks wait")
+    found: head_checks.HeadChecks | None = None
+    review_id: int | None = None
+    moved = transient.head_before_wait(
+        lambda: pull_head(repository, number),
         head_sha,
-        wait_minutes=wait_minutes,
-        clock=clock,
+        retries,
+        spare=lambda: window.deadline - clock() - RESERVE_SECONDS,
         sleep=sleep,
     )
-    found = head_checks.await_checks(
-        repository, head_sha, lambda: pull_head(repository, number), window, rule
-    )
+    if moved is not None:
+        verdict = verdicts.pending(moved)
+    else:
+        verdict, review_id = await_review(
+            repository,
+            number,
+            head_sha,
+            wait_minutes=wait_minutes,
+            clock=clock,
+            sleep=sleep,
+            started=started,
+            retries=retries,
+        )
+        found = head_checks.await_checks(
+            repository,
+            head_sha,
+            lambda: pull_head(repository, number),
+            window,
+            rule,
+            checked,
+        )
+    if warnings is not None:
+        warnings.extend(w for w in (retries.warning(), checked.warning()) if w)
     return verdict, review_id, found
 
 
@@ -378,31 +406,23 @@ def run_await(args: argparse.Namespace) -> None:
     if head is None:
         verdict = verdicts.pending("no published head recorded to bind the review to")
     else:
-        try:
-            current = pull_head(repository, number)
-        except github.GitHubError as exc:
-            # The wait never started; the record still says why.
-            verdict = verdicts.pending(
-                f"could not read the pull request head: {github.safe_message(exc)}"
+        verdict, review_id, found = await_head(
+            repository,
+            number,
+            head,
+            wait_minutes=wait_minutes,
+            rule=rule,
+            warnings=cast("list[str]", result.setdefault("warnings", [])),
+        )
+        if unrequested and found is not None and verdict.verdict == "pending":
+            verdict = dataclasses.replace(
+                verdict,
+                reasons=[
+                    *verdict.reasons,
+                    f"review not requested, so the wait was cut to "
+                    f"{wait_minutes} minutes",
+                ],
             )
-        else:
-            if current != head:
-                verdict = verdicts.pending(
-                    f"head moved from {head[:7]} to {current[:7]} before the wait"
-                )
-            else:
-                verdict, review_id, found = await_head(
-                    repository, number, head, wait_minutes=wait_minutes, rule=rule
-                )
-                if unrequested and verdict.verdict == "pending":
-                    verdict = dataclasses.replace(
-                        verdict,
-                        reasons=[
-                            *verdict.reasons,
-                            f"review not requested, so the wait was cut to "
-                            f"{wait_minutes} minutes",
-                        ],
-                    )
     record.update(verdict.to_json(review_id=review_id, commit_id=head))
     record.setdefault("requested", False)
     result["review"] = record
