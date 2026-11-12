@@ -973,37 +973,30 @@ class RevisionIntegrationTest(NoSubprocessCase):
             select.build_selection(self.args_mode("branches"))
         scan.assert_not_called()
 
-    def test_scan_reads_no_second_pull_request_of_a_chosen_repository(self) -> None:
-        """A repository with a round chosen has its later rounds passed over unread.
+    def test_scan_takes_every_round_of_a_repository(self) -> None:
+        """Every bot pull request of a repository gets a round in one scan.
 
-        Each scan builder carries its repository, so the one-per-
-        repository rule applies before the packet is read: the read
-        is many calls, and a failure in one would otherwise abort the
-        whole selection for a round that could not be admitted.
+        The one-per-repository rule binds new issues alone: rounds
+        share no state, so a second pull request of a repository is
+        revised beside the first rather than in a later run.
         """
-
-        def built(entry: dict[str, Any]) -> Any:
-            return entry
-
-        def never() -> dict[str, Any]:
-            raise AssertionError("a round the budget refuses must not be read")
-
-        first = self.revision("alpha", 41, 7)
         patch.object(
             revision_rounds,
             "scan",
             return_value=[
-                ("org/alpha", lambda: built(first)),
-                ("org/alpha", never),
-                ("org/beta", lambda: built(self.revision("beta", 9, 2))),
+                ("org/alpha", lambda: self.revision("alpha", 41, 7)),
+                ("org/alpha", lambda: self.revision("alpha", 42, 8)),
+                ("org/beta", lambda: self.revision("beta", 9, 2)),
             ],
         ).start()
         selection, _ = select.build_selection(self.args("--max-pull-requests", "5"))
-        self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7", "beta-2"])
-        self.assertEqual(selection["skipped"]["one_per_repo"], 1)
+        self.assertEqual(
+            [e["key"] for e in selection["issues"]], ["alpha-7", "alpha-8", "beta-2"]
+        )
+        self.assertEqual(selection["skipped"]["one_per_repo"], 0)
 
     def test_revise_only_selects_rounds_and_no_issue(self) -> None:
-        """A revise-only scan reads no issue and keeps the cap and one per repository."""
+        """A revise-only scan reads no issue, keeps the cap and revises a repository twice."""
 
         def built(entry: dict[str, Any]) -> Any:
             return entry
@@ -1017,8 +1010,8 @@ class RevisionIntegrationTest(NoSubprocessCase):
             "scan",
             return_value=[
                 ("org/alpha", lambda: built(self.revision("alpha", 41, 7))),
-                ("org/alpha", never),
-                ("org/beta", lambda: built(self.revision("beta", 9, 2))),
+                ("org/alpha", lambda: built(self.revision("alpha", 42, 8))),
+                ("org/beta", never),
                 ("org/gamma", never),
             ],
         ).start()
@@ -1026,10 +1019,12 @@ class RevisionIntegrationTest(NoSubprocessCase):
             self.args("--revise-only", "--max-pull-requests", "2")
         )
         search.assert_not_called()
-        self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7", "beta-2"])
+        self.assertEqual(
+            [e["key"] for e in selection["issues"]], ["alpha-7", "alpha-8"]
+        )
         self.assertEqual({e["task"] for e in selection["issues"]}, {"revise"})
-        self.assertEqual(selection["skipped"]["one_per_repo"], 1)
-        self.assertEqual(selection["skipped"]["cap"], 1)
+        self.assertEqual(selection["skipped"]["one_per_repo"], 0)
+        self.assertEqual(selection["skipped"]["cap"], 2)
         self.assertEqual(selection["candidates_seen"], 0)
         self.assertIs(selection["revise_only"], True)
         self.assertIs(selection["revise"], True)

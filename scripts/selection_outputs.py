@@ -70,8 +70,9 @@ def summary_markdown(selection: dict[str, Any]) -> str:
     if skipped_issues:
         lines += ["", "| Skipped issue | Reason |", "| --- | --- |"]
         for entry in skipped_issues:
-            # Both fields are the selector's own text, not issue content.
-            lines.append(f"| {entry['issue']} | {entry['reason']} |")
+            # Every field is the selector's own text, not issue content.
+            chosen = f": {entry['chosen']}" if entry.get("chosen") else ""
+            lines.append(f"| {entry['issue']} | {entry['reason']}{chosen} |")
     lines += unreviewed_heads.section(unreviewed_heads.entries(skipped_issues))
     lines += [
         "",

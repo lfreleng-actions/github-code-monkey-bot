@@ -82,7 +82,6 @@ class ChooseTest(unittest.TestCase):
         )
         return [str(entry["key"]) for entry in chosen]
 
-    @unittest.expectedFailure
     def test_two_rounds_of_one_repository_both_build(self) -> None:
         """Every bot pull request of a repository gets its round."""
         keys = self.choose([], [round_of("alpha", 7), round_of("alpha", 8)])
@@ -90,7 +89,6 @@ class ChooseTest(unittest.TestCase):
         self.assertEqual(self.skipped["one_per_repo"], 0)
         self.assertEqual(self.skipped_issues, [])
 
-    @unittest.expectedFailure
     def test_a_revised_repository_gets_no_new_issue(self) -> None:
         """The round is taken and the issue's skip names it, unread."""
         keys = self.choose([issue("alpha", 3)], [round_of("alpha", 7)])
@@ -102,7 +100,6 @@ class ChooseTest(unittest.TestCase):
             [{"issue": "org/alpha#3", "reason": WAITED, "chosen": "org/alpha#7"}],
         )
 
-    @unittest.expectedFailure
     def test_two_issues_of_one_repository_give_one(self) -> None:
         """The second issue waits, and the record names the first."""
         keys = self.choose([issue("alpha", 3), issue("alpha", 4), issue("beta", 5)], [])
@@ -113,7 +110,6 @@ class ChooseTest(unittest.TestCase):
             [{"issue": "org/alpha#4", "reason": WAITED, "chosen": "org/alpha#3"}],
         )
 
-    @unittest.expectedFailure
     def test_the_cap_bounds_rounds_and_issues_together(self) -> None:
         """``max_pull_requests`` counts every entry, whatever its kind."""
         rounds = [round_of("alpha", 7), round_of("alpha", 8), round_of("beta", 9)]
@@ -121,7 +117,6 @@ class ChooseTest(unittest.TestCase):
         self.assertEqual(len(keys), 2)
         self.assertEqual(self.skipped["cap"], 2)
 
-    @unittest.expectedFailure
     def test_a_scan_records_only_the_rule(self) -> None:
         """A scan's other skips stay counters alone, as before."""
         self.prior.return_value = reads.PriorAttempt("pull_request", "merged", 9)
@@ -129,7 +124,6 @@ class ChooseTest(unittest.TestCase):
         self.assertEqual(self.skipped["attempted"], 1)
         self.assertEqual(self.skipped_issues, [])
 
-    @unittest.expectedFailure
     def test_summary_names_the_target_chosen(self) -> None:
         """The run summary shows which target took the repository's slot."""
         self.choose([issue("alpha", 3), issue("alpha", 4)], [])
