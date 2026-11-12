@@ -24,8 +24,9 @@ from stale_statuses import OFF
 from stale_statuses import Rule as StaleRule
 
 Builder = Callable[[], dict[str, Any] | None]
-# A round to build, with the repository it belongs to named up front,
-# so the one-per-repository rule applies before the packet is read.
+# A round to build, with the repository it belongs to named beside it.
+# The selection takes every round its cap allows, whatever the
+# repository (DESIGN.md section 6).
 Round = tuple[str, Builder]
 
 # Whether another active run holds any of the numbers in the
@@ -53,9 +54,9 @@ def scan(
     by the issue's priority and then the pull request's age, as issue
     #19 asks, and hands both on so the build repeats neither. The
     packet, the many reads, waits for the budget to call the builder,
-    which returns the entry or None after recording the skip; the
-    repository beside it lets the budget refuse a second round of one
-    repository unread. ``allowed`` is the run's repository policy, by
+    which returns the entry or None after recording the skip, and a
+    repository with several pull requests gets a round on each.
+    ``allowed`` is the run's repository policy, by
     lower-cased name; a hit outside it gets no builder. ``reviewers``
     are the antagonistic review Apps whose findings count, and
     ``max_rounds`` the cap each build applies. ``held`` passes over a

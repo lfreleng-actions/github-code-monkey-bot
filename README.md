@@ -89,7 +89,9 @@ an App, waits for a maintainer to label it `agent-approved`.
 `no-agent` opts any issue out and wins over `agent-approved`. A list
 of the bot's open pull requests runs a revision round on each; an issue whose earlier
 attempt is still open gets a round too, and scheduled runs revise
-before they take new issues unless `revise` is off. A second
+before they take new issues unless `revise` is off. A scan revises
+every such pull request in a repository, and takes no new issue
+from a repository with something else chosen in that run. A second
 schedule, with `revise_only`, runs every hour, every day, at 17
 minutes past: it revises the bot's open pull requests with work
 outstanding, takes no new issue, and stays silent in Slack unless it

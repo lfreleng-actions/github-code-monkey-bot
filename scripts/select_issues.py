@@ -359,7 +359,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         skipped=skipped,
         one_per_repository=not explicit_run,
         named=explicit_run,
-        skipped_issues=skipped_issues if explicit_run else None,
+        skipped_issues=skipped_issues,
         revisions=holds.rounds(
             rounds.named(holds.pulls(rounds.org, pulls))
             + (rounds.scan(holds.claims) if not explicit_run else [])

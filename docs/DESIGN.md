@@ -513,7 +513,18 @@ first issue seen for each repository and drops the rest. Two agents
 in one repository would race on `main` and on the toolchain cache;
 one agent working two issues would juggle branches and widen the
 blast radius of a mistake. The rest of that repository's backlog
-waits for the next run.
+waits for the next run. A repository whose pull request takes a
+revision round (§20.1) gets no new issue in the same run, since
+revisions come first and take the repository. Each skip counts under
+`one_per_repo` and lands in `skipped_issues` with a reason naming
+the repository and a `chosen` field naming the entry that took it;
+the summary then shows what waited and for what. The rule does not
+bind revision rounds: each round is its own job with its own
+checkout of the default branch head and one fork branch, and two
+rounds of one repository share no state, so every bot pull request
+with work outstanding gets a round within the cap. Two such pull
+requests may conflict at merge time whatever order the rounds take,
+and the round after the first merge resolves that (§20.2).
 
 **Cap.** The first `max_pull_requests` survivors form the selection;
 each yields at most one pull request, so the value bounds the pull
@@ -530,11 +541,12 @@ open pull requests with work outstanding (§20.1) and then works new
 issues by the rules above. A **`revise_only`** scan (§9.1) does the
 first half alone: it reads no issue, so no candidate,
 ranking or category applies, and the revision scan runs under the
-full `max_pull_requests` cap and the one-per-repository rule as it
-does in a full scan. The caller's second schedule runs one every hour,
-every day (§11), so a published pull request's findings, failing
-checks and maintainer comments reach the next slot rather than wait
-for the next 02:00. A `revise_only` scan names nothing: the input
+full `max_pull_requests` cap as it does in a full scan, revising
+every pull request of a repository with work outstanding. The
+caller's second schedule runs one every hour, every day (§11), so a
+published pull request's findings, failing checks and maintainer
+comments reach the next slot rather than wait for the next 02:00.
+A `revise_only` scan names nothing: the input
 check refuses it beside `issues` or `repositories`, in a mode other
 than `pull-requests`, or with `revise` off. Beside named
 `pull_requests` it changes nothing, since a named run scans nothing
@@ -2271,7 +2283,9 @@ holds the named issues as `owner/repo#N`, in the order given, and
 `skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
 dropped; both are empty on a scan, but for a target another run
-holds, which `skipped_issues` records on a scan too. `overlap_waits`
+holds and an issue the one-per-repository rule held back, which
+`skipped_issues` records on a scan too, the latter with a `chosen`
+field naming the entry that took its repository as `owner/repo#N`. `overlap_waits`
 holds one line per older run the overlap tie-break waited for (§6
 "Overlapping runs"), empty when it waited for none. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
@@ -2798,9 +2812,10 @@ Three ways in, all through the select job and its read token:
   maintainer's comment does. Revisions come
   before new issues, ranked by the originating issue's priority and
   then the pull request's age, the scan reading each hit's pull
-  request and issue for the rank before the cap, under the same cap and the same
-  one-per-repository rule, and a pull request past the cap, or a
-  second one of a repository already chosen, costs no
+  request and issue for the rank before the cap, under the same cap
+  but not the one-per-repository rule (§6), so a repository with
+  two or more pull requests outstanding gets a round on each, and a pull
+  request past the cap costs no
   reads: the selection builds a candidate when the budget has room
   for it, so a failed read of a round it could not admit aborts
   nothing.
