@@ -26,7 +26,6 @@ import re
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
@@ -51,6 +50,7 @@ from selection_inputs import (
     parse_max_pull_requests,
     parse_max_rounds,
     parse_repositories,
+    selection_parser,
 )
 
 PRIORITY_RANK = {"Urgent": 0, "High": 1, "Medium": 2, "Low": 3}
@@ -384,39 +384,8 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Describe the command line."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--org", required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument(
-        "--mode", required=True, choices=("select", "branches", "pull-requests")
-    )
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--repositories", default="")
-    parser.add_argument("--issues", default="")
-    parser.add_argument("--pull-requests", default="")
-    parser.add_argument("--session", default="")
-    parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--revise-only", action="store_true")
-    parser.add_argument("--outstanding-only", action="store_true")
-    parser.add_argument("--continues-run", default="")
-    parser.add_argument("--exclude-file", type=Path)
-    parser.add_argument("--exclude-repos", default="")
-    parser.add_argument("--fork-orgs", type=Path, required=True)
-    parser.add_argument("--antagonistic-reviewers", type=Path)
-    parser.add_argument("--include-dotgithub", action="store_true")
-    parser.add_argument("--include-assigned", action="store_true")
-    parser.add_argument("--max-pull-requests", default="10")
-    parser.add_argument("--max-rounds", default="10")
-    parser.add_argument("--categories", default="all")
-    parser.add_argument("--guidance-repository", required=True)
-    parser.add_argument("--guidance-ref", default="main")
-    parser.add_argument("--guidance-path", default="AGENTS.md")
-    parser.add_argument("--bot-slug", default="")
-    parser.add_argument("--results-repository", default="")
-    parser.add_argument("--held-file", type=Path)
-    return parser
+    """Describe the command line, with this module's own description."""
+    return selection_parser(__doc__)
 
 
 def main(argv: list[str] | None = None) -> None:

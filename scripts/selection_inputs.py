@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""Parse the selection's scalar and list inputs before any read happens."""
+"""The selection's command line, and its inputs parsed before any read happens."""
 
 from __future__ import annotations
 
+import argparse
 import re
 from pathlib import Path
 
@@ -81,3 +82,39 @@ def parse_max_pull_requests(text: str) -> int:
             f"max_pull_requests must be a non-negative integer, got {text!r}"
         )
     return int(text)
+
+
+def selection_parser(description: str | None) -> argparse.ArgumentParser:
+    """The selection's command line, described by ``description``."""
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--org", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--mode", required=True, choices=("select", "branches", "pull-requests")
+    )
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--repositories", default="")
+    parser.add_argument("--issues", default="")
+    parser.add_argument("--pull-requests", default="")
+    parser.add_argument("--session", default="")
+    parser.add_argument("--revise", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--revise-only", action="store_true")
+    parser.add_argument("--outstanding-only", action="store_true")
+    parser.add_argument("--continues-run", default="")
+    parser.add_argument("--exclude-file", type=Path)
+    parser.add_argument("--exclude-repos", default="")
+    parser.add_argument("--fork-orgs", type=Path, required=True)
+    parser.add_argument("--antagonistic-reviewers", type=Path)
+    parser.add_argument("--include-dotgithub", action="store_true")
+    parser.add_argument("--include-assigned", action="store_true")
+    parser.add_argument("--max-pull-requests", default="10")
+    parser.add_argument("--max-rounds", default="10")
+    parser.add_argument("--categories", default="all")
+    parser.add_argument("--guidance-repository", required=True)
+    parser.add_argument("--guidance-ref", default="main")
+    parser.add_argument("--guidance-path", default="AGENTS.md")
+    parser.add_argument("--bot-slug", default="")
+    parser.add_argument("--results-repository", default="")
+    parser.add_argument("--held-file", type=Path)
+    return parser
