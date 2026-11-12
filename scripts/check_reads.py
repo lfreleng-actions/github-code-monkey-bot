@@ -11,6 +11,14 @@ its checkout (DESIGN.md section 20). Names, titles, summaries and
 annotation messages come from code under review: data, bounded here
 as the threads are.
 
+Services that report through the Commit Status API, pre-commit.ci
+among them, post no check run. The combined status of the head is
+read beside the runs, and each status is carried as a run with no
+annotations: its ``context`` as the name, its ``state`` as the
+conclusion, its ``description`` as the title and its ``target_url``
+as the details link, bounded as a run's are. ``target_url`` is an
+arbitrary link from the repository under review: data, never fetched.
+
 A failing run whose failure-level annotation shows harden-runner's
 egress agent never came up failed before the job ran its own steps:
 it is ``infrastructure``, which needs a re-run, not a defect of the
@@ -28,8 +36,9 @@ import bot_github as github
 import issue_reads as reads
 
 # Conclusions that mean the run failed; success, neutral, skipped,
-# cancelled, action_required, stale and runs still going do not.
-FAILING = frozenset({"failure", "timed_out", "startup_failure"})
+# cancelled, action_required, stale and runs still going do not. A
+# commit status fails with ``failure`` or ``error``.
+FAILING = frozenset({"failure", "timed_out", "startup_failure", "error"})
 # Annotation levels carried; a notice is not a fault.
 LEVELS = frozenset({"failure", "warning"})
 # Check names whose failure the head's own round cannot influence, so
@@ -55,6 +64,8 @@ RUNS_PER_PAGE = 100
 MAX_RUN_PAGES = 10
 ANNOTATIONS_PER_PAGE = 100
 MAX_ANNOTATION_PAGES = 3
+# GitHub returns the latest status per context; one page holds them.
+STATUSES_PER_PAGE = 100
 
 
 class OutOfTime(Exception):
@@ -79,13 +90,25 @@ class CheckPacket:
 
 
 def failing_checks(repository: str, head_sha: str) -> CheckPacket:
-    """The head's failing check runs with their annotations, bounded.
+    """The head's failing check runs and statuses, with annotations, bounded.
 
-    Every run is read before the bounds apply, so the counts of
-    failing runs that bring a round, of infrastructure failures and of
-    runs yet to finish are whole whatever the packet keeps.
+    Every run and status is read before the bounds apply, so the
+    counts of failing checks that bring a round, of infrastructure
+    failures and of checks yet to finish are whole whatever the packet
+    keeps.
     """
-    return failing_of(repository, check_runs(repository, head_sha))
+    return failing_of(repository, head_runs(repository, head_sha))
+
+
+def head_runs(
+    repository: str,
+    head_sha: str,
+    *,
+    fits: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """The head's latest check runs, and its commit statuses shaped as runs."""
+    runs = check_runs(repository, head_sha, fits=fits)
+    return runs + commit_statuses(repository, head_sha, fits=fits)
 
 
 def failing_of(
@@ -174,6 +197,60 @@ def check_runs(
     raise reads.SelectionError(
         f"{repository}@{head_sha[:12]} carries more check runs than the packet reads"
     )
+
+
+def commit_statuses(
+    repository: str,
+    head_sha: str,
+    *,
+    fits: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """The commit's latest status per context, each shaped as a check run.
+
+    One page; a commit with more contexts than it holds fails closed,
+    as a head with too many runs does. With ``fits``, a read that
+    would not fit the caller's wait raises ``OutOfTime``.
+    """
+    if fits is not None and not fits():
+        raise OutOfTime("could not read the commit statuses within the wait")
+    data = github.api_object(
+        f"repos/{repository}/commits/{head_sha}/status?per_page={STATUSES_PER_PAGE}"
+    )
+    reply = data.get("statuses")
+    if not isinstance(reply, list):
+        raise github.GitHubError("commit status reply carries no statuses array")
+    batch = cast("list[Any]", reply)
+    count = data.get("total_count")
+    whole = type(count) is int and count <= len(batch)
+    if len(batch) >= STATUSES_PER_PAGE and not whole:
+        raise reads.SelectionError(
+            f"{repository}@{head_sha[:12]} carries more statuses than one page"
+        )
+    sha = data.get("sha")
+    runs: list[dict[str, Any]] = []
+    for status in batch:
+        if not isinstance(status, dict):
+            raise github.GitHubError("commit status reply carries a non-object entry")
+        runs.append(status_run(cast("dict[str, Any]", status), sha))
+    return runs
+
+
+def status_run(status: dict[str, Any], sha: Any) -> dict[str, Any]:
+    """A commit status in check run form: no id, no app, no annotations.
+
+    ``pending`` has yet to finish; every other state has. ``check_entry``
+    bounds the context and description as it bounds a run's name and
+    title.
+    """
+    state = status.get("state")
+    return {
+        "name": status.get("context"),
+        "head_sha": sha,
+        "status": "pending" if state == "pending" else "completed",
+        "conclusion": state,
+        "details_url": status.get("target_url"),
+        "output": {"title": status.get("description")},
+    }
 
 
 def is_failing(run: dict[str, Any]) -> bool:

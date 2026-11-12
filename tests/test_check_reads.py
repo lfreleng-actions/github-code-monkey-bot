@@ -77,8 +77,10 @@ class ChecksCase(unittest.TestCase):
         return int(query["page"]), int(query["per_page"])
 
     def runs_page(self, endpoint: str) -> dict[str, Any]:
-        """One page of the fixture runs."""
+        """One page of the fixture runs, or the head's statuses: none."""
         self.endpoints.append(endpoint)
+        if "/status?" in endpoint:
+            return {"total_count": 0, "statuses": []}
         page, size = self.page_of(endpoint)
         batch = self.runs[(page - 1) * size : page * size]
         return {"total_count": len(self.runs), "check_runs": batch}

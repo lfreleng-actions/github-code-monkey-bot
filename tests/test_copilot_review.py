@@ -716,6 +716,8 @@ class FakeHead:
             if isinstance(reply, Exception):
                 raise reply
             return {"total_count": len(reply), "check_runs": reply}
+        if f"/commits/{HEAD}/status?" in endpoint:
+            return {"sha": HEAD, "total_count": 0, "statuses": []}
         raise AssertionError(f"unexpected read of {endpoint}")
 
     def api_list(self, endpoint: str) -> list[dict[str, Any]]:
@@ -905,7 +907,11 @@ class InfrastructureChecksTest(unittest.TestCase):
             patch.object(
                 github,
                 "api_object",
-                return_value={"total_count": len(runs), "check_runs": runs},
+                return_value={
+                    "total_count": len(runs),
+                    "check_runs": runs,
+                    "statuses": [],
+                },
             ),
             patch.object(reads, "api_page", side_effect=notes),
         ):

@@ -90,7 +90,6 @@ class StatusCase(unittest.TestCase):
 class PacketTest(StatusCase):
     """The select job's packet carries a failing status as a check."""
 
-    @unittest.expectedFailure
     def test_a_failing_status_alone_is_outstanding(self) -> None:
         """A failing status and no failing run brings a round, as a check entry."""
         self.runs = [run(1, "Test")]
@@ -110,7 +109,6 @@ class PacketTest(StatusCase):
         self.assertIn("per_page=100", read[0])
         self.assertNotIn("filter=latest", read[0])
 
-    @unittest.expectedFailure
     def test_an_error_status_is_failing(self) -> None:
         """``error`` fails as ``failure`` does."""
         self.statuses = [status(state="error")]
@@ -118,7 +116,6 @@ class PacketTest(StatusCase):
         self.assertEqual(packet.outstanding, 1)
         self.assertEqual(packet.checks[0]["conclusion"], "error")
 
-    @unittest.expectedFailure
     def test_a_pending_status_leaves_the_head_unsettled(self) -> None:
         """A pending status is unsettled and no failure."""
         self.runs = [run(1, "Test")]
@@ -127,7 +124,6 @@ class PacketTest(StatusCase):
         self.assertEqual((packet.outstanding, packet.unsettled), (0, 1))
         self.assertEqual(packet.checks, [])
 
-    @unittest.expectedFailure
     def test_a_status_and_a_run_of_one_name_are_two_entries(self) -> None:
         """A run and a status sharing a name are not merged."""
         self.runs = [run(1, PRE_COMMIT, "failure")]
@@ -139,7 +135,6 @@ class PacketTest(StatusCase):
             sorted(e["app"] or "" for e in packet.checks), ["", "github-actions"]
         )
 
-    @unittest.expectedFailure
     def test_the_bound_trims_context_and_description(self) -> None:
         """A context or description past the bound is cut to it."""
         long = "x" * (checks.MAX_TEXT + 50)
@@ -149,7 +144,6 @@ class PacketTest(StatusCase):
         self.assertLessEqual(len(entry["title"].encode()), checks.MAX_TEXT)
         self.assertTrue(entry["name"].startswith("xxx"))
 
-    @unittest.expectedFailure
     def test_a_reply_without_statuses_fails_closed(self) -> None:
         """A malformed combined status is an error, not a clean head."""
         self.status_reply = {"sha": HEAD, "state": "pending"}
@@ -182,7 +176,6 @@ class PublishRecordTest(StatusCase):
         window = head_checks.Window.of(20, 60.0, clock, clock.sleep)
         return head_checks.await_checks(REPOSITORY, HEAD, lambda: HEAD, window)
 
-    @unittest.expectedFailure
     def test_a_failing_status_makes_the_record_failing(self) -> None:
         """Passing runs and a failed status record ``failing``."""
         self.runs = [run(1, "Test")]
@@ -196,7 +189,6 @@ class PublishRecordTest(StatusCase):
         assert warning is not None
         self.assertIn(PRE_COMMIT, warning)
 
-    @unittest.expectedFailure
     def test_a_pending_status_is_running_at_the_deadline(self) -> None:
         """A status that stays pending is waited on, then ``running``."""
         self.runs = [run(1, "Test")]
@@ -218,12 +210,10 @@ class CountBoundTest(unittest.TestCase):
         """The most runs the reads keep plus one page of statuses."""
         return checks.RUNS_PER_PAGE * checks.MAX_RUN_PAGES + checks.STATUSES_PER_PAGE
 
-    @unittest.expectedFailure
     def test_the_bound_covers_every_run_and_status(self) -> None:
         """The most runs read plus one page of statuses is a valid count."""
         self.assertEqual(outcome.MAX_UNSETTLED, self.most())
 
-    @unittest.expectedFailure
     def test_a_count_past_the_runs_alone_survives(self) -> None:
         """1,000 runs still going and a pending status are 1,001 (#181 review)."""
         self.assertEqual(outcome.unsettled_count(1_001), 1_001)
