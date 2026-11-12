@@ -1966,7 +1966,7 @@ AGENTS.md                                organisation stub (§12 there)
 config/excluded-repos.txt                repositories to skip
 config/coauthors.json                    model prefix to trailer (§10.3)
 scripts/select_issues.py                 selection policy
-scripts/selection_inputs.py              list and cap input parsing
+scripts/selection_inputs.py              its command line, list and cap parsing
 scripts/explicit_issues.py               named issues (§6)
 scripts/issue_categories.py              category switches and matching
 scripts/selection_outputs.py             selection files and summary
@@ -1983,6 +1983,7 @@ scripts/proposal_policy.py               the rules a proposal must pass
 scripts/proposal_check.py                offline bundle verification
 scripts/proposal_model.py                verdict record and its rendering
 scripts/publish.py                       replay, open PR, reconcile
+scripts/publish_cli.py                   its eight commands' command line
 scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/stale_branch.py                  a closed attempt's branch (§5)
 scripts/issue_recheck.py                 the issue re-read before a push (§8)
