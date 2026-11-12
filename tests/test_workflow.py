@@ -1491,7 +1491,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         """The checks share the wait's step and token; no secret reaches it (#110)."""
         step = self.step("publish", "review")
         self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
-        self.assertEqual(set(step["env"]), {"GH_TOKEN"})
+        self.assertEqual(set(step["env"]), {"GH_TOKEN", "STALE_MINUTES"})
         self.assertNotIn("secrets.", dumped(step))
         self.assertNotIn("continue-on-error", step)
 
@@ -2524,6 +2524,7 @@ class ListInputContracts(ReusableWorkflowCase):
             "MAX_PRS": "1",
             "MAX_RUNTIME": "60",
             "MAX_ROUNDS": "10",
+            "STALE_MINUTES": "8",
             "MAX_AGENTS": "1",
             "MODEL": "auto",
             "REPOSITORIES": "",
@@ -2574,6 +2575,7 @@ class ListInputContracts(ReusableWorkflowCase):
             "MAX_PRS": "1",
             "MAX_RUNTIME": "60",
             "MAX_ROUNDS": "10",
+            "STALE_MINUTES": "8",
             "MAX_AGENTS": "1",
             "MODEL": "auto",
             "REPOSITORIES": "",
@@ -2784,6 +2786,7 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         "MAX_PRS": "10",
         "MAX_RUNTIME": "60",
         "MAX_ROUNDS": "10",
+        "STALE_MINUTES": "8",
         "MAX_AGENTS": "1",
         "MODEL": "auto",
         "REPOSITORIES": "",
@@ -2887,7 +2890,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 21)
+        self.assertEqual(len(inputs), 22)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -3248,7 +3251,8 @@ CONTINUE_DISPATCH = (
     ' -f pull_requests="$pull" -f outstanding_only=true'
     ' -f continues_run="$PARENT_RUN"'
     ' -f model="$MODEL" -f max_runtime_minutes="$RUNTIME"'
-    ' -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS"'
+    ' -f max_rounds="$ROUNDS" -f stale_status_minutes="$STALE"'
+    ' -f allow_subagents="$SUBAGENTS"'
     ' -f request_review="$REVIEW"'
     ' -f request_antagonistic_review="$ANTAGONISTIC"'
     ' -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"'
@@ -3366,6 +3370,7 @@ class ContinueJobContracts(WorkflowCase):
         self.assert_expression(env["MODEL"], "inputs.model || 'Claude Opus 5.5'")
         self.assert_expression(env["RUNTIME"], "inputs.max_runtime_minutes || '180'")
         self.assert_expression(env["ROUNDS"], "inputs.max_rounds || '10'")
+        self.assert_expression(env["STALE"], "inputs.stale_status_minutes || '8'")
         self.assert_expression(
             env["SUBAGENTS"],
             "github.event_name != 'workflow_dispatch' || inputs.allow_subagents",
@@ -3411,6 +3416,7 @@ class ContinueJobContracts(WorkflowCase):
                 "MODEL": "Claude Opus 5.5",
                 "RUNTIME": "180",
                 "ROUNDS": "10",
+                "STALE": "8",
                 "PARENT_RUN": "42",
                 "SUBAGENTS": "true",
                 "REVIEW": "true",
@@ -3449,7 +3455,8 @@ class ContinueJobContracts(WorkflowCase):
                 f" -f pull_requests={pull} -f outstanding_only=true"
                 " -f continues_run=42"
                 " -f model=Claude Opus 5.5 -f max_runtime_minutes=180"
-                " -f max_rounds=10 -f allow_subagents=true"
+                " -f max_rounds=10 -f stale_status_minutes=8"
+                " -f allow_subagents=true"
                 " -f request_review=true -f request_antagonistic_review=true"
                 " -f load_repo_skills=false -f include_dotgithub=false"
                 for pull in pulls
@@ -3528,6 +3535,9 @@ class ContinueJobContracts(WorkflowCase):
             {"MODEL": "gpt; rm -rf"},
             {"RUNTIME": "1 -f x=y"},
             {"ROUNDS": "0"},
+            {"STALE": ""},
+            {"STALE": "-1"},
+            {"STALE": "8 -f x=y"},
             {"PARENT_RUN": ""},
             {"PARENT_RUN": "42 -f x=y"},
             {"SUBAGENTS": "yes"},
@@ -3542,6 +3552,83 @@ class ContinueJobContracts(WorkflowCase):
                 )
                 self.assertNotEqual(status, 0)
                 self.assertEqual(calls, [])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_zero_stale_minutes_is_forwarded(self) -> None:
+        """``0``, which turns the stale rule off, passes the check."""
+        status, calls, _, _ = self.dispatch(["lfreleng-actions/a#1"], STALE="0")
+        self.assertEqual(status, 0)
+        self.assertIn(" -f stale_status_minutes=0 ", calls[0])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_stale_minutes_take_the_select_jobs_syntax(self) -> None:
+        """A value the select job accepts, ``08`` or ``00``, is forwarded."""
+        for value in ("08", "00"):
+            with self.subTest(value=value):
+                status, calls, _, _ = self.dispatch(
+                    ["lfreleng-actions/a#1"], STALE=value
+                )
+                self.assertEqual(status, 0)
+                self.assertIn(f" -f stale_status_minutes={value} ", calls[0])
+
+
+class StaleStatusContracts(ReusableWorkflowCase):
+    """stale_status_minutes reaches the scan and the review wait (#168)."""
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_check_inputs_takes_a_non_negative_integer(self) -> None:
+        """``0`` and up pass; anything else fails the select job."""
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(env["STALE_MINUTES"], "inputs.stale_status_minutes")
+        base = {**ReviseOnlyContracts.BUDGET_ENV, "REVISE_ONLY": "false"}
+        for value, passes in (
+            ("0", True),
+            ("8", True),
+            ("30", True),
+            ("08", True),
+            ("", False),
+            ("-1", False),
+            ("1.5", False),
+            ("8 x", False),
+        ):
+            with (
+                self.subTest(value=value),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        **base,
+                        "PATH": os.environ["PATH"],
+                        "STALE_MINUTES": value,
+                        "GITHUB_OUTPUT": str(Path(holder) / "output"),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode == 0, passes, proc.stdout)
+                if not passes:
+                    self.assertIn(
+                        "::error::stale_status_minutes must be a non-negative",
+                        proc.stdout,
+                    )
+
+    def test_the_scan_and_the_review_wait_read_the_list(self) -> None:
+        """Both steps pass the context list and the minutes."""
+        for job, step in (("select", "Select issues"), ("publish", "review")):
+            with self.subTest(step=step):
+                found = self.step(job, step)
+                env = cast(dict[str, Any], found["env"])
+                self.assert_expression(
+                    env["STALE_MINUTES"], "inputs.stale_status_minutes"
+                )
+                run = flatten(found["run"])
+                self.assertIn(
+                    "--stale-statuses monkey-assets/config/stale-statuses.txt", run
+                )
+                self.assertIn('--stale-status-minutes "$STALE_MINUTES"', run)
 
 
 class InterfaceContracts(ReusableWorkflowCase):
@@ -3568,6 +3655,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "continues_run",
                 "max_runtime_minutes",
                 "max_rounds",
+                "stale_status_minutes",
                 "max_concurrent_agents",
                 "allow_subagents",
                 "include_dotgithub",
@@ -3617,6 +3705,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "categories": "all",
             "max_runtime_minutes": "180",
             "max_rounds": "10",
+            "stale_status_minutes": "8",
             "max_concurrent_agents": "10",
             "allow_subagents": True,
             "include_dotgithub": False,
@@ -3727,6 +3816,7 @@ class CronCallerContracts(WorkflowCase):
             "max_pull_requests": "10",
             "max_runtime_minutes": "180",
             "max_rounds": "10",
+            "stale_status_minutes": "8",
             "max_concurrent_agents": "10",
             "allow_subagents": True,
             "include_dotgithub": False,
@@ -3753,6 +3843,9 @@ class CronCallerContracts(WorkflowCase):
         self.assert_expression(with_["categories"], "inputs.categories || 'all'")
         self.assert_expression(with_["issues"], "inputs.issues || ''")
         self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assert_expression(
+            with_["stale_status_minutes"], "inputs.stale_status_minutes || '8'"
+        )
         self.assertEqual(
             [s.get("id") for s in self.steps("options") if s.get("id")], ["map"]
         )

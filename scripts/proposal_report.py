@@ -18,6 +18,7 @@ import report_outputs as outputs
 import review_outcome
 import revision_reads as revisions
 import round_caps as caps
+import stale_statuses as stale
 import unreviewed_heads
 from proposal_policy import PublishError
 
@@ -348,6 +349,7 @@ def run_report(args: argparse.Namespace) -> None:
     merge_totals: dict[str, int] = dict.fromkeys(MERGE_COLUMNS, 0)
     check_totals: dict[str, int] = dict.fromkeys(CHECK_COLUMNS, 0)
     infrastructure_failures = 0
+    stale_heads = 0
     for item in results:
         verdict = str(item.get("verdict"))
         totals[verdict] = totals.get(verdict, 0) + 1
@@ -355,6 +357,7 @@ def run_report(args: argparse.Namespace) -> None:
         merge_totals[review_outcome.merge_token(item) or "none"] += 1
         check_totals[review_outcome.checks_state(item) or "not read"] += 1
         infrastructure_failures += review_outcome.infrastructure_count(item)
+        stale_heads += bool(stale.contexts(item, review_outcome.checks_state(item)))
         lines.append(report_row(item))
     spend = total_spend(every, results)
     # The select job's file, which the report step verified and passes on.
@@ -386,7 +389,7 @@ def run_report(args: argparse.Namespace) -> None:
         "",
         "Head checks: "
         + ", ".join(f"{name} {check_totals[name]}" for name in CHECK_COLUMNS)
-        + ".",
+        + f"; with a stale status {stale_heads}.",
         "",
         *conflict_lines(results),
         *failing_check_lines(results),
@@ -407,6 +410,7 @@ def run_report(args: argparse.Namespace) -> None:
                 "merge_totals": merge_totals,
                 "check_totals": check_totals,
                 "infrastructure_check_failures": infrastructure_failures,
+                "stale_status_heads": stale_heads,
                 "premium_requests": spend,
                 "unreadable": unreadable,
                 "unreviewed_heads": unreviewed,

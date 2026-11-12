@@ -53,6 +53,13 @@ on:
           must take over
         type: string
         default: '10'
+      stale_status_minutes:
+        description: >-
+          Minutes a pending status listed in config/stale-statuses.txt
+          (pre-commit.ci) may stay so before it is stale: not waited
+          for, not failing, and named in the record. 0 turns this off
+        type: string
+        default: '8'
       max_concurrent_agents:
         description: 'Agents running at once (1-30)'
         type: string
@@ -471,6 +478,7 @@ jobs:
           MAX_PRS: "${{ inputs.max_pull_requests }}"
           MAX_RUNTIME: "${{ inputs.max_runtime_minutes }}"
           MAX_ROUNDS: "${{ inputs.max_rounds }}"
+          STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
           MAX_AGENTS: "${{ inputs.max_concurrent_agents }}"
           MODEL: "${{ inputs.model }}"
           # Already split, checked and comma-joined, as the App token
@@ -507,6 +515,9 @@ jobs:
             { echo '::error::max_runtime_minutes must be 1-330'; exit 1; }
           [[ "$MAX_ROUNDS" =~ ^[1-9][0-9]*$ ]] && [ "$MAX_ROUNDS" -le 50 ] ||
             { echo '::error::max_rounds must be 1-50'; exit 1; }
+          [[ "$STALE_MINUTES" =~ ^[0-9]+$ ]] || {
+            echo '::error::stale_status_minutes must be a non-negative integer'
+            exit 1; }
           [[ "$MAX_AGENTS" =~ ^[1-9][0-9]*$ ]] && [ "$MAX_AGENTS" -le 30 ] || {
             echo '::error::max_concurrent_agents must be 1-30'; exit 1; }
           [[ "$MODEL" =~ ^[a-z0-9.-]+$ ]] || {
@@ -848,6 +859,7 @@ jobs:
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
           MAX_ROUNDS: "${{ inputs.max_rounds }}"
+          STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
           CATEGORIES: "${{ inputs.categories }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -894,6 +906,8 @@ jobs:
             monkey-assets/config/antagonistic-reviewers.txt \
             --max-pull-requests "$MAX_PRS" \
             --max-rounds "$MAX_ROUNDS" \
+            --stale-statuses monkey-assets/config/stale-statuses.txt \
+            --stale-status-minutes "$STALE_MINUTES" \
             --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \
@@ -1971,7 +1985,9 @@ jobs:
       # arrives. After a refused request it waits a short grace instead
       # of the full wait, for a maintainer's own request. Once the
       # verdict is known, the rest of the same wait reads the head's
-      # checks: recorded and warned on, never a reason to fail.
+      # checks: recorded and warned on, never a reason to fail. A
+      # listed status pending past stale_status_minutes is not waited
+      # for (config/stale-statuses.txt).
       - name: 'Await Copilot review'
         id: review
         if: >-
@@ -1979,10 +1995,13 @@ jobs:
           inputs.request_review
         env:
           GH_TOKEN: "${{ github.token }}"
+          STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
         run: |
           python3 monkey-assets/scripts/publish.py review-await \
             --result artefacts/result.json --output artefacts/result.json \
-            --wait-minutes 30
+            --wait-minutes 30 \
+            --stale-statuses monkey-assets/config/stale-statuses.txt \
+            --stale-status-minutes "$STALE_MINUTES"
 
       # A head that conflicts with the default branch gets no
       # pull_request CI, so its checks look missing, not failed. After

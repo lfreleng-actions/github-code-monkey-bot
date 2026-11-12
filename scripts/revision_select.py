@@ -33,6 +33,8 @@ import thread_reads
 import unreviewed_heads
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
+from stale_statuses import OFF
+from stale_statuses import Rule as StaleRule
 
 TASK = "revise"
 # The skip for a head whose only failures need a re-run, not a round.
@@ -45,7 +47,10 @@ class Skip(Exception):
 
 @dataclass(frozen=True)
 class Inputs:
-    """What every build shares: the owner, the bot, the forks and the reviewers."""
+    """What every build shares: the owner, the bot, the forks and the reviewers.
+
+    ``stale`` is the run's rule for pending statuses left too long.
+    """
 
     org: str
     bot: dict[str, Any]
@@ -54,6 +59,7 @@ class Inputs:
     # (empty: none), and the rounds a pull request may receive.
     reviewers: frozenset[str] = frozenset()
     max_rounds: int = revisions.MAX_ROUNDS
+    stale: StaleRule = OFF
 
 
 @dataclass(frozen=True)
@@ -79,8 +85,11 @@ def read_findings(
     pull: dict[str, Any],
     since: str | None,
     reviewers: frozenset[str] = frozenset(),
+    rule: StaleRule = OFF,
 ) -> Findings:
     """The unresolved threads, the head's reviews and its failing checks.
+
+    ``rule`` sets the stale statuses apart from the checks.
 
     The hand-back is read before the threads and again after every
     other read. GitHub posts a review together with its inline
@@ -97,7 +106,7 @@ def read_findings(
     findings = Findings(
         thread_reads.unresolved_threads(repository, number, since, reviewers),
         revisions.latest_review(repository, number, head),
-        check_reads.failing_checks(repository, head),
+        check_reads.failing_checks(repository, head, rule),
         handback,
     )
     recheck = revisions.handback_review(repository, number, head, reviewers)
@@ -135,8 +144,9 @@ def outstanding(
     an opener or a reply, counts as a comment, since the issue and
     pull request comments do not carry it; the thread
     reads heard it over every thread, the packet's bounds aside. A
-    head with nothing else skips (``scan_reasons``): as still running
-    while its checks have yet to finish, as needing a re-run when its
+    stale status (``stale_statuses``) is no work. A head with nothing
+    else skips (``scan_reasons``): as still running while its checks
+    have yet to finish, stale statuses aside, as needing a re-run when its
     only failures are infrastructure, as unreviewed when Copilot has
     not reviewed it, and as done when its review is clean. A
     ``mergeable`` that never settled
@@ -226,7 +236,7 @@ def build_entry(
         raise Skip("the run that dispatched this continuation published no round here")
     # Skips a capped pull request before the packet's reads.
     next_segment_round(repository, pull, history, inputs, None)
-    findings = read_findings(repository, pull, since, inputs.reviewers)
+    findings = read_findings(repository, pull, since, inputs.reviewers, inputs.stale)
     # The hand-back may have changed since the cap read it; decide on
     # the one the packet carries.
     segment_round = next_segment_round(repository, pull, history, inputs, findings)
@@ -275,6 +285,7 @@ def build_entry(
         "checks": findings.checks.checks,
         "checks_dropped": findings.checks.dropped,
         "checks_unsettled": findings.checks.unsettled,
+        "checks_stale": findings.checks.stale,
         **rounds_of.conversation(repository, issue, pull_number, since),
     }
 

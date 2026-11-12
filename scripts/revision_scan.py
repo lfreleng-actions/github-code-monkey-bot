@@ -20,6 +20,8 @@ import revision_reads as revisions
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 from revision_select import Inputs, Prefetch, Skip, build_entry, read_issue
+from stale_statuses import OFF
+from stale_statuses import Rule as StaleRule
 
 Builder = Callable[[], dict[str, Any] | None]
 # A round to build, with the repository it belongs to named up front,
@@ -42,6 +44,7 @@ def scan(
     reviewers: frozenset[str] = frozenset(),
     max_rounds: int = revisions.MAX_ROUNDS,
     held: Hold | None = None,
+    stale: StaleRule = OFF,
 ) -> list[Round]:
     """A builder per bot pull request in the owner, ranked, built on demand.
 
@@ -57,9 +60,10 @@ def scan(
     are the antagonistic review Apps whose findings count, and
     ``max_rounds`` the cap each build applies. ``held`` passes over a
     hit whose pull request or issue another run holds, once the
-    ranking reads name both and before any packet read.
+    ranking reads name both and before any packet read. ``stale`` is
+    the run's rule for pending statuses left too long.
     """
-    inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds)
+    inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds, stale)
     slug = str(bot["login"]).removesuffix("[bot]")
     found = revisions.search_bot_pull_requests(org, slug)
     ranked: list[tuple[tuple[int, str, int], str, int, Prefetch]] = []

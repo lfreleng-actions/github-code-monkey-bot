@@ -78,8 +78,11 @@ administrators can dispatch it by hand, live unless they tick
 (`select`, `branches`, `pull-requests`), issue, runtime and round
 caps (`max_rounds` lifts the ten-round limit per antagonistic
 review round for one run; sixty rounds in all stays the ceiling),
-a category list, and either a repository list to scan or a list of
-issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
+`stale_status_minutes` (default 8: past it, a pending pre-commit.ci
+status is stale, not waited for and not failing, and named in the
+comment; `30` lifts it during a pre-commit.ci incident and `0` waits
+as for any check), a category list, and either a repository list to
+scan or a list of issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
 skips the scan and the triage filters. A scan works an issue from
 an organisation owner or member; an issue from anyone else, or from
 an App, waits for a maintainer to label it `agent-approved`.

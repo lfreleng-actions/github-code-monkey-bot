@@ -19,6 +19,8 @@ import revision_reads as revisions
 from revision_reads import pull_request_for_branch
 from revision_scan import Hold, Round, scan
 from revision_select import Inputs, Skip, build_entry
+from stale_statuses import OFF
+from stale_statuses import Rule as StaleRule
 
 
 class Rounds:
@@ -38,6 +40,7 @@ class Rounds:
         max_rounds: int = revisions.MAX_ROUNDS,
         outstanding_only: bool = False,
         continues: str = "",
+        stale: StaleRule = OFF,
     ) -> None:
         """Remember what every build needs; ``skips`` are the counters and the named list.
 
@@ -46,12 +49,13 @@ class Rounds:
         outstanding. A continuation names it from an unauthenticated
         result, so it earns no operator waiver. ``continues``, the URL
         of the run that dispatched it, must have published a counted
-        round on the pull request.
+        round on the pull request. ``stale`` is the run's rule for
+        pending statuses left too long.
         """
         self.org = org
         self.bot = bot
         self.fork_orgs = fork_orgs
-        self.inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds)
+        self.inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds, stale)
         self.enabled = enabled
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
@@ -105,6 +109,7 @@ class Rounds:
             reviewers=self.inputs.reviewers,
             max_rounds=self.inputs.max_rounds,
             held=held,
+            stale=self.inputs.stale,
         )
 
     def for_issue(

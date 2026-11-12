@@ -9,9 +9,12 @@ statuses until none is queued, in progress or pending, within the
 deadline and reserve the review wait already had, never past it. A
 red check fails nothing here; it is recorded as ``checks`` in
 ``result.json`` for the comment, the report and the next revision
-scan (section 20.1) to read. A head whose every failure is one the
-egress agent caused (``check_reads``) is ``infrastructure``: it needs
-a re-run, not a fix.
+scan (section 20.1) to read. A pending status the run's stale rule
+covers, left past its minutes (``stale_statuses``), is not waited
+for: the record lists it under ``stale`` and the state ignores it.
+A head whose every failure is one the egress agent caused
+(``check_reads``) is ``infrastructure``: it needs a re-run, not a
+fix.
 
 The check-runs listing and the combined status answer the job's own
 token on a public repository, so this needs no mint. Names, titles,
@@ -30,6 +33,7 @@ import bot_github as github
 import check_reads as checks
 import issue_reads as reads
 import proposal_policy as policy
+import stale_statuses as stale
 
 STATES = ("passing", "infrastructure", "failing", "running", "none", "unknown")
 FIELDS = frozenset(
@@ -43,6 +47,7 @@ FIELDS = frozenset(
         "defects",
         "read_at",
         "reason",
+        "stale",
     }
 )
 POLL_SECONDS = 30
@@ -102,6 +107,8 @@ class HeadChecks:
     # Failing runs that are no infrastructure, kept or dropped: whole,
     # so a defect the bounds left out still marks the head failed.
     defects: int = 0
+    # Pending statuses the stale rule stopped waiting for.
+    stale: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
 
     def to_json(
         self, commit_id: str | None, read_at: str | None = None
@@ -117,6 +124,7 @@ class HeadChecks:
             "defects": self.defects,
             "read_at": read_at or now(),
             "reason": self.reason,
+            "stale": self.stale,
         }
 
 
@@ -131,7 +139,11 @@ def unknown(reason: str) -> HeadChecks:
 
 
 def await_checks(
-    repository: str, head_sha: str, confirm_head: Callable[[], str], window: Window
+    repository: str,
+    head_sha: str,
+    confirm_head: Callable[[], str],
+    window: Window,
+    rule: stale.Rule = stale.OFF,
 ) -> HeadChecks:
     """Poll the head's check runs and statuses until they settle or time nears.
 
@@ -139,8 +151,9 @@ def await_checks(
     request's head (``confirm_head``), fit in ``window`` at their
     worst case, so the wait never overruns. A commit status counts as
     a run (``check_reads.commit_statuses``): pending is unsettled,
-    failure and error fail. Only runs whose ``head_sha`` is
-    ``head_sha`` count. A read that fails, or a head
+    failure and error fail; one ``rule`` finds stale is set apart at
+    each read, neither waited for nor counted. Only runs whose
+    ``head_sha`` is ``head_sha`` count. A read that fails, or a head
     that moved, is ``unknown``; runs still going when time runs out
     are ``running``. Settled failures that the egress agent alone
     caused are ``infrastructure``; any other failure makes the head
@@ -148,6 +161,7 @@ def await_checks(
     """
     fits = window.fits
     runs: list[dict[str, Any]] | None = None
+    late: list[dict[str, Any]] = []
     unsettled = 0
     while fits():
         try:
@@ -159,7 +173,9 @@ def await_checks(
                 "could not read the head's check runs and statuses: "
                 f"{github.safe_message(exc)}"
             )
-        runs = [run for run in listed if run.get("head_sha") == head_sha]
+        runs, late = rule.split(
+            [run for run in listed if run.get("head_sha") == head_sha]
+        )
         unsettled = sum(1 for run in runs if checks.is_unsettled(run))
         spare = window.spare()
         if not unsettled or spare <= 0:
@@ -200,6 +216,7 @@ def await_checks(
         unsettled,
         infrastructure=packet.infrastructure,
         defects=failed - packet.infrastructure,
+        stale=rule.entries(late),
     )
 
 
@@ -287,5 +304,8 @@ def log_lines(found: HeadChecks, head: str | None) -> list[str]:
     )
     if found.reason:
         line += f"; {found.reason}"
-    warning = None if head is None else annotation(found, head)
-    return [line] if warning is None else [line, warning]
+    if found.stale:
+        line += f"; stale: {len(found.stale)}"
+    warnings = [None if head is None else annotation(found, head)]
+    warnings.append(stale.warning(found.stale))
+    return [line, *(warning for warning in warnings if warning is not None)]
