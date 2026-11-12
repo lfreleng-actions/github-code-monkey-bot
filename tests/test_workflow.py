@@ -2156,6 +2156,7 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "count",
                 "matrix",
                 "run_agent",
+                "unreviewed_sha256",
                 "author_timeout",
                 "agent_timeout",
                 "max_parallel",
@@ -2388,7 +2389,6 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assertIn("publish.py report", script)
         self.assertIn('--org "$ORG" --github-output "$GITHUB_OUTPUT"', script)
 
-    @unittest.expectedFailure
     def test_unreviewed_heads_reach_the_report(self) -> None:
         """The select job's list of unreviewed heads, as verified evidence.
 

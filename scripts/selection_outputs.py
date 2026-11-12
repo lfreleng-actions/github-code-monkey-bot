@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+import unreviewed_heads
+
 
 def summary_markdown(selection: dict[str, Any]) -> str:
     """Render the selection for the step summary."""
@@ -70,6 +72,7 @@ def summary_markdown(selection: dict[str, Any]) -> str:
         for entry in skipped_issues:
             # Both fields are the selector's own text, not issue content.
             lines.append(f"| {entry['issue']} | {entry['reason']} |")
+    lines += unreviewed_heads.section(unreviewed_heads.entries(skipped_issues))
     lines += [
         "",
         "| Issue | Task | Priority | Type | Title |",
@@ -127,6 +130,10 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
     (directory / "excluded-repos.txt").write_text(
         "".join(f"{name}\n" for name in cast("list[str]", selection["exclusions"])),
         encoding="utf-8",
+    )
+    skipped_issues = cast("list[dict[str, str]]", selection.get("skipped_issues") or [])
+    (directory / "unreviewed-heads.json").write_text(
+        json.dumps(unreviewed_heads.entries(skipped_issues)) + "\n", encoding="utf-8"
     )
     (directory / "selection-summary.md").write_text(
         summary_markdown(selection), encoding="utf-8"

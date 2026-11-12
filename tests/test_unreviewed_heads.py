@@ -65,7 +65,6 @@ def selection(skipped_issues: list[dict[str, str]]) -> dict[str, Any]:
 class ReasonTest(unittest.TestCase):
     """The skip's reason, from the latest footer's review token."""
 
-    @unittest.expectedFailure
     def test_reason_names_a_refused_request(self) -> None:
         """Only ``pending/not-requested`` adds the refusal."""
         self.assertEqual(heads().reason(None), NO_REVIEW)
@@ -73,7 +72,6 @@ class ReasonTest(unittest.TestCase):
         self.assertEqual(heads().reason("clean"), NO_REVIEW)
         self.assertEqual(heads().reason("pending/not-requested"), REFUSED)
 
-    @unittest.expectedFailure
     def test_entries_keep_the_unreviewed_skips_in_order(self) -> None:
         """Every other skip is left out."""
         self.assertEqual(
@@ -88,7 +86,6 @@ class ReasonTest(unittest.TestCase):
 class SelectionSummaryTest(unittest.TestCase):
     """The step summary lists the heads under their own heading, with a count."""
 
-    @unittest.expectedFailure
     def test_summary_counts_and_lists_the_heads(self) -> None:
         """The heading carries both counts; each head is a row."""
         text = selection_outputs.summary_markdown(selection(skips()))
@@ -103,7 +100,6 @@ class SelectionSummaryTest(unittest.TestCase):
         text = selection_outputs.summary_markdown(selection([]))
         self.assertNotIn("no Copilot review", text)
 
-    @unittest.expectedFailure
     def test_write_outputs_writes_the_heads_for_the_report(self) -> None:
         """The select job reads them from a file of their own."""
         with tempfile.TemporaryDirectory() as work:
@@ -145,7 +141,6 @@ class ReportTest(unittest.TestCase):
         document = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
         return markdown, document
 
-    @unittest.expectedFailure
     def test_report_lists_the_heads(self) -> None:
         """Valid entries are listed and recorded in report.json."""
         markdown, document = self.report(json.dumps(heads().entries(skips())))
@@ -156,7 +151,6 @@ class ReportTest(unittest.TestCase):
         self.assertIn(f"| {ORG}/gamma#3 | review request refused |", markdown)
         self.assertEqual(document["unreviewed_heads"], heads().entries(skips()))
 
-    @unittest.expectedFailure
     def test_report_refuses_what_it_cannot_vouch_for(self) -> None:
         """Another owner, an unknown reason or a bad shape is counted, not printed."""
         raw = json.dumps(
@@ -187,7 +181,6 @@ class ReportTest(unittest.TestCase):
                 markdown, _ = self.report(raw)
                 self.assertNotIn("no Copilot review", markdown)
 
-    @unittest.expectedFailure
     def test_an_unreadable_file_is_counted(self) -> None:
         """A path the report cannot read costs the list, not the report."""
         markdown, document = self.report(None, self.root / "missing.json")

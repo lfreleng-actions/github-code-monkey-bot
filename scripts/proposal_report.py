@@ -18,6 +18,7 @@ import report_outputs as outputs
 import review_outcome
 import revision_reads as revisions
 import round_caps as caps
+import unreviewed_heads
 from proposal_policy import PublishError
 
 SCHEMA = 1
@@ -356,6 +357,11 @@ def run_report(args: argparse.Namespace) -> None:
         infrastructure_failures += review_outcome.infrastructure_count(item)
         lines.append(report_row(item))
     spend = total_spend(every, results)
+    # The select job's file, which the report step verified and passes on.
+    unreviewed, invalid = unreviewed_heads.accepted(
+        unreviewed_heads.read(getattr(args, "unreviewed_heads", None)),
+        getattr(args, "org", None),
+    )
     for problem in unreadable:
         lines.append(f"| — | unreadable | — | — | — | {cell(problem)} |")
     if not results and not unreadable:
@@ -385,6 +391,7 @@ def run_report(args: argparse.Namespace) -> None:
         *conflict_lines(results),
         *failing_check_lines(results),
         *infrastructure_check_lines(results),
+        *unreviewed_heads.report_lines(unreviewed, invalid),
         policy.REVISION_DISCLOSURE,
         "",
     ]
@@ -402,6 +409,7 @@ def run_report(args: argparse.Namespace) -> None:
                 "infrastructure_check_failures": infrastructure_failures,
                 "premium_requests": spend,
                 "unreadable": unreadable,
+                "unreviewed_heads": unreviewed,
                 "results": results,
                 **extra,
             },

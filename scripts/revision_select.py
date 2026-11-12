@@ -30,6 +30,7 @@ import repository_reads as repositories
 import revision_reads as revisions
 import round_reads as rounds_of
 import thread_reads
+import unreviewed_heads
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 
@@ -134,10 +135,11 @@ def outstanding(
     an opener or a reply, counts as a comment, since the issue and
     pull request comments do not carry it; the thread
     reads heard it over every thread, the packet's bounds aside. A
-    head with no review yet is left for the gate to await, and a clean
-    head with nothing else is done, or skips as still running while
-    its checks have yet to finish, or as needing a re-run when its
-    only failures are infrastructure. A ``mergeable`` that never settled
+    head with nothing else skips (``scan_reasons``): as still running
+    while its checks have yet to finish, as needing a re-run when its
+    only failures are infrastructure, as unreviewed when Copilot has
+    not reviewed it, and as done when its review is clean. A
+    ``mergeable`` that never settled
     is no work on its own, so a GitHub hiccup cannot spend rounds.
     """
     packet, verdict = findings.threads, findings.verdict
@@ -324,13 +326,21 @@ def scan_reasons(
     *,
     repository: str,
 ) -> list[str]:
-    """Why a scan gives the pull request a round, or ``Skip`` when it does not."""
+    """Why a scan gives the pull request a round, or ``Skip`` when it does not.
+
+    A head with nothing outstanding and no Copilot review skips by its
+    own reason, naming a refused request when the latest footer
+    records one, so the scan records it rather than reading it as
+    done: no round can request a review (DESIGN.md section 20.1).
+    """
     reasons = outstanding(pull, findings, repository=repository, since=history.since)
     if not reasons:
         if findings.checks.unsettled:
             raise Skip("checks still running")
         if findings.checks.infrastructure:
             raise Skip(INFRASTRUCTURE_ONLY)
+        if findings.verdict is None:
+            raise Skip(unreviewed_heads.reason(history.last_review))
         raise Skip("nothing outstanding")
     # After a handoff the threads the agent disputed stay open on
     # purpose; a maintainer's word, not the threads or the checks,

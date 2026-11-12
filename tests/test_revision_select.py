@@ -604,13 +604,11 @@ class NoReviewTest(RevisionCase):
         super().setUp()
         self.review = None
 
-    @unittest.expectedFailure
     def test_no_review_and_nothing_else_skips_by_name(self) -> None:
         """No review, threads, failing checks or comments: its own skip."""
         with self.assertRaisesRegex(select.Skip, "^no Copilot review of the head$"):
             self.build(explicit=False)
 
-    @unittest.expectedFailure
     def test_a_refused_request_says_so(self) -> None:
         """The latest footer's ``pending/not-requested`` names the refusal."""
         refused = dataclasses.replace(
@@ -643,7 +641,6 @@ class NoReviewTest(RevisionCase):
         entry = self.build(explicit=True)
         self.assertEqual(entry["round_reasons"], ["named by the operator"])
 
-    @unittest.expectedFailure
     def test_the_scan_records_the_skip(self) -> None:
         """Unlike nothing outstanding, the skip reaches ``skipped_issues``."""
         hits = [
@@ -712,7 +709,6 @@ class PublishedRunsTest(unittest.TestCase):
             found = round_reads.round_history("org/alpha", 7, BOT["login"], None, 41)
         self.assertEqual(found.published, frozenset())
 
-    @unittest.expectedFailure
     def test_last_review_is_the_latest_handled_footers(self) -> None:
         """A later failed round leaves the published head's review token."""
         found = self.history(
