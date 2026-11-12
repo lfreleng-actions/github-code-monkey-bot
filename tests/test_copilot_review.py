@@ -836,8 +836,9 @@ class AwaitChecksTest(unittest.TestCase):
 
     def test_a_head_that_moves_is_unknown(self) -> None:
         """A push during the wait makes the runs another head's."""
+        # The head stands before the wait and when the review lands.
         fake = FakeHead(
-            Clock(), [check_run(1, "ok")], reviews=CLEAN, heads=(HEAD, OTHER)
+            Clock(), [check_run(1, "ok")], reviews=CLEAN, heads=(HEAD, HEAD, OTHER)
         )
         verdict, _, found = fake.run()
         self.assertEqual(verdict.verdict, "clean")
@@ -1444,13 +1445,14 @@ class HandlersTest(unittest.TestCase):
                 self.assertNotIn("review", self.stored())
 
     def test_failed_head_read_records_pending(self) -> None:
-        """A head read the wrapper's retries did not cure still writes a record."""
+        """A head read that fails for good still writes a record, at once."""
         self.write(review={"requested": True})
-        failure = github.GitHubError("gh: Server Error (HTTP 502)")
-        with patch.object(github, "api_object", side_effect=failure):
+        failure = github.GitHubError("gh: Not Found (HTTP 404)")
+        with patch.object(github, "api_object", side_effect=failure) as head:
             review.run_await(
                 argparse.Namespace(result=self.path, output=self.path, wait_minutes=20)
             )
+        self.assertEqual(len(head.call_args_list), 1)
         record = self.stored()["review"]
         self.assertEqual(record["verdict"], "pending")
         self.assertIn("could not read the pull request head", record["reasons"][0])
