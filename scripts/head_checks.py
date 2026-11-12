@@ -1,21 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""The published head's check runs, read inside the review wait (DESIGN.md section 8).
+"""The published head's checks, read inside the review wait (DESIGN.md section 8).
 
 The publish job gates on Copilot's review and reports CI: once the
-review's verdict is known, it polls the head's check runs until none
-is queued or in progress, within the deadline and reserve the review
-wait already had, never past it. A red check fails nothing here; it
-is recorded as ``checks`` in ``result.json`` for the comment, the
-report and the next revision scan (section 20.1) to read. A head whose
-every failure is one the egress agent caused (``check_reads``) is
-``infrastructure``: it needs a re-run, not a fix.
+review's verdict is known, it polls the head's check runs and commit
+statuses until none is queued, in progress or pending, within the
+deadline and reserve the review wait already had, never past it. A
+red check fails nothing here; it is recorded as ``checks`` in
+``result.json`` for the comment, the report and the next revision
+scan (section 20.1) to read. A head whose every failure is one the
+egress agent caused (``check_reads``) is ``infrastructure``: it needs
+a re-run, not a fix.
 
-The check-runs listing answers the job's own token on a public
-repository, so this needs no mint. Names, titles and summaries come
-from the workflows of the code under review: ``check_reads`` bounds
-them, and every reader escapes them.
+The check-runs listing and the combined status answer the job's own
+token on a public repository, so this needs no mint. Names, titles,
+summaries and status descriptions come from the code under review:
+``check_reads`` bounds them, and every reader escapes them.
 """
 
 from __future__ import annotations
@@ -132,12 +133,14 @@ def unknown(reason: str) -> HeadChecks:
 def await_checks(
     repository: str, head_sha: str, confirm_head: Callable[[], str], window: Window
 ) -> HeadChecks:
-    """Poll the head's check runs until they settle or the deadline nears.
+    """Poll the head's check runs and statuses until they settle or time nears.
 
     Every read starts only while it, and the closing read of the pull
     request's head (``confirm_head``), fit in ``window`` at their
-    worst case, so the wait never overruns. Only runs whose
-    ``head_sha`` is ``head_sha`` count. A read that fails, or a head
+    worst case, so the wait never overruns. A commit status counts as
+    a run (``check_reads.commit_statuses``): pending is unsettled,
+    failure and error fail. Only runs whose ``head_sha`` is
+    ``head_sha`` count. A read that fails, or a head
     that moved, is ``unknown``; runs still going when time runs out
     are ``running``. Settled failures that the egress agent alone
     caused are ``infrastructure``; any other failure makes the head
@@ -148,12 +151,13 @@ def await_checks(
     unsettled = 0
     while fits():
         try:
-            listed = checks.check_runs(repository, head_sha, fits=fits)
+            listed = checks.head_runs(repository, head_sha, fits=fits)
         except checks.OutOfTime:
             break
         except (github.GitHubError, reads.SelectionError) as exc:
             return unknown(
-                f"could not read the head's check runs: {github.safe_message(exc)}"
+                "could not read the head's check runs and statuses: "
+                f"{github.safe_message(exc)}"
             )
         runs = [run for run in listed if run.get("head_sha") == head_sha]
         unsettled = sum(1 for run in runs if checks.is_unsettled(run))

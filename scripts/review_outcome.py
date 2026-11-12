@@ -367,9 +367,10 @@ def checks_named(names: list[str], total: int = 0) -> str:
     return f"{text} and {more} more" if text and more > 0 else text
 
 
-# The most check runs the selection reads on a head; a larger count
-# is not one it recorded.
-MAX_UNSETTLED = 1_000
+# The most checks the selection reads on a head: ten pages of check
+# runs and one of commit statuses (check_reads). A larger count is not
+# one it recorded.
+MAX_UNSETTLED = 1_100
 
 
 def unsettled_count(value: Any) -> int:

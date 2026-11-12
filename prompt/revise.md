@@ -141,9 +141,10 @@ round summary.
 
 ## Failing checks
 
-The packet's `checks` lists the check runs that failed on the pull
-request's head: each with its `name`, `conclusion`, the `app` that
-ran it, a `details_url`, the run's `title` and `summary`, its
+The packet's `checks` lists the check runs and commit statuses that
+failed on the pull request's head: each with its `name`,
+`conclusion`, the `app` that ran it, a `details_url`, the run's
+`title` and `summary`, its
 `annotations` (`level`, `path`, `line`, `title`, `message`, failures
 and warnings alone), and its `kind`, `defect` or `infrastructure`.
 `checks_dropped` counts the failing runs and
@@ -168,6 +169,13 @@ finding. A failure you cannot reproduce or cannot attribute to the
 change, such as a registry outage or a platform you cannot run, goes
 in the `pr_body` as a note for the reviewer and in the round summary;
 do not change code for it blind.
+
+The packet carries a commit status the same way, with no
+annotations and no `app`; its `details_url` is an external link you
+cannot reach. A failing `pre-commit.ci` status is the repository's
+own pre-commit configuration: recover it by running the hooks in your
+checkout (`prek run --all-files`), as you would a failing job's
+commands.
 
 An entry whose `kind` is `infrastructure` failed at harden-runner's
 egress agent, before the job ran its own steps: nothing in the change

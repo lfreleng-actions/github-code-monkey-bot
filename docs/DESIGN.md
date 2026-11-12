@@ -1298,8 +1298,12 @@ For each selected issue:
     landed keeps the full wait. The record goes into `result.json` as
     `review` (§18.4).
     Once the verdict is in, the rest of the same wait reads the
-    head's check runs (`head_checks.py`), with the same token, since
-    the target is public, and no new mint. The publish job gates on
+    head's check runs and its combined commit status
+    (`head_checks.py`), with the same token, since the target is
+    public, and no new mint. A commit status, which services such as
+    pre-commit.ci post instead of a check run, counts as a run with
+    no annotations: a `pending` one has yet to settle, and `failure`
+    and `error` fail. The publish job gates on
     Copilot's review and reports CI: a failing check never stops the
     publication, it records and warns. The read shares the wait's
     deadline, fixed before the review poll starts, and the reserve
@@ -1314,9 +1318,10 @@ For each selected issue:
     passing. The state is `passing`, `infrastructure` (every
     failing run failed at harden-runner's egress agent, below),
     `failing` (a run concluded `failure`, `timed_out` or
-    `startup_failure`, and at least one is a defect), `running` (a
+    `startup_failure`, or a status is `failure` or `error`, and at
+    least one is a defect), `running` (a
     run still unsettled at the deadline, with any failures so far),
-    `none` (no runs at all) or `unknown`. A failing run is
+    `none` (no runs or statuses at all) or `unknown`. A failing run is
     `infrastructure` when one of its failure-level annotations has
     the title `harden-runner agent did not start`, or a message that
     starts, after stripping, with `harden-runner's agent reverted its
@@ -2246,8 +2251,12 @@ thread before the bound trims the replies), `threads_dropped`,
 `antagonistic_review` (the hand-back of §20.1 as `{review_id, round,
 run, head_sha, url, author, submitted_at, body, body_truncated}`, or
 null),
-`checks` (the head's failing check runs, as `{name, conclusion,
-app, details_url, title, summary, annotations, kind}`, each annotation
+`checks` (the head's failing check runs and commit statuses, as
+`{name, conclusion, app, details_url, title, summary, annotations,
+kind}`; a status carries its `context` as `name`, its `state` as
+`conclusion`, its `description` as `title`, its `target_url` as
+`details_url`, a null `app`, an empty `summary` and no annotations,
+bounded as a run is; each annotation
 `{level, path, line, title, message}` at level `failure` or `warning`,
 and `kind` `defect` or `infrastructure` (§8 step 11);
 empty when none failed), `checks_dropped` (the failing runs, and
@@ -2257,6 +2266,7 @@ runs, 10 annotations each, 2 KiB per title, summary and message,
 annotations past the third page of a run count unread, whatever
 their level), `checks_unsettled` (the head's runs
 whose `status` is not `completed`, queued, in progress or waiting,
+and its `pending` statuses,
 counted over every run whatever the bounds keep: an empty `checks`
 beside a non-zero count says CI had not finished, not that it
 passed), `pr_comments`, `new_comments` and
@@ -2427,9 +2437,11 @@ read), `failing` (at most 30 runs and 32 KiB, each with `name`,
 `conclusion`, `app`, `details_url`, `title`, `summary`, bounded
 `annotations`, each with `level`, `path`, `line`, `title` and
 `message`, and `kind`, `defect` or `infrastructure`, as the revision
-packet carries them; an entry without `kind` reads as a defect),
+packet carries them, a failing commit status among them; an entry
+without `kind` reads as a defect),
 `dropped` (failing runs left out),
-`unsettled` (runs not yet completed), `infrastructure` (failing runs
+`unsettled` (runs not yet completed and statuses still pending),
+`infrastructure` (failing runs
 the egress agent failed, kept or left out, so the comment and the
 report count those the bounds dropped; a record without it counts
 the entries marked so), `defects` (the other failing runs, kept or
@@ -2918,8 +2930,12 @@ and within a thread a maintainer's replies outrank a reviewer's for
 the places the bound allows. The entry carries the
 head's review verdict; the head's failing checks, read from the
 public check runs API (`filter=latest`, every page, failing closed
-past ten) with the failure and warning annotations of each, bounded as
-the threads are; the maintainers' comments on the pull request,
+past ten) with the failure and warning annotations of each, and from
+the public combined status (`commits/{sha}/status`, one page of 100,
+failing closed past it; GitHub keeps the latest status per context),
+whose `failure` and `error` statuses count as failing checks and
+`pending` ones as unsettled, bounded as the threads are; the
+maintainers' comments on the pull request,
 the maintainers' comments on the issue and the pull request since the
 last round, newest first within the bounds and one oversized comment
 hiding none behind it, so the instruction that caused the round
@@ -2933,7 +2949,15 @@ storage host outside the select job's egress allow-list, so the job
 records which checks failed and where, and the session, which has
 the checkout and the toolchain, recovers why (§20.2). The read mint
 adds Checks: read for this and scopes to the
-named repositories as for issues.
+named repositories as for issues. The combined status needs no
+permission on a public repository, and every selection path refuses
+one that is not public, so the mint does not ask for Commit statuses,
+which the App registration does not hold: GitHub would refuse a mint
+asking for it. Should private repositories come into scope (§16), the
+App gains Commit statuses: read first, then the mint and §10.1. A
+status's `context`, `description` and `target_url` come from whoever
+can post statuses on the repository: data, bounded and escaped as a
+run's name and title, and the select job never follows `target_url`.
 
 **Antagonistic review.** The review bot's antagonistic mode
 (`lfreleng-actions/github-code-review-bot` issue 28) reviews a bot
@@ -3040,7 +3064,7 @@ next selection, not the description. That
 line, and the round's issue comment, also name the failing checks
 the selection carried, escaped and bounded as agent text is, since
 a check's name comes from the code under review, and, when the
-selection's `checks_unsettled` is a count from one to 1,000, say `N
+selection's `checks_unsettled` is a count from one to 1,100, say `N
 check(s) still running at selection`; any other value says nothing.
 A round sent by an
 antagonistic hand-back names the review it answers, its round and
