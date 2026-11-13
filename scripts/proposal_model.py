@@ -68,6 +68,9 @@ class Check:
     # thread ids a reply may name. Blank or empty for an issue.
     task: str = "issue"
     rebase_sha: str = ""
+    # The pull request's own base as the selection recorded it; a
+    # rebase moves ``base_sha`` but never this.
+    pull_base_sha: str = ""
     rebased: bool = False
     head_sha: str = ""
     pull_number: int = 0
@@ -144,6 +147,7 @@ class Check:
         if check.task == "revise":
             pull = cast("dict[str, Any]", entry["pull_request"])
             check.rebase_sha = str(entry["rebase_sha"])
+            check.pull_base_sha = check.base_sha
             check.head_sha = str(pull["head_sha"])
             check.pull_number = int(pull["number"])
             check.pull_request_url = str(pull["url"])
@@ -276,6 +280,8 @@ class Context:
     run_url: str
     issue_url: str
     zizmor_token: str = ""
+    # The run's switch for new proposals that change workflow files.
+    allow_workflow_edits: bool = False
 
 
 def check_summary(check: Check) -> str:

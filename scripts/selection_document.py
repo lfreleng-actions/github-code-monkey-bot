@@ -56,6 +56,7 @@ def selection_document(
         "bot": bot,
         "revise": bool(args.revise),
         "revise_only": bool(args.revise_only),
+        "allow_workflow_edits": bool(args.allow_workflow_edits),
         "guidance": {
             "repository": args.guidance_repository,
             "path": args.guidance_path,

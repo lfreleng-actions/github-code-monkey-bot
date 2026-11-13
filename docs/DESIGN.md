@@ -1061,8 +1061,16 @@ For each selected issue:
 
    Names and directories other than the licence ones compare
    without regard to case. Changes
-   under `.github/workflows/` pass and set `needs_workflows` in the
-   check summary; no token mint depends on it (step 6).
+   under `.github/workflows/` set `needs_workflows` in the check
+   summary; no token mint depends on it (step 6). Whether they pass
+   is the run's `allow_workflow_edits` switch (§9.1), which the
+   selection records (§18.1): the check rejects a new proposal that
+   adds, edits or deletes a workflow file, naming the file, unless
+   the switch is on, and a selection without the field counts as
+   off. A revision round may change the workflow files its pull
+   request already changes and no other, whatever the switch says
+   (§20.3).
+   `workflow_gate.py` holds both rules.
 
    Every proposal then faces an **online zizmor audit**, the last
    part of the check (`online_audit.py`), since the author job's
@@ -1501,6 +1509,7 @@ For each selected issue:
 | `include_dotgithub` | boolean | `false` | §6 |
 | `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
+| `allow_workflow_edits` | boolean | `false` | §8 step 3: let new proposals change `.github/workflows/` |
 | `request_review` | boolean | `true` | §8 steps 10–11: request, await, report |
 | `request_antagonistic_review` | boolean | `true` | §20.5: ask the review bot after a clean review |
 | `antagonistic_repository` | string | `lfreleng-actions/github-code-review-bot` | Holds the antagonistic workflow (§20.5) |
@@ -1561,6 +1570,7 @@ nothing reads it back.
 | `include_dotgithub` | boolean | `false` |
 | `include_assigned` | boolean | `false` |
 | `load_repo_skills` | boolean | `false` |
+| `allow_workflow_edits` | boolean | `false` |
 | `request_review` | boolean | `true` |
 | `request_antagonistic_review` | boolean | `true` |
 | `repositories` | string | `''` |
@@ -1587,7 +1597,7 @@ entries, worked in parallel, and at most ten pull requests.
 limit; anything non-numeric or negative fails the select job.
 `categories` passes straight through: `docs` for a run that fixes
 documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 22 inputs, within
+schedule, passing no inputs, gets. The form holds 23 inputs, within
 GitHub's limit of 25; the lists `issues` and `repositories` take the
 place of what used to be one boolean per category.
 
@@ -1695,10 +1705,15 @@ repository for the write steps and a separate one for the comment.
 The App key never leaves those two jobs and no action in the author
 job receives it, including as a post-step input.
 
-Workflow edits are in scope from the start. The estate is
+Workflow edits are in scope, behind a switch. The estate is
 workflows, and an issue labelled `CI` is as fair a target as any
 other; a bot that cannot touch `.github/workflows/` would abstain
-from a large share of the backlog. Both fork mints request
+from a large share of the backlog. A workflow edit is also the
+change with the widest reach, so a new proposal may make one when
+the operator sets `allow_workflow_edits` and not otherwise (§9.1,
+§8 step 3); a
+revision round stays within the workflow files its pull request
+already changes (§20.3). Both fork mints request
 `workflows: write` on every run, whatever the verified diff holds:
 the fork sync (§4.3 step 2) fast-forwards over upstream
 workflow changes too, and a proposal that edits no workflow would
@@ -2039,6 +2054,7 @@ scripts/proposal_policy.py               the rules a proposal must pass
 
 scripts/proposal_check.py                offline bundle verification
 scripts/proposal_model.py                verdict record and its rendering
+scripts/workflow_gate.py                 which workflow files a proposal may change
 scripts/publish.py                       replay, open PR, reconcile
 scripts/publish_cli.py                   its eight commands' command line
 scripts/branch_refs.py                   bot branch and its PR on GitHub
@@ -2151,7 +2167,7 @@ The questions the first draft left open, and how they closed:
 | Where bot branches live | Bot fork organisations, never the target (§4.3); CI on agent code runs as an outside contribution |
 | Mode changes and symlinks | Reject; agent banners the human follow-up in the PR body (§5, §7.3). Unsigned commits are unmergeable and create work |
 | Payload cap | 4 MiB added, 512 KiB per binary; rollout confirms (§5) |
-| Workflow edits | In scope from day one; App holds `workflows: write`, granted to every fork mint (§10.1) |
+| Workflow edits | Off by default for new proposals; `allow_workflow_edits` turns them on. A revision round changes no workflow file beyond those its pull request already changes. App holds `workflows: write`, granted to every fork mint (§8 step 3, §10.1) |
 | Assigned issues | Skipped by default; `include_assigned` overrides (§6) |
 | Sub-agent tool | `task`; agent-definition tools denied alongside (§7.2) |
 | Skills from the checkout | Off by default; `load_repo_skills` for a repository a maintainer has read (§7.2) |
@@ -2219,6 +2235,7 @@ cross-checked against the trusted `selection.json`.
   "generated_at": "2026-09-18T09:02:11Z",
   "mode": "pull-requests",
   "dry_run": true,
+  "allow_workflow_edits": false,
   "model": "claude-opus-5.5",
   "bot": {
     "login": "lf-code-monkey[bot]",
@@ -2290,6 +2307,9 @@ holds one line per older run the overlap tie-break waited for (§6
 "Overlapping runs"), empty when it waited for none. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
 selection holds revision entries alone and `candidates_seen` is 0.
+`allow_workflow_edits` records the §9.1 switch the publisher's
+check reads (§8 step 3); a JSON `true` turns it on and any other
+value leaves it off.
 A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
 `pull_request` (`number`, `url`, `title`, `head_sha`, `mergeable`,
 `created_at`), `round` (global, as the footers number it),
@@ -2432,7 +2452,8 @@ here; `result.json` (§18.4) adds `publish-failed` for a write that
 failed after verification, with the branch rolled back.
 `reasons` explains anything but `proposed`. `needs_workflows` records
 whether the proposal edits `.github/workflows/`, for the check
-summary alone; no step gates on it. `commits[].body` is the
+summary alone; no step gates on it. The workflow rules of §8 step 3
+are part of the check itself, and land in `reasons`. `commits[].body` is the
 composed message the publisher will send: the agent's body plus the
 trailers §5 describes. `pr_body` is the composed body: the closing
 line and provenance block first, then the agent's text.
@@ -3125,7 +3146,32 @@ no write credential and the fork is public.
 ### 20.3 The publish job
 
 The offline check verifies the whole chain against whichever
-recorded base the manifest names and rejects any other; types each
+recorded base the manifest names and rejects any other. The check
+compares a chain that adds, edits or deletes a file under
+`.github/workflows/` with the pull request itself: it fetches the
+recorded base and published head from the bot fork, anonymously,
+and rejects a round that touches a workflow file the diff between
+them leaves alone, naming the file, whatever `allow_workflow_edits`
+says. One exception covers commits the round carries over, such as
+an edit and its revert: a file outside that diff passes when the
+chain leaves it as its own base had it and the pull request's
+published commits already made every change the chain makes to it,
+in the same order and no more often, read along the first-parent
+line for at most 64 commits. The check reads a change as the file's
+mode and blob before and after it, from each commit's raw diff with
+no pathspec, so a name holding a glob character covers that file
+alone. It replays the published changes onto the chain's base, each
+merged three ways as a rebase would and stopping at the first that
+does not apply, and requires the chain's changes to equal those:
+a rebase over an upstream edit elsewhere in the file still
+matches, while an edit moved to another line, rewritten or repeated
+does not. The base is
+the pull request's own, not the
+rebase commit, so upstream workflow changes a rebase brings in
+neither widen nor narrow what the round may touch. A chain that
+touches no workflow file fetches nothing, and one that does reads
+the pull request's diff once for all its paths. The check also
+types each
 reply and binds it to a thread the selection carried, defusing
 mentions and bounding the text; requires the round summary; and
 warns of a thread left unanswered, which stays open for a human. It

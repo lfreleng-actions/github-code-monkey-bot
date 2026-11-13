@@ -2890,7 +2890,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 22)
+        self.assertEqual(len(inputs), 23)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -3661,6 +3661,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "include_dotgithub",
                 "include_assigned",
                 "load_repo_skills",
+                "allow_workflow_edits",
                 "request_review",
                 "request_antagonistic_review",
                 "antagonistic_repository",
@@ -3711,6 +3712,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_dotgithub": False,
             "include_assigned": False,
             "load_repo_skills": False,
+            "allow_workflow_edits": False,
             "request_review": True,
             "request_antagonistic_review": True,
             "antagonistic_repository": "lfreleng-actions/github-code-review-bot",
@@ -3733,7 +3735,6 @@ class InterfaceContracts(ReusableWorkflowCase):
 class WorkflowEditSwitchContracts(ReusableWorkflowCase):
     """``allow_workflow_edits`` reaches selection, prompt and publisher (#143)."""
 
-    @unittest.expectedFailure
     def test_input_is_an_off_by_default_boolean(self) -> None:
         """A caller that says nothing gets no workflow edits."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3741,7 +3742,6 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
         self.assertEqual(switch["type"], "boolean")
         self.assertIs(switch["default"], False)
 
-    @unittest.expectedFailure
     def test_selection_records_the_switch(self) -> None:
         """The trusted selection carries it, for the publisher to read."""
         step = self.step("select", "Select issues")
@@ -3751,11 +3751,10 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
         )
         self.assertIn(
             'if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then'
-            " extra+=(--allow-workflow-edits); fi",
+            " extra+=(--allow-workflow-edits) fi",
             flatten(step["run"]),
         )
 
-    @unittest.expectedFailure
     def test_runtime_context_states_the_switch(self) -> None:
         """An issue session learns whether it may change workflow files."""
         step = self.step("author", "Assemble prompt")
@@ -3767,7 +3766,6 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
         self.assertIn("workflow edits: allowed", script)
         self.assertIn("workflow edits: not allowed", script)
 
-    @unittest.expectedFailure
     def test_prompts_state_the_workflow_rules(self) -> None:
         """Authoring follows the switch; a round stays within its pull request."""
         author = squash(PROMPT.read_text(encoding="utf-8"))
@@ -3775,7 +3773,6 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
         revise = squash(REVISE_PROMPT.read_text(encoding="utf-8"))
         self.assertIn("workflow files the pull request already changes", revise)
 
-    @unittest.expectedFailure
     def test_callers_forward_the_switch(self) -> None:
         """Both dispatch forms offer it, off; every call passes it on."""
         for path, job, expected in (
@@ -3889,6 +3886,7 @@ class CronCallerContracts(WorkflowCase):
             "include_dotgithub": False,
             "include_assigned": False,
             "load_repo_skills": False,
+            "allow_workflow_edits": False,
             "repositories": "",
             "issues": "",
             "categories": "all",

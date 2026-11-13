@@ -570,7 +570,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
 
-    @unittest.expectedFailure
     def test_selection_records_the_workflow_edit_switch(self) -> None:
         """``allow_workflow_edits`` is off unless the run turns it on (#143)."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)

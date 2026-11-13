@@ -80,6 +80,13 @@ on:
         description: 'Let the agent use skills from the target checkout'
         type: boolean
         default: false
+      allow_workflow_edits:
+        description: >-
+          Let a new proposal add, change or delete files under
+          .github/workflows/; a revision round may change only the
+          workflow files its pull request already changes
+        type: boolean
+        default: false
       request_review:
         description: >-
           Request a Copilot review of each pull request opened, wait for
@@ -857,6 +864,7 @@ jobs:
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
+          ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
           MAX_ROUNDS: "${{ inputs.max_rounds }}"
           STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
@@ -877,6 +885,9 @@ jobs:
           fi
           if [ "$INCLUDE_ASSIGNED" = true ]; then
             extra+=(--include-assigned)
+          fi
+          if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
+            extra+=(--allow-workflow-edits)
           fi
           if [ "$REVISE" != true ]; then
             extra+=(--no-revise)
@@ -1253,6 +1264,7 @@ jobs:
           TASK: "${{ matrix.task }}"
           GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
+          ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
         run: |
           artefacts="$(pwd)/artefacts"
           cp evidence/agents.md "$artefacts/agents.md"
@@ -1280,6 +1292,14 @@ jobs:
             printf -- '- git identity: `%s` (placeholder, set in git)\n' \
               "$GIT_IDENTITY"
             printf -- '- mode: `%s`\n' "$MODE"
+            # A round's rule is in its prompt; the switch is for issues.
+            if [ "$TASK" = issue ]; then
+              if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
+                printf -- '- workflow edits: allowed\n'
+              else
+                printf -- '- workflow edits: not allowed\n'
+              fi
+            fi
             printf -- '- issue packet: `%s/issue.json`\n' "$artefacts"
             printf -- '- organisation guidance: `%s/agents.md`\n' "$artefacts"
             printf -- '- repository AGENTS.md: %s\n' "$local_stub"

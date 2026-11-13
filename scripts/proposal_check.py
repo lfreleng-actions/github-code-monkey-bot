@@ -20,6 +20,7 @@ import bot_github as github
 import online_audit
 import proposal_policy as policy
 import revision_check as revision
+import workflow_gate
 from fork_orgs import ALLOWED_RE
 from git_bounded import git
 from proposal_model import Check, Context, load_json, read_usage
@@ -351,6 +352,7 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
             {"sha": sha, "tree": tree, "headline": headline, "body": body, **diff}
         )
         parent = sha
+    workflow_gate.check_workflows(clone, check, allowed=context.allow_workflow_edits)
     single = check.commits[0]["headline"] if len(check.commits) == 1 else None
     title, body = policy.check_pull_request_text(
         manifest.get("pr_title"),
@@ -410,6 +412,8 @@ def run_check(
         run_url=run_url,
         issue_url=str(entry["url"]),
         zizmor_token=zizmor_token,
+        # Only a JSON true turns it on; a selection without it is off.
+        allow_workflow_edits=selection.get("allow_workflow_edits") is True,
     )
     check = Check.from_entry(key, entry)
     check.bot_login = context.identity.bot_login

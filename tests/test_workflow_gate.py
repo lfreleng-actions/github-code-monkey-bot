@@ -122,7 +122,6 @@ class NewProposalSwitchTest(GitCase):
         self.fixture.manifest(pr_title="CI: Change workflows")
         return run_check(self.fixture, self.root)
 
-    @unittest.expectedFailure
     def test_switch_absent_rejects_an_addition(self) -> None:
         """A selection without the switch keeps it off: the default is false."""
         check = self.propose({ADDED: WORKFLOW})
@@ -133,7 +132,6 @@ class NewProposalSwitchTest(GitCase):
         self.assertIn("allow_workflow_edits", reason)
         self.assertTrue(check.needs_workflows)
 
-    @unittest.expectedFailure
     def test_switch_off_rejects_an_edit(self) -> None:
         """An edit to an existing workflow file is a workflow edit."""
         self.fixture.allow_workflow_edits = False
@@ -143,7 +141,6 @@ class NewProposalSwitchTest(GitCase):
         self.assertIn(CHANGED, reason)
         self.assertNotIn("README.md", reason)
 
-    @unittest.expectedFailure
     def test_switch_off_rejects_a_deletion(self) -> None:
         """Deleting a workflow file is gated as much as writing one."""
         self.fixture.allow_workflow_edits = False
@@ -152,7 +149,6 @@ class NewProposalSwitchTest(GitCase):
         (reason,) = check.reasons
         self.assertIn(OTHER, reason)
 
-    @unittest.expectedFailure
     def test_only_a_boolean_true_turns_the_switch_on(self) -> None:
         """A string or a number in the selection is not the switch."""
         for index, value in enumerate(("true", 1)):
@@ -213,20 +209,17 @@ class RevisionWorkflowTest(GitCase):
             )
         return check, fork
 
-    @unittest.expectedFailure
     def test_edit_to_a_workflow_the_pull_request_changes_passes(self) -> None:
         """The pull request already changes the file; the round may too."""
         check, fork = self.revise({CHANGED: "on: pull_request\njobs: {}\n"})
         self.assertEqual(check.verdict, "proposed", check.reasons)
         fork.assert_called_with(FORK)
 
-    @unittest.expectedFailure
     def test_deleting_a_workflow_the_pull_request_changes_passes(self) -> None:
         """Deleting a file the pull request already changes is within it."""
         check, _fork = self.revise({CHANGED: None})
         self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_edit_to_another_workflow_is_rejected(self) -> None:
         """A file the pull request leaves alone is outside the round's reach."""
         check, _fork = self.revise({OTHER: EDITED})
@@ -236,7 +229,6 @@ class RevisionWorkflowTest(GitCase):
         self.assertIn(OTHER, reason)
         self.assertNotIn(CHANGED, reason)
 
-    @unittest.expectedFailure
     def test_deleting_another_workflow_is_rejected(self) -> None:
         """A deletion widens the pull request as much as an edit."""
         check, _fork = self.revise({OTHER: None})
@@ -244,7 +236,6 @@ class RevisionWorkflowTest(GitCase):
         (reason,) = check.reasons
         self.assertIn(OTHER, reason)
 
-    @unittest.expectedFailure
     def test_adding_a_workflow_is_rejected(self) -> None:
         """A new workflow file is one the pull request does not change."""
         check, _fork = self.revise({ADDED: WORKFLOW})
@@ -252,7 +243,6 @@ class RevisionWorkflowTest(GitCase):
         (reason,) = check.reasons
         self.assertIn(ADDED, reason)
 
-    @unittest.expectedFailure
     def test_the_pull_request_is_read_once_per_round(self) -> None:
         """Several workflow paths share one fetch and diff of the pull request."""
         with patch(
@@ -265,7 +255,6 @@ class RevisionWorkflowTest(GitCase):
         self.assertIn(ADDED, check.reasons[0])
         spy.assert_called_once()
 
-    @unittest.expectedFailure
     def test_the_switch_does_not_widen_a_round(self) -> None:
         """``allow_workflow_edits`` governs new proposals, never a round."""
         self.fixture.allow_workflow_edits = True
@@ -273,14 +262,12 @@ class RevisionWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_the_switch_off_does_not_narrow_a_round(self) -> None:
         """A round within its pull request's workflows passes with the switch off."""
         self.fixture.allow_workflow_edits = False
         check, _fork = self.revise({CHANGED: "on: pull_request\njobs: {}\n"})
         self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_upstream_workflow_changes_a_rebase_brings_do_not_count(self) -> None:
         """Only the round's own changes are tested, not those of the new base.
 
@@ -363,14 +350,12 @@ class InheritedWorkflowTest(GitCase):
         for message, change in files:
             self.fixture.commit(message, change)
 
-    @unittest.expectedFailure
     def test_preserved_edit_and_revert_pass(self) -> None:
         """A readme-only round keeping the pull request's commits passes."""
         check = self.revise()
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertTrue(check.needs_workflows)
 
-    @unittest.expectedFailure
     def test_preserved_edit_and_revert_pass_after_a_rebase(self) -> None:
         """Carried-over writes match whichever base the chain sits on."""
         run_git(self.fixture.agent, "fetch", "-q", str(self.fixture.upstream), "main")
@@ -379,7 +364,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertTrue(check.rebased)
 
-    @unittest.expectedFailure
     def test_carried_writes_pass_after_an_upstream_edit_to_the_file(self) -> None:
         """A rebase over an upstream edit elsewhere in the file still passes.
 
@@ -398,7 +382,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertTrue(check.rebased)
 
-    @unittest.expectedFailure
     def test_repeating_the_carried_edit_and_revert_is_rejected(self) -> None:
         """A second edit and revert of the same file is the round's own."""
         self.rewrite(
@@ -413,7 +396,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_dropping_the_revert_is_rejected(self) -> None:
         """Every write was published, but the chain now changes the file."""
         self.rewrite(
@@ -426,7 +408,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_rewriting_the_carried_edit_is_rejected(self) -> None:
         """A write the published commits never made is the round's own."""
         self.rewrite(
@@ -440,7 +421,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_deleting_and_restoring_another_workflow_is_rejected(self) -> None:
         """A round may not add a delete-and-restore pair of its own."""
         self.rewrite(
@@ -499,7 +479,6 @@ class InheritedWorkflowTest(GitCase):
             if edit is published:
                 self.head = tip
 
-    @unittest.expectedFailure
     def test_carried_edit_with_non_utf8_bytes_passes(self) -> None:
         """The very same non-UTF-8 edit and revert, carried over, pass."""
         edit = b"on: push # \xff\njobs: {}\n"
@@ -507,7 +486,6 @@ class InheritedWorkflowTest(GitCase):
         check = self.revise()
         self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_rewriting_a_carried_non_utf8_edit_is_rejected(self) -> None:
         """Bytes that decode to the same replacement text still differ."""
         self.publish_edit(
@@ -517,7 +495,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_carried_edit_with_a_carriage_return_passes(self) -> None:
         """The very same edit holding a lone carriage return passes."""
         edit = b"on: pull_request\r+jobs: {a: 1}\n"
@@ -525,7 +502,6 @@ class InheritedWorkflowTest(GitCase):
         check = self.revise()
         self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_a_carriage_return_inside_a_line_is_not_a_line_break(self) -> None:
         """A one-line edit holding a carriage return is not a two-line edit."""
         self.publish_edit(
@@ -535,7 +511,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_the_same_edit_in_another_job_is_rejected(self) -> None:
         """A carried change must sit where the published one did.
 
@@ -552,7 +527,6 @@ class InheritedWorkflowTest(GitCase):
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_the_same_edit_in_the_same_job_passes(self) -> None:
         """The published edit and revert of one job's line, carried over, pass."""
         self.seed_base({OTHER: JOBS})
@@ -561,7 +535,6 @@ class InheritedWorkflowTest(GitCase):
         check = self.revise()
         self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_a_wildcard_in_a_path_names_that_file_alone(self) -> None:
         """A path holding a glob character matches no other workflow file.
 
