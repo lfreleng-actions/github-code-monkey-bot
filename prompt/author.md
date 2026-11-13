@@ -95,9 +95,12 @@ part and note it in your manifest reason.
      `SECURITY.md`, `.pre-commit-config.yaml` and `.zizmor.yml`),
      and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When the
      change cannot avoid one, abstain and name the file in your
-     reason. Workflow files under
-     `.github/workflows/` are fine. When the fix needs a step you
-     cannot take, do the rest and open the pull request body with an
+     reason. Files under `.github/workflows/` follow the runtime
+     context: with `workflow edits: allowed` you may add, edit or
+     delete them; with `workflow edits: not allowed` the workflow
+     rejects any such change, so when the fix needs one, abstain and
+     name the workflow file in your reason. When the fix needs a step
+     you cannot take, do the rest and open the pull request body with an
      `> **INFO**` banner listing the follow-up a human must make and
      why you could not.
    - *Publication and review.* You cannot push, so the workflow

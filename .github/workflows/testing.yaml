@@ -21,6 +21,10 @@ on:
         description: 'Pull requests to attempt in the manual dry-run'
         type: string
         default: '1'
+      allow_workflow_edits:
+        description: 'Let the manual dry-run propose workflow file changes'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -54,6 +58,7 @@ jobs:
       mode: 'select'
       dry_run: true
       max_pull_requests: '3'
+      allow_workflow_edits: false
       # Block mode with the organisation allow-list, as the scheduled
       # caller runs, so a pull request proves the trusted jobs' egress.
       harden_runner_egress: 'block'
@@ -87,6 +92,7 @@ jobs:
       max_concurrent_agents: '2'
       repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
+      allow_workflow_edits: ${{ inputs.allow_workflow_edits || false }}
       harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length
       harden_runner_allowlist: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0

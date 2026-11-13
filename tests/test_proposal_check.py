@@ -123,6 +123,9 @@ class Fixture:
         run_git(root, "clone", "-q", str(self.upstream), str(self.agent))
         self.branch = BRANCH
         run_git(self.agent, "checkout", "-q", "-b", self.branch)
+        # The run's switch as the selection records it; None leaves it
+        # out, as a selection from before the switch did.
+        self.allow_workflow_edits: bool | None = None
 
     def commit(
         self,
@@ -260,7 +263,7 @@ class Fixture:
             "comments_dropped": 0,
         }
         entry.update(overrides)
-        return {
+        document: dict[str, Any] = {
             "schema": 1,
             "org": "owner",
             "generated_at": "2026-09-18T00:00:00Z",
@@ -273,6 +276,9 @@ class Fixture:
             "skipped": {},
             "issues": [entry],
         }
+        if self.allow_workflow_edits is not None:
+            document["allow_workflow_edits"] = self.allow_workflow_edits
+        return document
 
     def write_selection(self, selection: dict[str, Any] | None = None) -> Path:
         """Write selection.json and return its path."""
@@ -460,6 +466,7 @@ class RunCheckProposedTest(GitCase):
 
     def test_workflow_change_flags_permission(self) -> None:
         """Touching a workflow file sets ``needs_workflows``."""
+        self.fixture.allow_workflow_edits = True
         self.fixture.commit(
             "CI: Add a workflow\n\nBody.\n",
             {".github/workflows/ci.yaml": "on: push\njobs: {}\n"},
@@ -577,6 +584,7 @@ class RunCheckProposedTest(GitCase):
 
     def test_workflow_deletion_flags_permission(self) -> None:
         """Deleting a workflow file needs the grant as much as writing one."""
+        self.fixture.allow_workflow_edits = True
         self.fixture.commit(
             "CI: Add a workflow\n\nBody.\n",
             {".github/workflows/old.yaml": "on: push\njobs: {}\n"},
@@ -637,6 +645,7 @@ class RunCheckOnlineAuditTest(GitCase):
 
     def propose_workflow(self) -> None:
         """One commit adding a workflow, bundled with its manifest."""
+        self.fixture.allow_workflow_edits = True
         self.fixture.commit(
             "CI: Add a workflow\n\nBody.\n",
             {self.WORKFLOW: "on: push\njobs: {}\n"},

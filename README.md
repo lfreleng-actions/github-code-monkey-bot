@@ -155,6 +155,12 @@ requests: write on the organisation, which bills the reviews to that
 seat (section 10.4). Without it the request falls back to the App's
 token and the review stays `pending (not requested)`.
 
+New pull requests leave `.github/workflows/` alone unless the caller
+sets `allow_workflow_edits: true`; the publisher rejects a proposal
+that changes a workflow file without it. A revision round may change
+the workflow files its pull request already changes and no other,
+whatever the switch says (design document sections 8 and 20.3).
+
 ## Development
 
 ```bash

@@ -2890,7 +2890,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 22)
+        self.assertEqual(len(inputs), 23)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """A revise-only run queues behind a full scan, never beside it."""
@@ -3661,6 +3661,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "include_dotgithub",
                 "include_assigned",
                 "load_repo_skills",
+                "allow_workflow_edits",
                 "request_review",
                 "request_antagonistic_review",
                 "antagonistic_repository",
@@ -3711,6 +3712,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_dotgithub": False,
             "include_assigned": False,
             "load_repo_skills": False,
+            "allow_workflow_edits": False,
             "request_review": True,
             "request_antagonistic_review": True,
             "antagonistic_repository": "lfreleng-actions/github-code-review-bot",
@@ -3728,6 +3730,68 @@ class InterfaceContracts(ReusableWorkflowCase):
                 actual: object = inputs[name]["default"]
                 self.assertIs(type(actual), type(default))
                 self.assertEqual(actual, default)
+
+
+class WorkflowEditSwitchContracts(ReusableWorkflowCase):
+    """``allow_workflow_edits`` reaches selection, prompt and publisher (#143)."""
+
+    def test_input_is_an_off_by_default_boolean(self) -> None:
+        """A caller that says nothing gets no workflow edits."""
+        call = cast(dict[str, Any], self.triggers["workflow_call"])
+        switch = cast(dict[str, Any], call["inputs"]["allow_workflow_edits"])
+        self.assertEqual(switch["type"], "boolean")
+        self.assertIs(switch["default"], False)
+
+    def test_selection_records_the_switch(self) -> None:
+        """The trusted selection carries it, for the publisher to read."""
+        step = self.step("select", "Select issues")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_WORKFLOW_EDITS"], "inputs.allow_workflow_edits"
+        )
+        self.assertIn(
+            'if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then'
+            " extra+=(--allow-workflow-edits) fi",
+            flatten(step["run"]),
+        )
+
+    def test_runtime_context_states_the_switch(self) -> None:
+        """An issue session learns whether it may change workflow files."""
+        step = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_WORKFLOW_EDITS"], "inputs.allow_workflow_edits"
+        )
+        script = flatten(step["run"])
+        self.assertIn("workflow edits: allowed", script)
+        self.assertIn("workflow edits: not allowed", script)
+
+    def test_prompts_state_the_workflow_rules(self) -> None:
+        """Authoring follows the switch; a round stays within its pull request."""
+        author = squash(PROMPT.read_text(encoding="utf-8"))
+        self.assertIn("workflow edits: not allowed", author)
+        revise = squash(REVISE_PROMPT.read_text(encoding="utf-8"))
+        self.assertIn("workflow files the pull request already changes", revise)
+
+    def test_callers_forward_the_switch(self) -> None:
+        """Both dispatch forms offer it, off; every call passes it on."""
+        for path, job, expected in (
+            (CRON, "code-monkey", "inputs.allow_workflow_edits || false"),
+            (TESTING, "dry-run", "inputs.allow_workflow_edits || false"),
+        ):
+            with self.subTest(workflow=path.name):
+                loaded = cast(
+                    dict[Any, Any], yaml.safe_load(path.read_text(encoding="utf-8"))
+                )
+                inputs = loaded[TRIGGERS]["workflow_dispatch"]["inputs"]
+                self.assertEqual(inputs["allow_workflow_edits"]["type"], "boolean")
+                self.assertIs(inputs["allow_workflow_edits"]["default"], False)
+                with_ = loaded["jobs"][job]["with"]
+                self.assert_expression(with_["allow_workflow_edits"], expected)
+        loaded = cast(
+            dict[Any, Any], yaml.safe_load(TESTING.read_text(encoding="utf-8"))
+        )
+        self.assertIs(loaded["jobs"]["plumbing"]["with"]["allow_workflow_edits"], False)
 
 
 class CronCallerContracts(WorkflowCase):
@@ -3822,6 +3886,7 @@ class CronCallerContracts(WorkflowCase):
             "include_dotgithub": False,
             "include_assigned": False,
             "load_repo_skills": False,
+            "allow_workflow_edits": False,
             "repositories": "",
             "issues": "",
             "categories": "all",
