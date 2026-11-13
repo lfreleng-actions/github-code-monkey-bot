@@ -3730,6 +3730,73 @@ class InterfaceContracts(ReusableWorkflowCase):
                 self.assertEqual(actual, default)
 
 
+class WorkflowEditSwitchContracts(ReusableWorkflowCase):
+    """``allow_workflow_edits`` reaches selection, prompt and publisher (#143)."""
+
+    @unittest.expectedFailure
+    def test_input_is_an_off_by_default_boolean(self) -> None:
+        """A caller that says nothing gets no workflow edits."""
+        call = cast(dict[str, Any], self.triggers["workflow_call"])
+        switch = cast(dict[str, Any], call["inputs"]["allow_workflow_edits"])
+        self.assertEqual(switch["type"], "boolean")
+        self.assertIs(switch["default"], False)
+
+    @unittest.expectedFailure
+    def test_selection_records_the_switch(self) -> None:
+        """The trusted selection carries it, for the publisher to read."""
+        step = self.step("select", "Select issues")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_WORKFLOW_EDITS"], "inputs.allow_workflow_edits"
+        )
+        self.assertIn(
+            'if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then'
+            " extra+=(--allow-workflow-edits); fi",
+            flatten(step["run"]),
+        )
+
+    @unittest.expectedFailure
+    def test_runtime_context_states_the_switch(self) -> None:
+        """An issue session learns whether it may change workflow files."""
+        step = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_WORKFLOW_EDITS"], "inputs.allow_workflow_edits"
+        )
+        script = flatten(step["run"])
+        self.assertIn("workflow edits: allowed", script)
+        self.assertIn("workflow edits: not allowed", script)
+
+    @unittest.expectedFailure
+    def test_prompts_state_the_workflow_rules(self) -> None:
+        """Authoring follows the switch; a round stays within its pull request."""
+        author = squash(PROMPT.read_text(encoding="utf-8"))
+        self.assertIn("workflow edits: not allowed", author)
+        revise = squash(REVISE_PROMPT.read_text(encoding="utf-8"))
+        self.assertIn("workflow files the pull request already changes", revise)
+
+    @unittest.expectedFailure
+    def test_callers_forward_the_switch(self) -> None:
+        """Both dispatch forms offer it, off; every call passes it on."""
+        for path, job, expected in (
+            (CRON, "code-monkey", "inputs.allow_workflow_edits || false"),
+            (TESTING, "dry-run", "inputs.allow_workflow_edits || false"),
+        ):
+            with self.subTest(workflow=path.name):
+                loaded = cast(
+                    dict[Any, Any], yaml.safe_load(path.read_text(encoding="utf-8"))
+                )
+                inputs = loaded[TRIGGERS]["workflow_dispatch"]["inputs"]
+                self.assertEqual(inputs["allow_workflow_edits"]["type"], "boolean")
+                self.assertIs(inputs["allow_workflow_edits"]["default"], False)
+                with_ = loaded["jobs"][job]["with"]
+                self.assert_expression(with_["allow_workflow_edits"], expected)
+        loaded = cast(
+            dict[Any, Any], yaml.safe_load(TESTING.read_text(encoding="utf-8"))
+        )
+        self.assertIs(loaded["jobs"]["plumbing"]["with"]["allow_workflow_edits"], False)
+
+
 class CronCallerContracts(WorkflowCase):
     """The scheduled caller: schedule, dispatch form and what it forwards."""
 
