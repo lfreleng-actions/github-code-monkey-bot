@@ -21,7 +21,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections import Counter
 from collections.abc import Mapping
 from importlib import import_module
 from pathlib import Path
@@ -420,14 +419,25 @@ class AuthorJobContracts(ReusableWorkflowCase):
         """The agent runner never mints, receives or references the App key."""
         author = self.jobs["author"]
         self.assertEqual(self.actions("author", APP_TOKEN), [])
-        self.assertEqual(author["permissions"], {"contents": "read"})
-        self.assertNotIn("secrets.github_app_private_key", dumped(author))
-        references = Counter(SECRET_REFERENCE.findall(dumped(author)))
-        self.assertEqual(references, Counter({"secrets.copilot_token": 1}))
-        agent = self.step("author", "agent")
-        self.assert_expression(
-            agent["env"]["COPILOT_GITHUB_TOKEN"], "secrets.copilot_token"
+        self.assertEqual(
+            author["permissions"], {"contents": "read", "copilot-requests": "write"}
         )
+        self.assertNotIn("secrets.github_app_private_key", dumped(author))
+
+    def test_author_holds_no_stored_credential(self) -> None:
+        """The model runs on the job's own token; no secret reaches the job."""
+        author = self.jobs["author"]
+        self.assertEqual(SECRET_REFERENCE.findall(dumped(author)), [])
+        self.assertNotIn("copilot_token", self.triggers["workflow_call"]["secrets"])
+        holders = [
+            str(step.get("id") or step.get("name"))
+            for step in self.steps("author")
+            if "github.token" in dumped(step)
+        ]
+        self.assertEqual(holders, ["agent"])
+        agent = self.step("author", "agent")
+        self.assert_expression(agent["env"]["GITHUB_TOKEN"], "github.token")
+        self.assertNotIn("COPILOT_GITHUB_TOKEN", agent["env"])
 
     def test_author_budget_and_gating_come_from_select(self) -> None:
         """Audit egress; timeouts, parallelism and matrix from select outputs."""
@@ -685,13 +695,9 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertLess(verified, self.position("author", "agent"))
 
     def test_agent_invocation_is_confined(self) -> None:
-        """PAT prefix check, deny list, secret masking and the workspace cwd."""
+        """Deny list, secret masking and the workspace cwd."""
         raw = str(self.step("author", "agent")["run"])
         script = flatten(raw)
-        self.assertRegex(
-            script,
-            r'case "\$COPILOT_GITHUB_TOKEN" in github_pat_\*\) ;; \*\) .*?exit 1 ;; esac',
-        )
 
         deny = re.search(r"deny='([^']*)'", script)
         self.assertIsNotNone(deny, "deny list initialiser missing")
@@ -701,7 +707,7 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assertIn('--deny-tool="$deny"', script)
 
         for flag in (
-            "--secret-env-vars=COPILOT_GITHUB_TOKEN",
+            "--secret-env-vars=GITHUB_TOKEN",
             "--no-custom-instructions",
             "--disable-builtin-mcps",
             "--no-auto-update",
@@ -1453,10 +1459,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         self.assertEqual(
             SECRET_REFERENCE.findall(dumped(self.step("publish", "review"))), []
         )
-        self.assertEqual(
-            Counter(SECRET_REFERENCE.findall(dumped(self.jobs["author"]))),
-            Counter({"secrets.copilot_token": 1}),
-        )
+        self.assertEqual(SECRET_REFERENCE.findall(dumped(self.jobs["author"])), [])
 
     def test_review_token_is_an_optional_secret_the_caller_forwards(self) -> None:
         """Declared optional, so a caller without it keeps the App's request."""
@@ -1865,9 +1868,7 @@ class PreflightContracts(ReusableWorkflowCase):
         self.assertEqual(
             step["env"]["BOT_APP_PRIVATE_KEY"], "${{ secrets.github_app_private_key }}"
         )
-        self.assertEqual(
-            step["env"]["COPILOT_GITHUB_TOKEN"], "${{ secrets.copilot_token }}"
-        )
+        self.assertNotIn("COPILOT_GITHUB_TOKEN", step["env"])
 
     def test_every_minted_token_is_checked_for_identity(self) -> None:
         """Read, fork and pull request mints each hand their slug to the check."""
@@ -3683,7 +3684,6 @@ class InterfaceContracts(ReusableWorkflowCase):
         self.assertEqual(
             set(secrets),
             {
-                "copilot_token",
                 "github_app_private_key",
                 "copilot_review_token",
                 "antagonistic_dispatch_token",
@@ -3952,13 +3952,11 @@ class CronCallerContracts(WorkflowCase):
         self.assertEqual(
             set(secrets),
             {
-                "copilot_token",
                 "github_app_private_key",
                 "copilot_review_token",
                 "antagonistic_dispatch_token",
             },
         )
-        self.assert_expression(secrets["copilot_token"], "secrets.COPILOT_CLI_TOKEN")
         self.assert_expression(
             secrets["github_app_private_key"], "secrets.BOT_APP_PRIVATE_KEY"
         )

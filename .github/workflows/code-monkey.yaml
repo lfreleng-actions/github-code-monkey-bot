@@ -207,11 +207,6 @@ on:
         type: string
         default: ''
     secrets:
-      copilot_token:
-        description: >-
-          Personal fine-grained PAT with Copilot Requests and no
-          repository grants; the only credential the agent receives
-        required: false
       github_app_private_key:
         description: 'GitHub App private key, used in trusted jobs alone'
         required: false
@@ -763,7 +758,6 @@ jobs:
         env:
           BOT_APP_CLIENT_ID: "${{ inputs.github_app_client_id }}"
           BOT_APP_PRIVATE_KEY: "${{ secrets.github_app_private_key }}"
-          COPILOT_GITHUB_TOKEN: "${{ secrets.copilot_token }}"
           EGRESS_POLICY: "${{ inputs.harden_runner_egress }}"
           EGRESS_ALLOW_CONFIG: "${{ inputs.harden_runner_allowlist }}"
           DRY_RUN: "${{ inputs.dry_run }}"
@@ -1001,6 +995,7 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     permissions:
       contents: read  # Checkout assets and the public target repository
+      copilot-requests: write  # Model requests on the job's own token
     steps:
       # Always audit: the agent installs whatever toolchain the target
       # repository's hooks pin, which no fixed allow-list can cover.
@@ -1312,20 +1307,14 @@ jobs:
         if: steps.fetch-branch.outputs.moved != 'true'
         timeout-minutes: ${{ fromJSON(needs.select.outputs.agent_timeout) }}
         env:
-          COPILOT_GITHUB_TOKEN: "${{ secrets.copilot_token }}"
+          # The job's own token: no stored credential reaches the
+          # session, and this one expires with the job.
+          GITHUB_TOKEN: "${{ github.token }}"
           COPILOT_HOME: "${{ runner.temp }}/copilot"
           MODEL: "${{ inputs.model }}"
           ALLOW_SUBAGENTS: "${{ inputs.allow_subagents }}"
           LOAD_REPO_SKILLS: "${{ inputs.load_repo_skills }}"
         run: |
-          # The prefix rejects native/classic tokens, not extra PAT
-          # grants. The caller must provision Copilot Requests only.
-          case "$COPILOT_GITHUB_TOKEN" in
-            github_pat_*) ;;
-            *)
-              echo '::error::Use a model-only fine-grained Copilot PAT'
-              exit 1 ;;
-          esac
           artefacts="$(pwd)/artefacts"
           mkdir -p "$artefacts/copilot-logs"
           prompt="$(cat "$artefacts/prompt.md")"
@@ -1350,7 +1339,7 @@ jobs:
             --allow-all-tools \
             --deny-tool="$deny" \
             --add-dir "$artefacts" \
-            --secret-env-vars=COPILOT_GITHUB_TOKEN \
+            --secret-env-vars=GITHUB_TOKEN \
             --no-ask-user --no-custom-instructions --disable-builtin-mcps \
             --no-auto-update --no-color \
             --log-dir="$artefacts/copilot-logs" \

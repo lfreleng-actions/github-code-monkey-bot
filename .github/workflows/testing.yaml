@@ -52,6 +52,7 @@ jobs:
       contents: read  # Asset checkout and public repository reads
       actions: read  # Report job artifact lookup
       checks: read  # Select reads other runs' evidence vouches
+      copilot-requests: write  # The author job's model requests
     uses: $/.github/workflows/code-monkey.yaml
     with:
       org: "${{ github.repository_owner }}"
@@ -81,6 +82,7 @@ jobs:
       contents: read  # Asset checkout and public repository reads
       actions: read  # Publish and report jobs locate artifacts
       checks: read  # Select reads other runs' evidence vouches
+      copilot-requests: write  # The author job's model requests
     uses: $/.github/workflows/code-monkey.yaml
     with:
       org: "${{ github.repository_owner }}"
@@ -98,8 +100,6 @@ jobs:
       harden_runner_allowlist: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
       assets_repository: "${{ github.repository }}"
       assets_ref: "${{ github.sha }}"
-    secrets:
-      copilot_token: "${{ secrets.COPILOT_CLI_TOKEN }}"
 
   regression:
     name: 'Offline regression tests'

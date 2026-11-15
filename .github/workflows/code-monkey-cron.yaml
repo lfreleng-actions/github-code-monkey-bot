@@ -239,6 +239,7 @@ jobs:
       contents: read  # Asset checkout and public repository reads
       actions: read  # Publish and report jobs locate artifacts
       checks: read  # Select reads other runs' evidence vouches
+      copilot-requests: write  # The author job's model requests
     uses: $/.github/workflows/code-monkey.yaml
     with:
       org: "${{ github.repository_owner }}"
@@ -293,7 +294,6 @@ jobs:
       assets_repository: "${{ github.repository }}"
       assets_ref: "${{ github.sha }}"
     secrets:
-      copilot_token: "${{ secrets.COPILOT_CLI_TOKEN }}"
       github_app_private_key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
       copilot_review_token: "${{ secrets.COPILOT_REVIEW_TOKEN }}"
       antagonistic_dispatch_token: "${{ secrets.CODE_REVIEW_DISPATCH_TOKEN }}"
