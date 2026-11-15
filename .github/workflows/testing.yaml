@@ -88,7 +88,7 @@ jobs:
       org: "${{ github.repository_owner }}"
       mode: 'pull-requests'
       dry_run: true
-      model: 'claude-sonnet-5.5'
+      model: 'claude-sonnet-5'
       max_pull_requests: "${{ inputs.max_pull_requests || '1' }}"
       max_runtime_minutes: '60'
       max_concurrent_agents: '2'

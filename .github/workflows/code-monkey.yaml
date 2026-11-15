@@ -1331,6 +1331,27 @@ jobs:
           if [ "$LOAD_REPO_SKILLS" != true ]; then
             deny="$deny,skill"
           fi
+          # Throwaway probe, never for merge: which of the bot's models
+          # the job token may use. An unavailable model fails before
+          # any request; an available one costs a single short reply.
+          probe="$RUNNER_TEMP/model-probe"
+          mkdir -p "$probe"
+          for candidate in claude-opus-5.5 claude-fable-5.1 \
+              claude-sonnet-5.5 gpt-6-astra claude-opus-5 claude-sonnet-5; do
+            status=0
+            (cd "$probe" && COPILOT_HOME="$probe/home" copilot \
+              --prompt='Reply with the one word: ready' \
+              --model="$candidate" --secret-env-vars=GITHUB_TOKEN \
+              --no-ask-user --no-custom-instructions \
+              --disable-builtin-mcps --no-auto-update --no-color \
+              --log-dir="$probe/logs" \
+              > "$probe/$candidate.out" 2>&1) || status=$?
+            if grep -q 'is not available' "$probe/$candidate.out"; then
+              echo "model probe: $candidate is not available"
+            else
+              echo "model probe: $candidate ended with status $status"
+            fi
+          done
           cd workspace
           copilot \
             --prompt="$prompt" \
