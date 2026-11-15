@@ -1331,27 +1331,43 @@ jobs:
           if [ "$LOAD_REPO_SKILLS" != true ]; then
             deny="$deny,skill"
           fi
-          # Throwaway probe, never for merge: which of the bot's models
-          # the job token may use. An unavailable model fails before
-          # any request; an available one costs a single short reply.
+          # Throwaway probe, never for merge: the model catalogue the
+          # job token is offered. It makes no model request and runs no
+          # session; only host names, statuses and model names print.
           probe="$RUNNER_TEMP/model-probe"
           mkdir -p "$probe"
-          for candidate in claude-opus-5.5 claude-fable-5.1 \
-              claude-sonnet-5.5 gpt-6-astra claude-opus-5 claude-sonnet-5; do
-            status=0
-            (cd "$probe" && COPILOT_HOME="$probe/home" copilot \
-              --prompt='Reply with the one word: ready' \
-              --model="$candidate" --secret-env-vars=GITHUB_TOKEN \
-              --no-ask-user --no-custom-instructions \
-              --disable-builtin-mcps --no-auto-update --no-color \
-              --log-dir="$probe/logs" \
-              > "$probe/$candidate.out" 2>&1) || status=$?
-            if grep -q 'is not available' "$probe/$candidate.out"; then
-              echo "model probe: $candidate is not available"
-            else
-              echo "model probe: $candidate ended with status $status"
-            fi
+          for host in api.githubcopilot.com api.business.githubcopilot.com \
+              api.enterprise.githubcopilot.com; do
+            code="$(curl -sS -m 30 -o "$probe/$host.json" -w '%{http_code}' \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H 'Copilot-Integration-Id: copilot-developer-cli' \
+              "https://$host/models" 2> /dev/null)" || code='no-answer'
+            echo "model catalogue: $host answered $code"
+            jq -r '(.data // .models // [])[]? |
+              "model catalogue: \(.id) picker=\(.model_picker_enabled)" +
+              " policy=\(.policy.state // "-")"' \
+              "$probe/$host.json" 2> /dev/null || true
           done
+          # An unavailable model fails before any request; the debug
+          # log of that refusal names the hosts and models the CLI saw.
+          (cd "$probe" && COPILOT_HOME="$probe/home" copilot \
+            --prompt='Reply with the one word: ready' \
+            --model=claude-opus-5.5 --secret-env-vars=GITHUB_TOKEN \
+            --no-ask-user --no-custom-instructions \
+            --disable-builtin-mcps --no-auto-update --no-color \
+            --log-level debug --log-dir="$probe/logs" \
+            > "$probe/refusal.out" 2>&1) || true
+          grep -o -h -E 'https://[a-z0-9.-]+(/[A-Za-z0-9_./-]*)?' \
+            "$probe"/logs/* | sort | uniq -c | sort -rn | head -40 |
+            sed 's/^/cli hosts: /' || true
+          grep -o -h -E '\b(claude|gpt|gemini|grok)-[a-z0-9.-]{1,40}' \
+            "$probe"/logs/* | sort | uniq -c | sort -rn | head -80 |
+            sed 's/^/cli models: /' || true
+          grep -h -i -E 'model' "$probe"/logs/* | cut -c1-400 | head -60 |
+            sed 's/^/cli log: /' || true
+          echo '::notice::Probe only; no session ran'
+          probe_only=true
+          if [ "$probe_only" = true ]; then exit 0; fi
           cd workspace
           copilot \
             --prompt="$prompt" \
