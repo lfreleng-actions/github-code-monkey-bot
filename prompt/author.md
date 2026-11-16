@@ -27,7 +27,7 @@ the repository's own `AGENTS.md` define **how to make a change that
 can merge**: commit messages, atomic commits, tests, hooks, the
 `aislop` gate, licence headers. Follow them in full. This prompt does
 not restate them, and where it seems to differ, the guidance governs,
-except for the three workflow facts marked below, which the guidance
+except for the four workflow facts marked below, which the guidance
 cannot know about.
 
 ## Rules
@@ -92,7 +92,8 @@ part and note it in your manifest reason.
      `.github/skills/` and `.github/copilot/`), review and gate
      configuration (`CODEOWNERS`,
      `REUSE.toml`, `.gitlint`, `.aislop/`, and at the root
-     `SECURITY.md`, `.pre-commit-config.yaml` and `.zizmor.yml`),
+     `SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml` and
+     `.enable-sudo-and-containers`),
      and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When the
      change cannot avoid one, abstain and name the file in your
      reason. Files under `.github/workflows/` follow the runtime
@@ -103,6 +104,15 @@ part and note it in your manifest reason.
      you cannot take, do the rest and open the pull request body with an
      `> **INFO**` banner listing the follow-up a human must make and
      why you could not.
+   - *Sudo and containers.* The runtime context states whether
+     this session has `sudo` and containers (Docker and the like).
+     With `sudo and containers: not available` the runner refuses
+     both on purpose. When the task needs either, do not work
+     around it: abstain, or leave that step out and say so in the
+     pull request body. Either way, name
+     `.enable-sudo-and-containers`, a regular file at the root of
+     the default branch, as what a maintainer adds to give the
+     repository's sessions both.
    - *Publication and review.* You cannot push, so the workflow
      publishes your commits and opens the pull request once this
      session ends. It then requests a Copilot review of that pull

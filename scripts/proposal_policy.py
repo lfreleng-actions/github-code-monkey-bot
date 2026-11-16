@@ -78,7 +78,7 @@ PROTECTED_NAMES = frozenset(
 )
 PROTECTED_ROOT_FILES = frozenset(
     {"security.md", ".pre-commit-config.yaml", ".zizmor.yml", ".zizmor.yaml"}
-)
+) | {".enable-sudo-and-containers"}
 PROTECTED_DIRS = frozenset(
     {
         ".copilot",

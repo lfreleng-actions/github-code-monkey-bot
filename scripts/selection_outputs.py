@@ -121,6 +121,9 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
             "pull_number": cast("dict[str, Any]", issue.get("pull_request") or {}).get(
                 "number", 0
             ),
+            # Only a JSON true opts in; an entry without the field
+            # runs with sudo and containers disabled.
+            "sudo_and_containers": issue.get("sudo_and_containers") is True,
         }
         for issue in cast("list[dict[str, Any]]", selection["issues"])
     ]

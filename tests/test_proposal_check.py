@@ -849,7 +849,6 @@ class RunCheckRejectionTest(GitCase):
         self.fixture.manifest(pr_title="Chore: Drop instructions")
         self.assertIn(".github/copilot-instructions.md is protected", self.rejected())
 
-    @unittest.expectedFailure
     def test_sudo_marker_addition(self) -> None:
         """A proposal cannot turn on sudo and containers for its target (#189)."""
         self.fixture.commit(

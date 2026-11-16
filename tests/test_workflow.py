@@ -3738,7 +3738,6 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
     MARKER = ".enable-sudo-and-containers"
     GUARD = "Require sudo and containers off"
 
-    @unittest.expectedFailure
     def test_first_step_disables_both_unless_the_entry_opted_in(self) -> None:
         """Harden-runner leads the job and turns both off by default."""
         first = self.steps("author")[0]
@@ -3750,7 +3749,6 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
             "matrix.sudo_and_containers != true",
         )
 
-    @unittest.expectedFailure
     def test_second_step_refuses_both_left_usable(self) -> None:
         """A hardener that skipped its setup cannot hand a session root or Docker."""
         guard = self.step("author", self.GUARD)
@@ -3762,13 +3760,15 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
         self.assertEqual(lines.count("exit 1"), 2)
 
     def test_author_steps_need_neither(self) -> None:
-        """No step the job runs itself calls sudo or docker."""
+        """No step the job runs itself calls sudo or docker, bar the probe."""
+        command = re.compile(r"(^|[;&|(]\s*)(sudo|docker|podman)(\s|$)")
         for step in self.steps("author"):
-            script = str(step.get("run", ""))
+            if step.get("name") == self.GUARD:
+                continue
             with self.subTest(step=step.get("name")):
-                self.assertNotRegex(script, r"\b(sudo|docker|podman)\b")
+                for line in command_lines(str(step.get("run", ""))):
+                    self.assertIsNone(command.search(line), line)
 
-    @unittest.expectedFailure
     def test_runtime_context_states_the_switch(self) -> None:
         """Every session learns whether sudo and containers are available."""
         step = self.step("author", "Assemble prompt")
@@ -3779,7 +3779,6 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
         self.assertIn("sudo and containers: available", script)
         self.assertIn("sudo and containers: not available", script)
 
-    @unittest.expectedFailure
     def test_prompts_protect_and_name_the_marker(self) -> None:
         """Both prompts protect the marker and name it as the maintainer's switch."""
         for path in (PROMPT, REVISE_PROMPT):

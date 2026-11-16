@@ -161,6 +161,18 @@ that changes a workflow file without it. A revision round may change
 the workflow files its pull request already changes and no other,
 whatever the switch says (design document sections 8 and 20.3).
 
+## Sudo and containers in a target repository
+
+Sessions run without `sudo` and without container access, since
+root on the runner could undo its hardening. A target repository
+that needs either, to build an image for one, opts in with a regular
+file named `.enable-sudo-and-containers` at the root of its default
+branch; the file's content is not read. A maintainer adds it through
+a reviewed pull request, and the publisher refuses any proposal or
+round that adds, edits or deletes it. Keep the marker rare and say
+in its pull request why the repository needs it: it gives every
+session there root and Docker back (design document section 4.1).
+
 ## Development
 
 ```bash

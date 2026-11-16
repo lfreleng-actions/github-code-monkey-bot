@@ -95,6 +95,7 @@ PROTECTED_ROOT_FILES = (
     ".pre-commit-config.yaml",
     ".zizmor.yml",
     ".zizmor.yaml",
+    ".enable-sudo-and-containers",
 )
 PROTECTED_DIRS = (
     ".copilot",
@@ -152,7 +153,6 @@ class ProtectedTest(unittest.TestCase):
             paths += [name, *cased(name)]
         self.assert_protected(paths)
 
-    @unittest.expectedFailure
     def test_sudo_marker_is_a_protected_root_file(self) -> None:
         """The sudo and container switch is protected at the root alone (#189)."""
         name = ".enable-sudo-and-containers"
