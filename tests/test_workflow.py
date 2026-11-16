@@ -3855,7 +3855,6 @@ class CronCallerContracts(WorkflowCase):
             " inputs.dry_run && ' (dry run)' || '')",
         )
 
-    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
@@ -3916,7 +3915,6 @@ class CronCallerContracts(WorkflowCase):
             [s.get("id") for s in self.steps("options") if s.get("id")], ["map"]
         )
 
-    @unittest.expectedFailure
     def test_model_display_names_map_to_identifiers(self) -> None:
         """Each form choice resolves to a CLI identifier; anything else fails."""
         script = str(self.step("options", "map")["run"])
