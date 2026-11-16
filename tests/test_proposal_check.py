@@ -849,6 +849,16 @@ class RunCheckRejectionTest(GitCase):
         self.fixture.manifest(pr_title="Chore: Drop instructions")
         self.assertIn(".github/copilot-instructions.md is protected", self.rejected())
 
+    @unittest.expectedFailure
+    def test_sudo_marker_addition(self) -> None:
+        """A proposal cannot turn on sudo and containers for its target (#189)."""
+        self.fixture.commit(
+            "Chore: Enable sudo\n\nBody.\n", {".enable-sudo-and-containers": ""}
+        )
+        self.fixture.bundle()
+        self.fixture.manifest(pr_title="Chore: Enable sudo")
+        self.assertIn(".enable-sudo-and-containers is protected", self.rejected())
+
     def test_subject_without_type(self) -> None:
         """A subject lacking a Conventional Commit type is rejected."""
         self.fixture.commit("fix readme\n\nBody.\n", {"README.md": "x\n"})
