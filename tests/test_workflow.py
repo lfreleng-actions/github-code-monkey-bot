@@ -3732,6 +3732,67 @@ class InterfaceContracts(ReusableWorkflowCase):
                 self.assertEqual(actual, default)
 
 
+class SudoAndContainerContracts(ReusableWorkflowCase):
+    """The author job runs without sudo and containers unless opted in (#189)."""
+
+    MARKER = ".enable-sudo-and-containers"
+    GUARD = "Require sudo and containers off"
+
+    def test_first_step_disables_both_unless_the_entry_opted_in(self) -> None:
+        """Harden-runner leads the job and turns both off by default."""
+        first = self.steps("author")[0]
+        self.assertTrue(is_action(first, HARDEN_RUNNER))
+        with_ = cast(dict[str, Any], first["with"])
+        self.assertEqual(with_["egress-policy"], "audit")
+        self.assert_expression(
+            with_["disable-sudo-and-containers"],
+            "matrix.sudo_and_containers != true",
+        )
+
+    def test_second_step_refuses_both_left_usable(self) -> None:
+        """A hardener that skipped its setup cannot hand a session root or Docker."""
+        guard = self.step("author", self.GUARD)
+        self.assertEqual(self.position("author", self.GUARD), 1)
+        self.assert_expression(guard["if"], "matrix.sudo_and_containers != true")
+        lines = command_lines(str(guard["run"]))
+        self.assertIn("if sudo -n true >/dev/null 2>&1; then", lines)
+        self.assertIn("if timeout 30 docker info >/dev/null 2>&1; then", lines)
+        self.assertEqual(lines.count("exit 1"), 2)
+
+    def test_author_steps_need_neither(self) -> None:
+        """No step the job runs itself calls sudo or docker, bar the probe."""
+        command = re.compile(r"(^|[;&|(]\s*)(sudo|docker|podman)(\s|$)")
+        for step in self.steps("author"):
+            if step.get("name") == self.GUARD:
+                continue
+            with self.subTest(step=step.get("name")):
+                for line in command_lines(str(step.get("run", ""))):
+                    self.assertIsNone(command.search(line), line)
+
+    def test_runtime_context_states_the_switch(self) -> None:
+        """Every session learns whether sudo and containers are available."""
+        step = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(env["SUDO_AND_CONTAINERS"], "matrix.sudo_and_containers")
+        script = flatten(step["run"])
+        self.assertIn('if [ "$SUDO_AND_CONTAINERS" = true ]; then', script)
+        self.assertIn("sudo and containers: available", script)
+        self.assertIn("sudo and containers: not available", script)
+
+    def test_prompts_protect_and_name_the_marker(self) -> None:
+        """Both prompts protect the marker and name it as the maintainer's switch."""
+        for path in (PROMPT, REVISE_PROMPT):
+            text = squash(path.read_text(encoding="utf-8"))
+            with self.subTest(prompt=path.name):
+                self.assertIn(
+                    "`SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml`"
+                    f" and `{self.MARKER}`",
+                    text,
+                )
+                self.assertIn("sudo and containers: not available", text)
+                self.assertIn("do not work around", text)
+
+
 class WorkflowEditSwitchContracts(ReusableWorkflowCase):
     """``allow_workflow_edits`` reaches selection, prompt and publisher (#143)."""
 

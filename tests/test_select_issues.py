@@ -32,6 +32,7 @@ categories = import_module("issue_categories")
 ALL = frozenset(categories.ALL_CATEGORIES)
 outputs = import_module("selection_outputs")
 document = import_module("selection_document")
+sudo_marker = import_module("sudo_marker")
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -243,6 +244,7 @@ class ExplicitIssuesTest(NoSubprocessCase):
         patch.object(
             revision_rounds, "pull_request_for_branch", return_value=None
         ).start()
+        patch.object(sudo_marker, "opted_in", return_value=False).start()
         self.addCleanup(patch.stopall)
 
     @staticmethod
@@ -310,6 +312,15 @@ class ExplicitIssuesTest(NoSubprocessCase):
             selection, _ = select.build_selection(args)
         self.assertEqual(selection["issues"][0]["previous_rejection"], record)
         self.assertEqual(lookup.call_args.args[1:], ("org/caller", "b[bot]"))
+
+    def test_issue_reads_the_marker_at_its_base(self) -> None:
+        """An issue entry records the marker read at its default-branch base (#189)."""
+        with patch.object(sudo_marker, "opted_in", return_value=True) as read:
+            selection, _ = select.build_selection(self.args("org/alpha#3"))
+        (entry,) = selection["issues"]
+        read.assert_called_once_with("org/alpha", SHA_A)
+        self.assertEqual(entry["checkout_sha"], SHA_A)
+        self.assertIs(entry["sudo_and_containers"], True)
 
     def test_named_issues_are_worked_in_order_without_triage_filters(self) -> None:
         """No scan, no Type, label, assignee, category or one-per-repository rule."""
@@ -495,6 +506,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         ).start()
         patch.object(revision_rounds, "build_entry", side_effect=self.entry).start()
         patch.object(revision_rounds, "scan", return_value=[]).start()
+        patch.object(sudo_marker, "opted_in", return_value=False).start()
         self.addCleanup(patch.stopall)
 
     def entry(
@@ -569,6 +581,18 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(skip["issue"], "org/alpha#99")
         self.assertEqual(selection["skipped"]["revision"], 1)
         self.assertIs(selection["revise"], True)
+
+    def test_round_reads_the_marker_at_the_default_branch_head(self) -> None:
+        """A round reads the marker at ``rebase_sha``, never its own head (#189)."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        with patch.object(sudo_marker, "opted_in", return_value=False) as read:
+            selection, _ = select.build_selection(
+                self.args("--pull-requests", "org/alpha#41")
+            )
+        (entry,) = selection["issues"]
+        read.assert_called_once_with("org/alpha", SHA_B)
+        self.assertEqual(entry["rebase_sha"], SHA_B)
+        self.assertIs(entry["sudo_and_containers"], False)
 
     def test_selection_records_the_workflow_edit_switch(self) -> None:
         """``allow_workflow_edits`` is off unless the run turns it on (#143)."""
@@ -1731,6 +1755,7 @@ class WriteOutputsTest(unittest.TestCase):
                             "rebase_sha": "",
                             "head_sha": "",
                             "pull_number": 0,
+                            "sudo_and_containers": False,
                         }
                     ]
                 },
@@ -1749,6 +1774,19 @@ class WriteOutputsTest(unittest.TestCase):
         )
         self.assertIn("| cap | 0 |", summary)
         self.assertNotIn("nothing to work", summary)
+
+    def test_matrix_carries_the_marker_answer(self) -> None:
+        """Only a JSON ``true`` opts an entry in; a missing field does not (#189)."""
+        cases = ((True, True), (False, False), ("true", False), (None, False))
+        for recorded, expected in cases:
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                issue = self.chosen_issue()
+                if recorded is not None:
+                    issue["sudo_and_containers"] = recorded
+                outputs.write_outputs(Path(tmp), sample_selection([issue]), b"g\n")
+                matrix = json.loads((Path(tmp) / "matrix.json").read_text("utf-8"))
+                (entry,) = matrix["include"]
+                self.assertIs(entry["sudo_and_containers"], expected)
 
     def test_title_cannot_inject_rows(self) -> None:
         """Line breaks in a public title stay inside its table cell."""
@@ -1837,6 +1875,7 @@ class MainTest(NoSubprocessCase):
                 "placeholder": False,
             },
         ).start()
+        patch.object(sudo_marker, "opted_in", return_value=False).start()
         self.addCleanup(patch.stopall)
 
     def test_end_to_end(self) -> None:

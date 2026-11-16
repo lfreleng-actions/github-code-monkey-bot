@@ -146,6 +146,35 @@ content the agent reads. A prompt-injected issue can waste model
 spend and produce a bad diff. It cannot push, cannot open a pull
 request, and cannot reach another repository.
 
+The hosted runner gives its user passwordless `sudo` and Docker, and
+root on the runner is the means to undo what harden-runner sets up.
+So the author job's harden-runner step sets
+`disable-sudo-and-containers` for every session unless the target
+opts in. A target opts in with a regular file named
+`.enable-sudo-and-containers`, exact case, at the root of its
+default branch; its content is not read, and a symlink, directory or
+submodule of that name does not count. A file rather than a
+repository variable, because the App holds no grant to read Actions
+variables, and git keeps a file's history, shows it in the tree and
+adds it through a reviewed pull request. The author job cannot
+decide this itself: it runs untrusted, and harden-runner runs before
+any checkout.
+The pinned harden-runner can skip its setup and still succeed (an
+HTTP 409 from its API), so the author job's next step, still before
+any checkout, fails a session that did not opt in when `sudo -n` or
+`docker info` still works.
+The select job reads the root tree through the API at the entry's
+`checkout_sha`, the default-branch commit an issue builds on or a
+round may rebase onto, never a bot branch or a pull request head:
+no round can turn the switch on for itself. It records the
+answer as `sudo_and_containers` (§18.1); an entry without the field
+counts as not opted in, and the publisher refuses a proposal or a
+round that touches the marker as a protected file (§8 step 3). A failed read
+other than an absent marker fails the selection, as its other reads
+of a target do. An opted-in repository gives its sessions root and
+Docker back, and with them the means to undo harden-runner, so the
+marker should stay rare, and each use should say why.
+
 The runtime token can upload artifacts to its run, so an artifact's
 name, producer run and upload digest prove the run, never the job
 that made it. A trusted job reads an artifact by an id and digest a
@@ -897,7 +926,7 @@ overlap:
   edit here. This repository's own `AGENTS.md` records that rule for
   future contributors to the prompt.
 
-The workflow facts the prompt adds:
+The workflow facts the prompt adds, four in all:
 
 1. *Signing.* The agent commits with `git commit -s` and no `-S`: the
    runner holds no signing key, and the publisher's replay signs the
@@ -940,6 +969,13 @@ The workflow facts the prompt adds:
    cannot take, and never tells the agent to skip them or that
    something else takes them; `tests/test_workflow.py` pins the
    prompt to the workflow's review steps.
+4. *Sudo and containers.* The runtime context states
+   `sudo and containers: available` or `not available` (§4.1). A
+   session that expects either and finds neither would otherwise
+   try to route around the failure, so the prompt tells it not to:
+   it abstains, or leaves the step out and says so, naming
+   `.enable-sudo-and-containers` as what a maintainer adds to the
+   repository. `prompt/revise.md` carries the same rule for a round.
 
 The publisher's mechanical checks (§8) do overlap the guidance on
 purpose: they are the gate that decides whether a proposal can merge,
@@ -961,7 +997,8 @@ home directory and the checkout, under `continue-on-error`.
 
 ### 7.5 Egress
 
-The author job runs harden-runner in `audit` mode. It needs the npm
+The author job runs harden-runner in `audit` mode, with `sudo` and
+containers disabled unless the target opted in (§4.1). It needs the npm
 registry for the locked toolchain tarballs, PyPI, GitHub, the
 Copilot API and whatever hook repositories the target's
 `.pre-commit-config.yaml` pins. A block-mode allow-list
@@ -1053,8 +1090,9 @@ For each selected issue:
      `.github/skills/` or `.github/copilot/`;
    - *review and gate configuration*: `CODEOWNERS`, `REUSE.toml` and
      `.gitlint` at any depth, an `.aislop` directory at any depth,
-     and `SECURITY.md`, `.pre-commit-config.yaml` and
-     `.zizmor.yml`/`.zizmor.yaml` at the root;
+     and `SECURITY.md`, `.pre-commit-config.yaml`,
+     `.zizmor.yml`/`.zizmor.yaml` and `.enable-sudo-and-containers`
+     (§4.1) at the root;
    - *licences*: a file whose name starts with `LICENSE` or
      `LICENCE` at any depth, and anything under a `LICENSES`
      directory.
@@ -2013,6 +2051,7 @@ conflicts while producer artifacts survive.
 | Agent times out | No proposal artifact | Publisher records `author-failed`; issue eligible next run |
 | Agent abstains | Manifest says why | Recorded; publisher comments the reason on the issue (§8 step 8) |
 | Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
+| Task needs `sudo` or containers (an image build, a loop mount) in a target without the marker | Runner refuses both; the step cannot run | Prompt tells the agent not to work around it: it abstains, or leaves the step out and says so, naming `.enable-sudo-and-containers`; a maintainer adds the marker to the default branch where the repository needs it (§4.1, §7.3) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
@@ -2074,6 +2113,7 @@ scripts/issue_categories.py              category switches and matching
 scripts/selection_outputs.py             selection files and summary
 scripts/issue_reads.py                   GitHub reads for selection
 scripts/repository_reads.py              owner listing or one repository
+scripts/sudo_marker.py                   the sudo and container marker (§4.1)
 scripts/bot_github.py                    gh wrapper, REST and GraphQL (shared)
 scripts/bot_evidence.py                  evidence digest verification (shared)
 scripts/artifact_fetch.py                bounded artifact extraction (shared)
@@ -2306,6 +2346,7 @@ cross-checked against the trusted `selection.json`.
       "default_branch": "main",
       "base_sha": "<40 hex>",
       "branch": "code-monkey/issue-40",
+      "sudo_and_containers": false,
       "comments": [
         {"author": "login", "association": "MEMBER",
          "created_at": "...", "body": "..."}
@@ -2386,7 +2427,10 @@ stale statuses, at most 30, each with `context`, `updated_at` and
 the run's `minutes`: the hook service did not report, so the result
 is unknown), `pr_comments`, `new_comments` and
 `new_pr_comments`; an issue entry has `task: "issue"` and
-`checkout_sha` equal to `base_sha`. Either kind adds
+`checkout_sha` equal to `base_sha`. Every entry carries
+`sudo_and_containers`: `true` when the root tree at its
+`checkout_sha` holds `.enable-sudo-and-containers` as a regular
+file, and `false` otherwise (§4.1). Either kind adds
 `previous_rejection` when the bot's latest outcome on the issue was
 `rejected` (§6), as `{heading, run_url, reasons, reasons_dropped,
 note}`: `note` is null when the select job read the reasons, and otherwise
@@ -2394,7 +2438,8 @@ a fixed text saying why it could not. Beside it the select job writes
 `matrix.json`
 (`{"include": [{key, repository, repo_name, number, base_sha,
 branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
-head_sha, pull_number}]}`), `agents.md` (the guidance bytes whose
+head_sha, pull_number, sudo_and_containers}]}`, the last `false`
+unless the entry's field is a JSON `true`), `agents.md` (the guidance bytes whose
 SHA-256 the `guidance` block records), `excluded-repos.txt` and
 `unreviewed-heads.json` (the `skipped_issues` entries whose reason
 says the head has no Copilot review, §20.1, which the report reads
@@ -3132,7 +3177,8 @@ above, never the request, makes a hand-back.
 ### 20.2 The author job
 
 The author job checks out the default branch head (`checkout_sha`),
-fetches the bot branch from the public fork without a credential,
+the commit the select job also read the sudo and container marker at
+(§4.1), fetches the bot branch from the public fork without a credential,
 refuses any head but the recorded one, and checks it out. A branch
 that moved or vanished after selection stands the round down, as
 the publish job does (§20.3): the moved branch is another round's

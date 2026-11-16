@@ -95,6 +95,7 @@ PROTECTED_ROOT_FILES = (
     ".pre-commit-config.yaml",
     ".zizmor.yml",
     ".zizmor.yaml",
+    ".enable-sudo-and-containers",
 )
 PROTECTED_DIRS = (
     ".copilot",
@@ -151,6 +152,14 @@ class ProtectedTest(unittest.TestCase):
         for name in PROTECTED_ROOT_FILES:
             paths += [name, *cased(name)]
         self.assert_protected(paths)
+
+    def test_sudo_marker_is_a_protected_root_file(self) -> None:
+        """The sudo and container switch is protected at the root alone (#189)."""
+        name = ".enable-sudo-and-containers"
+        self.assert_protected([name, *cased(name)])
+        for path in (f"docs/{name}", f"a/b/{name}"):
+            with self.subTest(path=path):
+                self.assertFalse(policy.protected(path))
 
     def test_licences_at_any_depth(self) -> None:
         """Licence files and the LICENSES directory, root or nested."""

@@ -10,9 +10,10 @@ or, when the caller names issues, works those alone in the order
 given (``explicit_issues``); a revise-only run reads no issue and
 keeps the revision rounds alone. For each survivor it records the
 default-branch SHA the agent will build on, the filtered comments,
-and the branch name the publisher will create. It also fetches the
-organisation's ``AGENTS.md`` at a recorded commit so the author job
-never reads it live.
+the branch name the publisher will create, and whether the target
+opts its sessions into ``sudo`` and containers (``sudo_marker``).
+It also fetches the organisation's ``AGENTS.md`` at a recorded commit
+so the author job never reads it live.
 
 Outputs in ``--output-dir``: ``selection.json``, ``matrix.json``,
 ``agents.md``, ``excluded-repos.txt`` and ``selection-summary.md``.
@@ -41,6 +42,7 @@ import revision_rounds
 import run_overlap
 import selection_outputs as outputs
 import stale_statuses as stale
+import sudo_marker
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 from selection_choose import choose
@@ -372,6 +374,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             results_repository=args.results_repository,
             bot_login=str(bot["login"]),
         )
+    sudo_marker.attach(chosen)
     stamp(chosen, args.session, collected_at)
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
