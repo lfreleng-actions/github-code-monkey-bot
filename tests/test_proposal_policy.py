@@ -418,7 +418,7 @@ class ShippedCoauthorsTest(unittest.TestCase):
         mapping = json.loads(path.read_text(encoding="utf-8"))
         self.assertTrue(mapping)
         self.assertEqual(set(mapping.values()), {self.COPILOT})
-        for model in ("claude-opus-5.5", "claude-fable-5.1", "gpt-6-astra"):
+        for model in ("claude-opus-5.5", "claude-fable-5.2", "gpt-6-astra"):
             self.assertEqual(policy.coauthor_for(model, mapping), self.COPILOT)
 
 

@@ -1759,21 +1759,27 @@ repository access and the author job has no other credential.
 
 ### 10.3 Models and the co-author trailer
 
-A check of the four identifiers below against the pinned CLI on
+A check of three of the four identifiers below (`claude-opus-5.5`,
+`claude-sonnet-5.5` and `gpt-6-astra`) against the pinned CLI on
 30 September 2026, with the entitlement behind `COPILOT_CLI_TOKEN`,
-started a session for each one. An unknown name fails at once with
+started a session for each one. A maintainer checked `claude-fable-5.2`
+on 16 November 2026 with Copilot CLI 1.0.83 and their own
+entitlement, not the pinned CLI or the workflow's credential; a dry
+run of this workflow with the option completes that check.
+An unknown name fails at once with
 `Model "..." from --model flag is not available`, before any
 request reaches the model. An interactive `/model` shows the same
 list. The dispatch form offers the latest release of each family;
-the earlier `claude-opus-5` and `claude-sonnet-5` still resolve, so
-a caller of the reusable workflow may name them directly.
+the earlier `claude-opus-5`, `claude-sonnet-5` and `claude-fable-5.1`
+still resolve, so a caller of the reusable workflow may name them
+directly.
 
 <!-- markdownlint-disable MD013 -->
 
 | Display name | `--model` |
 | ------------ | --------- |
 | Claude Opus 5.5 (default) | `claude-opus-5.5` |
-| Claude Fable 5.1 | `claude-fable-5.1` |
+| Claude Fable 5.2 | `claude-fable-5.2` |
 | Claude Sonnet 5.5 | `claude-sonnet-5.5` |
 | GPT-6 Astra | `gpt-6-astra` |
 
