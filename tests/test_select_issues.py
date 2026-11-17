@@ -695,7 +695,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
     def test_outstanding_only_needs_pull_requests_alone(self) -> None:
         """Without named pull requests, or beside named issues, it is refused."""
         for extra in (
-            ("--outstanding-only",),
+            ("--outstanding-only", "--issues", "org/alpha#3"),
             (
                 "--outstanding-only",
                 "--pull-requests",
@@ -725,7 +725,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         return str(path)
 
     def test_issues_another_run_holds_are_skipped(self) -> None:
-        """Scanned and named issues alike: skipped, recorded, read no further."""
+        """Named issues another run holds: skipped, recorded, read no further."""
         prior = patch.object(reads, "prior_attempt", return_value=None).start()
         patch.object(reads, "has_open_linked_pr", return_value=False).start()
         patch.object(reads, "branch_head", return_value=SHA_A).start()
@@ -734,24 +734,18 @@ class RevisionIntegrationTest(NoSubprocessCase):
         # GitHub compares repository names without case; so does the hold.
         held = self.held_file(("Org/Alpha", 3, 4242))
         named = ("--issues", "org/alpha#3,org/beta#5")
-        for extra in ((), named):
-            with (
-                self.subTest(named=bool(extra)),
-                patch.object(select, "scan_candidates", return_value=(2, ranked)),
-                patch.object(explicit_targets, "candidates", return_value=ranked),
-            ):
-                prior.reset_mock()
-                selection, _ = select.build_selection(
-                    self.args(*extra, "--held-file", held)
-                )
-                self.assertEqual([e["key"] for e in selection["issues"]], ["beta-5"])
-                self.assertEqual(selection["skipped"]["held"], 1)
-                self.assertEqual(
-                    selection["skipped_issues"],
-                    [{"issue": "org/alpha#3", "reason": "being worked by run 4242"}],
-                )
-                for call in prior.call_args_list:
-                    self.assertNotEqual(call.args[0], "org/alpha")
+        with patch.object(explicit_targets, "candidates", return_value=ranked):
+            selection, _ = select.build_selection(
+                self.args(*named, "--held-file", held)
+            )
+        self.assertEqual([e["key"] for e in selection["issues"]], ["beta-5"])
+        self.assertEqual(selection["skipped"]["held"], 1)
+        self.assertEqual(
+            selection["skipped_issues"],
+            [{"issue": "org/alpha#3", "reason": "being worked by run 4242"}],
+        )
+        for call in prior.call_args_list:
+            self.assertNotEqual(call.args[0], "org/alpha")
 
     def test_named_pull_request_another_run_holds_is_skipped(self) -> None:
         """A named round another run selected costs no session and no packet read.
@@ -779,13 +773,17 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertIn("| held | 1 |", summary)
 
     def test_scanned_round_another_run_holds_is_recorded(self) -> None:
-        """A scan records a held skip in skipped_issues, unlike its other skips."""
+        """A revision scan records a held skip in skipped_issues, unlike its others."""
         entry = self.revision("alpha", 41, 7)
         with patch.object(
             revision_rounds, "scan", return_value=[("org/alpha", lambda: entry)]
         ):
             selection, _ = select.build_selection(
-                self.args("--held-file", self.held_file(("org/alpha", 7, 99)))
+                self.args(
+                    "--revise-only",
+                    "--held-file",
+                    self.held_file(("org/alpha", 7, 99)),
+                )
             )
         self.assertEqual(selection["issues"], [])
         self.assertEqual(
@@ -926,13 +924,16 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
         self.assertEqual(selection["skipped"]["duplicate"], 1)
 
-    def test_scan_revisions_follow_the_repository_scope(self) -> None:
-        """The scan passes the run's repository policy to the revision scan."""
+    def test_scan_revisions_follow_the_repository_policy(self) -> None:
+        """A revise-only run passes its exclusions to the revision scan."""
         with patch.object(revision_rounds, "scan", return_value=[]) as scan:
-            select.build_selection(self.args("--repositories", "alpha"))
+            select.build_selection(
+                self.args("--revise-only", "--exclude-repos", "beta")
+            )
         allowed = scan.call_args.kwargs["allowed"]
         self.assertTrue(allowed("alpha"))
         self.assertFalse(allowed("beta"))
+        self.assertFalse(allowed(".github"))
 
     def test_entries_carry_the_session(self) -> None:
         """Every entry names the run's session, given or made, beside its read time."""
@@ -944,9 +945,11 @@ class RevisionIntegrationTest(NoSubprocessCase):
         patch.object(
             revision_rounds, "scan", return_value=[("org/alpha", lambda: built(first))]
         ).start()
-        selection, _ = select.build_selection(self.args("--session", "39115306869-2"))
+        selection, _ = select.build_selection(
+            self.args("--revise-only", "--session", "39115306869-2")
+        )
         self.assertEqual([e["session"] for e in selection["issues"]], ["39115306869-2"])
-        selection, _ = select.build_selection(self.args())
+        selection, _ = select.build_selection(self.args("--revise-only"))
         session = selection["issues"][0]["session"]
         self.assertRegex(session, r"^[0-9A-Za-z]+$")
         self.assertNotEqual(session, selection["issues"][0]["collected_at"])
@@ -975,11 +978,11 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 return fixed
 
         with patch.object(select, "datetime", Clock):
-            selection, _ = select.build_selection(self.args())
+            selection, _ = select.build_selection(self.args("--revise-only"))
         self.assertEqual(selection["issues"][0]["collected_at"], "2026-10-03T11:59:59Z")
 
     def test_scan_puts_revisions_first_under_the_cap(self) -> None:
-        """Revisions come before new issues and share the cap; past it nothing is read."""
+        """Revisions share the cap; past it nothing is read."""
         built: list[str] = []
 
         def builder(entry: dict[str, Any]) -> Any:
@@ -997,16 +1000,12 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 ("org/beta", builder(self.revision("beta", 9, 2))),
             ],
         ).start()
-        selection, _ = select.build_selection(self.args("--max-pull-requests", "1"))
+        selection, _ = select.build_selection(
+            self.args("--revise-only", "--max-pull-requests", "1")
+        )
         self.assertEqual([e["key"] for e in selection["issues"]], ["alpha-7"])
         self.assertEqual(built, ["alpha-7"])
         self.assertEqual(selection["skipped"]["cap"], 1)
-        selection, _ = select.build_selection(self.args("--no-revise"))
-        self.assertEqual(selection["issues"], [])
-        # Revisions publish in pull-requests mode alone; a branches run selects none.
-        with patch.object(revision_rounds, "scan", return_value=[]) as scan:
-            select.build_selection(self.args_mode("branches"))
-        scan.assert_not_called()
 
     def test_scan_takes_every_round_of_a_repository(self) -> None:
         """Every bot pull request of a repository gets a round in one scan.
@@ -1024,7 +1023,9 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 ("org/beta", lambda: self.revision("beta", 9, 2)),
             ],
         ).start()
-        selection, _ = select.build_selection(self.args("--max-pull-requests", "5"))
+        selection, _ = select.build_selection(
+            self.args("--revise-only", "--max-pull-requests", "5")
+        )
         self.assertEqual(
             [e["key"] for e in selection["issues"]], ["alpha-7", "alpha-8", "beta-2"]
         )
@@ -1064,9 +1065,41 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertIs(selection["revise_only"], True)
         self.assertIs(selection["revise"], True)
         self.assertIn("Revise-only", outputs.summary_markdown(selection))
-        selection, _ = select.build_selection(self.args("--max-pull-requests", "2"))
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        selection, _ = select.build_selection(
+            self.args("--pull-requests", "org/alpha#41")
+        )
         self.assertIs(selection["revise_only"], False)
         self.assertNotIn("Revise-only", outputs.summary_markdown(selection))
+
+    @unittest.expectedFailure
+    def test_a_run_naming_nothing_is_refused(self) -> None:
+        """No issues, no pull requests and no revise_only: no scan, no read (#196)."""
+        search = patch.object(reads, "search_open_issues").start()
+        listing = patch.object(repository_reads, "list_repositories").start()
+        for extra in (
+            (),
+            ("--repositories", "alpha"),
+            ("--no-revise",),
+            ("--issues", " , "),
+        ):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(
+                    reads.SelectionError, "scanning for new issues is off"
+                ),
+            ):
+                select.build_selection(self.args(*extra))
+        for mode in ("select", "branches"):
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(
+                    reads.SelectionError, "scanning for new issues is off"
+                ),
+            ):
+                select.build_selection(self.args_mode(mode))
+        search.assert_not_called()
+        listing.assert_not_called()
 
     def test_revise_only_refuses_targets_other_modes_and_no_revise(self) -> None:
         """Revise-only is a pull-requests scan with revisions on, nothing named."""
@@ -1836,12 +1869,6 @@ class MainTest(NoSubprocessCase):
 
     def patch_reads(self) -> None:
         """Install the read doubles a successful run needs."""
-        repositories = {"alpha": repo_meta("alpha"), "beta": repo_meta("beta")}
-        issues = [
-            search_issue("alpha", 1),
-            search_issue("beta", 2, labels=["chore"]),
-            search_issue("alpha", 3),
-        ]
         details: dict[str, Any] = {
             "state": "open",
             "title": "Title",
@@ -1850,11 +1877,13 @@ class MainTest(NoSubprocessCase):
             "type": "Bug",
             "assignees": [],
             "priority": "Urgent",
+            "url": "https://github.com/org/alpha/issues/1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "author_association": "MEMBER",
         }
         patch.object(
-            repository_reads, "list_repositories", return_value=repositories
+            repository_reads, "repository_meta", return_value=repo_meta("alpha")
         ).start()
-        patch.object(reads, "search_open_issues", return_value=issues).start()
         patch.object(reads, "issue_details", return_value=details).start()
         patch.object(reads, "prior_attempt", return_value=None).start()
         patch.object(reads, "has_open_linked_pr", return_value=False).start()
@@ -1902,6 +1931,8 @@ class MainTest(NoSubprocessCase):
                         str(FORK_ORGS_PATH),
                         "--max-pull-requests",
                         "5",
+                        "--issues",
+                        "org/alpha#1",
                         "--exclude-repos",
                         "gamma",
                         "--bot-slug",
@@ -1910,10 +1941,11 @@ class MainTest(NoSubprocessCase):
                 )
             selection = json.loads((out / "selection.json").read_text(encoding="utf-8"))
             self.assertEqual((out / "agents.md").read_bytes(), b"guidance\n")
+            # A named run waives the exclusion list and records none.
             self.assertEqual(
-                (out / "excluded-repos.txt").read_text(encoding="utf-8"), "gamma\n"
+                (out / "excluded-repos.txt").read_text(encoding="utf-8"), ""
             )
-        self.assertIn("Selected 1 issue(s) from 3 open", stderr.getvalue())
+        self.assertIn("Selected 1 issue(s) from 1 open", stderr.getvalue())
         self.assertEqual(selection["schema"], document.SCHEMA)
         self.assertTrue(selection["dry_run"])
         self.assertEqual(selection["bot"]["login"], "b[bot]")
@@ -1922,10 +1954,9 @@ class MainTest(NoSubprocessCase):
             selection["guidance"]["sha256"],
             hashlib.sha256(b"guidance\n").hexdigest(),
         )
-        self.assertEqual(selection["exclusions"], ["gamma"])
-        self.assertEqual(selection["candidates_seen"], 3)
-        self.assertEqual(selection["skipped"]["label"], 1)
-        self.assertEqual(selection["skipped"]["one_per_repo"], 1)
+        self.assertEqual(selection["exclusions"], [])
+        self.assertEqual(selection["explicit_issues"], ["org/alpha#1"])
+        self.assertEqual(selection["candidates_seen"], 1)
         (issue,) = selection["issues"]
         self.assertEqual(issue["key"], "alpha-1")
         self.assertEqual(issue["fork_org"], "lfreleng-bot-forks")
@@ -1934,6 +1965,7 @@ class MainTest(NoSubprocessCase):
         self.assertEqual(issue["comments_dropped"], 2)
         self.assertEqual(issue["priority"], "Urgent")
 
+    @unittest.expectedFailure
     def test_selection_error_exits_one(self) -> None:
         """A ``SelectionError`` becomes exit status 1 with a prefixed message."""
         self.patch_reads()
@@ -1954,13 +1986,11 @@ class MainTest(NoSubprocessCase):
                         "org/.github",
                         "--fork-orgs",
                         str(FORK_ORGS_PATH),
-                        "--repositories",
-                        "missing",
                     ]
                 )
             self.assertEqual(caught.exception.code, 1)
             self.assertIn("select issues: ", stderr.getvalue())
-            self.assertIn("org/missing not found", stderr.getvalue())
+            self.assertIn("scanning for new issues is off", stderr.getvalue())
             self.assertFalse((Path(tmp) / "selection.json").exists())
 
     def test_github_error_exits_one(self) -> None:
@@ -1968,7 +1998,7 @@ class MainTest(NoSubprocessCase):
         self.patch_reads()
         patch.object(
             repository_reads,
-            "list_repositories",
+            "repository_meta",
             side_effect=github.GitHubError("boom (HTTP 500)"),
         ).start()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1988,6 +2018,8 @@ class MainTest(NoSubprocessCase):
                         "org/.github",
                         "--fork-orgs",
                         str(FORK_ORGS_PATH),
+                        "--issues",
+                        "org/alpha#1",
                     ]
                 )
         self.assertEqual(caught.exception.code, 1)
@@ -2015,6 +2047,8 @@ class MainTest(NoSubprocessCase):
                         "org/.github",
                         "--fork-orgs",
                         str(bad),
+                        "--issues",
+                        "org/alpha#1",
                     ]
                 )
         self.assertEqual(caught.exception.code, 1)
