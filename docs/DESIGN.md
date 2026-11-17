@@ -3,14 +3,15 @@ SPDX-License-Identifier: Apache-2.0
 SPDX-FileCopyrightText: 2026 The Linux Foundation
 -->
 
-# Design: Scheduled AI Authoring of Pull Requests
+# Design: Dispatched AI Authoring of Pull Requests
 
 Status: **implemented and live** (§15). The workflow, scripts and
 offline tests exist, the bot fork organisations hold the App
 installation and the publisher writes through them (§4.3), live
 `pull-requests` dispatches have raised signed, reviewed pull
-requests, and the weekday schedule runs live and posts its pull
-requests to Slack (§11). §17 records the decisions taken on the
+requests. The caller runs when an operator dispatches it or a run
+continues itself, and at no other time (§11); no run scans for new
+issues (§6). §17 records the decisions taken on the
 first draft's open questions and the points rollout settles.
 
 This document reuses the architecture, vocabulary and lessons of
@@ -30,8 +31,8 @@ tight constraints.
 
 ## 2. Goal
 
-Each weekday, after triage completes, run a coding agent against the
-highest-ranked open issues and open one pull request per issue. Each
+When an operator names triaged issues, run a coding agent against
+them and open one pull request per issue. Each
 pull request:
 
 - comes from a bot-owned branch in a fork held by a bot fork
@@ -78,14 +79,15 @@ them.
 The triage workflow runs at 07:00 UTC on weekdays and applies labels, Priority
 and Type. This workflow depends on that output:
 
-- Priority drives the ranking (§6).
+- Priority drove the ranking of the retired new-issue scan (§6) and
+  still fills the packet the agent reads.
 - Type and category labels drive exclusions (§6) and the commit type
   the agent chooses.
 - An issue without a Type has not seen triage yet and waits a day.
 
 The two workflows live in separate repositories, which rules out a
-`workflow_run` trigger. The schedule runs at 02:00 UTC instead and
-reads the previous working day's triage (§11). Triage's
+`workflow_run` trigger. No timer replaces it: an operator reads
+triage's output and names the issues to work (§11). Triage's
 `excluded-repos.txt` lists repositories that produce noise; this
 workflow keeps its own list with the same format, seeded
 from that one.
@@ -316,7 +318,7 @@ gets CI once a maintainer has read it.
 ### 4.4 The pre-flight gate
 
 The contract tests in `tests/test_workflow.py` run when a pull
-request changes the workflow. A scheduled run executes whatever is on
+request changes the workflow. A dispatched run executes whatever is on
 the default branch, and nothing in that path re-checks the boundary
 before the first App token mint. `scripts/preflight.py` closes that:
 it runs from the pinned assets checkout in the select job, before any
@@ -478,6 +480,19 @@ The select job holds an App token with `issues: read`,
 across the organisation. It builds a candidate list and writes
 `selection.json`.
 
+**No new-issue scans.** No run scans the organisation for new
+issues. A run names its work: `issues` to work, `pull_requests` to
+revise, or `revise_only` to revise the bot's open pull requests with
+work outstanding (§20.1). The reusable workflow's input check refuses
+a run that names none of them, before the select job reads anything
+or mints a token, and the selector refuses it again, so a caller that
+skips the check still scans nothing. The candidate, ranking, category
+and one-per-repository rules below describe the scan the selector's
+code still holds, unreachable behind both refusals; they stay
+documented until that code goes, and §17 records why the scan
+stopped. The rules for named issues ("Explicit issues") and for
+revision rounds (§20.1) govern every run.
+
 **Candidate.** An open issue (not a pull request) in a **public**,
 non-archived, non-template, non-fork repository of the target owner
 (the author job clones without a credential, so private and
@@ -499,8 +514,7 @@ the exclusion list and is not `.github` (unless
   decides again with the final word, and a skip counts once, under
   `untrusted_author`. Every site calls one helper,
   `issue_authors.admits`, so the sites cannot drift;
-- has no assignee, unless the caller sets `include_assigned`: an
-  assignee means a human has claimed the work;
+- has no assignee: an assignee means a human has claimed the work;
 - has no pull request, open, closed or merged, from its
   `code-monkey/issue-<n>` branch **in the designated bot fork**
   (§4.3: the workflow already tried, or a human declined the
@@ -514,9 +528,10 @@ the exclusion list and is not `.github` (unless
 with no Priority sort last. Within a priority, older `created_at`
 first.
 
-**Categories.** A run works an issue when the caller enables any of
-its categories. Categories follow the labels triage applies, with the issue
-Type as a second signal for bugs and features:
+**Categories.** A scan worked an issue when the caller enabled any of
+its categories; no input sets them now. Categories follow the labels
+triage applies, with the issue Type as a second signal for bugs and
+features:
 
 <!-- markdownlint-disable MD013 -->
 
@@ -565,18 +580,16 @@ holds the serialised selection under 12 MiB, inside the 16 MiB the
 verifier accepts, since 256 entries at the per-issue body and
 comment caps would otherwise exceed it.
 
-**Two scans.** A full scan, the 02:00 schedule's, revises the bot's
-open pull requests with work outstanding (§20.1) and then works new
-issues by the rules above. A **`revise_only`** scan (§9.1) does the
-first half alone: it reads no issue, so no candidate,
-ranking or category applies, and the revision scan runs under the
-full `max_pull_requests` cap as it does in a full scan, revising
-every pull request of a repository with work outstanding. The
-caller's second schedule runs one every hour, every day (§11), so a
+**The `revise_only` scan.** A **`revise_only`** run (§9.1) is the one
+scan left: it revises the bot's open pull requests with work
+outstanding (§20.1) and reads no issue, so no candidate, ranking or
+category applies, and it runs under the full `max_pull_requests`
+cap, revising every pull request of a repository with work
+outstanding. Nothing schedules it: an operator dispatches it, so a
 published pull request's findings, failing checks and maintainer
-comments reach the next slot rather than wait for the next 02:00.
-A `revise_only` scan names nothing: the input
-check refuses it beside `issues` or `repositories`, in a mode other
+comments that arrive after the continuation loop ends (§20.6) wait
+for that dispatch. A `revise_only` scan names nothing: the input
+check refuses it beside `issues`, in a mode other
 than `pull-requests`, or with `revise` off. Beside named
 `pull_requests` it changes nothing, since a named run scans nothing
 and works what it names and nothing else.
@@ -584,8 +597,8 @@ and works what it names and nothing else.
 **Overlapping runs.** Scans share one concurrency group, but a live
 dispatch naming `issues` or `pull_requests` locks on its own run
 (§11), since a group built from its target list would pass GitHub's
-400-character limit. So nothing stops a scheduled scan, the 02:00 run
-or a `revise_only` slot, from running beside a named dispatch, or two
+400-character limit. So nothing stops a `revise_only` scan from
+running beside a named dispatch, or two
 dispatches beside each other, and both can select one issue or pull
 request. One of them is then wasted: a revision stands down at the
 author job when the other has already pushed (§20.2), and a new issue
@@ -713,22 +726,18 @@ tag, and refuses a ref whose target is anything but a commit, so the
 recorded provenance always names the commit whose `AGENTS.md` the
 agent read.
 
-**Explicit repositories.** When `repositories` names one or more
-repositories, the candidate scan covers those alone and lifts the
-exclusion list and the `.github` rule; an archived, template, forked
-or non-public repository stays out of scope whoever names it. The
-select job hands `repositories` and `exclude_repos` to
+**Excluded repositories.** The select job hands `exclude_repos` to
 [`list-splitter-action`](https://github.com/lfreleng-actions/list-splitter-action)
-before the input check and the read mint: each splits on commas and
+before the input check and the read mint: it splits on commas and
 whitespace, drops repeats without regard to case, and must hold bare
 repository names of `org`, every bad name reported before the run
-fails. The splitter works offline and takes no token. The read
-mint's scope is the splitter's names plus the guidance repository,
-and the selector receives the split lists, never the raw inputs; it
-still checks each name against `[A-Za-z0-9_.-]+`, so its own tests
-stand behind the splitter's. An empty `repositories` means the whole
-organisation; a list given but naming no repository, such as
-separators alone, fails the input check rather than widening the scan.
+fails. The splitter works offline and takes no token. The selector
+receives the split list, never the raw input; it still checks each
+name against `[A-Za-z0-9_.-]+`, so its own tests stand behind the
+splitter's. The list binds the `revise_only` scan (§20.1); a named
+issue or pull request is the operator's choice and waives it. The
+`repositories` input, which once narrowed the new-issue scan, went
+with that scan.
 
 **Explicit issues.** When `issues` names one or more issues, the run
 works those and scans nothing. The splitter accepts `repo#N`,
@@ -762,8 +771,7 @@ permission, rate-limit or server failure still fails the run. The
 selection records every named issue it skipped with its reason, in
 `skipped_issues`, naming the earlier pull request and its state
 where one is the cause, and the summary lists them, so a maintainer
-who named five issues and sees three in the matrix learns why. Issues and `repositories`
-exclude each other: the input check fails a run naming both. An
+who named five issues and sees three in the matrix learns why. An
 `issues` list given but naming no issue, such as separators alone,
 is an input error rather than a scan, and fails before selection.
 The read mint scopes to the issues' repositories plus the guidance
@@ -773,8 +781,7 @@ in that scope, so a step before the mint reads each named repository
 with the native token and keeps the ones GitHub reports as existing
 and public, since that token also reads the private caller
 repository, which the App installation may not cover; a run whose named
-repositories all fail that read stops there, and the step names a
-scan repository that fails it.
+repositories all fail that read stops there.
 
 **Outputs.** `selection.json` lists, per chosen issue: repository,
 number, title, body, Priority, Type, labels, `created_at`, the
@@ -1009,7 +1016,7 @@ The select, publish and report jobs run in `block` mode with the
 organisation's allow-list from `harden-runner-block-action`, pinned
 by commit in both callers, with `allow_list_summary: 'true'` on the
 select job alone. `block` is the reusable workflow's default; a
-caller may pass `audit` to diagnose a blocked endpoint. The cron
+caller may pass `audit` to diagnose a blocked endpoint. The dispatch
 caller's `options` job runs in `block` mode too, loading the same
 coordinate it forwards, without a token or a summary.
 
@@ -1544,8 +1551,7 @@ For each selected issue:
     and gets its own report; the earlier report keeps the earlier
     sessions' spend, so a run's cost is the sum of its reports.
     The report job also exposes the pull requests the run opened or
-    revised as the workflow's outputs (§18.6), from which the
-    scheduled caller posts a Slack digest (§11), and names those it
+    revised as the workflow's outputs (§18.6), and names those it
     nominates for an antagonistic review, which a last job asks the
     review bot for (§20.5).
 
@@ -1562,26 +1568,23 @@ For each selected issue:
 | `dry_run` | boolean | `true` | Author runs; publisher writes nothing |
 | `model` | string | `claude-opus-5.5` | Copilot model identifier (§10.3) |
 | `max_pull_requests` | string | `'10'` | `0` = up to the matrix limit |
-| `categories` | string | `'all'` | `all`, or a list from §6 |
 | `max_runtime_minutes` | string | `'180'` | Per agent |
 | `stale_status_minutes` | string | `'8'` | §13.1: a listed pending status older than this is stale; `0` turns it off |
 | `max_concurrent_agents` | string | `'10'` | 1–30, matrix `max-parallel` |
 | `allow_subagents` | boolean | `true` | §7.2 |
 | `include_dotgithub` | boolean | `false` | §6 |
-| `include_assigned` | boolean | `false` | §6: work issues a human holds |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
 | `allow_workflow_edits` | boolean | `false` | §8 step 3: let new proposals change `.github/workflows/` |
 | `request_review` | boolean | `true` | §8 steps 10–11: request, await, report |
 | `request_antagonistic_review` | boolean | `true` | §20.5: ask the review bot after a clean review |
 | `antagonistic_repository` | string | `lfreleng-actions/github-code-review-bot` | Holds the antagonistic workflow (§20.5) |
-| `repositories` | string | `''` | Commas and/or spaces; split per §6 |
-| `issues` | string | `''` | Issues to work instead of scanning (§6) |
+| `issues` | string | `''` | Issues to work (§6) |
 | `pull_requests` | string | `''` | Bot pull requests to revise (§20) |
 | `revise` | boolean | `true` | §20: revise before working new issues |
-| `revise_only` | boolean | `false` | §6: revise, work no new issue |
+| `revise_only` | boolean | `false` | §6: revise the bot's pull requests with work outstanding |
 | `outstanding_only` | boolean | `false` | §20.6: named pull requests take the scan's tests |
 | `continues_run` | string | `''` | §20.6: the dispatching run, which must have published |
-| `exclude_repos` | string | `''` | Same form; overrides bundled list |
+| `exclude_repos` | string | `''` | Commas and/or spaces; overrides bundled list |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
 | `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
@@ -1604,19 +1607,20 @@ optional.
 Numeric inputs are strings because reusable-workflow `number`
 inputs cannot carry validation and `fromJSON` handles the
 conversion at the point of use. The select job rejects values
-outside the stated ranges.
+outside the stated ranges. A run must name `issues` or
+`pull_requests`, or set `revise_only`; the input check refuses one
+that names none of them (§6 "No new-issue scans").
 
 ### 9.2 Dispatch caller (`code-monkey-cron.yaml`)
 
-Two schedules, `'0 2 * * 1-5'` (the full scan) and
-`'17 * * * *'` (`revise_only`, §11), and `workflow_dispatch`
-with the inputs below. A `run-name` keeps the `Code Monkey ⏰` prefix
-and adds what the run works, so the Actions list tells runs apart: a
-schedule names the full scan or the `revise_only` scan by the cron
-that fired; a dispatch names its `pull_requests`, else its `issues`,
-else its `repositories`, as the form's raw text, else a `revise_only`
-or plain scan, and marks a dry run. GitHub truncates a long name, and
-nothing reads it back.
+`workflow_dispatch` alone, with the inputs below: the caller has no
+schedule, and an organisation administrator starts every run that is
+not a continuation (§20.6). A `run-name` keeps the `Code Monkey ⏰`
+prefix and adds what the run works, so the Actions list tells runs
+apart: a dispatch names its `pull_requests`, else its `issues`, as
+the form's raw text, else a `revise_only` scan, else that it named
+nothing (a run the input check refuses), and marks a dry run. GitHub
+truncates a long name, and nothing reads it back.
 
 | Input | Type | Default |
 | ----- | ---- | ------- |
@@ -1629,61 +1633,49 @@ nothing reads it back.
 | `max_concurrent_agents` | string | `'10'` |
 | `allow_subagents` | boolean | `true` |
 | `include_dotgithub` | boolean | `false` |
-| `include_assigned` | boolean | `false` |
 | `load_repo_skills` | boolean | `false` |
 | `allow_workflow_edits` | boolean | `false` |
 | `request_review` | boolean | `true` |
 | `request_antagonistic_review` | boolean | `true` |
-| `repositories` | string | `''` |
 | `issues` | string | `''` |
 | `pull_requests` | string | `''` |
 | `revise` | boolean | `true` |
 | `revise_only` | boolean | `false` |
 | `outstanding_only` | boolean | `false` |
 | `continues_run` | string | `''` |
-| `categories` | string | `'all'` |
 
 The `model` choice shows display names and the caller maps them to
-the identifiers in §10.3. The schedule runs `pull-requests` mode
-with `dry_run: false`; the caller passes
-`github.event_name == 'workflow_dispatch' && inputs.dry_run`, so a
-dispatch keeps the form's choice, which is live unless the operator
-ticks `dry_run`. The reusable workflow's own `dry_run` (§9.1) keeps
-its default of `true`; the caller alone defaults live. A
-schedule passes no inputs and takes the defaults above: up to ten
-entries, worked in parallel, and at most ten pull requests.
+the identifiers in §10.3. The caller passes `inputs.dry_run`, so a
+dispatch is live unless the operator ticks `dry_run`. The reusable
+workflow's own `dry_run` (§9.1) keeps its default of `true`; the
+caller alone defaults live. A form field left blank takes the
+default above.
 
 `max_pull_requests` semantics: `1` raises at most one pull request,
 `20` at most twenty, and `0` lifts the cap as far as the matrix
-limit; anything non-numeric or negative fails the select job.
-`categories` passes straight through: `docs` for a run that fixes
-documentation alone, `all` or blank for everything, which is what a
-schedule, passing no inputs, gets. The form holds 23 inputs, within
-GitHub's limit of 25; the lists `issues` and `repositories` take the
-place of what used to be one boolean per category.
+limit; anything non-numeric or negative fails the select job. The
+form holds 20 inputs, within GitHub's limit of 25. The
+`repositories`, `categories` and `include_assigned` inputs went with
+the new-issue scan they shaped (§6, §17).
 
-`revise_only` is the second schedule or the form's choice: the
-caller passes `github.event.schedule == '17 * * * *' ||
-inputs.revise_only == true`, since GitHub sets `github.event.schedule`
-to the cron string that fired. The schedule entry and the two
-expressions that test it, in the `code-monkey` job and the Slack
-digest, change together. A `revise_only` dispatch must leave `issues`
-and `repositories` empty, keep `pull-requests` mode and `revise` on;
-the input check refuses it otherwise (§6).
+`revise_only` is the form's choice and the caller passes it through.
+A `revise_only` dispatch must leave `issues` empty, keep
+`pull-requests` mode and `revise` on; the input check refuses it
+otherwise (§6).
 
 `stale_status_minutes` bounds the wait on a slow status service
 (§13.1). An operator dispatching against a repository whose hooks are
 slow, or during a pre-commit.ci incident, lifts it for that run
-(`'30'`), or sets `'0'` to wait on the status as on any check; the
-schedule takes the default, and the `continue` job forwards the
+(`'30'`), or sets `'0'` to wait on the status as on any check; a
+blank field takes the default, and the `continue` job forwards the
 run's value. The input check refuses anything but a non-negative
 integer.
 
 `outstanding_only` is the continuation's input (§20.6): it needs
-named `pull_requests` and neither `issues` nor `repositories`, and
-the input check refuses it otherwise. `continues_run`, which the
-`continue` job sets to its own run's ID, needs `outstanding_only`
-and must be a run ID; an operator leaves it empty.
+named `pull_requests` and no `issues`, and the input check refuses
+it otherwise. `continues_run`, which the `continue` job sets to its
+own run's ID, needs `outstanding_only` and must be a run ID; an
+operator leaves it empty.
 
 ### 9.3 Mode and dry-run matrix
 
@@ -1875,7 +1867,7 @@ job's own token can do. The repository secret
 `lfreleng-actions`, limited to the one repository
 `antagonistic_repository` names, with Actions: write and the
 implicit Metadata: read; it can start, cancel or rerun that
-repository's workflows and nothing else. The scheduled caller passes
+repository's workflows and nothing else. The dispatch caller passes
 it as the optional `antagonistic_dispatch_token`, and the
 `antagonistic` job's `Dispatch antagonistic reviews` step is the one
 place that reads it. That job holds `permissions: {}`, checks out
@@ -1887,83 +1879,44 @@ step warns, dispatches nothing and succeeds, so the default stays
 harmless until a maintainer sets it. Its expiry needs the same owner and
 rotation reminder as the model PAT (§10.2).
 
-## 11. Scheduling and Concurrency
+## 11. Dispatch and Concurrency
 
-- Cron `17 * * * *`, live, with `revise_only` (§6 "Two
-  scans"): every hour, every day, at 17 minutes past (GitHub advises
-  against `:00`, when scheduled load peaks and GitHub delays or drops
-  runs), it revises the bot's open pull requests with work
-  outstanding and works no new issue. Each slot
-  costs one select job, which reads the bot's open pull requests, and
-  an agent session for each pull request with work outstanding; a
-  slot with nothing to do ends after selection. This is how a pull
-  request published with a failing check or a review with findings,
-  or one a maintainer commented on, gets its next round from the next
-  slot, weekends included.
+- No schedule. The caller runs on `workflow_dispatch` alone, and
+  every run that is not a continuation is one an organisation
+  administrator started (§9.2). The caller dropped the weekday 02:00
+  UTC full scan, the `revise_only` slot it ran every hour, and the
+  Slack digest that reported them (§17). Nothing here reads
+  the previous day's triage on a timer; an operator who wants a
+  triaged issue worked names it.
 - Continuation (§20.6): once a run's report lists pull requests whose
   round left work outstanding, its `continue` job dispatches this
   caller once for each of them, so the next round starts within
-  minutes rather than at the next slot. Each continuation, a live
-  dispatch naming one pull request, runs as a named run and locks on
-  `code-monkey-named-<run_id>`, below: continuations run in parallel,
-  and the publish locks and the overlap check (§6 "Overlapping runs")
-  keep two runs off one pull request. Like any dispatch, a
-  continuation posts nothing to Slack.
-- Cron `0 2 * * 1-5`, live. At 02:00 UTC the run's pull requests
-  are ready for review by the start of the European working day. It
-  reads the previous working day's triage, which runs at 07:00 UTC
-  and takes under thirty minutes, so an issue triaged today waits
-  for tomorrow's run. A `repository_dispatch` from triage's caller
-  would tie the two together at the cost of a cross-repository
-  token; §16 lists it as a later option.
-- A scheduled run posts once to Slack. The `notify` job reads the
-  reusable workflow's outputs (§18.6), re-validates each link against
-  the same pattern, and posts a header, one link per line in report
-  order (at most 50 links or 2,500 characters, then `... and N
-  more`), and a link to the run. Links the `unmergeable_pull_requests`
-  output names follow the others under their own heading, since no
-  CI ran on them and each needs a rebase, by a later round or, at
-  the round cap, by a human; that output sorts
-  no link but those the first one passed, and one that is not a JSON
-  array sorts none. The `failing_check_pull_requests` output adds a
-  count under the list, by the same rule, of the links published
-  with failing checks, pointing at the run report for the names. A
-  link the `antagonistic_pull_requests` output names, as
-  `owner/repo#N`, gets `(antagonistic review requested)` beside it;
-  a name that matches no link adds nothing. A
-  run that raised nothing posts
-  a line saying it raised none, so an empty night reads
-  differently from a broken one, and a run with failed jobs that
-  still reported says so under the list. A `revise_only` run says so
-  in its title and under the list, and stays quiet when the
-  `selected_count` output is `0`, it raised nothing, refused no link
-  and every job succeeded: a slot with nothing to do every hour
-  should not post. A slot that selected a revision and published no
-  link, its proposal refused offline or its round abstained, posts,
-  as does one whose count is missing or anything but `0`. `notify-failure`
-  needs `notify` and posts when a scheduled run failed, or a cancellation
-  stopped it, and the digest did not succeed: the run stopped before its report
-  produced outputs, or the digest job itself failed. It says the
-  nightly run failed and no digest follows; a digest that posted is
-  never repeated.
-  Both jobs run in the `production` environment with no token
-  permissions, harden the runner in block mode with the forwarded
-  allow-list (which admits `slack.com`), and warn and skip when the
-  organisation's `SLACK_BOT_TOKEN` or `SLACK_CHANNEL_ID` is missing.
-  The Slack token reaches their Slack steps alone and never the
-  reusable workflow. Dispatches never post, live or dry; a dispatch
-  is live by default, as the schedule is (§9.2).
+  minutes. Each continuation, a live dispatch naming one pull request,
+  runs as a named run and locks on `code-monkey-named-<run_id>`,
+  below: continuations run in parallel, and the publish locks and the
+  overlap check (§6 "Overlapping runs") keep two runs off one pull
+  request.
+- The gap the `revise_only` slot covered. A pull request whose continuation
+  loop has ended still gathers work: a Copilot review still pending
+  when publish stopped waiting, a maintainer's comment, or a check
+  that fails later. Nothing picks that up on its own any more. An
+  operator's `revise_only` dispatch revises every such pull request
+  across the organisation, and a dispatch naming `pull_requests`
+  revises the ones it names. The continuation is not stretched to
+  cover the gap: a job that dispatched on a later review or comment
+  would need its own trigger, and so its own trust and loop review,
+  which is work for the hardening pass rather than this change.
 - Caller concurrency group `code-monkey`, `cancel-in-progress:
-  false`, for scheduled runs and live dispatches without `issues`:
-  one run at a time, and a dispatch during the scheduled run queues
-  behind it. The group sets `queue: max`, so pending runs wait in a
-  FIFO queue of up to 100 rather than GitHub's default single slot,
-  where a newcomer cancels the run already pending and a dispatch an
-  operator made vanishes without trace. GitHub rejects `queue: max`
-  beside `cancel-in-progress: true`. A dry `workflow_dispatch`
-  writes nothing and takes `code-monkey-dry-run-<run_id>` instead:
-  it never waits behind the schedule or a live run. A live dispatch
-  that names `issues` or `pull_requests` takes
+  false`, for live `revise_only` dispatches, and for a live dispatch
+  naming nothing, which the input check refuses before it does any
+  work: one run at a time. The group sets `queue: max`, so pending
+  runs wait in a FIFO queue of up to 100 rather than GitHub's default
+  single slot, where a newcomer cancels the run already pending and a
+  dispatch an operator made vanishes without trace. GitHub rejects
+  `queue: max` beside `cancel-in-progress: true`. A dry
+  `workflow_dispatch` writes nothing and takes
+  `code-monkey-dry-run-<run_id>` instead: it never waits behind a live
+  run. A live dispatch that names `issues` or `pull_requests` takes
   `code-monkey-named-<run_id>`, keyed on its own run: dispatches run
   apart rather than evict each other without trace, and the group
   name keeps a fixed length, where one built from the target lists
@@ -1971,7 +1924,8 @@ rotation reminder as the model PAT (§10.2).
   references and fail the run before any job starts. Its scope is
   the named targets alone (§6 "Explicit issues", §20.1), and
   `max_pull_requests` bounds it. Two dispatches naming the same or
-  overlapping targets run together, as do a scan and a dispatch; the
+  overlapping targets run together, as do a `revise_only` scan and a
+  named dispatch; the
   later one's selector skips a target the earlier one already
   selected (§6 "Overlapping runs"), and when both select within the
   same five minutes the run with the higher id waits, up to five
@@ -1983,13 +1937,6 @@ rotation reminder as the model PAT (§10.2).
   branch-exists refusal and the revision's compare-and-swap limit
   the overlap to a wasted author session, never a duplicate pull
   request or a lost round.
-  A scan keeps the shared group even when `repositories` narrows it.
-  A `revise_only` run, scheduled or dispatched, is a scan and keeps it
-  too, so it queues behind a running full scan and never runs beside
-  it, and the reusable workflow's scan lock below holds it the same
-  way. `revise_only` slots that fire during a long full scan wait
-  their turn in the queue; each idle one then costs a select job of
-  a minute or two once the scan ends.
 - The reusable workflow locks a live scan on
   `code-monkey-<caller repository>-<owner>` for the whole pipeline.
   A dry run locks on `code-monkey-dry-run-<run_id>-<owner>` and a
@@ -2067,7 +2014,7 @@ conflicts while producer artifacts survive.
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
 | A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
 | A status service (pre-commit.ci) queues for hours and never reports | A pending status holds the head unsettled: the wait runs out and the scan reads `checks still running` round after round | A listed context pending past `stale_status_minutes` is stale (§13.1): not waited for, not failing, named in the record, the comment and the report; the next round runs the hooks itself |
-| Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, the report and a count in the Slack digest; the revision scan picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
+| Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, and the report; a later round, continued or dispatched, picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -2099,7 +2046,7 @@ the rule with it.
 
 ```text
 .github/workflows/code-monkey.yaml       reusable workflow
-.github/workflows/code-monkey-cron.yaml  schedule and dispatch caller
+.github/workflows/code-monkey-cron.yaml  dispatch caller
 .github/workflows/testing.yaml           PR plumbing, offline tests, actionlint
 prompt/author.md                         agent task (§7.3)
 AGENTS.md                                organisation stub (§12 there)
@@ -2195,15 +2142,18 @@ whole run at 3 minutes and has no network, so it skips four hooks:
 1. Land the workflow with the schedule in dry-run and
    `pull-requests` mode. Inspect diffs, messages and abstentions
    for a week of runs.
-2. Dispatch `branches` mode live against one repository named in
-   `repositories`. Confirm Verified commits, DCO status, message
+2. Dispatch `branches` mode live against one repository's named
+   issue. Confirm Verified commits, DCO status, message
    format and that the branch-exists guard trips on a second run.
 3. Dispatch `pull-requests` mode live against the same repository.
    Confirm the PR title check, Copilot's automatic review, label and
    provenance block.
 4. Flip the schedule to live (done: weekdays at 02:00 UTC, with a
-   Slack digest of each run's pull requests, §11). Watch spend from
+   Slack digest of each run's pull requests). Watch spend from
    `usage.json` and the ratio of merged to closed bot pull requests.
+5. Stop unattended runs (done): remove both schedules, the Slack
+   digest and the new-issue scan, so every run is a dispatch that
+   names its work or a continuation of one (§6, §11, §17).
 
 Each step is a signed commit and a PR through the normal review
 process. Disabling the workflow in the Actions UI is the kill
@@ -2220,8 +2170,14 @@ switch.
   `lfreleng-actions/.github`; a one-off mode could open its §12 stub
   pull request in every repository, which is itself an issue this
   workflow could work.
-- **Dispatch from triage** in place of the fixed 02:00 UTC cron
-  (§11), once a cross-repository token has an owner.
+- **Dispatch from triage**, naming the issues triage marks ready
+  (§11), once a cross-repository token has an owner and the
+  hardening pass has reviewed an unattended trigger.
+- **Remove the dormant scan code.** The selector still holds the
+  new-issue scan (`scan_candidates`, its ranking and category
+  filters, and the `--repositories`, `--categories` and
+  `--include-assigned` arguments, §18.5) behind the refusal in §6;
+  a later change deletes it and the selection fields it alone fills.
 - **Private repositories.** A `contents: read` token for the author
   job would be the first credential on that runner and needs its
   own containment answer.
@@ -2239,11 +2195,11 @@ The questions the first draft left open, and how they closed:
 | Mode changes and symlinks | Reject; agent banners the human follow-up in the PR body (§5, §7.3). Unsigned commits are unmergeable and create work |
 | Payload cap | 4 MiB added, 512 KiB per binary; rollout confirms (§5) |
 | Workflow edits | Off by default for new proposals; `allow_workflow_edits` turns them on. A revision round changes no workflow file beyond those its pull request already changes. App holds `workflows: write`, granted to every fork mint (§8 step 3, §10.1) |
-| Assigned issues | Skipped by default; `include_assigned` overrides (§6) |
+| Assigned issues | No scan, so no assignee filter; an operator who names an assigned issue works it (§6) |
 | Sub-agent tool | `task`; agent-definition tools denied alongside (§7.2) |
 | Skills from the checkout | Off by default; `load_repo_skills` for a repository a maintainer has read (§7.2) |
 | Issue feedback | One comment per outcome via a comment-step token; no labelling, which stays with triage (§8 step 8). GitHub has no permission that stops at comments |
-| Trigger | Live cron at 02:00 UTC on weekdays, reading the previous day's triage, with a Slack digest; dispatch from triage is a later option (§11, §16) |
+| Trigger | Operator dispatch naming issues, pull requests or `revise_only`, plus the continuation (§20.6). This change removed the weekday cron, the `revise_only` slot that ran every hour, the Slack digest and the new-issue scan: the proof of concept showed the pipeline can run with no operator, and unattended operation stops before a security hardening pass over the whole pipeline, so new work starts when an operator names it and at no other time. A pull request whose continuation ends with work still arriving waits for an operator's `revise_only` dispatch (§11). Dispatch from triage is a later option (§16) |
 | DCO | DCOAPP today, a pre-commit lint soon. The trailer matches the API commit's author identity (§5) |
 | Co-author trailer | Copilot, the assistant, for every supported model prefix in `config/coauthors.json` (§10.3) |
 | Comments in the packet | `OWNER` and `MEMBER` authors, bounded by count and bytes (§6) |
@@ -2684,6 +2640,13 @@ merge_state.py --result result.json --check check.json
     --output result.json
 ```
 
+`select_issues.py` refuses a run that passes neither `--issues` nor
+`--pull-requests`, unless it sets the flag the `revise_only` input
+maps to (§6 "No new-issue scans").
+The workflow no longer passes `--repositories`, `--include-assigned`
+or `--categories`, which the retired new-issue scan alone reads
+(§16).
+
 `select_issues.py`, `merge_state.py`, `publish.py push`, `open`,
 `respond`, `comment`, `review-request` and `review-await` read
 `GH_TOKEN`; `report` reads the select job's `unreviewed-heads.json`
@@ -2737,9 +2700,10 @@ keys stay fixed and neither value can hold a newline. A selection that ran no
 agent gives `[]` and `0`; a run whose report job did not run gives
 empty strings. Like the report, the outputs are informational: they
 name pull requests, and nothing may write to a repository on the
-strength of them. The scheduled caller's Slack digest (§11) is their
-one consumer; a forged result can at most add a link to another pull
-request in the organisation. The report's
+strength of them. The caller reads none of the pull request lists
+for display since the Slack digest went (§11); a forged result can
+at most add a link to another pull request in the organisation to
+the run's outputs. The report's
 `antagonistic_pull_requests` output, the request job's input, and
 the `continue_pull_requests` output, the caller's `continue` job's
 input, are the two exceptions; §20.5 and §20.6 bound them.
@@ -2830,7 +2794,7 @@ with findings, or a maintainer's comment, needs an answer. A
 reads the review and the comments, revises the same branch in place,
 and the publisher moves the branch, answers each thread, and runs
 the §8 review gate on the new head. One run performs one round; the
-next run, scheduled or dispatched, performs the next, up to ten per
+next run, continued or dispatched, performs the next, up to ten per
 pull request, the cap the guidance sets, counted afresh for each
 antagonistic review that hands the pull request back (§20.1).
 
@@ -2847,12 +2811,10 @@ Three ways in, all through the select job and its read token:
   skip. With `revise` off the earlier behaviour stands. A closed
   earlier attempt brings no round: the run works the named issue
   afresh (§6 "Explicit issues"), and a merged one keeps it out.
-- A scan with `revise` on, the default, searches the owner for the
-  App's open pull requests and selects those with **work
-  outstanding**, and a `revise_only` scan (§6 "Two scans") does that
-  and nothing else; the caller runs one every hour, every day (§11),
-  so a published pull request's findings and failing checks reach the
-  next slot, not the next 02:00 run. Work
+- A `revise_only` scan (§6 "The `revise_only` scan") searches the
+  owner for the App's open pull requests and selects those with
+  **work outstanding**, and nothing else; an operator dispatches it
+  (§11), since no schedule does any more. Work
   outstanding is: an unresolved review thread whose opening comment
   comes from Copilot, a listed antagonistic review App or an
   `OWNER`/`MEMBER`; a Copilot review of the head with findings; an
@@ -2938,10 +2900,10 @@ job when the fetch does, and passes `unreviewed-heads.json` on when its
 bytes match the select job's `unreviewed_sha256`; otherwise it warns and
 the report omits the list. The report prints an entry when it names a
 pull request of the owner with one of the two reasons, and counts the
-rest, an unreadable file as one. A skip is not a selection, so the Slack
-digest's quiet rule (§11) holds; the counts in the step summary are what
-tells a human the token lapsed. The scan leaves such a head for
-Copilot's own arrival or for a human: the next scan reads it again, and
+rest, an unreadable file as one. A skip is not a selection; the
+counts in the step summary are what tells a human the token lapsed. The
+scan leaves such a head for Copilot's own arrival or for a human: the
+next scan reads it again, and
 a review that arrives with findings, a thread, a failing check or a
 maintainer's comment brings a round as before. The select job does not
 request a review itself: it mints a token with the read levels alone by
@@ -3182,7 +3144,7 @@ the commit the select job also read the sudo and container marker at
 refuses any head but the recorded one, and checks it out. A branch
 that moved or vanished after selection stands the round down, as
 the publish job does (§20.3): the moved branch is another round's
-work, a named dispatch's or the schedule's, and a vanished one
+work, a named dispatch's or a `revise_only` scan's, and a vanished one
 means the pull request merged or closed, so the job neither
 fetches again nor retries. The fetch step prints a `::warning::`
 naming the branch, the fork and, for a moved branch, both heads cut
@@ -3505,8 +3467,8 @@ never counts as a hand-back; the review bot's marker does
 
 A run performs one round per pull request and ends (§2). The
 publish job already knows whether the round left work outstanding,
-so the scheduled caller starts the next round itself rather than
-leave it to the next `revise_only` slot or a person. The next round is a
+so the dispatch caller starts the next round itself rather than
+leave it to an operator's next dispatch. The next round is a
 new run, with a fresh select job that re-reads everything from
 GitHub, a fresh session and the same trusted publish.
 
@@ -3517,13 +3479,13 @@ the published head; the head has defect check failures
 (`review_outcome.checks_failed`, so failures at the egress agent
 alone do not continue); or `mergeable` is `false`. It does not
 continue any other verdict (`abstain`, `handoff`, `rejected` and the
-failures fall back to the schedule), a result with no `comment_url`,
+failures wait for an operator), a result with no `comment_url`,
 since the round history counts rounds by their outcome comments and
 a round with none would leave the next one the same number, so no
 cap would advance (the result's word alone proves nothing, so the
 continuation's select job checks the comment itself; see
 `continues_run` below), a review still `pending`, which
-the next `revise_only` scan picks up, a result whose antagonistic
+an operator's next `revise_only` dispatch picks up (§11), a result whose antagonistic
 review the run requested, since the review bot's hand-back dispatches that round
 and a continuation would race it, or a round at a cap
 (`round_caps.at_cap`: the segment's cap or the sixty-round ceiling).
@@ -3533,10 +3495,10 @@ validated and deduplicated as the antagonistic nominees are, in the
 run: the report job gives `[]` in any other, since no other mode
 moves a pull request's head.
 
-**The job.** The cron caller's `continue` job needs the whole
+**The job.** The dispatch caller's `continue` job needs the whole
 `code-monkey` call and runs when that output is neither empty nor
 `[]`, the run is not a dry dispatch, its mode is `pull-requests`
-(a schedule's, or the form's choice), and the repository variable
+(the form's choice), and the repository variable
 `CODE_MONKEY_CONTINUE` is not `false`. Every continuation is a
 `pull-requests` run, so the parent's own mode, a trusted input, must
 be too: a forged output of a `branches` run must not move a live
@@ -3561,9 +3523,9 @@ gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY" \
 
 naming its own run as `continues_run` and
 forwarding the run's own model, runtime, round cap, sub-agent choice,
-review switches, `load_repo_skills` and `include_dotgithub`, the form
-defaults on a schedule, so a dispatch that turned Copilot's or the
-antagonistic review off keeps it off for every round it continues,
+review switches, `load_repo_skills` and `include_dotgithub`, so a
+dispatch that turned Copilot's or the antagonistic review off keeps it
+off for every round it continues,
 and one that trusted checkout skills or the `.github` repository
 keeps that trust. One pull request per
 dispatch keeps a failure to that pull request, and each loop at its

@@ -11,8 +11,8 @@
 
 site_name: 'GitHub Code Monkey Bot'
 site_description: >-
-  Scheduled AI authoring of pull requests: a reusable workflow that
-  works triaged issues with a Copilot CLI agent and publishes each
+  Dispatched AI authoring of pull requests: a reusable workflow that
+  works named issues with a Copilot CLI agent and publishes each
   result as signed commits from a bot fork organisation.
 site_url: 'https://lfreleng-actions.github.io/github-code-monkey-bot/'
 repo_url: 'https://github.com/lfreleng-actions/github-code-monkey-bot'

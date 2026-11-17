@@ -235,6 +235,13 @@ def parse_targets(
     targets = explicit_targets.parse_issues(args.issues, args.org)
     explicit = parse_repositories(args.repositories)
     pulls = explicit_targets.parse_issues(args.pull_requests, args.org)
+    if not (targets or pulls or args.revise_only):
+        # The workflow's input check refuses this first; the selector
+        # refuses it too, so no caller can start an issue scan.
+        raise SelectionError(
+            "scanning for new issues is off; name issues or pull_requests,"
+            " or set revise_only"
+        )
     if (targets or pulls) and explicit:
         raise SelectionError(
             "issues or pull requests and repositories cannot both be given"

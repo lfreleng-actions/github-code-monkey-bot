@@ -5,8 +5,8 @@ SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # GitHub Code Monkey Bot
 
-Scheduled AI authoring of pull requests for open GitHub issues. A
-reusable workflow selects the highest-ranked triaged issues, runs
+Operator-dispatched AI authoring of pull requests for named GitHub
+issues. A reusable workflow selects the issues a dispatch names, runs
 one Copilot CLI coding agent per repository against a checkout of
 that repository, and publishes the result as GitHub-signed commits
 on a branch in a bot fork organisation, with a pull request against

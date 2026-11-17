@@ -2,45 +2,34 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Scheduled and on-demand entry point for the reusable workflow.
+# On-demand entry point for the reusable workflow.
 #
-# The schedule is live: it runs at 02:00 UTC on weekdays so its pull
-# requests are ready for review by the start of the European working
-# day, and posts them to Slack. It reads the previous working day's
-# triage (github-issues-triage, 07:00 UTC weekdays), so Priority and
-# Type are in place before selection. A second schedule, every hour,
-# every day, at 17 minutes past, is revise-only: it revises the
-# bot's open pull requests with work outstanding, takes no new issue,
-# and posts only when it selected something. A manual dispatch is
-# live too unless its form asks for a dry run, and posts nothing.
+# Nothing runs unattended: there is no schedule, and a run works only
+# what an operator names in a dispatch. A dispatch names issues to
+# work or open bot pull requests to revise, or sets revise_only to
+# revise the bot's open pull requests with work outstanding and work
+# no new issue. No run scans the organisation for new issues: the
+# reusable workflow's input check refuses a dispatch that names
+# nothing. A dispatch is live unless its form asks for a dry run. The
+# continue job re-dispatches this workflow for the next round of each
+# pull request a round left with work (docs/DESIGN.md section 20.6).
 # Disabling this workflow in the Actions UI is the kill switch.
 name: 'Code Monkey ⏰'
-# Name each run by what it works, keeping the workflow name as prefix.
-# A schedule names the cron that fired; a dispatch names its pull
-# requests, else its issues, else its repositories, else its scan. The
-# lists are the operator's raw input; GitHub truncates a long name.
+# Name each run by what it works, keeping the workflow name as prefix:
+# its pull requests, else its issues, else a revise-only scan. A
+# dispatch naming none of them fails the input check. The lists are
+# the operator's raw input; GitHub truncates a long name.
 run-name: >-
   ${{ format('Code Monkey ⏰: {0}{1}',
-  github.event_name == 'schedule'
-  && (github.event.schedule == '0 2 * * 1-5'
-  && 'full scan' || 'revise-only scan')
-  || inputs.pull_requests != ''
+  inputs.pull_requests != ''
   && format('revise {0}', inputs.pull_requests)
   || inputs.issues != '' && format('work {0}', inputs.issues)
-  || inputs.repositories != ''
-  && format('scan {0}', inputs.repositories)
   || inputs.revise_only && 'revise-only scan'
-  || 'scan',
+  || 'nothing named',
   inputs.dry_run && ' (dry run)' || '') }}
 
 # yamllint disable-line rule:truthy
 on:
-  schedule:
-    - cron: '0 2 * * 1-5'
-    # Revise-only, hourly at :17 to miss the peak in GitHub's
-    # scheduled load at :00. The caller tests github.event.schedule
-    # for this exact string, so change all three together.
-    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -92,10 +81,6 @@ on:
         description: 'Include issues from the .github repository'
         type: boolean
         default: false
-      include_assigned:
-        description: 'Include issues that already have an assignee'
-        type: boolean
-        default: false
       load_repo_skills:
         description: 'Trust skills found in the target checkout'
         type: boolean
@@ -114,14 +99,10 @@ on:
           review is clean
         type: boolean
         default: true
-      repositories:
-        description: 'Repositories to scan (commas and/or spaces)'
-        type: string
-        default: ''
       issues:
         description: >-
-          Issues to work instead of scanning: repo#N, owner/repo#N,
-          repo/issues/N or URLs (commas and/or spaces)
+          Issues to work: repo#N, owner/repo#N, repo/issues/N or URLs
+          (commas and/or spaces)
         type: string
         default: ''
       pull_requests:
@@ -137,7 +118,7 @@ on:
       revise_only:
         description: >-
           Revise open bot pull requests alone, working no new issue;
-          leave issues and repositories empty
+          leave issues empty
         type: boolean
         default: false
       outstanding_only:
@@ -152,38 +133,29 @@ on:
           which must have published a round on each pull request
         type: string
         default: ''
-      categories:
-        description: >-
-          Issue categories to work: all, or any of bugs, features, docs,
-          ci, code_quality, refactor, performance, other
-        type: string
-        default: 'all'
 
 permissions: {}
 
-# Serialise scheduled runs and scan dispatches of this caller. Pending
-# runs wait in a FIFO queue (`queue: max`, up to 100) instead of the
-# default single slot a newcomer would take, so no run is cancelled
-# unseen; `queue` needs `cancel-in-progress: false`. A dry dispatch
-# writes nothing and takes a group of its own: it never waits behind
-# the schedule or a live run. A live dispatch that names `issues` or
-# `pull_requests` locks on its own run, a fixed-length key: a group
-# name built from the target lists would grow with them past GitHub's
-# 400-character limit. Two dispatches naming the same or overlapping
-# targets run apart; the reusable workflow's publish locks serialise
-# their writes to any one pull request or issue, and the per-issue
-# pull request check, the branch-exists refusal and the revision's
-# compare-and-swap stop a duplicate. A revise-only run, scheduled or
-# dispatched, is a scan and shares `code-monkey`: it queues behind a
-# full scan and never runs beside it. Revise-only slots that fire
-# during a long full scan wait their turn; one with nothing to do ends
-# after selection.
+# Serialise the revise-only dispatches of this caller. Pending runs
+# wait in a FIFO queue (`queue: max`, up to 100) instead of the default
+# single slot a newcomer would take, so no run is cancelled unseen;
+# `queue` needs `cancel-in-progress: false`. A dry dispatch writes
+# nothing and takes a group of its own: it never waits behind a live
+# run. A live dispatch that names `issues` or `pull_requests` locks on
+# its own run, a fixed-length key: a group name built from the target
+# lists would grow with them past GitHub's 400-character limit. Two
+# dispatches naming the same or overlapping targets run apart; the
+# reusable workflow's publish locks serialise their writes to any one
+# pull request or issue, and the per-issue pull request check, the
+# branch-exists refusal and the revision's compare-and-swap stop a
+# duplicate. A revise-only run scans the bot's own pull requests and
+# shares `code-monkey`: two never run side by side, and one with
+# nothing to do ends after selection.
 concurrency:
   group: >-
-    ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run
+    ${{ inputs.dry_run
     && format('code-monkey-dry-run-{0}', github.run_id)
-    || github.event_name == 'workflow_dispatch'
-    && (inputs.issues != '' || inputs.pull_requests != '')
+    || (inputs.issues != '' || inputs.pull_requests != '')
     && format('code-monkey-named-{0}', github.run_id)
     || 'code-monkey' }}
   cancel-in-progress: false
@@ -220,7 +192,7 @@ jobs:
       - name: 'Map display name to identifier'
         id: map
         env:
-          MODEL: "${{ inputs.model || 'Claude Opus 5.5' }}"
+          MODEL: "${{ inputs.model }}"
         run: |
           case "$MODEL" in
             'Claude Opus 5.5') id='claude-opus-5.5' ;;
@@ -235,55 +207,34 @@ jobs:
     name: 'Code Monkey'
     needs: 'options'
     permissions:
-      issues: read  # Candidate scan when running without the App
+      issues: read  # Named issue reads when running without the App
       contents: read  # Asset checkout and public repository reads
       actions: read  # Publish and report jobs locate artifacts
       checks: read  # Select reads other runs' evidence vouches
     uses: $/.github/workflows/code-monkey.yaml
     with:
       org: "${{ github.repository_owner }}"
-      mode: "${{ inputs.mode || 'pull-requests' }}"
-      # A schedule is live; a dispatch keeps the operator's choice,
-      # which is live unless the form asks for a dry run.
-      dry_run: >-
-        ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      mode: "${{ inputs.mode }}"
+      dry_run: ${{ inputs.dry_run }}
       model: "${{ needs.options.outputs.model }}"
-      # A schedule passes no inputs; empty means every category, as
-      # the reusable workflow's default does.
-      categories: "${{ inputs.categories || 'all' }}"
+      # A form field left blank takes its default.
       max_pull_requests: "${{ inputs.max_pull_requests || '10' }}"
       max_runtime_minutes: "${{ inputs.max_runtime_minutes || '180' }}"
       max_rounds: "${{ inputs.max_rounds || '10' }}"
       stale_status_minutes: "${{ inputs.stale_status_minutes || '8' }}"
       max_concurrent_agents: "${{ inputs.max_concurrent_agents || '10' }}"
-      allow_subagents: >-
-        ${{ github.event_name != 'workflow_dispatch'
-            || inputs.allow_subagents }}
-      include_dotgithub: ${{ inputs.include_dotgithub || false }}
-      include_assigned: ${{ inputs.include_assigned || false }}
-      load_repo_skills: ${{ inputs.load_repo_skills || false }}
-      # A schedule passes no inputs; workflow edits are off for it.
-      allow_workflow_edits: ${{ inputs.allow_workflow_edits || false }}
-      # A schedule passes no inputs; the review gate is on for it.
-      request_review: >-
-        ${{ github.event_name != 'workflow_dispatch'
-            || inputs.request_review }}
-      # A schedule passes no inputs; antagonistic requests are on for it.
-      request_antagonistic_review: >-
-        ${{ github.event_name != 'workflow_dispatch'
-            || inputs.request_antagonistic_review }}
-      repositories: "${{ inputs.repositories || '' }}"
-      issues: "${{ inputs.issues || '' }}"
-      pull_requests: "${{ inputs.pull_requests || '' }}"
-      # A schedule passes no inputs; it revises before working issues.
-      revise: >-
-        ${{ github.event_name != 'workflow_dispatch' || inputs.revise }}
-      # The revise-only schedule, or the form's choice on a dispatch.
-      revise_only: >-
-        ${{ github.event.schedule == '17 * * * *'
-            || inputs.revise_only == true }}
-      outstanding_only: ${{ inputs.outstanding_only || false }}
-      continues_run: "${{ inputs.continues_run || '' }}"
+      allow_subagents: ${{ inputs.allow_subagents }}
+      include_dotgithub: ${{ inputs.include_dotgithub }}
+      load_repo_skills: ${{ inputs.load_repo_skills }}
+      allow_workflow_edits: ${{ inputs.allow_workflow_edits }}
+      request_review: ${{ inputs.request_review }}
+      request_antagonistic_review: ${{ inputs.request_antagonistic_review }}
+      issues: "${{ inputs.issues }}"
+      pull_requests: "${{ inputs.pull_requests }}"
+      revise: ${{ inputs.revise }}
+      revise_only: ${{ inputs.revise_only }}
+      outstanding_only: ${{ inputs.outstanding_only }}
+      continues_run: "${{ inputs.continues_run }}"
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       harden_runner_egress: 'block'
@@ -305,13 +256,13 @@ jobs:
   # dispatch with the workflow token starts a run: GitHub's rule
   # against recursive runs exempts workflow_dispatch. Each dispatch
   # is a named run that re-reads everything with outstanding_only and
-  # applies the scan's repository policy, author rule and work test,
-  # so a forged or stale entry costs one select job, or brings
-  # forward a round the scan would run. Each names this run as
-  # continues_run, and its select job skips a pull request on which
-  # this run published no counted round. Only a pull-requests run
-  # continues: no other mode moves a live pull request's head, so a
-  # forged output of a branches run must start no round. Setting the
+  # applies the revision scan's repository policy, author rule and
+  # work test, so a forged or stale entry costs one select job, or
+  # brings forward a round a revise-only run would start. Each names
+  # this run as continues_run, and its select job skips a pull request
+  # on which this run published no counted round. Only a pull-requests
+  # run continues: no other mode moves a live pull request's head, so
+  # a forged output of a branches run must start no round. Setting the
   # repository variable CODE_MONKEY_CONTINUE to 'false' stops the loop.
   continue:
     name: 'Continue rounds'
@@ -322,8 +273,8 @@ jobs:
       ${{ !cancelled()
       && needs.code-monkey.outputs.continue_pull_requests != ''
       && needs.code-monkey.outputs.continue_pull_requests != '[]'
-      && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
-      && (inputs.mode || 'pull-requests') == 'pull-requests'
+      && !inputs.dry_run
+      && inputs.mode == 'pull-requests'
       && vars.CODE_MONKEY_CONTINUE != 'false' }}
     runs-on: 'ubuntu-latest'
     timeout-minutes: 10
@@ -349,8 +300,9 @@ jobs:
       # a newline cannot pass as two, and one bad entry refuses the
       # whole list before any dispatch. One pull request per dispatch
       # keeps a failure to that pull request, and each loop at its own
-      # pace. A failed dispatch is a warning: the hourly scan still
-      # finds the pull request. The run's own switches go with it, so a
+      # pace. A failed dispatch is a warning: an operator's revise_only
+      # dispatch still finds the pull request. The run's own switches
+      # go with it, so a
       # dispatch that turned a review off keeps it off for the loop, and
       # one that trusted checkout skills or .github keeps them on.
       - name: 'Dispatch next rounds'
@@ -360,22 +312,16 @@ jobs:
           ORG: "${{ github.repository_owner }}"
           PULLS: "${{ needs.code-monkey.outputs.continue_pull_requests }}"
           PARENT_RUN: "${{ github.run_id }}"
-          # A schedule passes no inputs; it forwards the form defaults.
-          MODEL: "${{ inputs.model || 'Claude Opus 5.5' }}"
+          MODEL: "${{ inputs.model }}"
+          # A form field left blank forwards its default.
           RUNTIME: "${{ inputs.max_runtime_minutes || '180' }}"
           ROUNDS: "${{ inputs.max_rounds || '10' }}"
           STALE: "${{ inputs.stale_status_minutes || '8' }}"
-          SUBAGENTS: >-
-            ${{ github.event_name != 'workflow_dispatch'
-                || inputs.allow_subagents }}
-          REVIEW: >-
-            ${{ github.event_name != 'workflow_dispatch'
-                || inputs.request_review }}
-          ANTAGONISTIC: >-
-            ${{ github.event_name != 'workflow_dispatch'
-                || inputs.request_antagonistic_review }}
-          SKILLS: "${{ inputs.load_repo_skills || false }}"
-          DOTGITHUB: "${{ inputs.include_dotgithub || false }}"
+          SUBAGENTS: "${{ inputs.allow_subagents }}"
+          REVIEW: "${{ inputs.request_review }}"
+          ANTAGONISTIC: "${{ inputs.request_antagonistic_review }}"
+          SKILLS: "${{ inputs.load_repo_skills }}"
+          DOTGITHUB: "${{ inputs.include_dotgithub }}"
         run: |
           set -euo pipefail
           export LC_ALL=C
@@ -442,317 +388,3 @@ jobs:
             for pull in "${dispatched[@]}"; do echo "- dispatched: $pull"; done
             for pull in "${failed[@]}"; do echo "- failed: $pull"; done
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # Post the scheduled run's pull requests to Slack. Dispatches never
-  # post. The links come from the report, which cannot yet
-  # authenticate its results (docs/DESIGN.md 18.4), so the digest
-  # re-validates each one before it reaches the payload.
-  notify:
-    name: 'Notify Slack'
-    needs: [code-monkey]
-    if: >-
-      ${{ github.event_name == 'schedule' && !cancelled()
-      && needs.code-monkey.outputs.pull_request_count != '' }}
-    runs-on: 'ubuntu-latest'
-    timeout-minutes: 5
-    permissions: {}
-    environment: 'production'
-    steps:
-      - name: 'Load egress allow-list'
-        # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
-        with:
-          # yamllint disable-line rule:line-length
-          config: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
-          allow_list_summary: 'false'
-
-      - name: 'Harden runner'
-        # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
-        with:
-          egress-policy: 'block'
-          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
-
-      - name: 'Check Slack configuration'
-        id: slack
-        env:
-          SLACK_BOT_TOKEN: "${{ secrets.SLACK_BOT_TOKEN }}"
-          SLACK_CHANNEL_ID: "${{ vars.SLACK_CHANNEL_ID }}"
-        run: |
-          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
-            missing='SLACK_BOT_TOKEN or SLACK_CHANNEL_ID is not set'
-            echo "::warning::$missing; skipping the Slack notification"
-            echo "Slack notification skipped: $missing." \
-              >> "$GITHUB_STEP_SUMMARY"
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Each link is checked as a JSON string literal, so one holding
-      # a newline cannot pass as two lines. The payload below is
-      # inline YAML: the body is one line with literal \n separators.
-      - name: 'Build digest'
-        id: digest
-        if: steps.slack.outputs.configured == 'true'
-        env:
-          ORG: "${{ github.repository_owner }}"
-          PULL_REQUESTS: "${{ needs.code-monkey.outputs.pull_requests }}"
-          # yamllint disable-line rule:line-length
-          UNMERGEABLE: "${{ needs.code-monkey.outputs.unmergeable_pull_requests }}"
-          # yamllint disable-line rule:line-length
-          FAILING_CHECKS: "${{ needs.code-monkey.outputs.failing_check_pull_requests }}"
-          # yamllint disable-line rule:line-length
-          ANTAGONISTIC: "${{ needs.code-monkey.outputs.antagonistic_pull_requests }}"
-          RUN_RESULT: "${{ needs.code-monkey.result }}"
-          SELECTED: "${{ needs.code-monkey.outputs.selected_count }}"
-          REVISE_ONLY: >-
-            ${{ github.event.schedule == '17 * * * *'
-                || inputs.revise_only == true }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$ORG" =~ ^[A-Za-z0-9-]+$ ]]; then
-            echo "::error::Unexpected owner name"
-            exit 1
-          fi
-          pattern='^"https://github\.com/'"$ORG"'/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*"$'
-          # nocasematch folds case by the locale: under UTF-8 a dotless
-          # i matches i and gıthub.com would pass. Fold in ASCII alone.
-          export LC_ALL=C
-          if ! items=$(jq -r 'if type == "array" then .[] | @json
-              else error("not an array") end' <<< "$PULL_REQUESTS"); then
-            echo "::warning::The run's pull_requests output is not a JSON array"
-            items=''
-          fi
-          shopt -s nocasematch
-          urls=()
-          refused=0
-          while IFS= read -r item; do
-            [ -n "$item" ] || continue
-            if [[ "$item" =~ $pattern ]]; then
-              urls+=("${item:1:${#item}-2}")
-            else
-              refused=$((refused + 1))
-            fi
-          done <<< "$items"
-          shopt -u nocasematch
-          if [ "$refused" -gt 0 ]; then
-            echo "::warning::$refused pull request link(s) failed validation"
-          fi
-          # A conflicting head is listed apart from the ready ones; only
-          # a link already validated above can be named a conflict.
-          if ! conflicts=$(jq -r 'if type == "array" then .[] | @json
-              else error("not an array") end' <<< "${UNMERGEABLE:-[]}"); then
-            echo "::warning::The run's unmergeable output is not a JSON array"
-            conflicts=''
-          fi
-          ready=()
-          conflicting=()
-          for url in "${urls[@]}"; do
-            if grep -qixF -- "\"$url\"" <<< "$conflicts"; then
-              conflicting+=("$url")
-            else
-              ready+=("$url")
-            fi
-          done
-          # A ready link whose antagonistic review the run requested
-          # says so beside it, matched as owner/repo#N.
-          if ! antagonistic=$(jq -r 'if type == "array" then .[] | @json
-              else error("not an array") end' <<< "${ANTAGONISTIC:-[]}"); then
-            echo "::warning::The antagonistic output is not a JSON array"
-            antagonistic=''
-          fi
-          heading='_Conflicting with the default branch, so no CI ran;'
-          heading="$heading each needs a rebase, by a later round or,"
-          heading="$heading at the round cap, by a human:_"
-          count=${#urls[@]}
-          body=''
-          shown=0
-          lines=()
-          for url in "${ready[@]}"; do
-            path="${url#https://github.com/}"
-            ref="${path%%/pull/*}#${path##*/pull/}"
-            if [ -n "$antagonistic" ] &&
-              grep -qixF -- "\"$ref\"" <<< "$antagonistic"; then
-              lines+=("<$url> (antagonistic review requested)")
-            else
-              lines+=("<$url>")
-            fi
-          done
-          if [ "${#conflicting[@]}" -gt 0 ]; then
-            if [ "${#ready[@]}" -gt 0 ]; then
-              lines+=('')
-            fi
-            lines+=("$heading")
-            for url in "${conflicting[@]}"; do
-              lines+=("<$url>")
-            done
-          fi
-          for line in "${lines[@]}"; do
-            if [ "$shown" -ge 50 ] \
-              || [ $(( ${#body} + ${#line} + 2 )) -gt 2500 ]; then
-              break
-            fi
-            if [ -n "$body" ] || [ -z "$line" ]; then
-              body="$body\\n"
-            fi
-            body="$body$line"
-            if [[ "$line" == '<'* ]]; then
-              shown=$((shown + 1))
-            fi
-          done
-          if [ "$shown" -lt "$count" ]; then
-            body="$body\\n... and $((count - shown)) more"
-          fi
-          if [ "$count" -eq 0 ]; then
-            body='_No pull requests were raised._'
-          fi
-          # Counted, not listed: only a link validated above counts, and
-          # the run report names the checks.
-          if ! failing=$(jq -r 'if type == "array" then .[] | @json
-              else error("not an array") end' <<< "${FAILING_CHECKS:-[]}"); then
-            echo "::warning::The failing checks output is not a JSON array"
-            failing=''
-          fi
-          red=0
-          for url in "${urls[@]}"; do
-            if grep -qixF -- "\"$url\"" <<< "$failing"; then
-              red=$((red + 1))
-            fi
-          done
-          if [ "$red" -gt 0 ]; then
-            noun='pull requests'
-            if [ "$red" -eq 1 ]; then
-              noun='pull request'
-            fi
-            body="$body\\n\\n_$red $noun published with failing checks;"
-            body="$body see the run report._"
-          fi
-          if [ "$RUN_RESULT" != 'success' ]; then
-            failed='❌ _Some jobs in this run failed; see the workflow run._'
-            body="$body\\n\\n$failed"
-          fi
-          noun='pull requests'
-          if [ "$count" -eq 1 ]; then
-            noun='pull request'
-          fi
-          # A revise-only slot runs every hour; one that selected
-          # nothing, raised nothing, refused nothing and failed nothing
-          # stays quiet. A selected revision that came to no link, its
-          # proposal refused or its round abstained, still posts, as
-          # does a selection count that is missing or not 0.
-          post=true
-          if [ "${REVISE_ONLY:-false}" = true ]; then
-            noun="$noun revised"
-            revised='_Revise-only run: open pull requests revised,'
-            body="$body\\n\\n$revised no new issues worked._"
-            if [ "${SELECTED:-}" = 0 ] && [ "$count" -eq 0 ] \
-              && [ "$refused" -eq 0 ] && [ "$RUN_RESULT" = 'success' ]; then
-              post=false
-            fi
-          fi
-          {
-            printf 'text=%s\n' "🐒 Code Monkey: $count $noun for review"
-            printf 'body=%s\n' "$body"
-            echo "post=$post"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: 'Post to Slack'
-        if: >-
-          steps.slack.outputs.configured == 'true'
-          && steps.digest.outputs.post == 'true'
-        # yamllint disable-line rule:line-length
-        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
-        with:
-          method: 'chat.postMessage'
-          token: "${{ secrets.SLACK_BOT_TOKEN }}"
-          errors: true
-          payload: |
-            channel: "${{ vars.SLACK_CHANNEL_ID }}"
-            text: "${{ steps.digest.outputs.text }}"
-            blocks:
-              - type: "header"
-                text:
-                  type: "plain_text"
-                  text: "🐒 Code Monkey: pull requests for review"
-              - type: "section"
-                text:
-                  type: "mrkdwn"
-                  text: "${{ steps.digest.outputs.body }}"
-              - type: "context"
-                elements:
-                  - type: "mrkdwn"
-                    text: "<${{ github.server_url }}/${{ github.repository }}\
-                      /actions/runs/${{ github.run_id }}|View workflow run>"
-
-  # A scheduled run that failed or was cancelled with no digest
-  # posted says so rather than stay silent: the run failed before its
-  # report, or the digest job itself failed. A digest that succeeded
-  # has already noted any failed jobs, so this does not repeat it.
-  notify-failure:
-    name: 'Notify Slack of failure'
-    needs: [options, code-monkey, notify]
-    if: >-
-      ${{ github.event_name == 'schedule' && (failure() || cancelled())
-      && needs.notify.result != 'success' }}
-    runs-on: 'ubuntu-latest'
-    timeout-minutes: 5
-    permissions: {}
-    environment: 'production'
-    steps:
-      - name: 'Load egress allow-list'
-        # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
-        with:
-          # yamllint disable-line rule:line-length
-          config: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
-          allow_list_summary: 'false'
-
-      - name: 'Harden runner'
-        # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
-        with:
-          egress-policy: 'block'
-          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
-
-      - name: 'Check Slack configuration'
-        id: slack
-        env:
-          SLACK_BOT_TOKEN: "${{ secrets.SLACK_BOT_TOKEN }}"
-          SLACK_CHANNEL_ID: "${{ vars.SLACK_CHANNEL_ID }}"
-        run: |
-          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
-            missing='SLACK_BOT_TOKEN or SLACK_CHANNEL_ID is not set'
-            echo "::warning::$missing; skipping the Slack notification"
-            echo "Slack notification skipped: $missing." \
-              >> "$GITHUB_STEP_SUMMARY"
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: 'Post to Slack'
-        if: steps.slack.outputs.configured == 'true'
-        # yamllint disable-line rule:line-length
-        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
-        with:
-          method: 'chat.postMessage'
-          token: "${{ secrets.SLACK_BOT_TOKEN }}"
-          errors: true
-          payload: |
-            channel: "${{ vars.SLACK_CHANNEL_ID }}"
-            text: "🐒 Code Monkey: the nightly run failed"
-            blocks:
-              - type: "header"
-                text:
-                  type: "plain_text"
-                  text: "🐒 Code Monkey: nightly run failed"
-              - type: "section"
-                text:
-                  type: "mrkdwn"
-                  text: "The nightly run failed and no digest follows."
-              - type: "context"
-                elements:
-                  - type: "mrkdwn"
-                    text: "<${{ github.server_url }}/${{ github.repository }}\
-                      /actions/runs/${{ github.run_id }}|View workflow run>"

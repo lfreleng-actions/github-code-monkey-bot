@@ -10,11 +10,12 @@ SPDX-FileCopyrightText: 2026 The Linux Foundation
 [![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/github-code-monkey-bot) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/github-code-monkey-bot/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/github-code-monkey-bot)
 <!-- prettier-ignore-end -->
 
-Scheduled AI authoring of pull requests for open GitHub issues across
-the `lfreleng-actions` organisation. A reusable workflow selects the
-highest-ranked triaged issues, runs one Copilot CLI coding agent per
-repository against a checkout of that repository, and publishes the
-result as GitHub-signed commits on a bot branch with a pull request.
+Operator-dispatched AI authoring of pull requests for named GitHub
+issues across the `lfreleng-actions` organisation. A reusable
+workflow selects the issues a dispatch names, runs one Copilot CLI
+coding agent per repository against a checkout of that repository,
+and publishes the result as GitHub-signed commits on a bot branch
+with a pull request.
 Nothing merges without a maintainer.
 
 The [design document](docs/DESIGN.md) covers the architecture, the
@@ -64,53 +65,47 @@ switched off, and accept the App's installation and nothing else.
 The [design document](docs/DESIGN.md) section 4.3 explains the
 reasoning.
 
-## Schedule and dispatch
+## Dispatch
 
-`code-monkey-cron.yaml` runs live at 02:00 UTC on weekdays, so its
-pull requests are ready for review by the start of the European
-working day, and reads the previous working day's issues triage. It
-raises at most ten pull requests and posts them to Slack, one link
-per line, or says that it raised none; a failed scheduled run posts
-a failure notice instead. Disabling the workflow in the Actions UI
-stops it. Organisation
-administrators can dispatch it by hand, live unless they tick
-`dry_run`, and without a Slack post, with a model, a mode
-(`select`, `branches`, `pull-requests`), issue, runtime and round
-caps (`max_rounds` lifts the ten-round limit per antagonistic
-review round for one run; sixty rounds in all stays the ceiling),
+`code-monkey-cron.yaml` runs when an organisation administrator
+dispatches it, and at no other time: it has no schedule, and no run
+scans for new issues. A dispatch is live unless it ticks `dry_run`, and
+names its work: a
+list of issues to work (`repo#N`, `owner/repo#N` or URLs), a list of
+the bot's open pull requests to revise, or `revise_only`. The
+reusable workflow refuses a run that names none of them before it
+selects anything or mints a token. The form also sets a model, a
+mode (`select`, `branches`, `pull-requests`), issue, runtime and
+round caps (`max_rounds` lifts the ten-round limit per antagonistic
+review round for one run; sixty rounds in all stays the ceiling) and
 `stale_status_minutes` (default 8: past it, a pending pre-commit.ci
 status is stale, not waited for and not failing, and named in the
 comment; `30` lifts it during a pre-commit.ci incident and `0` waits
-as for any check), a category list, and either a repository list to
-scan or a list of issues to work outright (`repo#N`, `owner/repo#N` or URLs), which
-skips the scan and the triage filters. A scan works an issue from
-an organisation owner or member; an issue from anyone else, or from
-an App, waits for a maintainer to label it `agent-approved`.
-`no-agent` opts any issue out and wins over `agent-approved`. A list
-of the bot's open pull requests runs a revision round on each; an issue whose earlier
-attempt is still open gets a round too, and scheduled runs revise
-before they take new issues unless `revise` is off. A scan revises
-every such pull request in a repository, and takes no new issue
-from a repository with something else chosen in that run. A second
-schedule, with `revise_only`, runs every hour, every day, at 17
-minutes past: it revises the bot's open pull requests with work
-outstanding, takes no new issue, and stays silent in Slack unless it
-selected something or failed. The form's `revise_only` dispatches the
-same. When a live `pull-requests` run's round leaves a published pull
+as for any check). A named issue skips the triage filters and the
+author rule, since the operator vouches for it; `no-agent` still opts
+it out. A named issue whose earlier attempt is still open gets a
+revision round on that pull request instead, unless `revise` is off.
+`revise_only` revises the bot's open pull requests with work
+outstanding across the organisation and takes no new issue.
+
+When a live `pull-requests` run's round leaves a published pull
 request with work outstanding (review findings on its head, failing
 checks or a conflict), its outcome commented on the issue, below every
 round cap and with no antagonistic review requested, its `continue` job
 dispatches the next round of that pull request at once, one dispatch per
 pull request with `outstanding_only` set, the run's own options and
 switches, and `continues_run` naming the run. The continuation works no
-pull request the scan would not, under the same repository policy,
-author rule and work-outstanding test, nor one on which that run's
-outcome footer is missing, so the review cycle runs unattended until the
+pull request a `revise_only` run would not, under the same repository
+policy, author rule and work-outstanding test, nor one on which that
+run's outcome footer is missing, so the review cycle runs on until the
 review is clean, the bot hands the pull request back or it reaches a
 cap. Setting the repository variable `CODE_MONKEY_CONTINUE` to `false`
-stops that loop. Each run's name in the Actions list says what it works:
-the scan a schedule fired, or the pull requests, issues or repositories
-a dispatch named, and marks a dry run.
+stops that loop. Nothing else revisits a pull request: a Copilot review
+still pending when publish stops waiting for it, or a maintainer's
+comment or a failing check that arrives after the loop ends, waits for
+an operator's `revise_only` dispatch. Each run's name in the Actions
+list says what it works, the pull requests or issues named or a
+`revise_only` scan, and marks a dry run.
 
 ## Reusable workflow
 
@@ -130,7 +125,8 @@ jobs:
       # (docs/DESIGN.md 4.3), a live run names its targets here and
       # keeps to repositories whose workflows hold no secrets.
       dry_run: true
-      repositories: 'test-python-project'
+      # Name the work: no run scans for new issues.
+      issues: 'test-python-project#1'
       # Trusted jobs default to block mode; name the allow-list.
       harden_runner_allowlist: '@<allow-list commit sha>'
       # Optional: a further allow-list merged with the baseline, and

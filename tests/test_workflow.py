@@ -56,6 +56,10 @@ BLOCK_ACTION = "lfreleng-actions/harden-runner-block-action"
 CHECKOUT = "actions/checkout"
 APP_TOKEN = "actions/create-github-app-token"
 SPLITTER = "lfreleng-actions/list-splitter-action"
+# The input check's refusal of a run that names nothing (#196).
+SCAN_REFUSED = (
+    "scanning for new issues is off; name issues or pull_requests, or set revise_only"
+)
 DOWNLOAD = "actions/download-artifact"
 UPLOAD = "actions/upload-artifact"
 SETUP_UV = "astral-sh/setup-uv"
@@ -935,10 +939,8 @@ class RevisionContracts(ReusableWorkflowCase):
         self.assertIs(form["revise"]["default"], True)
         self.assertEqual(form["pull_requests"]["default"], "")
         with_ = cast(dict[str, Any], cron["jobs"]["code-monkey"]["with"])
-        self.assert_expression(with_["pull_requests"], "inputs.pull_requests || ''")
-        self.assert_expression(
-            with_["revise"], "github.event_name != 'workflow_dispatch' || inputs.revise"
-        )
+        self.assert_expression(with_["pull_requests"], "inputs.pull_requests")
+        self.assert_expression(with_["revise"], "inputs.revise")
 
     def test_author_fetches_the_bot_branch_without_a_credential(self) -> None:
         """The fork is public; the fetch names it and checks the head it recorded."""
@@ -1089,9 +1091,9 @@ class RevisionContracts(ReusableWorkflowCase):
             moved = (
                 f"code-monkey/issue-7 in forks/repo moved from {first[:7]} to "
                 f"{second[:7]} after this run selected it. Another run has "
-                "revised this pull request since (a named dispatch or the "
-                "schedule); its work stands, and this round made no change. "
-                "The next scan picks the pull request up at its new head."
+                "revised this pull request since (a named or revise-only "
+                "dispatch); its work stands, and this round made no change. "
+                "A later round starts from the pull request's new head."
             )
             self.assertEqual(code, 0)
             self.assertEqual(stdout, f"::warning::Skipped: {moved}\n")
@@ -1473,7 +1475,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         )
 
     def test_caller_forwards_the_gate_on_by_default(self) -> None:
-        """The cron form offers the switch; schedules and dispatches default on."""
+        """The cron form offers the switch, on by default, and forwards it."""
         cron = cast(
             dict[str | bool, Any], yaml.safe_load(CRON.read_text(encoding="utf-8"))
         )
@@ -1482,10 +1484,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         )
         self.assertIs(inputs["request_review"]["default"], True)
         with_ = cast(dict[str, Any], cron["jobs"]["code-monkey"]["with"])
-        self.assert_expression(
-            with_["request_review"],
-            "github.event_name != 'workflow_dispatch' || inputs.request_review",
-        )
+        self.assert_expression(with_["request_review"], "inputs.request_review")
 
     def test_wait_reads_the_checks_with_the_native_token_alone(self) -> None:
         """The checks share the wait's step and token; no secret reaches it (#110)."""
@@ -2431,7 +2430,6 @@ class ListInputContracts(ReusableWorkflowCase):
 
     # Splitter step id and validate mode for each list input.
     LISTS: ClassVar[dict[str, tuple[str, str]]] = {
-        "repositories": ("repositories", "repository"),
         "exclude_repos": ("exclusions", "repository"),
         "issues": ("issues", "issue"),
         "pull_requests": ("pulls", "pull-request"),
@@ -2460,19 +2458,17 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
-    def test_named_issues_scope_the_read_mint_and_exclude_a_scan(self) -> None:
-        """Issues scope the token to the repositories that exist; with a scan they fail."""
+    def test_named_issues_scope_the_read_mint(self) -> None:
+        """Issues scope the token to the repositories that exist."""
         budget = self.step("select", "budget")
         env = cast(dict[str, Any], budget["env"])
         self.assert_expression(
             env["ISSUE_REPOSITORIES"], "steps.named.outputs.repositories"
         )
         self.assert_expression(env["ISSUE_COUNT"], "steps.issues.outputs.count")
-        self.assert_expression(
-            env["REPOSITORY_COUNT"], "steps.repositories.outputs.count"
-        )
+        self.assertNotIn("REPOSITORY_COUNT", env)
         script = squash(str(budget["run"]))
-        self.assertIn("::error::issues and repositories cannot both be given", script)
+        self.assertIn('repositories="$ISSUE_REPOSITORIES"', script)
         select = cast(dict[str, Any], self.step("select", "Select issues")["env"])
         self.assert_expression(select["ISSUES"], "steps.issues.outputs.csv")
         self.assert_expression(select["PULL_REQUESTS"], "steps.pulls.outputs.csv")
@@ -2492,20 +2488,18 @@ class ListInputContracts(ReusableWorkflowCase):
         )
 
     def test_a_list_given_but_naming_nothing_is_refused(self) -> None:
-        """Separators alone fail the input check instead of scanning.
+        """Separators alone fail the input check with a message of their own.
 
         The concurrency group tests the raw issues input and selection
         the split one, so a list that parses to nothing would take a
-        per-run lock and then scan. The check reads both, before the
-        selection and the mint.
+        per-run lock and then name nothing. The check reads both,
+        before the selection and the mint.
         """
         budget = self.step("select", "budget")
         env = cast(dict[str, Any], budget["env"])
         self.assert_expression(env["ISSUES_RAW"], "inputs.issues")
-        self.assert_expression(env["REPOSITORIES_RAW"], "inputs.repositories")
         script = squash(str(budget["run"]))
         self.assertIn("::error::issues was given but names no issue", script)
-        self.assertIn("::error::repositories was given but names no repository", script)
         self.assert_expression(env["PULL_REQUESTS_RAW"], "inputs.pull_requests")
         self.assertIn(
             "::error::pull_requests was given but names no pull request", script
@@ -2527,9 +2521,6 @@ class ListInputContracts(ReusableWorkflowCase):
             "STALE_MINUTES": "8",
             "MAX_AGENTS": "1",
             "MODEL": "auto",
-            "REPOSITORIES": "",
-            "REPOSITORIES_RAW": "",
-            "REPOSITORY_COUNT": "0",
             "ISSUE_REPOSITORIES": "",
             "ISSUES_RAW": "",
             "ISSUE_COUNT": "0",
@@ -2540,7 +2531,7 @@ class ListInputContracts(ReusableWorkflowCase):
             (" , ", "0", "pull_requests was given but names no pull request"),
             (",", "0", "pull_requests was given but names no pull request"),
             ("repo#41", "1", None),
-            ("", "0", None),
+            ("", "0", SCAN_REFUSED),
         ):
             with (
                 self.subTest(pull_requests=raw),
@@ -2566,8 +2557,8 @@ class ListInputContracts(ReusableWorkflowCase):
                     self.assertIn(f"::error::{error}", proc.stdout)
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    def test_only_an_empty_list_means_a_scan(self) -> None:
-        """An empty list scans; one that parsed to nothing fails."""
+    def test_a_run_naming_nothing_is_refused(self) -> None:
+        """No list and no revise_only would scan for issues: the check refuses it."""
         budget = self.step("select", "budget")
         env = {
             "PATH": os.environ["PATH"],
@@ -2578,25 +2569,25 @@ class ListInputContracts(ReusableWorkflowCase):
             "STALE_MINUTES": "8",
             "MAX_AGENTS": "1",
             "MODEL": "auto",
-            "REPOSITORIES": "",
             "ISSUE_REPOSITORIES": "",
             "PULL_COUNT": "0",
             "PULL_REQUESTS_RAW": "",
+            "REVISE": "true",
             "ORG": "o",
             "GUIDANCE_REPOSITORY": "o/.github",
         }
         cases = (
-            ("", "0", "", "0", None),
-            (" , ", "0", "", "0", "issues was given but names no issue"),
-            (",", "0", "", "0", "issues was given but names no issue"),
-            (" ", "0", "", "0", "issues was given but names no issue"),
-            ("", "0", " , ", "0", "repositories was given but names no repository"),
-            ("repo#1", "1", "", "0", None),
-            ("", "0", "repo", "1", None),
+            ("", "0", "false", SCAN_REFUSED),
+            ("", "", "false", SCAN_REFUSED),
+            (" , ", "0", "false", "issues was given but names no issue"),
+            (",", "0", "false", "issues was given but names no issue"),
+            (" ", "0", "false", "issues was given but names no issue"),
+            ("repo#1", "1", "false", None),
+            ("", "0", "true", None),
         )
-        for issues, issue_count, repos, repo_count, error in cases:
+        for issues, issue_count, revise_only, error in cases:
             with (
-                self.subTest(issues=issues, repositories=repos),
+                self.subTest(issues=issues, count=issue_count, revise_only=revise_only),
                 tempfile.TemporaryDirectory() as holder,
             ):
                 output = Path(holder) / "output"
@@ -2606,8 +2597,7 @@ class ListInputContracts(ReusableWorkflowCase):
                         **env,
                         "ISSUES_RAW": issues,
                         "ISSUE_COUNT": issue_count,
-                        "REPOSITORIES_RAW": repos,
-                        "REPOSITORY_COUNT": repo_count,
+                        "REVISE_ONLY": revise_only,
                         "GITHUB_OUTPUT": str(output),
                     },
                     capture_output=True,
@@ -2620,6 +2610,14 @@ class ListInputContracts(ReusableWorkflowCase):
                     self.assertEqual(proc.returncode, 1)
                     self.assertIn(f"::error::{error}", proc.stdout)
                     self.assertFalse(output.exists())
+
+    def test_the_scan_refusal_precedes_selection_and_the_mint(self) -> None:
+        """The refusal sits in the input check, before any token or read."""
+        script = squash(str(self.step("select", "budget")["run"]))
+        self.assertIn("::error::scanning for new issues is off;", script)
+        check = self.position("select", "budget")
+        self.assertLess(check, self.position("select", "app-token"))
+        self.assertLess(check, self.position("select", "Select issues"))
 
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
@@ -2640,9 +2638,7 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assert_expression(
             env["PULL_REPOSITORIES"], "steps.pulls.outputs.repositories"
         )
-        self.assert_expression(
-            env["REPOSITORIES"], "steps.repositories.outputs.repositories"
-        )
+        self.assertNotIn("REPOSITORIES", env)
         script = squash(str(named["run"]))
         self.assertIn("HTTP 404", script)
         # Readable is not public: the native token reads the private
@@ -2650,7 +2646,6 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertIn("--jq .private", script)
         self.assertIn('[ "$output" = false ]', script)
         self.assertIn("::error::none of the named issues' repositories exist", script)
-        self.assertIn("::error::repository", script)
         self.assertLess(
             self.position("select", "issues"), self.position("select", "named")
         )
@@ -2659,12 +2654,10 @@ class ListInputContracts(ReusableWorkflowCase):
         )
 
     def test_read_mint_scope_derives_from_the_split_list(self) -> None:
-        """The scope is the splitter's names plus the guidance repository."""
+        """The scope is the resolved names plus the guidance repository."""
         budget = self.step("select", "budget")
         env = cast(dict[str, Any], budget["env"])
-        self.assert_expression(
-            env["REPOSITORIES"], "steps.repositories.outputs.repositories"
-        )
+        self.assertNotIn("REPOSITORIES", env)
         script = squash(str(budget["run"]))
         for tool in ("tr ", "sed ", "paste "):
             self.assertNotIn(tool, script)
@@ -2678,12 +2671,12 @@ class ListInputContracts(ReusableWorkflowCase):
     def test_selection_reads_the_split_lists(self) -> None:
         """The raw inputs reach the splitters and nothing else.
 
-        The input check alone also sees the raw issues, repositories
-        and pull requests, under names of their own, to tell an absent
-        list from one that parsed to nothing.
+        The input check alone also sees the raw issues and pull
+        requests, under names of their own, to tell an absent list from
+        one that parsed to nothing.
         """
         env = cast(dict[str, Any], self.step("select", "Select issues")["env"])
-        self.assert_expression(env["REPOSITORIES"], "steps.repositories.outputs.csv")
+        self.assertNotIn("REPOSITORIES", env)
         self.assert_expression(env["EXCLUDE_REPOS"], "steps.exclusions.outputs.csv")
         splitters = {id(s) for s in self.actions("select", SPLITTER)}
         budget = self.step("select", "budget")
@@ -2701,17 +2694,23 @@ class ListInputContracts(ReusableWorkflowCase):
                             "env": {
                                 k: v
                                 for k, v in step["env"].items()
-                                if k
-                                not in (
-                                    "ISSUES_RAW",
-                                    "REPOSITORIES_RAW",
-                                    "PULL_REQUESTS_RAW",
-                                )
+                                if k not in ("ISSUES_RAW", "PULL_REQUESTS_RAW")
                             },
                         }
                     text = json.dumps(checked)
                     for name in self.LISTS:
                         self.assertNotRegex(text, rf"inputs\.{name}\b")
+
+    def test_scan_only_inputs_are_gone(self) -> None:
+        """No input names repositories to scan, categories or assignees (#196)."""
+        inputs = cast(dict[str, Any], self.triggers["workflow_call"]["inputs"])
+        for name in ("repositories", "categories", "include_assigned"):
+            with self.subTest(input=name):
+                self.assertNotIn(name, inputs)
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        for flag in ("--repositories", "--categories", "--include-assigned"):
+            with self.subTest(flag=flag):
+                self.assertNotIn(flag, text)
 
 
 @unittest.skipUnless(shutil.which("bash"), "needs bash")
@@ -2726,7 +2725,7 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
     )
 
     def resolve(self, stdout: str, stderr: str, status: int) -> tuple[int, str]:
-        """Run the step on one scan repository against a stub gh."""
+        """Run the step on one named issue's repository against a stub gh."""
         script = str(self.step("select", "named")["run"])
         with tempfile.TemporaryDirectory() as holder:
             stub = Path(holder) / "gh"
@@ -2737,8 +2736,7 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
                 env={
                     "PATH": f"{holder}{os.pathsep}{os.environ['PATH']}",
                     "ORG": "o",
-                    "REPOSITORIES": "repo",
-                    "ISSUE_REPOSITORIES": "",
+                    "ISSUE_REPOSITORIES": "repo",
                     "PULL_REPOSITORIES": "",
                     "GITHUB_OUTPUT": str(Path(holder) / "output"),
                     "GH_STDOUT": stdout,
@@ -2757,8 +2755,8 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
         self.assertEqual(status, 0, output)
 
     def test_failures_are_told_apart_by_stderr(self) -> None:
-        """Private and absent reject the name; anything else is an error."""
-        rejected = "::error::repository o/repo not found or not public"
+        """Private and absent drop the name; anything else is an error."""
+        rejected = "::error::none of the named issues' repositories exist"
         failed = "::error::Could not read o/repo: gh: Server Error (HTTP 502)"
         cases = (
             ("true\\n", "", 0, 1, rejected),
@@ -2772,12 +2770,6 @@ class NamedRepositoryContracts(ReusableWorkflowCase):
                 self.assertIn(message, output)
 
 
-REVISE_ONLY_CRON = "17 * * * *"
-REVISE_ONLY = (
-    f"github.event.schedule == '{REVISE_ONLY_CRON}' || inputs.revise_only == true"
-)
-
-
 class ReviseOnlyContracts(ReusableWorkflowCase):
     """A revise-only run revises open bot pull requests and works no issue (#113)."""
 
@@ -2789,9 +2781,6 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         "STALE_MINUTES": "8",
         "MAX_AGENTS": "1",
         "MODEL": "auto",
-        "REPOSITORIES": "",
-        "REPOSITORIES_RAW": "",
-        "REPOSITORY_COUNT": "0",
         "ISSUE_REPOSITORIES": "",
         "ISSUES_RAW": "",
         "ISSUE_COUNT": "0",
@@ -2831,11 +2820,7 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
             ({"PULL_REQUESTS_RAW": "a#2", "PULL_COUNT": "1"}, None),
             (
                 {"ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"},
-                "revise_only cannot be given with issues or repositories",
-            ),
-            (
-                {"REPOSITORIES_RAW": "a", "REPOSITORY_COUNT": "1"},
-                "revise_only cannot be given with issues or repositories",
+                "revise_only cannot be given with issues",
             ),
             ({"MODE": "branches"}, "revise_only needs pull-requests mode"),
             ({"MODE": "select"}, "revise_only needs pull-requests mode"),
@@ -2868,20 +2853,15 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
 
 
 class ReviseOnlyCallerContracts(WorkflowCase):
-    """The caller's revise-only schedule, form input and lock (#113)."""
+    """The caller's revise-only form input and lock (#113, #196)."""
 
     WORKFLOW = CRON
 
-    def test_second_schedule_sets_revise_only(self) -> None:
-        """The weekday 02:00 scan stays; an hourly slot revises alone."""
-        self.assertEqual(
-            self.triggers["schedule"],
-            [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],
-        )
+    def test_the_form_alone_sets_revise_only(self) -> None:
+        """No schedule sets it: an operator's dispatch is the only source."""
+        self.assertNotIn("schedule", self.triggers)
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
-        self.assert_expression(with_["revise_only"], REVISE_ONLY)
-        env = cast(dict[str, Any], self.step("notify", "digest")["env"])
-        self.assert_expression(env["REVISE_ONLY"], REVISE_ONLY)
+        self.assert_expression(with_["revise_only"], "inputs.revise_only")
 
     def test_dispatch_form_offers_revise_only(self) -> None:
         """A boolean, off by default; the form stays inside GitHub's 25."""
@@ -2890,10 +2870,10 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 23)
+        self.assertEqual(len(inputs), 20)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
-        """A revise-only run queues behind a full scan, never beside it."""
+        """Two live revise-only runs queue one behind the other."""
         group = unwrap(str(cast(dict[str, Any], self.workflow["concurrency"])["group"]))
         self.assertNotIn("revise_only", group)
         self.assertNotIn("schedule", group)
@@ -2982,8 +2962,7 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         caller = cron["jobs"]["code-monkey"]
         self.assert_expression(
             caller["with"]["request_antagonistic_review"],
-            "github.event_name != 'workflow_dispatch'"
-            " || inputs.request_antagonistic_review",
+            "inputs.request_antagonistic_review",
         )
         self.assert_expression(
             caller["secrets"]["antagonistic_dispatch_token"],
@@ -3178,11 +3157,12 @@ class OutstandingOnlyContracts(ReusableWorkflowCase):
         error = "outstanding_only needs pull_requests alone"
         cases: tuple[tuple[dict[str, str], str | None], ...] = (
             (pulls, None),
-            ({"OUTSTANDING_ONLY": "false"}, None),
-            ({}, error),
-            ({"PULL_COUNT": ""}, error),
+            ({**pulls, "OUTSTANDING_ONLY": "false"}, None),
+            # Naming nothing is refused before outstanding_only is read.
+            ({}, SCAN_REFUSED),
+            ({"PULL_COUNT": ""}, SCAN_REFUSED),
             ({**pulls, "ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"}, error),
-            ({"REPOSITORIES_RAW": "a", "REPOSITORY_COUNT": "1"}, error),
+            ({"ISSUES_RAW": "a#1", "ISSUE_COUNT": "1"}, error),
             ({**pulls, "CONTINUES_RUN": "42"}, None),
             (
                 {**pulls, "CONTINUES_RUN": "42", "OUTSTANDING_ONLY": "false"},
@@ -3273,7 +3253,7 @@ class ContinueJobContracts(WorkflowCase):
         self.assertIs(inputs["outstanding_only"]["default"], False)
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
         self.assert_expression(
-            str(with_["outstanding_only"]), "inputs.outstanding_only || false"
+            str(with_["outstanding_only"]), "inputs.outstanding_only"
         )
 
     def test_form_offers_continues_run_and_forwards_it(self) -> None:
@@ -3284,9 +3264,7 @@ class ContinueJobContracts(WorkflowCase):
         self.assertEqual(inputs["continues_run"]["type"], "string")
         self.assertEqual(inputs["continues_run"]["default"], "")
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
-        self.assert_expression(
-            str(with_["continues_run"]), "inputs.continues_run || ''"
-        )
+        self.assert_expression(str(with_["continues_run"]), "inputs.continues_run")
         env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
         self.assert_expression(env["PARENT_RUN"], "github.run_id")
 
@@ -3311,8 +3289,8 @@ class ContinueJobContracts(WorkflowCase):
             "!cancelled()"
             " && needs.code-monkey.outputs.continue_pull_requests != ''"
             " && needs.code-monkey.outputs.continue_pull_requests != '[]'"
-            " && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)"
-            " && (inputs.mode || 'pull-requests') == 'pull-requests'"
+            " && !inputs.dry_run"
+            " && inputs.mode == 'pull-requests'"
             " && vars.CODE_MONKEY_CONTINUE != 'false'",
         )
 
@@ -3320,23 +3298,20 @@ class ContinueJobContracts(WorkflowCase):
         """A forged output of a branches or select run starts no round (#179).
 
         Every continuation is dispatched in pull-requests mode, so the
-        parent's own mode, trusted input, gates it; a schedule passes
-        none and runs pull-requests mode.
+        parent's own mode, trusted input, gates it.
         """
         condition = str(self.jobs["continue"]["if"])
         forged = '["lfreleng-actions/a#1"]'
         cases = (
-            ("workflow_dispatch", "pull-requests", forged, True),
-            ("workflow_dispatch", "branches", forged, False),
-            ("workflow_dispatch", "select", forged, False),
-            ("schedule", "", forged, True),
-            ("workflow_dispatch", "pull-requests", "[]", False),
-            ("workflow_dispatch", "pull-requests", "", False),
+            ("pull-requests", forged, True),
+            ("branches", forged, False),
+            ("select", forged, False),
+            ("pull-requests", "[]", False),
+            ("pull-requests", "", False),
         )
-        for event, mode, pulls, expected in cases:
-            with self.subTest(event=event, mode=mode, pulls=pulls):
+        for mode, pulls, expected in cases:
+            with self.subTest(mode=mode, pulls=pulls):
                 context = {
-                    "github.event_name": event,
                     "inputs.mode": mode,
                     "inputs.dry_run": False,
                     "needs.code-monkey.outputs.continue_pull_requests": pulls,
@@ -3344,7 +3319,6 @@ class ContinueJobContracts(WorkflowCase):
                 }
                 self.assertIs(bool(evaluate(condition, context)), expected)
         dry = {
-            "github.event_name": "workflow_dispatch",
             "inputs.mode": "pull-requests",
             "inputs.dry_run": True,
             "needs.code-monkey.outputs.continue_pull_requests": '["o/r#1"]',
@@ -3367,25 +3341,18 @@ class ContinueJobContracts(WorkflowCase):
     def test_options_are_forwarded_with_the_form_defaults(self) -> None:
         """The loop keeps the operator's model, runtime, rounds and switches."""
         env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
-        self.assert_expression(env["MODEL"], "inputs.model || 'Claude Opus 5.5'")
+        self.assert_expression(env["MODEL"], "inputs.model")
         self.assert_expression(env["RUNTIME"], "inputs.max_runtime_minutes || '180'")
         self.assert_expression(env["ROUNDS"], "inputs.max_rounds || '10'")
         self.assert_expression(env["STALE"], "inputs.stale_status_minutes || '8'")
+        self.assert_expression(env["SUBAGENTS"], "inputs.allow_subagents")
+        self.assert_expression(env["REVIEW"], "inputs.request_review")
         self.assert_expression(
-            env["SUBAGENTS"],
-            "github.event_name != 'workflow_dispatch' || inputs.allow_subagents",
+            env["ANTAGONISTIC"], "inputs.request_antagonistic_review"
         )
-        self.assert_expression(
-            env["REVIEW"],
-            "github.event_name != 'workflow_dispatch' || inputs.request_review",
-        )
-        self.assert_expression(
-            env["ANTAGONISTIC"],
-            "github.event_name != 'workflow_dispatch'"
-            " || inputs.request_antagonistic_review",
-        )
-        self.assert_expression(env["SKILLS"], "inputs.load_repo_skills || false")
-        self.assert_expression(env["DOTGITHUB"], "inputs.include_dotgithub || false")
+        self.assert_expression(env["SKILLS"], "inputs.load_repo_skills")
+        self.assert_expression(env["DOTGITHUB"], "inputs.include_dotgithub")
+        self.assertNotIn("github.event", dumped(self.jobs["continue"]))
 
     def dispatch(
         self, pulls: object, fail: str = "", **overrides: str
@@ -3581,7 +3548,12 @@ class StaleStatusContracts(ReusableWorkflowCase):
         budget = self.step("select", "budget")
         env = cast(dict[str, Any], budget["env"])
         self.assert_expression(env["STALE_MINUTES"], "inputs.stale_status_minutes")
-        base = {**ReviseOnlyContracts.BUDGET_ENV, "REVISE_ONLY": "false"}
+        base = {
+            **ReviseOnlyContracts.BUDGET_ENV,
+            "REVISE_ONLY": "false",
+            "PULL_REQUESTS_RAW": "a#2",
+            "PULL_COUNT": "1",
+        }
         for value, passes in (
             ("0", True),
             ("8", True),
@@ -3646,7 +3618,6 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "dry_run",
                 "model",
                 "max_pull_requests",
-                "categories",
                 "issues",
                 "pull_requests",
                 "revise",
@@ -3659,13 +3630,11 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "max_concurrent_agents",
                 "allow_subagents",
                 "include_dotgithub",
-                "include_assigned",
                 "load_repo_skills",
                 "allow_workflow_edits",
                 "request_review",
                 "request_antagonistic_review",
                 "antagonistic_repository",
-                "repositories",
                 "exclude_repos",
                 "guidance_repository",
                 "guidance_ref",
@@ -3703,14 +3672,12 @@ class InterfaceContracts(ReusableWorkflowCase):
             "mode": "pull-requests",
             "model": "claude-opus-5.5",
             "max_pull_requests": "10",
-            "categories": "all",
             "max_runtime_minutes": "180",
             "max_rounds": "10",
             "stale_status_minutes": "8",
             "max_concurrent_agents": "10",
             "allow_subagents": True,
             "include_dotgithub": False,
-            "include_assigned": False,
             "load_repo_skills": False,
             "allow_workflow_edits": False,
             "request_review": True,
@@ -3837,7 +3804,7 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
     def test_callers_forward_the_switch(self) -> None:
         """Both dispatch forms offer it, off; every call passes it on."""
         for path, job, expected in (
-            (CRON, "code-monkey", "inputs.allow_workflow_edits || false"),
+            (CRON, "code-monkey", "inputs.allow_workflow_edits"),
             (TESTING, "dry-run", "inputs.allow_workflow_edits || false"),
         ):
             with self.subTest(workflow=path.name):
@@ -3856,63 +3823,52 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
 
 
 class CronCallerContracts(WorkflowCase):
-    """The scheduled caller: schedule, dispatch form and what it forwards."""
+    """The dispatch-only caller: triggers, dispatch form and what it forwards."""
 
     WORKFLOW = CRON
 
-    def test_schedule_and_concurrency(self) -> None:
-        """Weekday 02:00 UTC and revise-only slots; scans share a group."""
-        self.assertEqual(
-            self.triggers["schedule"],
-            [{"cron": "0 2 * * 1-5"}, {"cron": REVISE_ONLY_CRON}],
-        )
+    def test_no_schedule_and_dispatch_concurrency(self) -> None:
+        """A dispatch is the only trigger; revise-only dispatches share a group."""
+        self.assertEqual(list(self.triggers), ["workflow_dispatch"])
         concurrency = cast(dict[str, Any], self.workflow["concurrency"])
         self.assert_expression(
             str(concurrency["group"]),
-            "github.event_name == 'workflow_dispatch' && inputs.dry_run"
+            "inputs.dry_run"
             " && format('code-monkey-dry-run-{0}', github.run_id)"
-            " || github.event_name == 'workflow_dispatch'"
-            " && (inputs.issues != '' || inputs.pull_requests != '')"
+            " || (inputs.issues != '' || inputs.pull_requests != '')"
             " && format('code-monkey-named-{0}', github.run_id)"
             " || 'code-monkey'",
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
         self.assertEqual(concurrency["queue"], "max")
 
+    def test_no_schedule_only_expression_remains(self) -> None:
+        """Nothing tests the event or a cron, and nothing posts to Slack (#196)."""
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        for fragment in ("github.event_name", "github.event.schedule", "SLACK_"):
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment, text)
+        self.assertEqual(set(self.jobs), {"options", "code-monkey", "continue"})
+
     def test_run_name_says_what_the_run_works(self) -> None:
-        """The Actions list tells a full scan, a slot and each dispatch apart.
+        """The Actions list tells each dispatch apart.
 
         The name keeps the workflow's own as its prefix so the sidebar
-        still groups by workflow. A schedule names which cron fired; a
-        dispatch names its pull requests, else its issues, else its
-        repositories, else a revise-only or plain scan, and a dry run
-        says so.
+        still groups by workflow. A dispatch names its pull requests,
+        else its issues, else a revise-only scan; one naming none of
+        them fails the input check, and a dry run says so.
         """
         name = str(self.workflow["name"])
-        full_scan = cast(list[dict[str, str]], self.triggers["schedule"])[0]["cron"]
         run_name = unwrap(str(self.workflow["run-name"]))
         self.assertTrue(run_name.startswith(f"format('{name}: "), run_name)
-        for reference in (
-            "inputs.pull_requests",
-            "inputs.issues",
-            "inputs.repositories",
-            "github.event.schedule",
-        ):
-            with self.subTest(reference=reference):
-                self.assertIn(reference, run_name)
         self.assert_expression(
             run_name,
             f"format('{name}: {{0}}{{1}}',"
-            " github.event_name == 'schedule'"
-            f" && (github.event.schedule == '{full_scan}'"
-            " && 'full scan' || 'revise-only scan')"
-            " || inputs.pull_requests != ''"
+            " inputs.pull_requests != ''"
             " && format('revise {0}', inputs.pull_requests)"
             " || inputs.issues != '' && format('work {0}', inputs.issues)"
-            " || inputs.repositories != ''"
-            " && format('scan {0}', inputs.repositories)"
             " || inputs.revise_only && 'revise-only scan'"
-            " || 'scan',"
+            " || 'nothing named',"
             " inputs.dry_run && ' (dry run)' || '')",
         )
 
@@ -3945,12 +3901,9 @@ class CronCallerContracts(WorkflowCase):
             "max_concurrent_agents": "10",
             "allow_subagents": True,
             "include_dotgithub": False,
-            "include_assigned": False,
             "load_repo_skills": False,
             "allow_workflow_edits": False,
-            "repositories": "",
             "issues": "",
-            "categories": "all",
             "revise_only": False,
             "outstanding_only": False,
             "continues_run": "",
@@ -3960,15 +3913,19 @@ class CronCallerContracts(WorkflowCase):
                 actual: object = inputs[name]["default"]
                 self.assertIs(type(actual), type(default))
                 self.assertEqual(actual, default)
+        for name in ("repositories", "categories", "include_assigned"):
+            with self.subTest(gone=name):
+                self.assertNotIn(name, inputs)
         # GitHub caps a dispatch form at 25 inputs.
         self.assertLessEqual(len(inputs), 25)
 
-    def test_categories_and_targets_are_forwarded_as_typed(self) -> None:
-        """One categories string and the target lists reach the reusable workflow."""
+    def test_targets_are_forwarded_as_typed(self) -> None:
+        """The target lists reach the reusable workflow; no scan input does."""
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
-        self.assert_expression(with_["categories"], "inputs.categories || 'all'")
-        self.assert_expression(with_["issues"], "inputs.issues || ''")
-        self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assert_expression(with_["issues"], "inputs.issues")
+        for name in ("repositories", "categories", "include_assigned"):
+            with self.subTest(gone=name):
+                self.assertNotIn(name, with_)
         self.assert_expression(
             with_["stale_status_minutes"], "inputs.stale_status_minutes || '8'"
         )
@@ -4002,15 +3959,12 @@ class CronCallerContracts(WorkflowCase):
         self.assertEqual(sorted(re.findall(r"'([^']+)'", block.group(1))), sorted(arms))
 
     def test_caller_forwards_credentials_and_pins_assets(self) -> None:
-        """Scheduled runs are live; secrets and App id come from org config."""
+        """A dispatch is live unless dry; secrets and App id come from org config."""
         job = self.jobs["code-monkey"]
         self.assertEqual(job["uses"], REUSABLE_CALL)
         with_ = cast(dict[str, Any], job["with"])
         self.assert_expression(with_["model"], "needs.options.outputs.model")
-        self.assert_expression(
-            with_["dry_run"],
-            "github.event_name == 'workflow_dispatch' && inputs.dry_run",
-        )
+        self.assert_expression(with_["dry_run"], "inputs.dry_run")
         self.assertIn(
             "vars.BOT_APP_CLIENT_ID", unwrap(str(with_["github_app_client_id"]))
         )
@@ -4059,340 +4013,11 @@ class CronCallerContracts(WorkflowCase):
         self.assert_pinned_steps()
 
 
-SLACK_ACTION = "slackapi/slack-github-action"
-SLACK_JOBS = ("notify", "notify-failure")
-SLACK_TOKEN = "secrets.SLACK_BOT_TOKEN"
-SLACK_STEPS = ("Check Slack configuration", "Post to Slack")
-PULL_URL = "https://github.com/lfreleng-actions/{}/pull/{}"
-
-
-class CronSlackContracts(WorkflowCase):
-    """The scheduled run's Slack digest and failure notice (issue #73)."""
-
-    WORKFLOW = CRON
-
-    def test_slack_jobs_run_in_production_without_permissions(self) -> None:
-        """The environment scopes the Slack secret; the jobs hold no token."""
-        for name in SLACK_JOBS:
-            with self.subTest(job=name):
-                job = self.jobs[name]
-                self.assertEqual(job["environment"], "production")
-                self.assertEqual(job["permissions"], {})
-                self.assertEqual(job["runs-on"], "ubuntu-latest")
-                self.assertLessEqual(int(job["timeout-minutes"]), 10)
-
-    def test_slack_jobs_harden_first_in_block_mode(self) -> None:
-        """The loader and harden-runner lead, with the forwarded allow-list."""
-        forwarded = self.jobs["code-monkey"]["with"]["harden_runner_allowlist"]
-        for name in SLACK_JOBS:
-            with self.subTest(job=name):
-                steps = self.steps(name)
-                self.assertTrue(is_action(steps[0], BLOCK_ACTION))
-                self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
-                self.assertEqual(steps[0]["with"]["config"], forwarded)
-                self.assertEqual(steps[1]["with"]["egress-policy"], "block")
-                self.assert_expression(
-                    steps[1]["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
-                )
-                self.assertEqual(steps[2]["name"], "Check Slack configuration")
-                self.assertTrue(is_action(steps[-1], SLACK_ACTION))
-
-    def test_slack_token_stays_in_the_slack_steps(self) -> None:
-        """No other job, nor any other step of the Slack jobs, sees the token."""
-        for name, job in self.jobs.items():
-            if name not in SLACK_JOBS:
-                with self.subTest(job=name):
-                    self.assertNotIn("SLACK_BOT_TOKEN", dumped(job))
-                continue
-            for step in cast(list[dict[str, Any]], job["steps"]):
-                with self.subTest(job=name, step=step.get("name")):
-                    holds = SLACK_TOKEN in dumped(step)
-                    self.assertEqual(holds, step.get("name") in SLACK_STEPS)
-
-    def test_slack_jobs_post_on_schedule_alone(self) -> None:
-        """The digest needs the report's outputs; the notice, a failed digest."""
-        notify = self.jobs["notify"]
-        self.assertEqual(notify["needs"], ["code-monkey"])
-        self.assert_expression(
-            notify["if"],
-            "github.event_name == 'schedule' && !cancelled()"
-            " && needs.code-monkey.outputs.pull_request_count != ''",
-        )
-        failure = self.jobs["notify-failure"]
-        self.assertEqual(failure["needs"], ["options", "code-monkey", "notify"])
-        self.assert_expression(
-            failure["if"],
-            "github.event_name == 'schedule' && (failure() || cancelled())"
-            " && needs.notify.result != 'success'",
-        )
-
-    def test_slack_posts_skip_without_configuration(self) -> None:
-        """A missing token or channel warns; every later step is skipped."""
-        for name in SLACK_JOBS:
-            with self.subTest(job=name):
-                check = self.step(name, "slack")
-                script = str(check["run"])
-                self.assertIn("::warning::", script)
-                self.assertIn("GITHUB_STEP_SUMMARY", script)
-                later = self.steps(name)[self.position(name, "slack") + 1 :]
-                for step in later:
-                    # The digest may also hold back a quiet revise-only post.
-                    self.assertIn(
-                        step["if"],
-                        (
-                            "steps.slack.outputs.configured == 'true'",
-                            "steps.slack.outputs.configured == 'true'"
-                            " && steps.digest.outputs.post == 'true'",
-                        ),
-                    )
-
-    def test_messages_carry_header_and_run_link(self) -> None:
-        """Header first, run link last, through chat.postMessage."""
-        headers = {
-            "notify": "🐒 Code Monkey: pull requests for review",
-            "notify-failure": "🐒 Code Monkey: nightly run failed",
-        }
-        for name, header in headers.items():
-            with self.subTest(job=name):
-                post = cast(dict[str, Any], self.action(name, SLACK_ACTION)["with"])
-                self.assertEqual(post["method"], "chat.postMessage")
-                self.assert_expression(post["token"], SLACK_TOKEN)
-                payload = cast(dict[str, Any], yaml.safe_load(str(post["payload"])))
-                blocks = cast(list[dict[str, Any]], payload["blocks"])
-                self.assertEqual(
-                    [block["type"] for block in blocks],
-                    ["header", "section", "context"],
-                )
-                self.assertEqual(blocks[0]["text"]["text"], header)
-                self.assertEqual(
-                    blocks[2]["elements"][0]["text"],
-                    "<${{ github.server_url }}/${{ github.repository }}"
-                    "/actions/runs/${{ github.run_id }}|View workflow run>",
-                )
-        digest = yaml.safe_load(
-            str(self.action("notify", SLACK_ACTION)["with"]["payload"])
-        )
-        self.assertEqual(digest["text"], "${{ steps.digest.outputs.text }}")
-        self.assertEqual(
-            digest["blocks"][1]["text"]["text"], "${{ steps.digest.outputs.body }}"
-        )
-
-    def digest(
-        self,
-        pulls: str,
-        result: str = "success",
-        unmergeable: str | None = None,
-        failing: str | None = None,
-        revise_only: str | None = None,
-        selected: str | None = None,
-        antagonistic: str | None = None,
-    ) -> dict[str, str]:
-        """Run the digest step's script and return what it wrote to its outputs."""
-        step = self.step("notify", "digest")
-        self.assert_expression(
-            step["env"]["PULL_REQUESTS"], "needs.code-monkey.outputs.pull_requests"
-        )
-        self.assert_expression(step["env"]["ORG"], "github.repository_owner")
-        with tempfile.TemporaryDirectory() as work:
-            output = Path(work) / "output"
-            output.touch()
-            env = {
-                "PATH": os.environ["PATH"],
-                # The runner's own locale: folding there is Unicode-aware.
-                "LC_ALL": "C.UTF-8",
-                "ORG": "lfreleng-actions",
-                "PULL_REQUESTS": pulls,
-                "RUN_RESULT": result,
-                "GITHUB_OUTPUT": str(output),
-            }
-            if unmergeable is not None:
-                env["UNMERGEABLE"] = unmergeable
-            if failing is not None:
-                env["FAILING_CHECKS"] = failing
-            if revise_only is not None:
-                env["REVISE_ONLY"] = revise_only
-            if selected is not None:
-                env["SELECTED"] = selected
-            if antagonistic is not None:
-                env["ANTAGONISTIC"] = antagonistic
-            subprocess.run(
-                ["bash", "-c", str(step["run"])],
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            lines = output.read_text(encoding="utf-8").splitlines()
-        return dict(line.split("=", 1) for line in lines)
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_digest_revalidates_each_link(self) -> None:
-        """Valid links, one per line in order; anything else never reaches Slack."""
-        good = [PULL_URL.format("a", 1), PULL_URL.format("b.c", 22)]
-        bad = [
-            "https://github.com/elsewhere/a/pull/1",
-            PULL_URL.format("a", 1) + "?x=1",
-            "x\n" + PULL_URL.format("a", 3),
-            PULL_URL.format("a", 4) + "\n",
-            "<!channel>",
-            PULL_URL.format("a", 5).replace("github", "g\u0131thub"),
-            PULL_URL.format("\u212a", 6),
-        ]
-        out = self.digest(json.dumps([good[0], *bad, good[1]]))
-        self.assertEqual(out["body"], f"<{good[0]}>\\n<{good[1]}>")
-        self.assertEqual(out["text"], "🐒 Code Monkey: 2 pull requests for review")
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_digest_says_when_nothing_was_raised(self) -> None:
-        """An empty night reads differently from a broken one."""
-        out = self.digest("[]")
-        self.assertEqual(out["body"], "_No pull requests were raised._")
-        self.assertEqual(out["text"], "🐒 Code Monkey: 0 pull requests for review")
-        failed = self.digest("[]", "failure")
-        self.assertIn("❌ _Some jobs in this run failed", failed["body"])
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_digest_caps_the_list(self) -> None:
-        """At most fifty links, then a count of the rest."""
-        pulls = [PULL_URL.format("r", n) for n in range(1, 61)]
-        out = self.digest(json.dumps(pulls))
-        lines = out["body"].split("\\n")
-        self.assertEqual(len(lines), 51)
-        self.assertEqual(lines[-1], "... and 10 more")
-        self.assertLessEqual(len(out["body"]), 2600)
-        self.assertEqual(out["text"], "🐒 Code Monkey: 60 pull requests for review")
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_digest_lists_conflicting_links_apart(self) -> None:
-        """Ready links first; conflicting ones under their own heading (#104)."""
-        step = self.step("notify", "digest")
-        self.assert_expression(
-            step["env"]["UNMERGEABLE"],
-            "needs.code-monkey.outputs.unmergeable_pull_requests",
-        )
-        ready, conflict = PULL_URL.format("a", 1), PULL_URL.format("b", 2)
-        stray = PULL_URL.format("c", 3)
-        out = self.digest(
-            json.dumps([ready, conflict]),
-            unmergeable=json.dumps([conflict.upper().replace("HTTPS", "https"), stray]),
-        )
-        lines = out["body"].split("\\n")
-        self.assertEqual(lines[0], f"<{ready}>")
-        self.assertEqual(lines[1], "")
-        self.assertTrue(lines[2].startswith("_Conflicting with the default branch"))
-        self.assertIn("at the round cap, by a human", lines[2])
-        self.assertEqual(lines[3:], [f"<{conflict}>"])
-        self.assertNotIn(stray, out["body"])
-        self.assertEqual(out["text"], "🐒 Code Monkey: 2 pull requests for review")
-        alone = self.digest(json.dumps([conflict]), unmergeable=json.dumps([conflict]))
-        self.assertTrue(alone["body"].startswith("_Conflicting"))
-        broken = self.digest(json.dumps([ready]), unmergeable="not json")
-        self.assertEqual(broken["body"], f"<{ready}>")
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_digest_marks_requested_antagonistic_reviews(self) -> None:
-        """A requested link says so beside it; a stray name adds nothing (#138)."""
-        step = self.step("notify", "digest")
-        self.assert_expression(
-            step["env"]["ANTAGONISTIC"],
-            "needs.code-monkey.outputs.antagonistic_pull_requests",
-        )
-        one, two = PULL_URL.format("a", 1), PULL_URL.format("b", 2)
-        out = self.digest(
-            json.dumps([one, two]),
-            antagonistic=json.dumps(["LFRELENG-actions/b#2", "lfreleng-actions/c#3"]),
-        )
-        self.assertEqual(
-            out["body"].split("\\n"),
-            [f"<{one}>", f"<{two}> (antagonistic review requested)"],
-        )
-        self.assertNotIn("/c/", out["body"])
-        for value in ("", "[]", "not json"):
-            with self.subTest(antagonistic=value):
-                quiet = self.digest(json.dumps([one]), antagonistic=value)
-                self.assertEqual(quiet["body"], f"<{one}>")
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_digest_counts_pull_requests_with_failing_checks(self) -> None:
-        """A count of the run's own links with red checks, never a stray (#110)."""
-        step = self.step("notify", "digest")
-        self.assert_expression(
-            step["env"]["FAILING_CHECKS"],
-            "needs.code-monkey.outputs.failing_check_pull_requests",
-        )
-        one, two = PULL_URL.format("a", 1), PULL_URL.format("b", 2)
-        stray = PULL_URL.format("c", 3)
-        out = self.digest(
-            json.dumps([one, two]),
-            failing=json.dumps([two.upper().replace("HTTPS", "https"), stray]),
-        )
-        lines = out["body"].split("\\n")
-        self.assertEqual(lines[:2], [f"<{one}>", f"<{two}>"])
-        self.assertEqual(
-            lines[2:],
-            ["", "_1 pull request published with failing checks; see the run report._"],
-        )
-        self.assertNotIn(stray, out["body"])
-        both = self.digest(json.dumps([one, two]), failing=json.dumps([one, two]))
-        self.assertIn("_2 pull requests published with failing checks;", both["body"])
-        for failing in (None, "[]", "not json"):
-            with self.subTest(failing=failing):
-                quiet = self.digest(json.dumps([one]), failing=failing)
-                self.assertEqual(quiet["body"], f"<{one}>")
-        late = self.digest(json.dumps([one]), "failure", failing=json.dumps([one]))
-        self.assertTrue(late["body"].endswith("see the workflow run._"))
-        self.assertIn("failing checks; see the run report._", late["body"])
-
-    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_revise_only_digest_says_so_and_an_empty_one_stays_quiet(self) -> None:
-        """A revise-only slot posts unless it selected and failed nothing (#113)."""
-        self.assert_expression(
-            self.step("notify", "digest")["env"]["SELECTED"],
-            "needs.code-monkey.outputs.selected_count",
-        )
-        post = self.action("notify", SLACK_ACTION)
-        self.assertEqual(
-            post["if"],
-            "steps.slack.outputs.configured == 'true'"
-            " && steps.digest.outputs.post == 'true'",
-        )
-        one = PULL_URL.format("a", 1)
-        nightly = self.digest("[]", selected="0")
-        self.assertEqual(nightly["post"], "true")
-        self.assertNotIn("Revise-only", nightly["body"])
-        revised = self.digest(json.dumps([one]), revise_only="true", selected="1")
-        self.assertEqual(revised["post"], "true")
-        self.assertEqual(
-            revised["body"].split("\\n")[-1],
-            "_Revise-only run: open pull requests revised, no new issues worked._",
-        )
-        self.assertIn("revised", revised["text"])
-        quiet = self.digest("[]", revise_only="true", selected="0")
-        self.assertEqual(quiet["post"], "false")
-        failed = self.digest("[]", "failure", revise_only="true", selected="0")
-        self.assertEqual(failed["post"], "true")
-        self.assertIn("Some jobs in this run failed", failed["body"])
-        refused = self.digest(
-            json.dumps(["https://github.com/elsewhere/a/pull/1"]),
-            revise_only="true",
-            selected="1",
-        )
-        self.assertEqual(refused["post"], "true")
-        # A selected revision that published no link, its proposal
-        # refused offline or its round abstained, is not an empty slot;
-        # nor is a count that is missing or not a number.
-        for selected in ("1", "", "0x", None):
-            with self.subTest(selected=selected):
-                lost = self.digest("[]", revise_only="true", selected=selected)
-                self.assertEqual(lost["post"], "true")
-                self.assertIn("0 pull requests revised", lost["text"])
-
-
 # Free-length dispatch inputs. GitHub refuses a concurrency group name
 # of 400 characters or more before any job starts, so no group may
 # embed one of these. A test for emptiness yields a boolean that picks
 # a branch and never reaches the name, so it is allowed.
-UNBOUNDED_INPUTS = ("inputs.issues", "inputs.pull_requests", "inputs.repositories")
+UNBOUNDED_INPUTS = ("inputs.issues", "inputs.pull_requests")
 EMPTINESS_TEST = re.compile(r"\binputs\.[a-z_]+\s*!=\s*''")
 
 
@@ -4423,6 +4048,42 @@ class ConcurrencyGroupLengthContracts(unittest.TestCase):
                 for name in UNBOUNDED_INPUTS:
                     with self.subTest(workflow=path.name, scope=scope, input=name):
                         self.assertNotIn(name, named)
+
+
+class UnattendedRunContracts(unittest.TestCase):
+    """No schedule starts an agent session (#196)."""
+
+    # What a workflow that starts or feeds an agent session names.
+    AGENT_MARKERS = ("code-monkey.yaml", "code-monkey-cron.yaml", "COPILOT")
+
+    def test_no_scheduled_workflow_starts_an_agent(self) -> None:
+        """A workflow on a schedule names neither the pipeline nor its token."""
+        paths = sorted(WORKFLOWS.glob("*.y*ml"))
+        self.assertIn(CRON, paths)
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            loaded = cast(dict[str | bool, Any], yaml.safe_load(text))
+            triggers: Any = loaded.get(TRIGGERS) or {}
+            if isinstance(triggers, str):
+                triggers = [triggers]
+            if "schedule" not in triggers:
+                continue
+            for marker in self.AGENT_MARKERS:
+                with self.subTest(workflow=path.name, marker=marker):
+                    self.assertNotIn(marker, text)
+
+    def test_every_pipeline_caller_is_dispatched_or_tested(self) -> None:
+        """Only a dispatch or the pull request plumbing calls the pipeline."""
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            text = path.read_text(encoding="utf-8")
+            if path == REUSABLE or REUSABLE_CALL not in text:
+                continue
+            loaded = cast(dict[str | bool, Any], yaml.safe_load(text))
+            triggers = cast(dict[str, Any], loaded[TRIGGERS])
+            with self.subTest(workflow=path.name):
+                self.assertLessEqual(
+                    set(triggers), {"workflow_dispatch", "pull_request"}
+                )
 
 
 class TestingCallerContracts(WorkflowCase):
@@ -4456,17 +4117,20 @@ class TestingCallerContracts(WorkflowCase):
         with_ = cast(dict[str, Any], job["with"])
         self.assertEqual(with_["mode"], "select")
         self.assertIs(with_["dry_run"], True)
+        # No run scans for issues, so plumbing names one of its own.
+        self.assert_expression(with_["issues"], "format('{0}#1', github.repository)")
         self.assert_expression(with_["assets_repository"], "github.repository")
         self.assert_expression(with_["assets_ref"], "github.sha")
 
     def test_manual_dry_run_takes_the_target_lists(self) -> None:
-        """A dispatch names repositories to scan or issues to work."""
+        """A dispatch names the issues to work; no input names a scan."""
         inputs = cast(
             dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
         )
         self.assertEqual(inputs["issues"]["default"], "")
+        self.assertNotIn("repositories", inputs)
         with_ = cast(dict[str, Any], self.jobs["dry-run"]["with"])
-        self.assert_expression(with_["repositories"], "inputs.repositories || ''")
+        self.assertNotIn("repositories", with_)
         self.assert_expression(with_["issues"], "inputs.issues || ''")
 
     def test_callers_read_guidance_from_the_organisation_default(self) -> None:
