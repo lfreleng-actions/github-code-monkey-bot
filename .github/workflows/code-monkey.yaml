@@ -138,6 +138,13 @@ on:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
         default: ''
+      issue_authors:
+        description: >-
+          GitHub logins whose issues the bot may work, commas and/or
+          spaces; an issue's author and last editor must both be listed.
+          Empty fails the run: no issue author is trusted by default
+        type: string
+        default: ''
       guidance_repository:
         description: 'Repository holding the organisation AGENTS.md'
         type: string
@@ -731,6 +738,7 @@ jobs:
           # yamllint disable-line rule:line-length
           JOB_WORKFLOW_SHA: "${{ job.workflow_sha || github.job_workflow_sha }}"
           ASSETS_SHA: "${{ steps.pinned.outputs.sha }}"
+          ISSUE_AUTHORS: "${{ inputs.issue_authors }}"
         run: |
           extra=()
           if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
@@ -742,6 +750,10 @@ jobs:
             --assets-sha "$ASSETS_SHA" "${extra[@]}"
           python3 monkey-assets/scripts/fork_orgs.py check \
             --config monkey-assets/config/fork-orgs.json
+          # Fails closed: an empty or malformed list stops the run
+          # before any token exists.
+          python3 monkey-assets/scripts/issue_authors.py check \
+            --authors "$ISSUE_AUTHORS"
 
       - name: 'Mint read-only App token'
         id: app-token
@@ -836,6 +848,7 @@ jobs:
           # which the App token may not reach; this token reads it.
           RESULTS_TOKEN: "${{ github.token }}"
           RESULTS_REPOSITORY: "${{ github.repository }}"
+          ISSUE_AUTHORS: "${{ inputs.issue_authors }}"
         run: |
           extra=()
           if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
@@ -877,6 +890,7 @@ jobs:
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \
             --bot-slug "$BOT_SLUG" --held-file held-targets.json \
+            --issue-authors "$ISSUE_AUTHORS" \
             --results-repository "$RESULTS_REPOSITORY" "${extra[@]}"
           cat artefacts/selection-summary.md >> "$GITHUB_STEP_SUMMARY"
 

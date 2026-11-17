@@ -19,6 +19,7 @@ from typing import Any, cast
 import bot_github as github
 import copilot_review as review
 import issue_reads as reads
+import issue_recheck as recheck
 import proposal_model as model
 import write_recovery as recovery
 from branch_heads import branch_tip
@@ -36,9 +37,13 @@ def run_retitle(args: argparse.Namespace) -> None:
     run's own published chain on a retry; a head another session
     moved keeps its title, as does a pull request closed or merged
     since selection, or one whose branch is gone, and none of them
-    fails the step. Any other branch read failure fails it. What the write
-    replaced goes to ``--record`` so a push that then fails with the
-    branch unchanged can take the title back.
+    fails the step. Any other branch read failure fails it. An issue
+    whose author or last editor the listed issue authors no longer
+    admit, read live, keeps the title too: the push then refuses the
+    round for the same reason. What the write
+    replaced goes to ``--record``, with the issue and the listed issue
+    authors, so a push that then fails with the branch unchanged can
+    take the title back once the list still admits the issue.
     """
     check = model.load_json(args.check, "check")
     if check.get("task") != "revise" or check.get("verdict") != "proposed":
@@ -71,6 +76,10 @@ def run_retitle(args: argparse.Namespace) -> None:
     if not title or title == current:
         print("retitle: title unchanged")
         return
+    unlisted = recheck.listed_refusal(check)
+    if unlisted is not None:
+        print(f"retitle: {unlisted.reason}; title left alone")
+        return
     # The record goes down before the write: GitHub may apply the
     # title and lose the reply, and the restore must still know what
     # to give back.
@@ -80,6 +89,8 @@ def run_retitle(args: argparse.Namespace) -> None:
         "head_sha": head,
         "previous": current if isinstance(current, str) else "",
         "title": title,
+        "issue": check.get("issue"),
+        "issue_authors": check.get("issue_authors"),
     }
     args.record.parent.mkdir(parents=True, exist_ok=True)
     args.record.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -98,7 +109,11 @@ def run_restore_title(args: argparse.Namespace) -> None:
     head is still the one the retitle saw and the title is still the
     one it set, so another session's work is never touched. An
     unknown swap outcome restores nothing, since the branch may hold
-    the new chain.
+    the new chain. A listed-author refusal restores nothing either,
+    since the list binds every write: one the push recorded in the
+    result stands without a read, and otherwise the issue's author and
+    last editor are read live against the list the record carries
+    before the write, a failed read failing the step.
     """
     if not args.record.is_file():
         print("restore-title: nothing was retitled")
@@ -116,6 +131,9 @@ def run_restore_title(args: argparse.Namespace) -> None:
         if verdict == "publish-failed" and "unknown" in reasons:
             print("restore-title: swap outcome unknown; the title stands")
             return
+        if result.get(recheck.AUTHOR_UNLISTED) is True:
+            print("restore-title: the list refused the issue; title left alone")
+            return
     repository = str(record["repository"])
     number = int(record["pull_number"])
     head = review.pull_head(repository, number)
@@ -125,6 +143,10 @@ def run_restore_title(args: argparse.Namespace) -> None:
     current = github.api_object(f"repos/{repository}/pulls/{number}").get("title")
     if current != record["title"]:
         print("restore-title: title changed since; left alone")
+        return
+    unlisted = recheck.listed_refusal(record)
+    if unlisted is not None:
+        print(f"restore-title: {unlisted.reason}; title left alone")
         return
     set_title(repository, number, str(record["previous"]))
     print("restore-title: previous title restored")

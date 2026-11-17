@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import issue_authors as authors
 import revision_reads as revisions
 from revision_reads import pull_request_for_branch
 from revision_scan import Hold, Round, scan
@@ -41,6 +42,7 @@ class Rounds:
         outstanding_only: bool = False,
         continues: str = "",
         stale: StaleRule = OFF,
+        listed: frozenset[str] = frozenset(),
     ) -> None:
         """Remember what every build needs; ``skips`` are the counters and the named list.
 
@@ -50,12 +52,13 @@ class Rounds:
         result, so it earns no operator waiver. ``continues``, the URL
         of the run that dispatched it, must have published a counted
         round on the pull request. ``stale`` is the run's rule for
-        pending statuses left too long.
+        pending statuses left too long. ``listed`` are the listed issue
+        authors every round's issue must pass.
         """
         self.org = org
         self.bot = bot
         self.fork_orgs = fork_orgs
-        self.inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds, stale)
+        self.inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds, stale, listed)
         self.enabled = enabled
         self.explicit = explicit
         self.skipped, self.skipped_issues = skips
@@ -83,7 +86,7 @@ class Rounds:
                         continues=self.continues,
                     )
                 except Skip as exc:
-                    self.skipped["revision"] += 1
+                    self.skipped[exc.counter] += 1
                     reference = f"{self.org}/{repo_name}#{number}"
                     self.skipped_issues.append({"issue": reference, "reason": str(exc)})
                     return None
@@ -110,12 +113,18 @@ class Rounds:
             max_rounds=self.inputs.max_rounds,
             held=held,
             stale=self.inputs.stale,
+            listed=self.inputs.listed,
         )
 
     def for_issue(
         self, candidate: dict[str, Any], fork_org: str, branch: str
     ) -> dict[str, Any] | None:
-        """A round on the issue's open pull request, or None to skip it as before."""
+        """A round on the issue's open pull request, or None to skip it as before.
+
+        A refusal by the listed issue authors, the issue edited since
+        its first read, raises ``authors.Refused`` so the caller counts
+        it as such rather than as a generic skip.
+        """
         if not self.enabled:
             return None
         number = pull_request_for_branch(
@@ -127,5 +136,7 @@ class Rounds:
             return build_entry(
                 self.inputs, str(candidate["repo_name"]), number, explicit=self.explicit
             )
-        except Skip:
+        except Skip as exc:
+            if exc.counter in authors.LIST_COUNTERS:
+                raise authors.Refused(authors.Unlisted(exc.counter, str(exc))) from exc
             return None

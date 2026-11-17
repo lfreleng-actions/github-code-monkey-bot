@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import issue_authors as authors
 import online_audit
 import proposal_policy as policy
 import revision_check as revision
@@ -419,6 +420,10 @@ def run_check(
     check.bot_login = context.identity.bot_login
     read_usage(proposal_dir / "usage.json", check)
     try:
+        check.issue_authors, refused = authors.recorded_refusal(selection, entry)
+        if refused is not None:
+            check.author_unlisted = True
+            raise Rejection(refused)
         manifest = read_manifest(proposal_dir / "manifest.json", check)
         if check.verdict == "proposed":
             verify_proposal(check, manifest, context)

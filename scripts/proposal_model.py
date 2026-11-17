@@ -125,6 +125,11 @@ class Check:
     # What the online zizmor audit found (DESIGN.md section 8): its
     # pass note; blank when the check never reached it.
     online_audit: str = ""
+    # The listed issue authors the selection ran with: the publisher
+    # re-reads the issue's author and last editor against them.
+    issue_authors: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # Whether that list refused the entry: nothing writes to the target.
+    author_unlisted: bool = False
 
     @classmethod
     def from_entry(cls, key: str, entry: dict[str, Any]) -> Check:
@@ -194,6 +199,8 @@ class Check:
             "default_branch": self.default_branch,
             "fork_org": self.fork_org,
             "fork_repository": self.fork_repository,
+            "issue_authors": self.issue_authors,
+            "author_unlisted": self.author_unlisted,
             "verdict": self.verdict,
             "reasons": self.reasons,
             "needs_workflows": self.needs_workflows,

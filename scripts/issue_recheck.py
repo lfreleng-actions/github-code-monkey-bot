@@ -8,8 +8,9 @@ may take an hour; another run may publish for the issue meanwhile, a
 human may merge that work, and the issue may close. So the ``push``
 command re-makes the selection's checks with the job's own token on
 the public target before it touches the fork (DESIGN.md section 8
-step 8): the issue's state and labels, every pull request from the
-bot branch, and any open pull request linked to close the issue. A
+step 8): the issue's state and labels, its author and last editor
+against the listed issue authors, every pull request from the bot
+branch, and any open pull request linked to close the issue. A
 fact that changed is a rejection, as for a revision whose pull
 request closed (section 20.3). A read that fails raises, and the
 caller fails the step rather than publish on trust.
@@ -23,12 +24,17 @@ from collections.abc import Callable
 from typing import Any, NamedTuple, NoReturn, cast
 
 import bot_github as github
+import branch_refs as refs
+import issue_authors as authors
 import issue_reads as reads
-from branch_refs import branch_matches, is_fork_of, listed_fork
 from proposal_policy import PublishError
 
 # The label that keeps the bot off an issue, on a scan and a named run alike.
 NO_AGENT = "no-agent"
+
+# The result field that marks a listed-author refusal: no step writes
+# to the target for it, the outcome comment on the issue included.
+AUTHOR_UNLISTED = "author_unlisted"
 
 ISSUE_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -36,6 +42,9 @@ query($owner: String!, $name: String!, $number: Int!) {
     issue(number: $number) {
       state
       labels(first: 100) { nodes { name } }
+      author { login __typename }
+      lastEditedAt
+      editor { login __typename }
       closedByPullRequestsReferences(first: 20, includeClosedPrs: false) {
         nodes { number url }
       }
@@ -56,10 +65,14 @@ query($owner: String!, $name: String!, $number: Int!) {
 
 
 class Refusal(NamedTuple):
-    """Why the publisher must not write, and whether the issue is closed."""
+    """Why the publisher must not write, and whether the issue is closed.
+
+    ``unlisted`` marks a refusal by the listed-author rule.
+    """
 
     reason: str
     issue_closed: bool = False
+    unlisted: bool = False
 
 
 class Pull(NamedTuple):
@@ -120,6 +133,73 @@ def closer_of(issue: dict[str, Any]) -> str:
     return ""
 
 
+def unlisted_author(check: dict[str, Any], issue: dict[str, Any]) -> Refusal | None:
+    """Why the issue's author or last editor, as read now, fails the list.
+
+    The list is the one check.json carries from the selection; a
+    check without a valid one refuses, as an unlisted author does.
+    """
+    number = check.get("issue")
+    try:
+        listed = authors.recorded_list(check.get("issue_authors"))
+    except authors.AuthorListError as exc:
+        return Refusal(f"issue #{number}: {exc}; nothing published", unlisted=True)
+    refused = authors.unlisted(authors.graphql_fields(issue), listed)
+    if refused is None:
+        return None
+    return Refusal(
+        f"issue #{number}: {refused.reason}; nothing published", unlisted=True
+    )
+
+
+def listed_refusal(check: dict[str, Any]) -> Refusal | None:
+    """Re-read the issue and apply the listed-author rule alone.
+
+    For a revision round, whose push has its own state checks. A read
+    that fails raises.
+    """
+    repository = str(check["repository"])
+    number = github.require_int(check, "issue", "check")
+    return unlisted_author(check, read_issue(repository, number))
+
+
+def listed_issue(
+    check: dict[str, Any],
+    result: dict[str, Any],
+    withheld: str = "no reply posted and the description left alone",
+) -> bool:
+    """Whether the listed-author rule, read live, still admits a write after the push.
+
+    The push re-checked the issue before it moved the branch, but the
+    issue may have been edited since. A refusal recorded earlier
+    stands without a read. A new refusal sets ``AUTHOR_UNLISTED``, so
+    the later steps write nothing either, and a read that fails
+    leaves a warning; both end in ``withheld``, what the caller then
+    leaves undone. The verdict and the published commits stand: the
+    branch has already moved.
+    """
+    warnings = cast("list[str]", result.setdefault("warnings", []))
+    if result.get(AUTHOR_UNLISTED) is True:
+        warnings.append(f"issue author or editor not listed; {withheld}")
+        return False
+    try:
+        refusal = listed_refusal(check)
+    except (PublishError, github.GitHubError) as exc:
+        detail = (
+            github.safe_message(exc)
+            if isinstance(exc, github.GitHubError)
+            else str(exc)
+        )
+        warnings.append(f"could not re-read the issue's author ({detail}); {withheld}")
+        return False
+    if refusal is None:
+        return True
+    result[AUTHOR_UNLISTED] = True
+    reason = refusal.reason.removesuffix("; nothing published")
+    warnings.append(f"{reason}; {withheld}")
+    return False
+
+
 def fork_identity(check: dict[str, Any]) -> str:
     """The target's fork as GitHub names it now, found with reads alone.
 
@@ -134,13 +214,13 @@ def fork_identity(check: dict[str, Any]) -> str:
     fork = str(check["fork_repository"])
     try:
         data = github.api_object(f"repos/{fork}")
-        if is_fork_of(data, target):
+        if refs.is_fork_of(data, target):
             name = data.get("full_name")
             return name if isinstance(name, str) and name else fork
     except github.GitHubError as exc:
         if not github.is_absent(exc):
             raise
-    return listed_fork(target, str(check["fork_org"])) or fork
+    return refs.listed_fork(target, str(check["fork_org"])) or fork
 
 
 def branch_pulls(repository: str, fork_repository: str, branch: str) -> list[Pull]:
@@ -196,7 +276,7 @@ def own_rerun(check: dict[str, Any], fork: str, pull: Pull) -> bool:
     bot = str(check["bot_login"])
     if pull.state != "open" or pull.login != bot:
         return False
-    chain = branch_matches(
+    chain = refs.branch_matches(
         fork,
         str(check["branch"]),
         str(check["base_sha"]),
@@ -209,11 +289,12 @@ def own_rerun(check: dict[str, Any], fork: str, pull: Pull) -> bool:
 def stale_selection(check: dict[str, Any]) -> Refusal | None:
     """Why the selection no longer holds for the issue, or None when it does.
 
-    Refused: a closed issue, an issue labelled ``no-agent``, an open
-    or merged pull request from the bot branch, a closed one other
-    than the newest when that is the ``retry_of`` a named retry
-    carries, and any other open pull request linked to close the
-    issue. Pull requests count from the fork under its current name,
+    Refused: a closed issue, an issue labelled ``no-agent``, an issue
+    whose author or last editor the listed issue authors no longer
+    admit, an open or merged pull request from the bot branch, a
+    closed one other than the newest when that is the ``retry_of`` a
+    named retry carries, and any other open pull request linked to
+    close the issue. Pull requests count from the fork under its current name,
     an old one included (``fork_identity``). Reads that fail raise
     ``GitHubError`` or ``PublishError``.
     """
@@ -232,6 +313,9 @@ def stale_selection(check: dict[str, Any]) -> Refusal | None:
             f"issue #{number} was labelled {NO_AGENT} after this run selected it; "
             "nothing published"
         )
+    unlisted = unlisted_author(check, issue)
+    if unlisted is not None:
+        return unlisted
     fork = fork_identity(check)
     pulls = branch_pulls(repository, fork, str(check["branch"]))
     own: str | None = None
@@ -288,9 +372,10 @@ def rejected(
     """Record a rejection in ``result`` when the selection no longer holds.
 
     A closed issue sets ``issue_closed``, so the comment step leaves
-    the finished issue alone. A read that fails goes to ``fail``, the
-    publisher's own, which records the failure and raises: nothing
-    publishes on trust.
+    the finished issue alone; a listed-author refusal sets
+    ``AUTHOR_UNLISTED``, so it writes nothing to the issue. A read
+    that fails goes to ``fail``, the publisher's own, which records
+    the failure and raises: nothing publishes on trust.
     """
     try:
         refusal = stale_selection(check)
@@ -302,6 +387,8 @@ def rejected(
     reject(result, refusal.reason)
     if refusal.issue_closed:
         result["issue_closed"] = True
+    if refusal.unlisted:
+        result[AUTHOR_UNLISTED] = True
     return True
 
 

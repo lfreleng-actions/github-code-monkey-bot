@@ -59,6 +59,9 @@ jobs:
       max_pull_requests: '3'
       allow_workflow_edits: false
       issues: "${{ format('{0}#1', github.repository) }}"
+      # A login no issue carries: the named issue is skipped by the
+      # listed-author rule, and every select step still runs.
+      issue_authors: "${{ github.repository_owner }}"
       # Block mode with the organisation allow-list, as the dispatch
       # caller runs, so a pull request proves the trusted jobs' egress.
       harden_runner_egress: 'block'
@@ -91,6 +94,7 @@ jobs:
       max_runtime_minutes: '60'
       max_concurrent_agents: '2'
       issues: "${{ inputs.issues || '' }}"
+      issue_authors: "${{ vars.CODE_MONKEY_ISSUE_AUTHORS || '' }}"
       allow_workflow_edits: ${{ inputs.allow_workflow_edits || false }}
       harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length

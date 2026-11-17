@@ -394,6 +394,7 @@ class CommentTest(unittest.TestCase):
                 return {"html_url": "https://x/c/1"}
 
             with (
+                patch.object(comments.recheck, "listed_refusal", return_value=None),
                 patch.object(reads, "api_page", return_value=[]),
                 patch.object(github, "api_write", side_effect=write),
                 redirect_stdout(io.StringIO()),

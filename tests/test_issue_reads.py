@@ -89,6 +89,21 @@ class FilteredCommentsTest(ReadsCase):
             ],
         )
 
+    def test_listed_authors_filter(self) -> None:
+        """With a list, an unlisted member's or an App's comment is dropped."""
+        entries = [
+            comment("MEMBER", "a", "Alice"),
+            comment("OWNER", "b", "mallory"),
+            comment("MEMBER", "c", "helper[bot]"),
+            comment("NONE", "d", "alice"),
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            kept, dropped, _ = reads.filtered_comments(
+                "org/repo", 4, frozenset({"alice", "helper[bot]"})
+            )
+        self.assertEqual([c["body"] for c in kept], ["a"])
+        self.assertEqual(dropped, 3)
+
     def test_malformed_comments_dropped(self) -> None:
         """A non-string body, a missing user or a non-string login drops it."""
         entries = [
@@ -443,8 +458,23 @@ class HasOpenLinkedPrTest(ReadsCase):
                 reads.has_open_linked_pr("org/repo", 9)
 
 
+def edit_reply(
+    edited_at: Any = None, editor: Any = None, body: Any = "Body"
+) -> dict[str, Any]:
+    """The GraphQL reply ``last_edit`` reads."""
+    issue = {"body": body, "lastEditedAt": edited_at, "editor": editor}
+    return {"repository": {"issue": issue}}
+
+
 class IssueDetailsTest(ReadsCase):
     """``issue_details`` types and bounds the issue payload."""
+
+    def setUp(self) -> None:
+        """Serve an unedited issue to the edit read."""
+        super().setUp()
+        edits = patch.object(github, "graphql", return_value=edit_reply())
+        self.graphql = edits.start()
+        self.addCleanup(edits.stop)
 
     def issue(self, **overrides: Any) -> dict[str, Any]:
         """A REST issue object."""
@@ -459,6 +489,7 @@ class IssueDetailsTest(ReadsCase):
             "html_url": "https://github.com/org/repo/issues/7",
             "created_at": "2026-01-07T00:00:00Z",
             "author_association": "MEMBER",
+            "user": {"login": "alice", "type": "User"},
         }
         data.update(overrides)
         return data
@@ -501,10 +532,48 @@ class IssueDetailsTest(ReadsCase):
                 "priority": "High",
                 "url": "https://github.com/org/repo/issues/7",
                 "created_at": "2026-01-07T00:00:00Z",
+                "author": "alice",
                 "author_association": "MEMBER",
                 "author_is_bot": False,
+                "edited": False,
+                "editor": None,
+                "editor_is_bot": False,
             },
         )
+        self.assertEqual(
+            self.graphql.call_args.args[1],
+            {"owner": "org", "name": "repo", "number": 7},
+        )
+
+    def test_reads_the_last_editor(self) -> None:
+        """An edited body names its editor; an App or a deleted account is a bot."""
+        for editor, login, bot in (
+            ({"login": "bob", "__typename": "User"}, "bob", False),
+            ({"login": "helper", "__typename": "Bot"}, "helper", True),
+            ({"login": "x[bot]", "__typename": "User"}, "x[bot]", True),
+            (None, None, True),
+        ):
+            self.graphql.return_value = edit_reply("2026-01-08T00:00:00Z", editor)
+            with (
+                self.subTest(editor=editor),
+                patch.object(github, "api_object", return_value=self.issue()),
+                patch.object(github, "api_list", return_value=[]),
+            ):
+                details = reads.issue_details("org/repo", 7)
+                self.assertEqual(
+                    (details["edited"], details["editor"], details["editor_is_bot"]),
+                    (True, login, bot),
+                )
+
+    def test_a_malformed_edit_reply_fails_the_read(self) -> None:
+        """No issue in the edit reply raises rather than reading as unedited."""
+        self.graphql.return_value = {"repository": None}
+        with (
+            patch.object(github, "api_object", return_value=self.issue()),
+            patch.object(github, "api_list", return_value=[]),
+            self.assertRaises(github.GitHubError),
+        ):
+            reads.issue_details("org/repo", 7)
 
     def test_flags_an_app_or_bot_author(self) -> None:
         """An App's issue reads as a bot whatever association it carries."""
@@ -524,6 +593,7 @@ class IssueDetailsTest(ReadsCase):
 
     def test_missing_type_and_priority(self) -> None:
         """No type object and no Priority field yield None for both."""
+        self.graphql.return_value = edit_reply(body=None)
         with (
             patch.object(
                 github, "api_object", return_value=self.issue(type=None, body=None)
@@ -555,17 +625,31 @@ class IssueDetailsTest(ReadsCase):
 
     def test_rejects_non_string_body(self) -> None:
         """A body that is neither string nor null is refused."""
+        self.graphql.return_value = edit_reply(body=["x"])
         with (
-            patch.object(github, "api_object", return_value=self.issue(body=["x"])),
+            patch.object(github, "api_object", return_value=self.issue()),
+            patch.object(github, "api_list", return_value=[]),
             self.assertRaises(github.GitHubError),
         ):
             reads.issue_details("org/repo", 7)
 
+    def test_body_comes_from_the_edit_read(self) -> None:
+        """The body is the one whose last editor was read, not the REST copy."""
+        self.graphql.return_value = edit_reply(
+            "2026-01-08T00:00:00Z", {"login": "alice", "__typename": "User"}, "New"
+        )
+        with (
+            patch.object(github, "api_object", return_value=self.issue(body="Old")),
+            patch.object(github, "api_list", return_value=[]),
+        ):
+            details = reads.issue_details("org/repo", 7)
+        self.assertEqual((details["body"], details["editor"]), ("New", "alice"))
+
     def test_body_truncated(self) -> None:
         """The body is cut at ``MAX_BODY_BYTES``."""
-        long_body = "b" * (reads.MAX_BODY_BYTES + 100)
+        self.graphql.return_value = edit_reply(body="b" * (reads.MAX_BODY_BYTES + 100))
         with (
-            patch.object(github, "api_object", return_value=self.issue(body=long_body)),
+            patch.object(github, "api_object", return_value=self.issue()),
             patch.object(github, "api_list", return_value=[]),
         ):
             details = reads.issue_details("org/repo", 7)

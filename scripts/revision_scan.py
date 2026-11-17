@@ -46,6 +46,7 @@ def scan(
     max_rounds: int = revisions.MAX_ROUNDS,
     held: Hold | None = None,
     stale: StaleRule = OFF,
+    listed: frozenset[str] = frozenset(),
 ) -> list[Round]:
     """A builder per bot pull request in the owner, ranked, built on demand.
 
@@ -62,9 +63,10 @@ def scan(
     ``max_rounds`` the cap each build applies. ``held`` passes over a
     hit whose pull request or issue another run holds, once the
     ranking reads name both and before any packet read. ``stale`` is
-    the run's rule for pending statuses left too long.
+    the run's rule for pending statuses left too long, and ``listed``
+    the listed issue authors.
     """
-    inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds, stale)
+    inputs = Inputs(org, bot, fork_orgs, reviewers, max_rounds, stale, listed)
     slug = str(bot["login"]).removesuffix("[bot]")
     found = revisions.search_bot_pull_requests(org, slug)
     ranked: list[tuple[tuple[int, str, int], str, int, Prefetch]] = []
@@ -77,7 +79,7 @@ def scan(
         try:
             prefetched = prefetch(inputs, repo_name, number)
         except Skip as exc:
-            skipped["revision"] += 1
+            skipped[exc.counter] += 1
             skipped_issues.append({"issue": reference, "reason": str(exc)})
             continue
         numbers = (number, int(prefetched.pull["issue"]))
@@ -105,7 +107,7 @@ def scan(
                 )
             except Skip as exc:
                 if str(exc) != "nothing outstanding":
-                    skipped["revision"] += 1
+                    skipped[exc.counter] += 1
                     skipped_issues.append({"issue": reference, "reason": str(exc)})
                 return None
 

@@ -21,6 +21,7 @@ import bot_github as github
 import branch_refs as refs
 import copilot_review as review
 import issue_reads as reads
+import issue_recheck as recheck
 import proposal_model as model
 import thread_reads as threads_of
 import write_recovery as recovery
@@ -134,6 +135,10 @@ def run_push(
         closed = closed_pull_request(target, int(check["pull_number"]))
         if closed is not None:
             raise Rejection(closed)
+        unlisted = recheck.listed_refusal(check)
+        if unlisted is not None:
+            result[recheck.AUTHOR_UNLISTED] = True
+            raise Rejection(unlisted.reason)
         refs.ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
         refs.sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
         published = already_moved(check)
@@ -195,9 +200,11 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     code a maintainer has since replaced answer the wrong head, while
     the handoff's footer would pause the rounds on a head the agent
     never weighed: either is a rejection, and a moved head, lost to
-    another run's push, marks the round superseded. A state or head
-    that cannot be read is a failure, not a handoff taken on trust; the
-    result records it before the raise.
+    another run's push, marks the round superseded. An issue whose
+    author or last editor the listed issue authors no longer admit,
+    read live, is a rejection too, as it is for a proposal's push. A
+    state, head or issue that cannot be read is a failure, not a
+    handoff taken on trust; the result records it before the raise.
     """
     expected = str(check["head_sha"])
     repository = str(check["repository"])
@@ -205,11 +212,18 @@ def handoff_head(check: dict[str, Any], result: dict[str, Any]) -> bool:
     try:
         closed = closed_pull_request(repository, number)
         head = None if closed is not None else review.pull_head(repository, number)
+        unlisted = recheck.listed_refusal(check) if head == expected else None
     except github.GitHubError as exc:
         result["verdict"] = "publish-failed"
         cast("list[str]", result["reasons"]).append(
-            f"could not read the pull request: {github.safe_message(exc)}"
+            f"could not read the pull request or its issue: {github.safe_message(exc)}"
         )
+        return False
+    if unlisted is not None:
+        result["verdict"] = "rejected"
+        result["pull_request_url"] = None
+        result[recheck.AUTHOR_UNLISTED] = True
+        cast("list[str]", result["reasons"]).append(unlisted.reason)
         return False
     if head == expected:
         return True
@@ -340,6 +354,8 @@ def run_respond(args: argparse.Namespace) -> None:
 
     Each write is its own attempt: one refusal is a warning and the
     others go on, so a maintainer sees every reply the agent wrote.
+    A handoff (``handoff_head``) and a proposal (``recheck.listed_issue``)
+    alike re-read the issue against the listed issue authors first.
     """
     result = model.load_json(args.result, "result")
     check = model.load_json(args.check, "check")
@@ -356,6 +372,8 @@ def run_respond(args: argparse.Namespace) -> None:
     if answering and verdict == "handoff" and not handoff_head(check, result):
         answering = False
     if answering and verdict == "proposed" and not published_head(check, result):
+        answering = False
+    if answering and verdict == "proposed" and not recheck.listed_issue(check, result):
         answering = False
     if answering:
         respond(check, verdict, counts, warnings)

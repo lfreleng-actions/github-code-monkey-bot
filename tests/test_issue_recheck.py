@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from importlib import import_module
@@ -12,7 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
 github = import_module("bot_github")
 recheck = import_module("issue_recheck")
 
@@ -35,6 +37,7 @@ def check(**overrides: Any) -> dict[str, Any]:
         "base_sha": BASE,
         "bot_login": BOT,
         "commits": [{"sha": "c" * 40}],
+        "issue_authors": ["alice"],
     }
     data.update(overrides)
     return data
@@ -45,8 +48,11 @@ def issue(
     labels: tuple[str, ...] = (),
     linked: tuple[tuple[int, str], ...] = (),
     closer: dict[str, Any] | None = None,
+    author: Any = None,
+    edited_at: str | None = None,
+    editor: Any = None,
 ) -> dict[str, Any]:
-    """The GraphQL reply for the issue."""
+    """The GraphQL reply for the issue, by a listed author unless told otherwise."""
     events = [{"closer": closer}] if closer is not None else []
     return {
         "repository": {
@@ -57,6 +63,9 @@ def issue(
                     "nodes": [{"number": n, "url": u} for n, u in linked]
                 },
                 "timelineItems": {"nodes": events},
+                "author": author or {"login": "alice", "__typename": "User"},
+                "lastEditedAt": edited_at,
+                "editor": editor,
             }
         }
     }
@@ -143,12 +152,40 @@ class StaleSelectionTest(unittest.TestCase):
         refusal = recheck.stale_selection(check())
         assert refusal is not None
         self.assertFalse(refusal.issue_closed)
+        self.assertFalse(refusal.unlisted)
         self.assertIn("no-agent", refusal.reason)
+
+    def test_author_and_editor_are_rechecked(self) -> None:
+        """An author or last editor the recorded list does not admit refuses."""
+        mallory = {"login": "mallory", "__typename": "User"}
+        for reply, record, reason in (
+            (issue(author=mallory), ["alice"], "author_not_listed"),
+            (
+                issue(author={"login": "alice", "__typename": "Bot"}),
+                ["alice"],
+                "author_not_listed",
+            ),
+            (issue(edited_at="t", editor=mallory), ["alice"], "editor_not_listed"),
+            (issue(edited_at="t", editor=None), ["alice"], "editor_not_listed"),
+            (issue(), None, "no CODE_MONKEY_ISSUE_AUTHORS list"),
+        ):
+            self.reads(reply)
+            with self.subTest(reply=reply, record=record):
+                refusal = recheck.stale_selection(check(issue_authors=record))
+                assert refusal is not None
+                self.assertIn(reason, refusal.reason)
+                self.assertFalse(refusal.issue_closed)
+                self.assertTrue(refusal.unlisted)
+                self.api_list.assert_not_called()
+        self.reads(
+            issue(edited_at="t", editor={"login": "Alice", "__typename": "User"})
+        )
+        self.assertIsNone(recheck.stale_selection(check()))
 
     def test_open_pull_request_from_the_branch_refuses(self) -> None:
         """Another run's open pull request from the branch refuses, by name."""
         self.reads(issue(), [pull(304)])
-        with patch.object(recheck, "branch_matches", return_value=None):
+        with patch.object(recheck.refs, "branch_matches", return_value=None):
             refusal = recheck.stale_selection(check())
         assert refusal is not None
         self.assertIn("pull request #304", refusal.reason)
@@ -157,7 +194,7 @@ class StaleSelectionTest(unittest.TestCase):
     def test_foreign_open_pull_request_is_never_adopted(self) -> None:
         """An open pull request the bot did not open refuses without a chain read."""
         self.reads(issue(), [pull(304, login="someone")])
-        with patch.object(recheck, "branch_matches") as matches:
+        with patch.object(recheck.refs, "branch_matches") as matches:
             refusal = recheck.stale_selection(check())
         matches.assert_not_called()
         assert refusal is not None
@@ -168,7 +205,7 @@ class StaleSelectionTest(unittest.TestCase):
         own = f"https://github.com/{REPOSITORY}/pull/304"
         self.reads(issue(linked=((304, own),)), [pull(304), pull(200, "closed")])
         with patch.object(
-            recheck, "branch_matches", return_value=["c" * 40]
+            recheck.refs, "branch_matches", return_value=["c" * 40]
         ) as matches:
             self.assertIsNone(recheck.stale_selection(check()))
         matches.assert_called_once_with(FORK, BRANCH, BASE, [{"sha": "c" * 40}], BOT)
@@ -225,7 +262,7 @@ class StaleSelectionTest(unittest.TestCase):
                 self.api_object.assert_called_once_with(f"repos/{FORK}")
         self.pulls = [pull(304, repo=OLD_FORK)]
         with patch.object(
-            recheck, "branch_matches", return_value=["c" * 40]
+            recheck.refs, "branch_matches", return_value=["c" * 40]
         ) as matches:
             self.assertIsNone(recheck.stale_selection(check()))
         matches.assert_called_once_with(
@@ -255,7 +292,7 @@ class StaleSelectionTest(unittest.TestCase):
         )
         self.reads(issue(), [pull(305, repo=OLD_FORK)], fork=fork)
         with patch.object(
-            recheck, "branch_matches", return_value=["c" * 40]
+            recheck.refs, "branch_matches", return_value=["c" * 40]
         ) as matches:
             self.assertIsNone(recheck.stale_selection(check()))
         matches.assert_called_once_with(
@@ -296,6 +333,31 @@ class StaleSelectionTest(unittest.TestCase):
         self.api_list.side_effect = github.GitHubError("boom", 502)
         with self.assertRaisesRegex(recheck.PublishError, "could not list forks"):
             recheck.stale_selection(check())
+
+
+class ImportOrderTest(unittest.TestCase):
+    """issue_recheck sits on an import cycle through branch_refs."""
+
+    def test_every_module_imports_first(self) -> None:
+        # Each module is imported first in a clean module table, so a
+        # cycle that only loads from one end fails here.
+        code = (
+            "import importlib, sys\n"
+            "names = sys.argv[1:]\n"
+            "for name in names:\n"
+            "    for loaded in names:\n"
+            "        sys.modules.pop(loaded, None)\n"
+            "    importlib.import_module(name)\n"
+        )
+        names = sorted(path.stem for path in SCRIPTS.glob("*.py"))
+        done = subprocess.run(
+            [sys.executable, "-B", "-c", code, *names],
+            cwd=SCRIPTS,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
 
 
 if __name__ == "__main__":

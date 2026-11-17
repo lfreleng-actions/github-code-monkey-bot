@@ -12,10 +12,12 @@ from typing import Any, cast
 
 import bot_github as github
 import issue_reads as reads
+import issue_recheck as recheck
 import proposal_model as model
 import proposal_policy as policy
 import round_recount
 import write_recovery as recovery
+from proposal_policy import PublishError
 from review_outcome import (
     checks_sentence,
     checks_token,
@@ -238,8 +240,42 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
 MAX_COMMENT_PAGES = 3
 
 
+def unlisted_issue(args: argparse.Namespace, result: dict[str, Any]) -> bool:
+    """Whether the listed-author rule forbids the outcome comment.
+
+    A refusal an earlier step recorded stands. Otherwise the issue is
+    re-read now against the list the selection ran with, whatever the
+    outcome: an abstention or a failure reaches this step without the
+    push's re-check, and the issue may have been edited since. A read
+    that fails records a warning and raises: nothing posts on trust.
+    """
+    if result.get(recheck.AUTHOR_UNLISTED) is True:
+        return True
+    warnings = cast("list[str]", result.setdefault("warnings", []))
+    try:
+        refusal = recheck.listed_refusal(result)
+    except (PublishError, github.GitHubError) as exc:
+        detail = (
+            github.safe_message(exc)
+            if isinstance(exc, github.GitHubError)
+            else str(exc)
+        )
+        warnings.append(f"could not re-read the issue's author ({detail}); no comment")
+        args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        raise PublishError(f"could not re-read the issue's author: {detail}") from exc
+    if refusal is None:
+        return False
+    result[recheck.AUTHOR_UNLISTED] = True
+    reason = refusal.reason.removesuffix("; nothing published")
+    warnings.append(f"no issue comment: {reason}")
+    return True
+
+
 def run_comment(args: argparse.Namespace) -> None:
-    """Post the outcome comment and record its URL in result.json."""
+    """Post the outcome comment and record its URL in result.json.
+
+    An issue the listed-author rule refuses gets no comment at all.
+    """
     result = model.load_json(args.result, "result")
     if result.get("dry_run"):
         print("dry run: no comment")
@@ -248,6 +284,10 @@ def run_comment(args: argparse.Namespace) -> None:
     body = comment_body(result, args.run_url)
     if body is None:
         print("nothing to comment")
+        args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return
+    if unlisted_issue(args, result):
+        print("issue author or editor not listed: no comment")
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return
     repository = github.require_str(result, "repository", "result")

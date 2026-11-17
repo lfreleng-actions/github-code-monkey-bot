@@ -1855,6 +1855,23 @@ class PreflightContracts(ReusableWorkflowCase):
         self.assertIn("--config monkey-assets/config/bot.json", config_run)
         self.assertIn("fork_orgs.py check", config_run)
 
+    def test_issue_author_list_is_checked_before_any_token(self) -> None:
+        """An empty or malformed list fails the run before the read mint."""
+        step = self.step("select", "Pre-flight: configuration and credentials")
+        self.assertEqual(step["env"]["ISSUE_AUTHORS"], "${{ inputs.issue_authors }}")
+        self.assertNotIn("GH_TOKEN", step["env"])
+        self.assertIn(
+            'issue_authors.py check --authors "$ISSUE_AUTHORS"', flatten(step["run"])
+        )
+        inputs = cast(dict[str, Any], self.triggers["workflow_call"]["inputs"])
+        self.assertEqual(inputs["issue_authors"]["default"], "")
+
+    def test_selection_reads_through_the_issue_author_list(self) -> None:
+        """Select hands the same list on; it records it for the publisher."""
+        step = self.step("select", "Select issues")
+        self.assertEqual(step["env"]["ISSUE_AUTHORS"], "${{ inputs.issue_authors }}")
+        self.assertIn('--issue-authors "$ISSUE_AUTHORS"', flatten(step["run"]))
+
     def test_config_gate_sees_the_credentials_under_template_names(self) -> None:
         """Shape checks read the inputs the workflow was handed, nothing else."""
         step = self.step("select", "Pre-flight: configuration and credentials")
@@ -3636,6 +3653,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "request_antagonistic_review",
                 "antagonistic_repository",
                 "exclude_repos",
+                "issue_authors",
                 "guidance_repository",
                 "guidance_ref",
                 "harden_runner_egress",
@@ -3841,6 +3859,15 @@ class CronCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], False)
         self.assertEqual(concurrency["queue"], "max")
+
+    def test_issue_authors_come_from_the_variable_alone(self) -> None:
+        """No dispatch field can widen the list of trusted issue authors."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["issue_authors"]), "vars.CODE_MONKEY_ISSUE_AUTHORS || ''"
+        )
+        inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
+        self.assertNotIn("issue_authors", inputs)
 
     def test_no_schedule_only_expression_remains(self) -> None:
         """Nothing tests the event or a cron, and nothing posts to Slack (#196)."""
@@ -4119,6 +4146,8 @@ class TestingCallerContracts(WorkflowCase):
         self.assertIs(with_["dry_run"], True)
         # No run scans for issues, so plumbing names one of its own.
         self.assert_expression(with_["issues"], "format('{0}#1', github.repository)")
+        # The list check must pass, so plumbing names a login.
+        self.assert_expression(with_["issue_authors"], "github.repository_owner")
         self.assert_expression(with_["assets_repository"], "github.repository")
         self.assert_expression(with_["assets_ref"], "github.sha")
 
