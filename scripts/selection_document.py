@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import issue_authors as authors
+
 SCHEMA = 1
 
 
@@ -27,7 +29,8 @@ class Settings:
     guidance: bytes
     commit: str
     # The issue author list the run applied; the publisher re-checks it.
-    listed: frozenset[str]
+    # None when ONLY_KNOWN_AUTHORS turned the rule off.
+    listed: frozenset[str] | None
 
 
 def selection_document(
@@ -73,7 +76,7 @@ def selection_document(
             f"{args.org}/{repo}#{number}" for repo, number in pulls
         ],
         "skipped_issues": skipped_issues,
-        "issue_authors": sorted(settings.listed),
+        **authors.mode_fields(settings.listed),
         "candidates_seen": seen,
         "skipped": skipped,
         "issues": chosen,

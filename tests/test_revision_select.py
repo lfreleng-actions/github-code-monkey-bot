@@ -540,7 +540,6 @@ class BuildEntryTest(RevisionCase):
             with self.assertRaisesRegex(select.Skip, "editor_not_listed"):
                 self.build(explicit=True)
 
-    @unittest.expectedFailure
     def test_rule_off_admits_any_author_and_member_comments(self) -> None:
         """With ``ONLY_KNOWN_AUTHORS=false`` a round reads no list anywhere."""
         self.threads = [thread()]

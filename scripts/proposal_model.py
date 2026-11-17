@@ -128,6 +128,9 @@ class Check:
     # The listed issue authors the selection ran with: the publisher
     # re-reads the issue's author and last editor against them.
     issue_authors: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # Whether the selection ran with the rule on; off only when it
+    # recorded ONLY_KNOWN_AUTHORS false, and then the list is empty.
+    only_known_authors: bool = True
     # Whether that list refused the entry: nothing writes to the target.
     author_unlisted: bool = False
 
@@ -199,6 +202,7 @@ class Check:
             "default_branch": self.default_branch,
             "fork_org": self.fork_org,
             "fork_repository": self.fork_repository,
+            "only_known_authors": self.only_known_authors,
             "issue_authors": self.issue_authors,
             "author_unlisted": self.author_unlisted,
             "verdict": self.verdict,

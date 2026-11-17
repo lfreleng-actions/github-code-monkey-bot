@@ -763,7 +763,6 @@ class RunCheckOutcomeTest(GitCase):
                 self.assertIn(reason, check.reasons[0])
                 self.assertIs(check.to_json()["author_unlisted"], True)
 
-    @unittest.expectedFailure
     def test_rule_off_skips_the_listed_author_recheck(self) -> None:
         """A selection that recorded the rule off admits any author, and says so."""
         self.fixture.manifest(outcome="abstain", reason="r")

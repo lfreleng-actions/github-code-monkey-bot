@@ -182,7 +182,6 @@ class StaleSelectionTest(unittest.TestCase):
         )
         self.assertIsNone(recheck.stale_selection(check()))
 
-    @unittest.expectedFailure
     def test_rule_off_rechecks_no_author(self) -> None:
         """A check that recorded the rule off admits any author, with no list."""
         mallory = {"login": "mallory", "__typename": "User"}

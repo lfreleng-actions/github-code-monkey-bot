@@ -499,7 +499,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
             "org/alpha", 3, frozenset({"alice"})
         )
 
-    @unittest.expectedFailure
     def test_flag_false_works_an_unlisted_members_named_issue(self) -> None:
         """``ONLY_KNOWN_AUTHORS=false``: no list is read, and comments pass unfiltered."""
         self.details[("org/alpha", 3)] = self.detail(
@@ -518,7 +517,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
             "Listed-author rule: **off**", outputs.summary_markdown(selection)
         )
 
-    @unittest.expectedFailure
     def test_flag_true_or_unset_keeps_the_list(self) -> None:
         """``true`` and unset refuse the unlisted author and filter the comments."""
         for flag in ("true", ""):
@@ -540,7 +538,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
                     outputs.summary_markdown(selection),
                 )
 
-    @unittest.expectedFailure
     def test_flag_false_ignores_a_hyphen_list_passed_attached(self) -> None:
         """The workflow's ``--issue-authors=`` form parses any list; off ignores it."""
         args = select.build_parser().parse_args(
@@ -563,7 +560,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         )
         self.assertIsNone(inputs.load_policy(args)[2])
 
-    @unittest.expectedFailure
     def test_a_bad_flag_stops_the_run(self) -> None:
         """A value other than true or false fails before any read."""
         args = self.args("org/alpha#3")

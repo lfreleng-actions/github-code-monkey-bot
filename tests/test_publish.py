@@ -1130,7 +1130,6 @@ class RecheckPushTest(NoNetworkCase):
         self.assertEqual(result["verdict"], "rejected")
         self.assertIs(result["author_unlisted"], True)
 
-    @unittest.expectedFailure
     def test_result_carries_the_selections_mode(self) -> None:
         """The comment step re-checks under the selection's mode, never another."""
         refusal = publish.recheck.Refusal("issue #7 was closed; nothing published")
@@ -2425,7 +2424,6 @@ class RunRetitleTest(NoNetworkCase):
         write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
         write.assert_called_once()
 
-    @unittest.expectedFailure
     def test_retitle_record_carries_the_mode(self) -> None:
         """The restore re-checks under the mode the round ran with."""
         for recorded in (False, True):

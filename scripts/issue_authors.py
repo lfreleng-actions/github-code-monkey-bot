@@ -19,6 +19,14 @@ list the caller reads from ``CODE_MONKEY_ISSUE_AUTHORS``, and an App
 or bot never passes. Issue comments reach a packet only from listed
 authors. ``parse_listed`` reads the list and refuses an empty or
 malformed one; ``unlisted`` and ``comment_listed`` apply it.
+
+``ONLY_KNOWN_AUTHORS`` gates the listed-author rule. Unset, blank or
+``true`` keeps it; ``false`` turns it off and the list goes unread;
+any other value fails the run. ``resolve_mode`` reads both, and its
+None result means the rule is off: the association rule, and the
+owner-or-member comment filter, still apply. A selection records the
+mode under ``MODE_KEY``, and every later site reads that record
+through ``recorded_mode`` instead of resolving the flag again.
 """
 
 from __future__ import annotations
@@ -34,6 +42,15 @@ APPROVAL_LABEL = "agent-approved"
 COMMENT_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
 # The repository variable the caller reads the list from; errors name it.
 VARIABLE = "CODE_MONKEY_ISSUE_AUTHORS"
+# The repository variable that gates the rule, and the record key for it.
+FLAG = "ONLY_KNOWN_AUTHORS"
+MODE_KEY = "only_known_authors"
+# How to fix a list the rule refuses, empty or malformed alike.
+SETUP_HINT = (
+    "populate it with the GitHub usernames whose issues will be accepted, "
+    f"for example: gh variable set {VARIABLE} "
+    "--repo <owner>/<repo> --body 'alice bob'"
+)
 # A GitHub login: at most 39 alphanumerics and single hyphens, neither
 # starting nor ending with a hyphen.
 LOGIN_RE = re.compile(r"(?=[A-Za-z0-9-]{1,39}\Z)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
@@ -43,7 +60,7 @@ LIST_COUNTERS = frozenset({AUTHOR_NOT_LISTED, EDITOR_NOT_LISTED})
 
 
 class AuthorListError(ValueError):
-    """The listed-author variable is empty or holds an entry that is no login."""
+    """The listed-author variable or its flag holds a value the rule refuses."""
 
 
 class Unlisted(NamedTuple):
@@ -171,13 +188,51 @@ def parse_listed(text: str | None) -> frozenset[str]:
     """
     entries = [token for token in re.split(r"[,\s]+", text or "") if token]
     if not entries:
-        raise AuthorListError(
-            f"{VARIABLE} is empty or unset; no issue author is listed"
-        )
+        raise AuthorListError(f"{VARIABLE} is empty or unset; {SETUP_HINT}")
     for entry in entries:
         if not LOGIN_RE.fullmatch(entry):
-            raise AuthorListError(f"{VARIABLE} holds {entry!r}, which is not a login")
+            raise AuthorListError(
+                f"{VARIABLE} holds {entry!r}, which is not a login; {SETUP_HINT}"
+            )
     return frozenset(entry.lower() for entry in entries)
+
+
+def resolve_mode(flag: str | None, text: str | None) -> frozenset[str] | None:
+    """The list ``ONLY_KNOWN_AUTHORS`` binds, None when it turns the rule off.
+
+    Unset, blank or ``true`` reads the list through ``parse_listed``;
+    ``false`` returns None without reading it. Surrounding whitespace
+    is ignored; any other value is an ``AuthorListError``.
+    """
+    value = (flag or "").strip()
+    if value in ("", "true"):
+        return parse_listed(text)
+    if value == "false":
+        return None
+    raise AuthorListError(
+        f"{FLAG} holds {value!r}; set it to true or false, or leave it unset"
+    )
+
+
+def rule_off(record: dict[str, Any]) -> bool:
+    """Whether a selection or check recorded the rule off: a JSON false only."""
+    return record.get(MODE_KEY) is False
+
+
+def recorded_mode(record: dict[str, Any]) -> frozenset[str] | None:
+    """The list a record binds, None when it recorded the rule off.
+
+    A record without the mode, or with any value but false, keeps the
+    rule on and needs its list, as ``recorded_list`` reads it.
+    """
+    if rule_off(record):
+        return None
+    return recorded_list(record.get("issue_authors"))
+
+
+def mode_fields(listed: frozenset[str] | None) -> dict[str, Any]:
+    """What a selection or check records for the mode and its list."""
+    return {MODE_KEY: listed is not None, "issue_authors": sorted(listed or ())}
 
 
 def is_listed(login: Any, listed: frozenset[str], *, bot: bool = False) -> bool:
@@ -190,13 +245,16 @@ def is_listed(login: Any, listed: frozenset[str], *, bot: bool = False) -> bool:
     )
 
 
-def unlisted(details: dict[str, Any], listed: frozenset[str]) -> Unlisted | None:
+def unlisted(details: dict[str, Any], listed: frozenset[str] | None) -> Unlisted | None:
     """Why the listed-author rule refuses the issue, or None when it admits it.
 
     ``details`` are an ``issue_reads.issue_details`` reply. The author
     must be listed; when the body was edited, so must its last editor.
-    A missing field refuses, as an unlisted login does.
+    A missing field refuses, as an unlisted login does. With no list
+    the rule is off and admits every issue.
     """
+    if listed is None:
+        return None
     author = details.get("author")
     if not is_listed(author, listed, bot=bool(details.get("author_is_bot"))):
         return Unlisted(
@@ -217,18 +275,20 @@ def unlisted(details: dict[str, Any], listed: frozenset[str]) -> Unlisted | None
 
 def recorded_refusal(
     selection: dict[str, Any], entry: dict[str, Any]
-) -> tuple[list[str], str | None]:
+) -> tuple[frozenset[str] | None, str | None]:
     """The list a selection recorded, and why its entry fails it, or None.
 
-    A selection without a usable list refuses every entry: the
-    publisher re-checks each one and publishes nothing on trust.
+    The list is None when the selection recorded the rule off. A
+    selection with the rule on and no usable list refuses every entry
+    under an empty list: the publisher re-checks each one and
+    publishes nothing on trust.
     """
     try:
-        listed = recorded_list(selection.get("issue_authors"))
+        listed = recorded_mode(selection)
     except AuthorListError as exc:
-        return [], f"the selection: {exc}"
+        return frozenset(), f"the selection: {exc}"
     refused = unlisted(entry, listed)
-    return sorted(listed), refused.reason if refused is not None else None
+    return listed, refused.reason if refused is not None else None
 
 
 def comment_listed(entry: dict[str, Any], listed: frozenset[str]) -> bool:
@@ -269,16 +329,23 @@ def member_comment(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """``check``: refuse an empty or malformed list before any token exists."""
+    """``check``: refuse a bad flag or list before any token exists."""
     parser = argparse.ArgumentParser(description="Check the listed issue authors.")
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help=f"validate {VARIABLE}")
     check.add_argument("--authors", required=True)
+    check.add_argument("--only-known-authors", default="")
     args = parser.parse_args(argv)
     try:
-        listed = parse_listed(args.authors)
+        listed = resolve_mode(args.only_known_authors, args.authors)
     except AuthorListError as exc:
         parser.exit(1, f"::error::{exc}\n")
+    if listed is None:
+        print(
+            f"::warning::{FLAG} is false: the listed-author rule is disabled; "
+            f"{VARIABLE} is not read"
+        )
+        return
     print(f"{VARIABLE}: {len(listed)} issue author(s) listed", file=sys.stderr)
 
 
