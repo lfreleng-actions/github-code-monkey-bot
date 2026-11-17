@@ -499,6 +499,82 @@ class ExplicitIssuesTest(NoSubprocessCase):
             "org/alpha", 3, frozenset({"alice"})
         )
 
+    @unittest.expectedFailure
+    def test_flag_false_works_an_unlisted_members_named_issue(self) -> None:
+        """``ONLY_KNOWN_AUTHORS=false``: no list is read, and comments pass unfiltered."""
+        self.details[("org/alpha", 3)] = self.detail(
+            author="mallory", edited=True, editor="eve"
+        )
+        args = self.args("org/alpha#3")
+        args.only_known_authors = "false"
+        args.issue_authors = ""
+        selection, _ = select.build_selection(args)
+        self.assertEqual([i["key"] for i in selection["issues"]], ["alpha-3"])
+        self.assertEqual(selection["skipped_issues"], [])
+        reads.filtered_comments.assert_called_once_with("org/alpha", 3, None)
+        self.assertIs(selection["only_known_authors"], False)
+        self.assertEqual(selection["issue_authors"], [])
+        self.assertIn(
+            "Listed-author rule: **off**", outputs.summary_markdown(selection)
+        )
+
+    @unittest.expectedFailure
+    def test_flag_true_or_unset_keeps_the_list(self) -> None:
+        """``true`` and unset refuse the unlisted author and filter the comments."""
+        for flag in ("true", ""):
+            self.details[("org/alpha", 3)] = self.detail(author="mallory")
+            self.details[("org/delta", 7)] = self.detail()
+            reads.filtered_comments.reset_mock()
+            args = self.args("org/alpha#3,org/delta#7")
+            args.only_known_authors = flag
+            with self.subTest(flag=flag):
+                selection, _ = select.build_selection(args)
+                self.assertEqual([i["key"] for i in selection["issues"]], ["delta-7"])
+                self.assertEqual(selection["skipped"]["author_not_listed"], 1)
+                reads.filtered_comments.assert_called_once_with(
+                    "org/delta", 7, frozenset({"alice"})
+                )
+                self.assertIs(selection["only_known_authors"], True)
+                self.assertIn(
+                    "Listed-author rule: on, 1 author(s)",
+                    outputs.summary_markdown(selection),
+                )
+
+    @unittest.expectedFailure
+    def test_flag_false_ignores_a_hyphen_list_passed_attached(self) -> None:
+        """The workflow's ``--issue-authors=`` form parses any list; off ignores it."""
+        args = select.build_parser().parse_args(
+            [
+                "--org",
+                "org",
+                "--output-dir",
+                "out",
+                "--mode",
+                "pull-requests",
+                "--model",
+                "m",
+                "--guidance-repository",
+                "org/.github",
+                "--fork-orgs",
+                str(FORK_ORGS_PATH),
+                "--issue-authors=-invalid",
+                "--only-known-authors=false",
+            ]
+        )
+        self.assertIsNone(inputs.load_policy(args)[2])
+
+    @unittest.expectedFailure
+    def test_a_bad_flag_stops_the_run(self) -> None:
+        """A value other than true or false fails before any read."""
+        args = self.args("org/alpha#3")
+        args.only_known_authors = "yes"
+        with (
+            patch.object(reads, "issue_details") as read,
+            self.assertRaisesRegex(reads.SelectionError, "ONLY_KNOWN_AUTHORS"),
+        ):
+            select.build_selection(args)
+        read.assert_not_called()
+
     def test_an_empty_or_bad_list_stops_the_run(self) -> None:
         """No list, or a malformed one, fails the selection before any read."""
         for text in ("", "alice,@bob"):

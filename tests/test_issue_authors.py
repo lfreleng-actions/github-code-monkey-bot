@@ -8,7 +8,7 @@ from __future__ import annotations
 import io
 import sys
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -220,6 +220,147 @@ class UnlistedTest(unittest.TestCase):
         ):
             with self.subTest(user=user):
                 self.assertFalse(authors.comment_listed({"user": user}, LISTED))
+
+
+def comment(login: str, association: str = "MEMBER") -> dict[str, Any]:
+    """A REST issue comment by ``login``."""
+    return {
+        "user": {"login": login},
+        "author_association": association,
+        "body": "hi",
+        "created_at": "t",
+    }
+
+
+class ResolveModeTest(unittest.TestCase):
+    """``resolve_mode`` reads ``ONLY_KNOWN_AUTHORS`` and the list together."""
+
+    @unittest.expectedFailure
+    def test_true_or_unset_enforces_a_valid_list(self) -> None:
+        """``true``, unset or blank, padded or not, applies the list."""
+        for flag in ("true", " true\n", None, "", "  "):
+            with self.subTest(flag=flag):
+                self.assertEqual(authors.resolve_mode(flag, "Alice bob-2"), LISTED)
+
+    @unittest.expectedFailure
+    def test_true_or_unset_refuses_a_missing_or_bad_list(self) -> None:
+        """No list, or a malformed one, fails the run; the fix is the list."""
+        for flag in ("true", None, ""):
+            for text in (None, "", " , ", "alice,@bob"):
+                with (
+                    self.subTest(flag=flag, text=text),
+                    self.assertRaisesRegex(authors.AuthorListError, authors.VARIABLE),
+                ):
+                    authors.resolve_mode(flag, text)
+        for text in ("", "alice,@bob"):
+            with (
+                self.subTest(guidance=text),
+                self.assertRaises(authors.AuthorListError) as raised,
+            ):
+                authors.resolve_mode(None, text)
+            message = str(raised.exception)
+            self.assertIn("GitHub usernames whose issues will be accepted", message)
+            self.assertIn(f"gh variable set {authors.VARIABLE}", message)
+            self.assertNotIn(authors.FLAG, message)
+
+    @unittest.expectedFailure
+    def test_false_bypasses_the_list_unread(self) -> None:
+        """``false`` turns the rule off whatever the list holds, absent included."""
+        for flag in ("false", " false\t"):
+            for text in (None, "", "alice", "@bad"):
+                with self.subTest(flag=flag, text=text):
+                    self.assertIsNone(authors.resolve_mode(flag, text))
+
+    @unittest.expectedFailure
+    def test_any_other_value_fails_naming_the_flag(self) -> None:
+        """Only the exact words pass; the error names the flag and its values."""
+        for flag in ("True", "TRUE", "False", "yes", "no", "1", "0", "on", "t r"):
+            with (
+                self.subTest(flag=flag),
+                self.assertRaises(authors.AuthorListError) as raised,
+            ):
+                authors.resolve_mode(flag, "alice")
+            message = str(raised.exception)
+            self.assertIn(authors.FLAG, message)
+            self.assertIn("true", message)
+            self.assertIn("false", message)
+
+    @unittest.expectedFailure
+    def test_recorded_mode_needs_an_explicit_false(self) -> None:
+        """A record turns the rule off only with a JSON false; else its list binds."""
+        self.assertIsNone(
+            authors.recorded_mode({authors.MODE_KEY: False, "issue_authors": None})
+        )
+        for mode in (True, "false", None, 0):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    authors.recorded_mode(
+                        {authors.MODE_KEY: mode, "issue_authors": ["alice"]}
+                    ),
+                    frozenset({"alice"}),
+                )
+                with self.assertRaises(authors.AuthorListError):
+                    authors.recorded_mode({authors.MODE_KEY: mode, "issue_authors": []})
+        self.assertEqual(
+            authors.recorded_mode({"issue_authors": ["alice"]}), frozenset({"alice"})
+        )
+
+    @unittest.expectedFailure
+    def test_mode_fields(self) -> None:
+        """What a selection, check or result records for each mode."""
+        self.assertEqual(
+            authors.mode_fields(LISTED),
+            {authors.MODE_KEY: True, "issue_authors": ["alice", "bob-2"]},
+        )
+        self.assertEqual(
+            authors.mode_fields(None), {authors.MODE_KEY: False, "issue_authors": []}
+        )
+
+    @unittest.expectedFailure
+    def test_rule_off_admits_any_author_and_member_comment(self) -> None:
+        """With no list, the author, editor and comment tests fall back to #199's."""
+        data = details(author="mallory", edited=True, editor="eve")
+        self.assertIsNone(authors.unlisted(data, None))
+        self.assertIsNotNone(authors.unlisted(data, LISTED))
+        self.assertIsNotNone(authors.member_comment(comment("mallory"), None))
+        self.assertIsNone(authors.member_comment(comment("mallory"), LISTED))
+        self.assertIsNone(authors.member_comment(comment("mallory", "NONE"), None))
+
+    @unittest.expectedFailure
+    def test_check_command_reports_the_mode(self) -> None:
+        """``check`` warns when the rule is off and fails on a bad flag."""
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+            authors.main(["check", "--authors", "", "--only-known-authors", "false"])
+        self.assertIn("::warning::", out.getvalue())
+        self.assertIn("disabled", out.getvalue())
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+            authors.main(["check", "--authors", "alice", "--only-known-authors", ""])
+        self.assertNotIn("::warning::", out.getvalue())
+        for flag, authors_text in (("yes", "alice"), ("true", "")):
+            with (
+                self.subTest(flag=flag),
+                redirect_stderr(io.StringIO()) as err,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                authors.main(
+                    ["check", "--authors", authors_text, "--only-known-authors", flag]
+                )
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("::error::", err.getvalue())
+
+    @unittest.expectedFailure
+    def test_check_command_takes_a_hyphen_list_attached(self) -> None:
+        """The workflow's ``--authors=`` form reaches the mode, not argparse."""
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+            authors.main(["check", "--authors=-invalid", "--only-known-authors=false"])
+        self.assertIn("disabled", out.getvalue())
+        with (
+            redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            authors.main(["check", "--authors=-invalid", "--only-known-authors=true"])
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn(authors.VARIABLE, err.getvalue())
 
 
 if __name__ == "__main__":

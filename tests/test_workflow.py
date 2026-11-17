@@ -1872,6 +1872,35 @@ class PreflightContracts(ReusableWorkflowCase):
         self.assertEqual(step["env"]["ISSUE_AUTHORS"], "${{ inputs.issue_authors }}")
         self.assertIn('--issue-authors "$ISSUE_AUTHORS"', flatten(step["run"]))
 
+    @unittest.expectedFailure
+    def test_only_known_authors_is_checked_before_any_token(self) -> None:
+        """The flag is resolved with the list at pre-flight, before the read mint."""
+        config = self.position("select", "Pre-flight: configuration and credentials")
+        self.assertLess(config, self.position("select", "Mint read-only App token"))
+        step = self.step("select", "Pre-flight: configuration and credentials")
+        self.assertEqual(
+            step["env"]["ONLY_KNOWN_AUTHORS"], "${{ inputs.only_known_authors }}"
+        )
+        self.assertIn(
+            'issue_authors.py check --authors="$ISSUE_AUTHORS"'
+            ' --only-known-authors="$ONLY_KNOWN_AUTHORS"',
+            flatten(step["run"]),
+        )
+        inputs = cast(dict[str, Any], self.triggers["workflow_call"]["inputs"])
+        self.assertEqual(inputs["only_known_authors"]["type"], "string")
+        self.assertEqual(inputs["only_known_authors"]["default"], "")
+
+    @unittest.expectedFailure
+    def test_selection_resolves_the_same_flag(self) -> None:
+        """Select records the mode it ran with for the publisher."""
+        step = self.step("select", "Select issues")
+        self.assertEqual(
+            step["env"]["ONLY_KNOWN_AUTHORS"], "${{ inputs.only_known_authors }}"
+        )
+        self.assertIn(
+            '--only-known-authors="$ONLY_KNOWN_AUTHORS"', flatten(step["run"])
+        )
+
     def test_config_gate_sees_the_credentials_under_template_names(self) -> None:
         """Shape checks read the inputs the workflow was handed, nothing else."""
         step = self.step("select", "Pre-flight: configuration and credentials")
@@ -3869,6 +3898,20 @@ class CronCallerContracts(WorkflowCase):
         inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
         self.assertNotIn("issue_authors", inputs)
 
+    @unittest.expectedFailure
+    def test_only_known_authors_comes_from_the_variable_alone(self) -> None:
+        """No dispatch field, and no continuation, can switch the list off."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["only_known_authors"]), "vars.ONLY_KNOWN_AUTHORS || ''"
+        )
+        inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
+        self.assertNotIn("only_known_authors", inputs)
+        dispatch = dumped(self.jobs["continue"]).lower()
+        for name in ("only_known_authors", "issue_authors"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, dispatch)
+
     def test_no_schedule_only_expression_remains(self) -> None:
         """Nothing tests the event or a cron, and nothing posts to Slack (#196)."""
         text = self.WORKFLOW.read_text(encoding="utf-8")
@@ -4150,6 +4193,16 @@ class TestingCallerContracts(WorkflowCase):
         self.assert_expression(with_["issue_authors"], "github.repository_owner")
         self.assert_expression(with_["assets_repository"], "github.repository")
         self.assert_expression(with_["assets_ref"], "github.sha")
+
+    @unittest.expectedFailure
+    def test_plumbing_callers_pass_the_flag_explicitly(self) -> None:
+        """Pull request plumbing keeps the list on; the dry-run reads the variable."""
+        plumbing = cast(dict[str, Any], self.jobs["plumbing"]["with"])
+        self.assertEqual(plumbing["only_known_authors"], "true")
+        dry_run = cast(dict[str, Any], self.jobs["dry-run"]["with"])
+        self.assert_expression(
+            dry_run["only_known_authors"], "vars.ONLY_KNOWN_AUTHORS || ''"
+        )
 
     def test_manual_dry_run_takes_the_target_lists(self) -> None:
         """A dispatch names the issues to work; no input names a scan."""
