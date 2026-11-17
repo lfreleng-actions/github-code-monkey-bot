@@ -37,12 +37,6 @@ on:
         description: 'Pull requests to raise at most; 0 lifts the cap'
         type: string
         default: '10'
-      categories:
-        description: >-
-          Issue categories to work: all, or a list of bugs, features,
-          docs, ci, code_quality, refactor, performance, other
-        type: string
-        default: 'all'
       max_runtime_minutes:
         description: 'Wall-clock budget for each agent session'
         type: string
@@ -70,10 +64,6 @@ on:
         default: true
       include_dotgithub:
         description: 'Consider issues in the .github repository'
-        type: boolean
-        default: false
-      include_assigned:
-        description: 'Consider issues that have an assignee'
         type: boolean
         default: false
       load_repo_skills:
@@ -105,14 +95,11 @@ on:
           dispatches; empty requests nothing
         type: string
         default: 'lfreleng-actions/github-code-review-bot'
-      repositories:
-        description: 'Repositories to scan; commas and/or spaces'
-        type: string
-        default: ''
       issues:
         description: >-
-          Issues to work instead of scanning: repo#N, owner/repo#N,
-          repo/issues/N or URLs; commas and/or spaces
+          Issues to work: repo#N, owner/repo#N, repo/issues/N or URLs;
+          commas and/or spaces. No run scans for new issues: a run
+          names issues or pull_requests, or sets revise_only
         type: string
         default: ''
       pull_requests:
@@ -131,14 +118,13 @@ on:
         description: >-
           Revise open bot pull requests with work outstanding and work
           no new issue; needs pull-requests mode, revise, and no issues
-          or repositories
         type: boolean
         default: false
       outstanding_only:
         description: >-
-          Revise each named pull request only when the scan's
+          Revise each named pull request only when the revision scan's
           work-outstanding test finds work, else skip it; needs
-          pull_requests alone, without issues or repositories
+          pull_requests alone, without issues
         type: boolean
         default: false
       continues_run:
@@ -268,8 +254,8 @@ on:
 
 permissions: {}
 
-# Live scans hold one lock per caller repository and owner across the
-# whole pipeline; different caller repositories need external
+# Live revise-only runs hold one lock per caller repository and owner
+# across the whole pipeline; different caller repositories need external
 # coordination if they target the same estate. Pending runs wait in a
 # FIFO queue (`queue: max`, up to 100), never cancelled by a newcomer;
 # `queue` needs `cancel-in-progress: false`. Dry runs, which write
@@ -299,7 +285,7 @@ jobs:
     runs-on: 'ubuntu-latest'
     timeout-minutes: 20
     permissions:
-      issues: read  # Candidate scan without an App (dry-run plumbing)
+      issues: read  # Named issue reads without an App (dry-run plumbing)
       contents: read  # Checkout trusted assets; read public repositories
       # A rejecting run's publish result, read for the next attempt (§6)
       actions: read  # This run's creation time; other runs' selections
@@ -374,16 +360,6 @@ jobs:
       # mistake reported at once. Repeats collapse without regard to
       # case, as GitHub compares repository names; an issue publishes
       # as owner/repo#N whichever of the accepted spellings named it.
-      - name: 'Split repositories'
-        id: repositories
-        # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/list-splitter-action@7bf2f3ab24d636464db599ce349bf345910c08d6  # v0.1.1
-        with:
-          list: "${{ inputs.repositories }}"
-          validate: 'repository'
-          owner: "${{ inputs.org }}"
-          token: ''
-
       - name: 'Split excluded repositories'
         id: exclusions
         # yamllint disable-line rule:line-length
@@ -421,8 +397,7 @@ jobs:
       # the App may not be installed, so the read must also say the
       # repository is public. A named issue's repository that fails
       # that leaves the scope here and the selector then records the
-      # issue as skipped. A scan repository that fails it is an error
-      # either way; this names it plainly.
+      # issue as skipped.
       - name: 'Resolve named repositories'
         id: named
         env:
@@ -430,7 +405,6 @@ jobs:
           ORG: "${{ inputs.org }}"
           ISSUE_REPOSITORIES: "${{ steps.issues.outputs.repositories }}"
           PULL_REPOSITORIES: "${{ steps.pulls.outputs.repositories }}"
-          REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
         run: |
           # Whether the repository exists and is public; 2 on any
           # other failure. Stderr stays apart from the answer, so a
@@ -452,13 +426,6 @@ jobs:
             echo "::error::Could not read $ORG/$1: $errors"
             exit 2
           }
-          IFS=, read -ra scan <<< "$REPOSITORIES"
-          for name in "${scan[@]}"; do
-            [ -n "$name" ] || continue
-            usable "$name" || {
-              echo "::error::repository $ORG/$name not found or not public"
-              exit 1; }
-          done
           # Named issues and named pull requests share one scope.
           IFS=, read -ra named <<< "$ISSUE_REPOSITORIES,$PULL_REPOSITORIES"
           kept=()
@@ -489,18 +456,16 @@ jobs:
           MAX_AGENTS: "${{ inputs.max_concurrent_agents }}"
           MODEL: "${{ inputs.model }}"
           # Already split, checked and comma-joined, as the App token
-          # action takes it; empty keeps the read token organisation-wide,
-          # which the scan needs. Named issues scope it to their own
-          # repositories instead.
-          REPOSITORIES: "${{ steps.repositories.outputs.repositories }}"
-          REPOSITORY_COUNT: "${{ steps.repositories.outputs.count }}"
+          # action takes it. Named issues and pull requests scope the
+          # read token to their own repositories; empty, in a
+          # revise-only run, keeps it organisation-wide, which the
+          # revision scan needs.
           ISSUE_REPOSITORIES: "${{ steps.named.outputs.repositories }}"
           ISSUE_COUNT: "${{ steps.issues.outputs.count }}"
           PULL_COUNT: "${{ steps.pulls.outputs.count }}"
           # The raw lists, only to tell an absent list from one that
           # parsed to nothing.
           ISSUES_RAW: "${{ inputs.issues }}"
-          REPOSITORIES_RAW: "${{ inputs.repositories }}"
           PULL_REQUESTS_RAW: "${{ inputs.pull_requests }}"
           REVISE: "${{ inputs.revise }}"
           REVISE_ONLY: "${{ inputs.revise_only }}"
@@ -532,37 +497,34 @@ jobs:
           # Expressions cannot add, so the job budget (session plus
           # toolchain setup and upload) is computed here.
           #
-          # Only an empty list means "scan". The concurrency group tests
-          # the raw issues input, while selection sees the split one, so
-          # a list of separators alone would take a per-run lock and
-          # then scan; it fails here, before selection and the mint. An
-          # issues list may name pull requests, which count beside the
-          # issues here. Issues and repositories exclude each other.
+          # The concurrency group tests the raw issues input, while
+          # selection sees the split one, so a list of separators alone
+          # would take a per-run lock and then name nothing; it fails
+          # here, before selection and the mint. An issues list may
+          # name pull requests, which count beside the issues here.
           if [ -n "$ISSUES_RAW" ] && [ "$ISSUE_COUNT" = 0 ] &&
             [ "${PULL_COUNT:-0}" = 0 ]; then
             echo '::error::issues was given but names no issue'
-            exit 1
-          fi
-          if [ -n "$REPOSITORIES_RAW" ] && [ "$REPOSITORY_COUNT" = 0 ]; then
-            echo '::error::repositories was given but names no repository'
             exit 1
           fi
           if [ -n "$PULL_REQUESTS_RAW" ] && [ "${PULL_COUNT:-0}" = 0 ]; then
             echo '::error::pull_requests was given but names no pull request'
             exit 1
           fi
-          if { [ "$ISSUE_COUNT" != 0 ] || [ "$PULL_COUNT" != 0 ]; } &&
-            [ "$REPOSITORY_COUNT" != 0 ]; then
-            echo '::error::issues and repositories cannot both be given'
-            echo '::error::(named pull requests count as issues here)'
+          # No run scans the organisation for new issues: a run works
+          # the issues or pull requests it names, or, with revise_only,
+          # the bot's own open pull requests alone.
+          if [ "${ISSUE_COUNT:-0}" = 0 ] && [ "${PULL_COUNT:-0}" = 0 ] &&
+            [ "$REVISE_ONLY" != true ]; then
+            echo '::error::scanning for new issues is off; name issues or' \
+              'pull_requests, or set revise_only'
             exit 1
           fi
           # A revise-only run scans the owner's bot pull requests and
-          # works no issue, so it names none and narrows no scan.
+          # works no issue, so it names none.
           if [ "$REVISE_ONLY" = true ]; then
-            if [ -n "$ISSUES_RAW" ] || [ -n "$REPOSITORIES_RAW" ]; then
-              message='revise_only cannot be given with issues or repositories'
-              echo "::error::$message"
+            if [ -n "$ISSUES_RAW" ]; then
+              echo '::error::revise_only cannot be given with issues'
               exit 1
             fi
             if [ "$MODE" != pull-requests ]; then
@@ -576,8 +538,7 @@ jobs:
           fi
           # A continuation names its pull requests and nothing else.
           if [ "$OUTSTANDING_ONLY" = true ] &&
-            { [ "${PULL_COUNT:-0}" = 0 ] || [ -n "$ISSUES_RAW" ] ||
-              [ -n "$REPOSITORIES_RAW" ]; }; then
+            { [ "${PULL_COUNT:-0}" = 0 ] || [ -n "$ISSUES_RAW" ]; }; then
             echo '::error::outstanding_only needs pull_requests alone'
             exit 1
           fi
@@ -587,7 +548,7 @@ jobs:
             [ "$OUTSTANDING_ONLY" = true ] || {
               echo '::error::continues_run needs outstanding_only'; exit 1; }
           fi
-          repositories="${ISSUE_REPOSITORIES:-$REPOSITORIES}"
+          repositories="$ISSUE_REPOSITORIES"
           # A scoped token must still reach the guidance repository
           # when it lives in the same organisation.
           guidance_owner="${GUIDANCE_REPOSITORY%%/*}"
@@ -796,8 +757,9 @@ jobs:
           client-id: "${{ inputs.github_app_client_id }}"
           private-key: "${{ secrets.github_app_private_key }}"
           owner: "${{ inputs.org }}"
-          # Empty means every repository of the owner: the candidate
-          # scan is organisation-wide by design and this token reads.
+          # Empty, in a revise-only run, means every repository of the
+          # owner: the revision scan is organisation-wide by design and
+          # this token reads.
           repositories: "${{ steps.budget.outputs.repositories }}"
           permission-issues: 'read'
           permission-metadata: 'read'
@@ -821,12 +783,12 @@ jobs:
           python3 monkey-assets/scripts/preflight.py token \
             --repository "$REPOSITORY"
 
-      # A scan and a named dispatch hold different concurrency groups,
-      # so both can select one target. The caller workflow's other
-      # active runs and their selection evidence live in this
-      # repository, which the native token reads and the App may not.
-      # Only evidence a select job vouched for on its own check run
-      # counts.
+      # A revise-only run and a named dispatch hold different
+      # concurrency groups, so both can select one target. The caller
+      # workflow's other active runs and their selection evidence live
+      # in this repository, which the native token reads and the App
+      # may not. Only evidence a select job vouched for on its own
+      # check run counts.
       # Fails open: a failed read or unvouched evidence warns and holds
       # nothing, and the script's own five-minute deadline keeps the
       # job's timeout away (docs/DESIGN.md section 6 "Overlapping
@@ -848,7 +810,6 @@ jobs:
           MODE: "${{ inputs.mode }}"
           MODEL: "${{ inputs.model }}"
           DRY_RUN: "${{ inputs.dry_run }}"
-          REPOSITORIES: "${{ steps.repositories.outputs.csv }}"
           ISSUES: "${{ steps.issues.outputs.csv }}"
           # The session: the run and this select job's attempt. New on
           # a full rerun, which selects and authors anew; kept across a
@@ -863,12 +824,10 @@ jobs:
           CONTINUES_RUN: "${{ inputs.continues_run }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
-          INCLUDE_ASSIGNED: "${{ inputs.include_assigned }}"
           ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
           MAX_ROUNDS: "${{ inputs.max_rounds }}"
           STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
-          CATEGORIES: "${{ inputs.categories }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
           GUIDANCE_REF: "${{ inputs.guidance_ref }}"
@@ -882,9 +841,6 @@ jobs:
           if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
           if [ "$INCLUDE_DOTGITHUB" = true ]; then
             extra+=(--include-dotgithub)
-          fi
-          if [ "$INCLUDE_ASSIGNED" = true ]; then
-            extra+=(--include-assigned)
           fi
           if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
             extra+=(--allow-workflow-edits)
@@ -906,7 +862,6 @@ jobs:
           python3 monkey-assets/scripts/select_issues.py \
             --org "$ORG" --output-dir artefacts \
             --mode "$MODE" --model "$MODEL" \
-            --repositories "$REPOSITORIES" \
             --issues "$ISSUES" \
             --pull-requests "$PULL_REQUESTS" \
             --session "$RUN_ID-$RUN_ATTEMPT" \
@@ -919,7 +874,6 @@ jobs:
             --max-rounds "$MAX_ROUNDS" \
             --stale-statuses monkey-assets/config/stale-statuses.txt \
             --stale-status-minutes "$STALE_MINUTES" \
-            --categories "$CATEGORIES" \
             --guidance-repository "$GUIDANCE_REPOSITORY" \
             --guidance-ref "$GUIDANCE_REF" \
             --bot-slug "$BOT_SLUG" --held-file held-targets.json \
@@ -1113,9 +1067,9 @@ jobs:
             reason="$BRANCH in $FORK_REPOSITORY moved from ${HEAD_SHA:0:7}"
             reason="$reason to ${now:0:7} after this run selected it."
             reason="$reason Another run has revised this pull request since"
-            reason="$reason (a named dispatch or the schedule); its work"
-            reason="$reason stands, and this round made no change. The next"
-            reason="$reason scan picks the pull request up at its new head."
+            reason="$reason (a named or revise-only dispatch); its work"
+            reason="$reason stands, and this round made no change. A later"
+            reason="$reason round starts from the pull request's new head."
           else
             case "$fetched" in
               *"couldn't find remote ref"*)

@@ -923,7 +923,6 @@ class RevisionContracts(ReusableWorkflowCase):
     pull request token (DESIGN.md section 20).
     """
 
-    @unittest.expectedFailure
     def test_revise_input_defaults_on_and_the_caller_forwards_it(self) -> None:
         """Revisions are on unless a caller says otherwise."""
         inputs = cast(
@@ -1071,7 +1070,6 @@ class RevisionContracts(ReusableWorkflowCase):
         return proc.returncode, proc.stdout, output.read_text(encoding="utf-8")
 
     @unittest.skipUnless(shutil.which("git") and shutil.which("bash"), "needs git")
-    @unittest.expectedFailure
     def test_fetch_stands_down_on_a_moved_or_missing_branch(self) -> None:
         """The recorded head checks out; a moved or gone branch warns and exits 0."""
         with tempfile.TemporaryDirectory() as name:
@@ -1476,7 +1474,6 @@ class ReviewGateContracts(ReusableWorkflowCase):
             secrets["copilot_review_token"], "secrets.COPILOT_REVIEW_TOKEN"
         )
 
-    @unittest.expectedFailure
     def test_caller_forwards_the_gate_on_by_default(self) -> None:
         """The cron form offers the switch, on by default, and forwards it."""
         cron = cast(
@@ -2438,7 +2435,6 @@ class ListInputContracts(ReusableWorkflowCase):
         "pull_requests": ("pulls", "pull-request"),
     }
 
-    @unittest.expectedFailure
     def test_each_list_is_split_as_objects_of_the_org(self) -> None:
         """Names or references of the trusted owner, offline, with no token."""
         self.assertEqual(len(self.actions("select", SPLITTER)), len(self.LISTS))
@@ -2462,7 +2458,6 @@ class ListInputContracts(ReusableWorkflowCase):
                 self.assertLess(self.position("select", identity), check)
                 self.assertLess(self.position("select", identity), mint)
 
-    @unittest.expectedFailure
     def test_named_issues_scope_the_read_mint(self) -> None:
         """Issues scope the token to the repositories that exist."""
         budget = self.step("select", "budget")
@@ -2514,7 +2509,6 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertLess(check, self.position("select", "Select issues"))
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_a_pull_request_list_naming_nothing_is_refused(self) -> None:
         """Separators alone in pull_requests fail too, rather than scan."""
         budget = self.step("select", "budget")
@@ -2563,7 +2557,6 @@ class ListInputContracts(ReusableWorkflowCase):
                     self.assertIn(f"::error::{error}", proc.stdout)
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_a_run_naming_nothing_is_refused(self) -> None:
         """No list and no revise_only would scan for issues: the check refuses it."""
         budget = self.step("select", "budget")
@@ -2618,7 +2611,6 @@ class ListInputContracts(ReusableWorkflowCase):
                     self.assertIn(f"::error::{error}", proc.stdout)
                     self.assertFalse(output.exists())
 
-    @unittest.expectedFailure
     def test_the_scan_refusal_precedes_selection_and_the_mint(self) -> None:
         """The refusal sits in the input check, before any token or read."""
         script = squash(str(self.step("select", "budget")["run"]))
@@ -2627,7 +2619,6 @@ class ListInputContracts(ReusableWorkflowCase):
         self.assertLess(check, self.position("select", "app-token"))
         self.assertLess(check, self.position("select", "Select issues"))
 
-    @unittest.expectedFailure
     def test_named_repositories_are_resolved_before_the_mint(self) -> None:
         """A missing named repository leaves the token scope; none left fails.
 
@@ -2662,7 +2653,6 @@ class ListInputContracts(ReusableWorkflowCase):
             self.position("select", "named"), self.position("select", "budget")
         )
 
-    @unittest.expectedFailure
     def test_read_mint_scope_derives_from_the_split_list(self) -> None:
         """The scope is the resolved names plus the guidance repository."""
         budget = self.step("select", "budget")
@@ -2678,7 +2668,6 @@ class ListInputContracts(ReusableWorkflowCase):
             "steps.budget.outputs.repositories",
         )
 
-    @unittest.expectedFailure
     def test_selection_reads_the_split_lists(self) -> None:
         """The raw inputs reach the splitters and nothing else.
 
@@ -2712,7 +2701,6 @@ class ListInputContracts(ReusableWorkflowCase):
                     for name in self.LISTS:
                         self.assertNotRegex(text, rf"inputs\.{name}\b")
 
-    @unittest.expectedFailure
     def test_scan_only_inputs_are_gone(self) -> None:
         """No input names repositories to scan, categories or assignees (#196)."""
         inputs = cast(dict[str, Any], self.triggers["workflow_call"]["inputs"])
@@ -2823,7 +2811,6 @@ class ReviseOnlyContracts(ReusableWorkflowCase):
         self.assert_expression(budget["REVISE"], "inputs.revise")
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_check_inputs_refuses_targets_and_other_modes(self) -> None:
         """Only a pull-requests scan with revisions on may be revise-only."""
         budget = self.step("select", "budget")
@@ -2870,14 +2857,12 @@ class ReviseOnlyCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_the_form_alone_sets_revise_only(self) -> None:
         """No schedule sets it: an operator's dispatch is the only source."""
         self.assertNotIn("schedule", self.triggers)
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
         self.assert_expression(with_["revise_only"], "inputs.revise_only")
 
-    @unittest.expectedFailure
     def test_dispatch_form_offers_revise_only(self) -> None:
         """A boolean, off by default; the form stays inside GitHub's 25."""
         inputs = cast(
@@ -2955,7 +2940,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         )
         self.assertIn("scripts/antagonistic_request.py", flatten(str(step["run"])))
 
-    @unittest.expectedFailure
     def test_switch_defaults_on_in_both_workflows(self) -> None:
         """The workflow_call input and the dispatch form default to true."""
         inputs = cast(
@@ -3161,7 +3145,6 @@ class OutstandingOnlyContracts(ReusableWorkflowCase):
                 self.assertEqual(evaluate(output, context), expected)
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_check_inputs_needs_pull_requests_alone(self) -> None:
         """Accepted beside pull_requests alone; refused without them or with targets."""
         budget = self.step("select", "budget")
@@ -3261,7 +3244,6 @@ class ContinueJobContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_form_offers_outstanding_only_and_forwards_it(self) -> None:
         """A boolean, off by default, reaching the reusable workflow."""
         inputs = cast(
@@ -3274,7 +3256,6 @@ class ContinueJobContracts(WorkflowCase):
             str(with_["outstanding_only"]), "inputs.outstanding_only"
         )
 
-    @unittest.expectedFailure
     def test_form_offers_continues_run_and_forwards_it(self) -> None:
         """A string, empty by default, reaching the reusable workflow (#179)."""
         inputs = cast(
@@ -3301,7 +3282,6 @@ class ContinueJobContracts(WorkflowCase):
             step["env"]["PULLS"], "needs.code-monkey.outputs.continue_pull_requests"
         )
 
-    @unittest.expectedFailure
     def test_job_is_gated_on_the_output_and_the_switch(self) -> None:
         """Not on the call's result; never on a dry run; a variable stops it."""
         self.assert_expression(
@@ -3314,7 +3294,6 @@ class ContinueJobContracts(WorkflowCase):
             " && vars.CODE_MONKEY_CONTINUE != 'false'",
         )
 
-    @unittest.expectedFailure
     def test_only_a_pull_requests_run_continues(self) -> None:
         """A forged output of a branches or select run starts no round (#179).
 
@@ -3359,7 +3338,6 @@ class ContinueJobContracts(WorkflowCase):
         self.assertEqual(len(steps), 3)
         self.assertIn(CONTINUE_DISPATCH, flatten(str(steps[2]["run"])))
 
-    @unittest.expectedFailure
     def test_options_are_forwarded_with_the_form_defaults(self) -> None:
         """The loop keeps the operator's model, runtime, rounds and switches."""
         env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
@@ -3565,7 +3543,6 @@ class StaleStatusContracts(ReusableWorkflowCase):
     """stale_status_minutes reaches the scan and the review wait (#168)."""
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_check_inputs_takes_a_non_negative_integer(self) -> None:
         """``0`` and up pass; anything else fails the select job."""
         budget = self.step("select", "budget")
@@ -3629,7 +3606,6 @@ class StaleStatusContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
-    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3825,7 +3801,6 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
         revise = squash(REVISE_PROMPT.read_text(encoding="utf-8"))
         self.assertIn("workflow files the pull request already changes", revise)
 
-    @unittest.expectedFailure
     def test_callers_forward_the_switch(self) -> None:
         """Both dispatch forms offer it, off; every call passes it on."""
         for path, job, expected in (
@@ -3852,7 +3827,6 @@ class CronCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_no_schedule_and_dispatch_concurrency(self) -> None:
         """A dispatch is the only trigger; revise-only dispatches share a group."""
         self.assertEqual(list(self.triggers), ["workflow_dispatch"])
@@ -3868,7 +3842,6 @@ class CronCallerContracts(WorkflowCase):
         self.assertIs(concurrency["cancel-in-progress"], False)
         self.assertEqual(concurrency["queue"], "max")
 
-    @unittest.expectedFailure
     def test_no_schedule_only_expression_remains(self) -> None:
         """Nothing tests the event or a cron, and nothing posts to Slack (#196)."""
         text = self.WORKFLOW.read_text(encoding="utf-8")
@@ -3877,7 +3850,6 @@ class CronCallerContracts(WorkflowCase):
                 self.assertNotIn(fragment, text)
         self.assertEqual(set(self.jobs), {"options", "code-monkey", "continue"})
 
-    @unittest.expectedFailure
     def test_run_name_says_what_the_run_works(self) -> None:
         """The Actions list tells each dispatch apart.
 
@@ -3900,7 +3872,6 @@ class CronCallerContracts(WorkflowCase):
             " inputs.dry_run && ' (dry run)' || '')",
         )
 
-    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
@@ -3948,7 +3919,6 @@ class CronCallerContracts(WorkflowCase):
         # GitHub caps a dispatch form at 25 inputs.
         self.assertLessEqual(len(inputs), 25)
 
-    @unittest.expectedFailure
     def test_targets_are_forwarded_as_typed(self) -> None:
         """The target lists reach the reusable workflow; no scan input does."""
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
@@ -3988,7 +3958,6 @@ class CronCallerContracts(WorkflowCase):
         assert block is not None
         self.assertEqual(sorted(re.findall(r"'([^']+)'", block.group(1))), sorted(arms))
 
-    @unittest.expectedFailure
     def test_caller_forwards_credentials_and_pins_assets(self) -> None:
         """A dispatch is live unless dry; secrets and App id come from org config."""
         job = self.jobs["code-monkey"]
@@ -4087,7 +4056,6 @@ class UnattendedRunContracts(unittest.TestCase):
     # What a workflow that starts or feeds an agent session names.
     AGENT_MARKERS = ("code-monkey.yaml", "code-monkey-cron.yaml", "COPILOT")
 
-    @unittest.expectedFailure
     def test_no_scheduled_workflow_starts_an_agent(self) -> None:
         """A workflow on a schedule names neither the pipeline nor its token."""
         paths = sorted(WORKFLOWS.glob("*.y*ml"))
@@ -4104,7 +4072,6 @@ class UnattendedRunContracts(unittest.TestCase):
                 with self.subTest(workflow=path.name, marker=marker):
                     self.assertNotIn(marker, text)
 
-    @unittest.expectedFailure
     def test_every_pipeline_caller_is_dispatched_or_tested(self) -> None:
         """Only a dispatch or the pull request plumbing calls the pipeline."""
         for path in sorted(WORKFLOWS.glob("*.y*ml")):
@@ -4136,7 +4103,6 @@ class TestingCallerContracts(WorkflowCase):
         )
         self.assertIs(concurrency["cancel-in-progress"], True)
 
-    @unittest.expectedFailure
     def test_plumbing_is_secretless_selection_of_the_merge_ref(self) -> None:
         """PR runs select only, dry, with no secrets, from the merge commit.
 
@@ -4156,7 +4122,6 @@ class TestingCallerContracts(WorkflowCase):
         self.assert_expression(with_["assets_repository"], "github.repository")
         self.assert_expression(with_["assets_ref"], "github.sha")
 
-    @unittest.expectedFailure
     def test_manual_dry_run_takes_the_target_lists(self) -> None:
         """A dispatch names the issues to work; no input names a scan."""
         inputs = cast(

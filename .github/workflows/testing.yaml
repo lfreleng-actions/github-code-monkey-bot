@@ -9,12 +9,8 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      repositories:
-        description: 'Repositories for the manual dry-run (commas/spaces)'
-        type: string
-        default: ''
       issues:
-        description: 'Issues for the manual dry-run instead of a scan'
+        description: 'Issues for the manual dry-run (no run scans for issues)'
         type: string
         default: ''
       max_pull_requests:
@@ -40,7 +36,10 @@ concurrency:
 jobs:
   # Exercises the select job and the matrix plumbing without an App,
   # a model token or an agent session. Two invocations prove that the
-  # invocation namespace keeps artifact names apart in one run.
+  # invocation namespace keeps artifact names apart in one run. No run
+  # scans for issues, so each names an issue of this public
+  # repository; selected or skipped by name (closed, absent or a pull
+  # request), it runs every select step.
   plumbing:
     name: 'Plumbing (secretless, ${{ matrix.invocation }})'
     strategy:
@@ -48,7 +47,7 @@ jobs:
         invocation: [first, second]
     if: github.event_name == 'pull_request'
     permissions:
-      issues: read  # Candidate scan
+      issues: read  # Named issue reads
       contents: read  # Asset checkout and public repository reads
       actions: read  # Report job artifact lookup
       checks: read  # Select reads other runs' evidence vouches
@@ -59,7 +58,8 @@ jobs:
       dry_run: true
       max_pull_requests: '3'
       allow_workflow_edits: false
-      # Block mode with the organisation allow-list, as the scheduled
+      issues: "${{ format('{0}#1', github.repository) }}"
+      # Block mode with the organisation allow-list, as the dispatch
       # caller runs, so a pull request proves the trusted jobs' egress.
       harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length
@@ -77,7 +77,7 @@ jobs:
     name: 'Agent dry-run (manual)'
     if: github.event_name == 'workflow_dispatch'
     permissions:
-      issues: read  # Candidate scan
+      issues: read  # Named issue reads
       contents: read  # Asset checkout and public repository reads
       actions: read  # Publish and report jobs locate artifacts
       checks: read  # Select reads other runs' evidence vouches
@@ -90,7 +90,6 @@ jobs:
       max_pull_requests: "${{ inputs.max_pull_requests || '1' }}"
       max_runtime_minutes: '60'
       max_concurrent_agents: '2'
-      repositories: "${{ inputs.repositories || '' }}"
       issues: "${{ inputs.issues || '' }}"
       allow_workflow_edits: ${{ inputs.allow_workflow_edits || false }}
       harden_runner_egress: 'block'

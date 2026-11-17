@@ -1072,7 +1072,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertIs(selection["revise_only"], False)
         self.assertNotIn("Revise-only", outputs.summary_markdown(selection))
 
-    @unittest.expectedFailure
     def test_a_run_naming_nothing_is_refused(self) -> None:
         """No issues, no pull requests and no revise_only: no scan, no read (#196)."""
         search = patch.object(reads, "search_open_issues").start()
@@ -1965,7 +1964,6 @@ class MainTest(NoSubprocessCase):
         self.assertEqual(issue["comments_dropped"], 2)
         self.assertEqual(issue["priority"], "Urgent")
 
-    @unittest.expectedFailure
     def test_selection_error_exits_one(self) -> None:
         """A ``SelectionError`` becomes exit status 1 with a prefixed message."""
         self.patch_reads()
