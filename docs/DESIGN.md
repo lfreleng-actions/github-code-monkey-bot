@@ -514,6 +514,9 @@ the exclusion list and is not `.github` (unless
   decides again with the final word, and a skip counts once, under
   `untrusted_author`. Every site calls one helper,
   `issue_authors.admits`, so the sites cannot drift;
+- has an author on the run's issue author list and, when anyone
+  edited its body, a last editor on it too (see "Listed issue
+  authors" below);
 - has no assignee: an assignee means a human has claimed the work;
 - has no pull request, open, closed or merged, from its
   `code-monkey/issue-<n>` branch **in the designated bot fork**
@@ -739,22 +742,61 @@ issue or pull request is the operator's choice and waives it. The
 `repositories` input, which once narrowed the new-issue scan, went
 with that scan.
 
+**Listed issue authors.** The `issue_authors` input, which the
+dispatch caller fills from the repository variable
+`CODE_MONKEY_ISSUE_AUTHORS` alone, lists the GitHub logins whose
+issues the bot may work, split on commas and whitespace and matched
+without regard to case. It adds to the association rule above and
+does not replace it. It fails closed: the configuration pre-flight
+(`issue_authors.py check`) stops the run before any token exists when
+the list is empty or holds an entry that is not a user login, such
+as an App's `name[bot]`, and the selector refuses such a list again.
+An issue passes when its author is a listed login that is not
+an App or bot, and, when GitHub records an edit to its body
+(`lastEditedAt`), its last editor (`editor`) is too, read through
+GraphQL for every candidate in the same reply as the body the packet
+carries, so the editor checked is the one of that body; a deleted
+or non-user editor never passes, and an unreadable edit state
+counts as edited. GitHub keeps no editor for a title edit, so the
+rule covers the body alone. The rule binds every way in, the scan,
+a named issue and a revision round, named or scanned, and counts a
+skip under `author_not_listed` or `editor_not_listed`. The issue
+comments the agent reads (`comments`, and a round's `new_comments`)
+keep those from a listed author alone, on top of the association
+filter, and an issue comment brings a revision round, or resumes one
+after a handoff, when it comes from a listed author (§20.1); a
+pull request's comments and review threads keep the association rule
+alone. The selection records the list as
+`issue_authors`, and the publisher re-checks each entry against it,
+offline in the proposal check, live in the step 8 re-read and live
+again before the pull request opens (§8 steps 8 and 9), and an edit
+made while the session ran stops publication. A revision re-reads it
+live before each write to the target: the retitle, the push, the
+replies and description a proposal or a handoff writes (§20), and
+the Copilot review request with its notice (§8 step 10). The
+outcome comment re-reads it live too, whatever the outcome (§8 step
+12), and so does restoring a title after a failed push (§20.3). A
+refusal by the list
+sets `author_unlisted` in `result.json`, and no step writes to the
+issue for it, the comment included.
+
 **Explicit issues.** When `issues` names one or more issues, the run
 works those and scans nothing. The splitter accepts `repo#N`,
 `owner/repo#N`, `repo/issues/N` and the issue URL, refuses a
 reference to another owner, and publishes each as `owner/repo#N`;
 the selector reads that form and nothing else. Naming an issue is an
 operator's decision, so the triage signals do not apply: no Type,
-label, assignee or category filter, no author rule, no ranking, and
+label, assignee or category filter, no association rule, no ranking, and
 no one-per-repository rule, since the operator chose the set. The
 summary lists the author association of each named issue admitted:
 the operator sees whose issue they approved. What
 remains is what the pipeline cannot work around: a repository the
 author job cannot clone or the publisher cannot fork (archived,
 template, fork, non-public or empty), a closed or absent issue, a
-number that names a pull request, the `no-agent` opt-out, an open
-or merged bot pull request from an earlier attempt, and an open pull
-request linked to close the issue. A bot pull request a human closed
+number that names a pull request, the `no-agent` opt-out, an
+author or last editor off the issue author list, an open or merged
+bot pull request from an earlier attempt, and an open pull request
+linked to close the issue. A bot pull request a human closed
 unmerged does not exclude a named issue: the operator decided to try
 again, and the run works the issue afresh on the same
 `code-monkey/issue-<n>` branch, which the publisher resets from the
@@ -1185,8 +1227,9 @@ For each selected issue:
    from `<fork-org>:code-monkey/issue-<n>` on the target, and the
    open pull requests linked to close it (`issue_recheck`). A
    closed issue (the reason names the pull request or commit that
-   closed it, from the timeline), a `no-agent` label, an open or
-   merged pull request from the branch, a closed one the entry's
+   closed it, from the timeline), a `no-agent` label, an author or
+   last body editor off the selection's `issue_authors` list (§6),
+   an open or merged pull request from the branch, a closed one the entry's
    `retry_of` does not name, or another linked open pull request is
    a `rejected` verdict with no write to the fork, as for a revision
    whose pull request closed (§20.3). The one open pull request it
@@ -1228,7 +1271,12 @@ For each selected issue:
    pull request unreviewed; step 10 asks for one. A `422` that
    says a pull request already exists, when none of the bot's own
    is open from the branch, is a `rejected` verdict, as at step 8:
-   someone else got there first. Any other failure
+   someone else got there first. Before the call the step re-reads
+   the issue's author and last body editor against the §6 list,
+   since someone may have edited the issue after the push: a refusal is
+   a `rejected` verdict marked `author_unlisted`, and a read that
+   fails is `publish-failed`; both keep the fork branch and open
+   nothing. Any other failure
    here keeps the fork branch and records `publish-failed`, since a
    pushed branch is not a publication; the next run's selection sees
    the orphan, selects the issue with `resume` set, and its publisher
@@ -1298,6 +1346,13 @@ For each selected issue:
     token, so a lapsed or revoked review token shows as a refusal
     under its own name. The App's token cannot add the reviewer
     (§17 item 4); the review token can, and this step alone holds it.
+    Before any of it the step honours an outcome marked
+    `author_unlisted` and otherwise re-reads the issue's author and
+    last body editor against the §6 list, since someone may have
+    edited the issue after the push: a refusal marks the result
+    `author_unlisted`, and a read that fails warns; either sends no
+    request and places or removes no notice, records the request as
+    not made, and leaves the publication standing.
 11. **Await the Copilot review** with the job's own token, since the
     target is public: poll for a review by
     `copilot-pull-request-reviewer[bot]` whose `commit_id` is the
@@ -1462,7 +1517,14 @@ For each selected issue:
     success; on `abstain`, the agent's reason; on a policy or
     provenance rejection, which check failed and the run URL; on a
     rejection because the issue closed after selection (step 8),
-    nothing, since a comment on a finished issue is noise. The
+    nothing, since a comment on a finished issue is noise. An issue
+    whose author or last body editor is off the §6 issue author list
+    gets nothing either: the step skips an outcome marked
+    `author_unlisted` and, for any other, re-reads the author and
+    last editor live against the selection's list first, whatever
+    the verdict, since an abstention or a failure never passed the
+    push's re-check; a refusal marks the result and posts nothing,
+    and an unreadable issue fails the step with no post. The
     reason descends from the untrusted manifest; the publisher cuts
     it to 2,000 characters when recording and again when rendering,
     which keeps the comment inside GitHub's limit with the run URL
@@ -1585,6 +1647,7 @@ For each selected issue:
 | `outstanding_only` | boolean | `false` | §20.6: named pull requests take the scan's tests |
 | `continues_run` | string | `''` | §20.6: the dispatching run, which must have published |
 | `exclude_repos` | string | `''` | Commas and/or spaces; overrides bundled list |
+| `issue_authors` | string | `''` | §6: logins trusted to open and edit issues; empty fails the run |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
 | `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
@@ -2277,10 +2340,12 @@ cross-checked against the trusted `selection.json`.
   },
   "candidates_seen": 78,
   "skipped": {"pull_request": 0, "repository": 12, "label": 5,
-              "untrusted_author": 4, "no_type": 3, "closed": 0,
+              "untrusted_author": 4, "author_not_listed": 2,
+              "editor_not_listed": 0, "no_type": 3, "closed": 0,
               "category": 0, "assigned": 2, "attempted": 1,
               "linked_pr": 0, "one_per_repo": 30, "cap": 15,
               "revision": 0, "duplicate": 0, "held": 0},
+  "issue_authors": ["alice", "bob"],
   "explicit_repositories": [],
   "explicit_issues": [],
   "skipped_issues": [],
@@ -2299,6 +2364,11 @@ cross-checked against the trusted `selection.json`.
       "type": "Feature",
       "created_at": "2026-09-18T18:52:05Z",
       "author_association": "MEMBER",
+      "author": "alice",
+      "author_is_bot": false,
+      "edited": true,
+      "editor": "bob",
+      "editor_is_bot": false,
       "default_branch": "main",
       "base_sha": "<40 hex>",
       "branch": "code-monkey/issue-40",
@@ -2318,12 +2388,16 @@ cross-checked against the trusted `selection.json`.
 the artifact-name suffix. `skipped` carries every counter, zero or
 not, and the summary lists each: `pull_request`, `repository`,
 `label`, `untrusted_author` (an author outside `OWNER` and `MEMBER`,
-or an App, without `agent-approved`, §6), `no_type`, `closed`,
+or an App, without `agent-approved`, §6), `author_not_listed` and
+`editor_not_listed` (an author or last body editor off the issue
+author list, §6), `no_type`, `closed`,
 `category`, `assigned`, `attempted`, `linked_pr`, `one_per_repo`,
 `cap`, `revision`, `duplicate` and `held` (another in-progress run
 selected the target, §6 "Overlapping runs"). An issue entry's
 `author_is_bot`
-records whether an App or bot opened the issue. `explicit_issues`
+records whether an App or bot opened the issue; `author`, `edited`,
+`editor` and `editor_is_bot` record the login that opened it and the
+last edit to its body, which the issue author list checks (§6). `explicit_issues`
 holds the named issues as `owner/repo#N`, in the order given, and
 `skipped_issues` one
 `{issue, reason}` per named issue or pull request the selection
@@ -2535,7 +2609,11 @@ the proposal it refused, and the next selection carries them to the
 agent (§6). `issue_closed` is `true` on a rejection because
 the issue closed after selection (§8 step 8), and absent otherwise:
 the comment step then posts nothing on the finished issue, and the
-report row still shows the reason. `review` is present on
+report row still shows the reason. `issue_authors` carries the
+check's list, and `author_unlisted` is `true` when that list refused
+the issue: offline, at the push, before the pull request opens, at a
+revision's replies or at the comment step's own re-read, which then
+posts nothing (§8 step 12). `review` is present on
 a published pull request when `request_review` is on: `requested`
 says whether the request landed (§8 step 10), `verdict` is `clean`,
 `findings` or `pending`, `assessment` is `approval`, `closer-look`,
@@ -2832,7 +2910,9 @@ Three ways in, all through the select job and its read token:
   otherwise wait unseen; or an `OWNER`/`MEMBER` comment
   on the issue, the
   pull request or an unresolved review thread, an opener or a reply,
-  after the bot's latest footer. The predicate leaves out, by name, a
+  after the bot's latest footer; on the issue, the comment must come
+  from a listed issue author (§6), whose comments alone reach the
+  packet. The predicate leaves out, by name, a
   check the head's own round cannot influence (`check_reads.EXCLUDED`,
   empty today); the round cap bounds a check that fails for reasons outside
   the pull request. GitHub computes `mergeable` in the background,
@@ -2924,11 +3004,17 @@ of an issue from an author outside `OWNER` and `MEMBER`, or from an
 App, that lacks the `agent-approved` label, and the reason names the
 label, so its pull request costs no further rounds until a
 maintainer approves the issue. A named round, like a named issue,
-applies no author rule. The selector skips a round, named or scanned,
-whose pull request or issue another in-progress or queued run already
-selected, counts it under `held` and names that run in the reason, so
-two runs do not revise one pull request at once (§6 "Overlapping
-runs"). A scan honours the
+applies no association rule. Every round, named or scanned, applies
+the §6 issue author list: an issue whose author or last body editor
+is off the list costs no round and counts under `author_not_listed`
+or `editor_not_listed`, not `revision`, and the publisher re-checks
+it live before it retitles, pushes, restores a title, posts a
+proposal's or a handoff's replies or description, or comments on the
+issue. The
+selector skips a round, named or scanned, whose pull request or issue
+another in-progress or queued run already selected, counts it under
+`held` and names that run in the reason, so two runs do not revise
+one pull request at once (§6 "Overlapping runs"). A scan honours the
 run's repository policy, the named repositories or everything but the
 exclusions, before it reads a hit. The round number continues from the
 bot's own footers on the issue: the last line of each of its comments,
@@ -3251,8 +3337,10 @@ state and head before any reply goes up: a pull request closed or
 merged since selection is a rejection with no reply, as on the push;
 a head that moved during the session is a rejection, since the
 replies answer code the agent did not see, and a superseded round
-(§20.1); and a state or head it
-cannot read is a failure, never a handoff taken on trust. The
+(§20.1); an issue whose author or last body editor the §6 list no
+longer admits is a rejection marked `author_unlisted`; and a state,
+head or issue it cannot read is a failure, never a handoff taken on
+trust. The
 next scan leaves the pull
 request alone until a maintainer comments, on the issue, the pull
 request or one of the disputed threads.
@@ -3275,7 +3363,12 @@ same token, while the head and title are still this attempt's, and
 after a retitle whose reply GitHub lost, since the record of the old
 title goes down before the write; a
 publication keeps the new title and an unknown swap outcome restores
-nothing, since the branch may hold the new chain. Either title write
+nothing, since the branch may hold the new chain. A refusal by the
+§6 issue author list restores nothing either: one the push recorded
+as `author_unlisted` stands without a read, and otherwise the
+restore re-reads the issue's author and last editor against the list
+the retitle recorded, failing the step with no write when that read
+fails. Either title write
 reads the pull request back once after a transient `5xx`: the title
 in place counts as set, and anything else fails the step, with the
 PATCH never sent again. A resend could replace a title a maintainer
@@ -3347,7 +3440,11 @@ GitHub's pull request object lags the ref update, so a read that
 still names the head the round began from is a stale read, not a
 move: `respond` reads again after 2, 4 and 8 seconds, and warns, naming
 the round's tip and the previous head, when the read never
-catches up. Any other head skips at once. It
+catches up. Any other head skips at once. It then re-reads the
+issue's author and last body editor against the §6 list, since
+someone may have edited the issue after the push: a refusal marks the result
+`author_unlisted`, and a read that fails warns; either leaves every
+write below undone and the publication standing. It
 then posts each reply on its thread
 prefixed with the AI disclosure and ending in a marker that names
 the round and the session,
