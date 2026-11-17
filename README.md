@@ -179,6 +179,17 @@ gh variable set CODE_MONKEY_ISSUE_AUTHORS --body "alice bob"
 GitHub records no editor for a title edit, so the check covers the
 author and the last body edit (design document section 6).
 
+## Agent egress
+
+The coding agent's job blocks egress to its own allow-list,
+`bots/code_monkey.txt` in the organisation `.github` repository,
+pinned by commit in the workflow itself. No caller input widens it;
+the `harden_runner_*` inputs govern the trusted jobs alone. The list
+still allows GitHub hosts and the package registries, so block mode
+narrows the paths a steered session could send data along rather
+than closing them. A target whose hooks or tests need a host outside
+the list fails at that connection (design document section 7.5).
+
 ## Sudo and containers in a target repository
 
 Sessions run without `sudo` and without container access, since
