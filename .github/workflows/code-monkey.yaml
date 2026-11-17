@@ -969,18 +969,38 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     permissions:
       contents: read  # Checkout assets and the public target repository
+    env:
+      # The allow-list leaves out aislop's telemetry host on purpose;
+      # the session's hooks inherit this instead.
+      AISLOP_NO_TELEMETRY: '1'
     steps:
-      # Always audit: the agent installs whatever toolchain the target
-      # repository's hooks pin, which no fixed allow-list can cover.
+      # The agent's own allow-list: bots/code_monkey.txt in the
+      # organisation .github repository, built from harden-runner's
+      # audit records of past sessions and pinned at its v0.22.0
+      # commit. A literal, never an input or variable, so no caller
+      # can widen what the agent reaches; no supplemental list or
+      # extra endpoints merge in. agent_not_ready stays at its default
+      # (error): an egress agent that does not enforce fails the job,
+      # and 'Require egress enforcement' covers an agent never installed.
+      - name: 'Load agent egress allow-list'
+        id: agent-egress
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/bots/code_monkey.txt@dfa09089d9d88230380539d2116810910347d378'  # v0.22.0
+          allow_list_summary: 'false'
+
       # Root on the runner could undo this step, so sudo and containers
       # stay off unless the select job read the target's marker file
       # at its default-branch commit; an entry without the field
       # counts as not opted in (docs/DESIGN.md section 4.1).
-      - name: 'Harden runner (audit)'
+      - name: 'Harden runner'
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
-          egress-policy: 'audit'
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
           disable-sudo-and-containers: >-
             ${{ matrix.sudo_and_containers != true }}
 
@@ -995,6 +1015,21 @@ jobs:
           fi
           if timeout 30 docker info >/dev/null 2>&1; then
             echo '::error::Docker works although the target did not opt in'
+            exit 1
+          fi
+
+      # The loader succeeds with agent_status 'skipped' when harden-runner
+      # installed no agent (no /home/agent), without consulting
+      # agent_not_ready. Only 'ready' means egress is enforced, so
+      # anything else fails the job before a step opens a connection,
+      # whether or not the target opted in to sudo and containers.
+      - name: 'Require egress enforcement'
+        env:
+          AGENT_STATUS: "${{ steps.agent-egress.outputs.agent_status }}"
+        run: |
+          if [ "$AGENT_STATUS" != ready ]; then
+            status="${AGENT_STATUS:-unset}"
+            echo "::error::Egress agent not enforcing (agent_status: $status)"
             exit 1
           fi
 

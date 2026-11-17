@@ -442,7 +442,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
             agent["env"]["COPILOT_GITHUB_TOKEN"], "secrets.copilot_token"
         )
 
-    @unittest.expectedFailure
     def test_author_blocks_egress_to_the_bot_list(self) -> None:
         """The agent reaches only the pinned bot list, and fails closed.
 
@@ -472,7 +471,6 @@ class AuthorJobContracts(ReusableWorkflowCase):
         self.assert_expression(harden["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST")
         self.assertEqual(author["env"]["AISLOP_NO_TELEMETRY"], "1")
 
-    @unittest.expectedFailure
     def test_author_requires_the_egress_agent_ready(self) -> None:
         """The session never starts unless the egress agent reported ready.
 
@@ -3801,7 +3799,6 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
     MARKER = ".enable-sudo-and-containers"
     GUARD = "Require sudo and containers off"
 
-    @unittest.expectedFailure
     def test_harden_runner_disables_both_unless_the_entry_opted_in(self) -> None:
         """Harden-runner follows the allow-list and turns both off by default."""
         harden = self.steps("author")[1]
@@ -3812,7 +3809,6 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
             "matrix.sudo_and_containers != true",
         )
 
-    @unittest.expectedFailure
     def test_guard_after_harden_runner_refuses_both_left_usable(self) -> None:
         """A hardener that skipped its setup cannot hand a session root or Docker."""
         guard = self.step("author", self.GUARD)
