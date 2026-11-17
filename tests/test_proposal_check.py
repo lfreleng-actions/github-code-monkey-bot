@@ -763,6 +763,25 @@ class RunCheckOutcomeTest(GitCase):
                 self.assertIn(reason, check.reasons[0])
                 self.assertIs(check.to_json()["author_unlisted"], True)
 
+    def test_rule_off_skips_the_listed_author_recheck(self) -> None:
+        """A selection that recorded the rule off admits any author, and says so."""
+        self.fixture.manifest(outcome="abstain", reason="r")
+        selection = self.fixture.selection()
+        selection["only_known_authors"] = False
+        selection["issue_authors"] = []
+        selection["issues"][0].update(author="mallory", edited=True, editor="eve")
+        check = self.fixture.run(selection=selection)
+        self.assertEqual(check.verdict, "abstain")
+        record = check.to_json()
+        self.assertIs(record["only_known_authors"], False)
+        self.assertEqual(record["issue_authors"], [])
+        self.assertIs(record["author_unlisted"], False)
+        # Only a JSON false turns it off: anything else needs the list.
+        selection["only_known_authors"] = "false"
+        check = self.fixture.run(selection=selection)
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIs(check.to_json()["only_known_authors"], True)
+
     def test_author_failed(self) -> None:
         """author-failed without a reason gets a placeholder."""
         self.fixture.manifest(outcome="author-failed", reason=None)

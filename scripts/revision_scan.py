@@ -46,7 +46,7 @@ def scan(
     max_rounds: int = revisions.MAX_ROUNDS,
     held: Hold | None = None,
     stale: StaleRule = OFF,
-    listed: frozenset[str] = frozenset(),
+    listed: frozenset[str] | None = frozenset(),
 ) -> list[Round]:
     """A builder per bot pull request in the owner, ranked, built on demand.
 

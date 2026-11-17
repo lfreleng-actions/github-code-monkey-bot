@@ -129,6 +129,8 @@ jobs:
       issues: 'test-python-project#1'
       # Required: the logins trusted to open and edit issues.
       issue_authors: ${{ vars.CODE_MONKEY_ISSUE_AUTHORS }}
+      # Optional: 'false' turns the author list off; unset keeps it.
+      only_known_authors: ${{ vars.ONLY_KNOWN_AUTHORS }}
       # Trusted jobs default to block mode; name the allow-list.
       harden_runner_allowlist: '@<allow-list commit sha>'
       # Optional: a further allow-list merged with the baseline, and
@@ -174,6 +176,18 @@ pre-flight:
 
 ```bash
 gh variable set CODE_MONKEY_ISSUE_AUTHORS --body "alice bob"
+```
+
+The repository variable `ONLY_KNOWN_AUTHORS` switches the list on
+and off. Unset, empty or `true` applies it; `false` turns it off, so
+the list goes unread and the runs fall back to the
+`OWNER`/`MEMBER`/`agent-approved` rule, with a warning in each run.
+Any other value, `True` or `yes` included, fails the run at
+pre-flight. Set it as this repository does:
+
+```bash
+gh variable set ONLY_KNOWN_AUTHORS \
+  --repo lfreleng-actions/github-code-monkey-bot --body true
 ```
 
 GitHub records no editor for a title edit, so the check covers the

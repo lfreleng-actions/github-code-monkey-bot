@@ -136,12 +136,13 @@ def closer_of(issue: dict[str, Any]) -> str:
 def unlisted_author(check: dict[str, Any], issue: dict[str, Any]) -> Refusal | None:
     """Why the issue's author or last editor, as read now, fails the list.
 
-    The list is the one check.json carries from the selection; a
-    check without a valid one refuses, as an unlisted author does.
+    The mode and list are the ones check.json carries from the
+    selection; with the rule on, a check without a valid list refuses,
+    as an unlisted author does.
     """
     number = check.get("issue")
     try:
-        listed = authors.recorded_list(check.get("issue_authors"))
+        listed = authors.recorded_mode(check)
     except authors.AuthorListError as exc:
         return Refusal(f"issue #{number}: {exc}; nothing published", unlisted=True)
     refused = authors.unlisted(authors.graphql_fields(issue), listed)
@@ -156,8 +157,10 @@ def listed_refusal(check: dict[str, Any]) -> Refusal | None:
     """Re-read the issue and apply the listed-author rule alone.
 
     For a revision round, whose push has its own state checks. A read
-    that fails raises.
+    that fails raises; a check that recorded the rule off reads nothing.
     """
+    if authors.rule_off(check):
+        return None
     repository = str(check["repository"])
     number = github.require_int(check, "issue", "check")
     return unlisted_author(check, read_issue(repository, number))

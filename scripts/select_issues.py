@@ -145,7 +145,7 @@ def enrich(
     include_assigned: bool,
     enabled: frozenset[str],
     skipped: dict[str, int],
-    listed: frozenset[str] = frozenset(),
+    listed: frozenset[str] | None = frozenset(),
 ) -> list[dict[str, Any]]:
     """Add the per-issue reads ranking needs and drop untriaged or claimed issues."""
     enriched: list[dict[str, Any]] = []
@@ -211,7 +211,7 @@ def scan_candidates(
     exclusions: set[str],
     enabled: frozenset[str],
     skipped: dict[str, int],
-    listed: frozenset[str] = frozenset(),
+    listed: frozenset[str] | None = frozenset(),
 ) -> tuple[int, list[dict[str, Any]]]:
     """Scan the owner or the named repositories; return the count seen and the ranking."""
     for name in explicit:

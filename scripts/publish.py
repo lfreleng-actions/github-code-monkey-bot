@@ -101,7 +101,8 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "failing_checks": list(cast("list[Any]", check.get("failing_checks") or [])),
         "antagonistic_review": check.get("antagonistic_review") or None,
         "collected_at": check.get("collected_at") or None,
-        # The comment step re-checks the issue against the same list.
+        # The comment step re-checks the issue under the same mode and list.
+        "only_known_authors": check.get("only_known_authors") is not False,
         "issue_authors": list(cast("list[Any]", check.get("issue_authors") or [])),
         recheck.AUTHOR_UNLISTED: check.get(recheck.AUTHOR_UNLISTED) is True,
     }

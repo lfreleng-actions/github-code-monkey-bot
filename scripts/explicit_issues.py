@@ -79,7 +79,7 @@ def repository_obstacle(meta: dict[str, Any] | None) -> str | None:
 def candidates(
     org: str,
     targets: list[tuple[str, int]],
-    listed: frozenset[str],
+    listed: frozenset[str] | None,
     *,
     skipped: dict[str, int],
     skipped_issues: list[dict[str, str]],

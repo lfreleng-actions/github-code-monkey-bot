@@ -182,6 +182,24 @@ class StaleSelectionTest(unittest.TestCase):
         )
         self.assertIsNone(recheck.stale_selection(check()))
 
+    def test_rule_off_rechecks_no_author(self) -> None:
+        """A check that recorded the rule off admits any author, with no list."""
+        mallory = {"login": "mallory", "__typename": "User"}
+        off = check(only_known_authors=False, issue_authors=[])
+        self.reads(issue(author=mallory, edited_at="t", editor=mallory))
+        self.assertIsNone(recheck.stale_selection(off))
+        self.graphql.reset_mock()
+        # The publisher's later re-checks read nothing at all.
+        self.assertIsNone(recheck.listed_refusal(off))
+        self.graphql.assert_not_called()
+        result: dict[str, Any] = {}
+        self.assertTrue(recheck.listed_issue(off, result))
+        self.assertNotIn(recheck.AUTHOR_UNLISTED, result)
+        # Anything but a JSON false keeps the rule on.
+        refusal = recheck.listed_refusal(check(only_known_authors="false"))
+        assert refusal is not None
+        self.assertIn("author_not_listed", refusal.reason)
+
     def test_open_pull_request_from_the_branch_refuses(self) -> None:
         """Another run's open pull request from the branch refuses, by name."""
         self.reads(issue(), [pull(304)])

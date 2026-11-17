@@ -90,6 +90,7 @@ def run_retitle(args: argparse.Namespace) -> None:
         "previous": current if isinstance(current, str) else "",
         "title": title,
         "issue": check.get("issue"),
+        "only_known_authors": check.get("only_known_authors"),
         "issue_authors": check.get("issue_authors"),
     }
     args.record.parent.mkdir(parents=True, exist_ok=True)

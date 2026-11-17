@@ -766,7 +766,17 @@ keep those from a listed author alone, on top of the association
 filter, and an issue comment brings a revision round, or resumes one
 after a handoff, when it comes from a listed author (§20.1); a
 pull request's comments and review threads keep the association rule
-alone. The selection records the list as
+alone. The `only_known_authors` input, filled from the repository
+variable `ONLY_KNOWN_AUTHORS` alone, gates the rule: unset, empty or
+`true` applies it as above; `false` turns it off, so the list goes
+unread and none of the checks in this paragraph or §20.1 applies,
+while the association rule and the `OWNER`/`MEMBER` comment filter
+stay; any other value, compared after trimming whitespace, fails the
+same pre-flight. The error for a missing or malformed list names
+`CODE_MONKEY_ISSUE_AUTHORS` and says to populate it, never to set the
+flag. With the rule off, pre-flight emits a warning, and the step
+summary states the mode on every run. The selection records the
+mode as `only_known_authors` and the list as
 `issue_authors`, and the publisher re-checks each entry against it,
 offline in the proposal check, live in the step 8 re-read and live
 again before the pull request opens (§8 steps 8 and 9), and an edit
@@ -778,7 +788,10 @@ outcome comment re-reads it live too, whatever the outcome (§8 step
 12), and so does restoring a title after a failed push (§20.3). A
 refusal by the list
 sets `author_unlisted` in `result.json`, and no step writes to the
-issue for it, the comment included.
+issue for it, the comment included. The publisher never resolves the
+flag itself: it reads the selection's record, where a JSON `false`
+alone turns the rule off, so a record without the field keeps it
+on.
 
 **Explicit issues.** When `issues` names one or more issues, the run
 works those and scans nothing. The splitter accepts `repo#N`,
@@ -1228,7 +1241,8 @@ For each selected issue:
    open pull requests linked to close it (`issue_recheck`). A
    closed issue (the reason names the pull request or commit that
    closed it, from the timeline), a `no-agent` label, an author or
-   last body editor off the selection's `issue_authors` list (§6),
+   last body editor off the selection's `issue_authors` list, unless
+   the selection recorded `only_known_authors` false (§6),
    an open or merged pull request from the branch, a closed one the entry's
    `retry_of` does not name, or another linked open pull request is
    a `rejected` verdict with no write to the fork, as for a revision
@@ -1648,6 +1662,7 @@ For each selected issue:
 | `continues_run` | string | `''` | §20.6: the dispatching run, which must have published |
 | `exclude_repos` | string | `''` | Commas and/or spaces; overrides bundled list |
 | `issue_authors` | string | `''` | §6: logins trusted to open and edit issues; empty fails the run |
+| `only_known_authors` | string | `''` | §6: `false` turns `issue_authors` off; empty or `true` keeps it; else fails |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
 | `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
@@ -2345,6 +2360,7 @@ cross-checked against the trusted `selection.json`.
               "category": 0, "assigned": 2, "attempted": 1,
               "linked_pr": 0, "one_per_repo": 30, "cap": 15,
               "revision": 0, "duplicate": 0, "held": 0},
+  "only_known_authors": true,
   "issue_authors": ["alice", "bob"],
   "explicit_repositories": [],
   "explicit_issues": [],
@@ -2609,8 +2625,9 @@ the proposal it refused, and the next selection carries them to the
 agent (§6). `issue_closed` is `true` on a rejection because
 the issue closed after selection (§8 step 8), and absent otherwise:
 the comment step then posts nothing on the finished issue, and the
-report row still shows the reason. `issue_authors` carries the
-check's list, and `author_unlisted` is `true` when that list refused
+report row still shows the reason. `only_known_authors` and
+`issue_authors` carry the check's mode and list, and
+`author_unlisted` is `true` when that list refused
 the issue: offline, at the push, before the pull request opens, at a
 revision's replies or at the comment step's own re-read, which then
 posts nothing (§8 step 12). `review` is present on
@@ -2912,7 +2929,8 @@ Three ways in, all through the select job and its read token:
   pull request or an unresolved review thread, an opener or a reply,
   after the bot's latest footer; on the issue, the comment must come
   from a listed issue author (§6), whose comments alone reach the
-  packet. The predicate leaves out, by name, a
+  packet, unless `ONLY_KNOWN_AUTHORS` turned the list off. The
+  predicate leaves out, by name, a
   check the head's own round cannot influence (`check_reads.EXCLUDED`,
   empty today); the round cap bounds a check that fails for reasons outside
   the pull request. GitHub computes `mergeable` in the background,
@@ -3005,7 +3023,8 @@ App, that lacks the `agent-approved` label, and the reason names the
 label, so its pull request costs no further rounds until a
 maintainer approves the issue. A named round, like a named issue,
 applies no association rule. Every round, named or scanned, applies
-the §6 issue author list: an issue whose author or last body editor
+the §6 issue author list, when `ONLY_KNOWN_AUTHORS` leaves it on:
+an issue whose author or last body editor
 is off the list costs no round and counts under `author_not_listed`
 or `editor_not_listed`, not `revision`, and the publisher re-checks
 it live before it retitles, pushes, restores a title, posts a

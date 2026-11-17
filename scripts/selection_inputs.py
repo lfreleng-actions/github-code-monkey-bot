@@ -91,14 +91,18 @@ def parse_max_pull_requests(text: str) -> int:
 
 def load_policy(
     args: argparse.Namespace,
-) -> tuple[frozenset[str], dict[str, Any], frozenset[str]]:
+) -> tuple[frozenset[str], dict[str, Any], frozenset[str] | None]:
     """Read the enabled categories, the fork organisations and the listed authors.
 
-    An empty or malformed issue author list stops the run (DESIGN.md §6).
+    The listed authors are None when ``ONLY_KNOWN_AUTHORS`` turns the
+    rule off. A bad flag, or with the rule on an empty or malformed
+    issue author list, stops the run (DESIGN.md §6).
     """
     try:
         enabled = categories.parse_categories(args.categories)
-        listed = authors.parse_listed(args.issue_authors)
+        listed = authors.resolve_mode(
+            getattr(args, "only_known_authors", ""), args.issue_authors
+        )
     except (categories.CategoryError, authors.AuthorListError) as exc:
         raise SelectionError(str(exc)) from exc
     try:
@@ -145,4 +149,5 @@ def selection_parser(description: str | None) -> argparse.ArgumentParser:
     parser.add_argument("--results-repository", default="")
     parser.add_argument("--held-file", type=Path)
     parser.add_argument("--issue-authors", default="")
+    parser.add_argument("--only-known-authors", default="")
     return parser

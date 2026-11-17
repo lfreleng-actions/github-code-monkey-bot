@@ -13,6 +13,17 @@ from typing import Any, cast
 import unreviewed_heads
 
 
+def listed_rule(selection: dict[str, Any]) -> str:
+    """The summary line for the listed-author rule's mode."""
+    if selection.get("only_known_authors") is False:
+        return "Listed-author rule: **off** (ONLY_KNOWN_AUTHORS is false)."
+    count = len(cast("list[Any]", selection.get("issue_authors") or []))
+    return (
+        f"Listed-author rule: on, {count} author(s) listed in "
+        "CODE_MONKEY_ISSUE_AUTHORS."
+    )
+
+
 def summary_markdown(selection: dict[str, Any]) -> str:
     """Render the selection for the step summary."""
     lines = [
@@ -22,6 +33,7 @@ def summary_markdown(selection: dict[str, Any]) -> str:
         f"model `{selection['model']}`, at most "
         f"{selection['max_pull_requests'] or 'unlimited'} pull request(s).",
         f"Categories: {', '.join(selection['categories'])}.",
+        listed_rule(selection),
         f"Candidates seen: {selection['candidates_seen']}; "
         f"selected: {len(selection['issues'])}.",
         "",

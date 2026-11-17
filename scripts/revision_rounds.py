@@ -42,7 +42,7 @@ class Rounds:
         outstanding_only: bool = False,
         continues: str = "",
         stale: StaleRule = OFF,
-        listed: frozenset[str] = frozenset(),
+        listed: frozenset[str] | None = frozenset(),
     ) -> None:
         """Remember what every build needs; ``skips`` are the counters and the named list.
 

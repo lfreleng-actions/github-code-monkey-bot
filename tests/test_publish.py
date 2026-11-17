@@ -1130,6 +1130,24 @@ class RecheckPushTest(NoNetworkCase):
         self.assertEqual(result["verdict"], "rejected")
         self.assertIs(result["author_unlisted"], True)
 
+    def test_result_carries_the_selections_mode(self) -> None:
+        """The comment step re-checks under the selection's mode, never another."""
+        refusal = publish.recheck.Refusal("issue #7 was closed; nothing published")
+        for recorded, carried in ((False, False), (True, True), ("false", True)):
+            path = self.write_check(check_json(only_known_authors=recorded))
+            with (
+                self.subTest(recorded=recorded),
+                patch.object(publish.recheck, "stale_selection", return_value=refusal),
+            ):
+                result = publish.run_push(self.push_args(path))
+                self.assertIs(result["only_known_authors"], carried)
+        # A check from before the flag keeps the rule on.
+        path = self.write_check(check_json())
+        with patch.object(publish.recheck, "stale_selection", return_value=refusal):
+            self.assertIs(
+                publish.run_push(self.push_args(path))["only_known_authors"], True
+            )
+
     def test_failed_reread_fails_the_step(self) -> None:
         """A re-read that fails is a failed step, never a publish on trust."""
         path = self.write_check(check_json())
@@ -2405,6 +2423,17 @@ class RunRetitleTest(NoNetworkCase):
         self.listed_refusal.return_value = None
         write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
         write.assert_called_once()
+
+    def test_retitle_record_carries_the_mode(self) -> None:
+        """The restore re-checks under the mode the round ran with."""
+        for recorded in (False, True):
+            check = revision_check(
+                pr_title="Fix: New subject", only_known_authors=recorded
+            )
+            with self.subTest(recorded=recorded):
+                self.retitle(check, "Fix: Old")
+                record = json.loads(self.record.read_text(encoding="utf-8"))
+                self.assertIs(record["only_known_authors"], recorded)
 
     def test_an_unlisted_issue_author_restores_no_title(self) -> None:
         """A list refusal, recorded by the push or read live, keeps the round's title."""

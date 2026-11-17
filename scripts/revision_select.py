@@ -69,7 +69,7 @@ class Inputs:
     max_rounds: int = revisions.MAX_ROUNDS
     stale: StaleRule = OFF
     # The listed issue authors; empty lists no one, so every round skips.
-    listed: frozenset[str] = frozenset()
+    listed: frozenset[str] | None = frozenset()
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ def outstanding(
     *,
     repository: str,
     since: str | None,
-    listed: frozenset[str] = frozenset(),
+    listed: frozenset[str] | None = frozenset(),
 ) -> list[str]:
     """Why the pull request needs a round, by the organisation definition.
 
@@ -355,7 +355,7 @@ def scan_reasons(
     history: rounds_of.RoundHistory,
     *,
     repository: str,
-    listed: frozenset[str] = frozenset(),
+    listed: frozenset[str] | None = frozenset(),
 ) -> list[str]:
     """Why a scan gives the pull request a round, or ``Skip`` when it does not.
 
@@ -400,7 +400,7 @@ def packet_of(
     issue: int,
     *,
     explicit: bool,
-    listed: frozenset[str] = frozenset(),
+    listed: frozenset[str] | None = frozenset(),
 ) -> dict[str, Any]:
     """The entry's view of the issue, after its safety tests.
 

@@ -540,6 +540,37 @@ class BuildEntryTest(RevisionCase):
             with self.assertRaisesRegex(select.Skip, "editor_not_listed"):
                 self.build(explicit=True)
 
+    def test_rule_off_admits_any_author_and_member_comments(self) -> None:
+        """With ``ONLY_KNOWN_AUTHORS=false`` a round reads no list anywhere."""
+        self.threads = [thread()]
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "MEMBER",
+            "author": "mallory",
+            "edited": True,
+            "editor": "eve",
+        }
+        with patch.object(reads, "issue_details", return_value=details):
+            entry = select.build_entry(
+                select.Inputs("org", BOT, FORK_ORGS, listed=None),
+                "alpha",
+                41,
+                explicit=True,
+            )
+        self.assertEqual(entry["number"], 7)
+        self.assertEqual(
+            [call.args for call in reads.filtered_comments.call_args_list],
+            [("org/alpha", 7, None), ("org/alpha", 41)],
+        )
+
     def test_issue_comments_are_read_through_the_list(self) -> None:
         """The issue's comments pass the list; the pull request's keep the old rule."""
         self.threads = [thread()]

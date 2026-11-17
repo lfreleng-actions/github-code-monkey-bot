@@ -62,6 +62,9 @@ jobs:
       # A login no issue carries: the named issue is skipped by the
       # listed-author rule, and every select step still runs.
       issue_authors: "${{ github.repository_owner }}"
+      # Whatever the repository variable says, plumbing keeps the rule on.
+      # yamllint disable-line rule:line-length
+      only_known_authors: "${{ 'true' }}"  # zizmor: ignore[obfuscation] actionlint types a bare 'true' as a boolean
       # Block mode with the organisation allow-list, as the dispatch
       # caller runs, so a pull request proves the trusted jobs' egress.
       harden_runner_egress: 'block'
@@ -95,6 +98,7 @@ jobs:
       max_concurrent_agents: '2'
       issues: "${{ inputs.issues || '' }}"
       issue_authors: "${{ vars.CODE_MONKEY_ISSUE_AUTHORS || '' }}"
+      only_known_authors: "${{ vars.ONLY_KNOWN_AUTHORS || '' }}"
       allow_workflow_edits: ${{ inputs.allow_workflow_edits || false }}
       harden_runner_egress: 'block'
       # yamllint disable-line rule:line-length

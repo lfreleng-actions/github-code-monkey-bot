@@ -420,7 +420,9 @@ def run_check(
     check.bot_login = context.identity.bot_login
     read_usage(proposal_dir / "usage.json", check)
     try:
-        check.issue_authors, refused = authors.recorded_refusal(selection, entry)
+        listed, refused = authors.recorded_refusal(selection, entry)
+        check.only_known_authors = listed is not None
+        check.issue_authors = sorted(listed or ())
         if refused is not None:
             check.author_unlisted = True
             raise Rejection(refused)
