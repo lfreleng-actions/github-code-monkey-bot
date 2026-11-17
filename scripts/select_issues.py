@@ -31,7 +31,6 @@ from typing import Any, cast
 
 import bot_github as github
 import explicit_issues as explicit_targets
-import fork_orgs as forks
 import issue_authors as authors
 import issue_categories as categories
 import issue_reads as reads
@@ -43,12 +42,12 @@ import run_overlap
 import selection_outputs as outputs
 import stale_statuses as stale
 import sudo_marker
-from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
 from selection_choose import choose
 from selection_document import Settings, selection_document
 from selection_inputs import (
     load_exclusions,
+    load_policy,
     load_reviewers,
     parse_max_pull_requests,
     parse_max_rounds,
@@ -146,6 +145,7 @@ def enrich(
     include_assigned: bool,
     enabled: frozenset[str],
     skipped: dict[str, int],
+    listed: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Add the per-issue reads ranking needs and drop untriaged or claimed issues."""
     enriched: list[dict[str, Any]] = []
@@ -170,6 +170,10 @@ def enrich(
         if not authors.admits(merged):
             skipped["untrusted_author"] += 1
             continue
+        refused = authors.unlisted(merged, listed)
+        if refused is not None:
+            skipped[refused.counter] += 1
+            continue
         found = categories.categories_of(details["labels"], details["type"])
         if not found & enabled:
             skipped["category"] += 1
@@ -183,6 +187,8 @@ SKIP_COUNTERS = (
     "repository",
     "label",
     "untrusted_author",
+    authors.AUTHOR_NOT_LISTED,
+    authors.EDITOR_NOT_LISTED,
     "no_type",
     "closed",
     "category",
@@ -205,6 +211,7 @@ def scan_candidates(
     exclusions: set[str],
     enabled: frozenset[str],
     skipped: dict[str, int],
+    listed: frozenset[str] = frozenset(),
 ) -> tuple[int, list[dict[str, Any]]]:
     """Scan the owner or the named repositories; return the count seen and the ranking."""
     for name in explicit:
@@ -224,6 +231,7 @@ def scan_candidates(
         include_assigned=args.include_assigned,
         enabled=enabled,
         skipped=skipped,
+        listed=listed,
     )
     return len(issues), sorted(enriched, key=rank_key)
 
@@ -268,19 +276,6 @@ def parse_targets(
     return targets, explicit, pulls
 
 
-def load_policy(args: argparse.Namespace) -> tuple[frozenset[str], dict[str, Any]]:
-    """Read the enabled categories and the fork organisations."""
-    try:
-        enabled = categories.parse_categories(args.categories)
-    except categories.CategoryError as exc:
-        raise SelectionError(str(exc)) from exc
-    try:
-        fork_orgs = forks.load(args.fork_orgs)
-    except ForkOrgError as exc:
-        raise SelectionError(str(exc)) from exc
-    return enabled, fork_orgs
-
-
 def stamp(chosen: list[dict[str, Any]], session: str, collected_at: str) -> None:
     """Mark every chosen entry with the read time and the session."""
     # The session names this selection: the run and its attempt, so
@@ -311,7 +306,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
     max_rounds = parse_max_rounds(args.max_rounds)
     stale_rule = stale.load_rule(args.stale_statuses, args.stale_status_minutes)
-    enabled, fork_orgs = load_policy(args)
+    enabled, fork_orgs, listed = load_policy(args)
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
     holds = run_overlap.Holds(
@@ -342,13 +337,14 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         outstanding_only=args.outstanding_only,
         continues=args.continues_run,
         stale=stale_rule,
+        listed=listed,
     )
     if explicit_run:
         # Named issues: no listing, no scan, no ranking, the given
         # order kept.
         seen = len(targets)
         ranked = explicit_targets.candidates(
-            args.org, targets, skipped=skipped, skipped_issues=skipped_issues
+            args.org, targets, listed, skipped=skipped, skipped_issues=skipped_issues
         )
     elif args.revise_only:
         seen, ranked = 0, []
@@ -360,6 +356,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             exclusions=exclusions,
             enabled=enabled,
             skipped=skipped,
+            listed=listed,
         )
     chosen = choose(
         holds.issues(ranked),
@@ -374,6 +371,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             + (rounds.scan(holds.claims) if not explicit_run else [])
         ),
         reviser=rounds.for_issue,
+        listed=listed,
     )
     if args.results_repository:
         previous_rejection.attach(
@@ -388,7 +386,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     )
     selection = selection_document(
         args,
-        Settings(bot, enabled, max_pull_requests, guidance, commit),
+        Settings(bot, enabled, max_pull_requests, guidance, commit, listed),
         lists=(explicit, targets, pulls, exclusions),
         outcome=(seen, skipped, skipped_issues, chosen),
     )

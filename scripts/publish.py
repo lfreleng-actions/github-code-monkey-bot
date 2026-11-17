@@ -101,6 +101,9 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "failing_checks": list(cast("list[Any]", check.get("failing_checks") or [])),
         "antagonistic_review": check.get("antagonistic_review") or None,
         "collected_at": check.get("collected_at") or None,
+        # The comment step re-checks the issue against the same list.
+        "issue_authors": list(cast("list[Any]", check.get("issue_authors") or [])),
+        recheck.AUTHOR_UNLISTED: check.get(recheck.AUTHOR_UNLISTED) is True,
     }
 
 
@@ -241,18 +244,54 @@ def needs_pull_request(result: dict[str, Any]) -> bool:
     )
 
 
+def unlisted_before_open(
+    args: argparse.Namespace, check: dict[str, Any], result: dict[str, Any]
+) -> bool:
+    """Whether the listed-author rule, read live, forbids opening the pull request.
+
+    The push re-checked the issue before it wrote the fork branch, but
+    the issue may have been edited since. A refusal rejects the result
+    and sets ``AUTHOR_UNLISTED``, so the comment step writes nothing
+    either; a read that fails goes to ``fail``. The fork branch stays
+    in both cases, as for any failed open.
+    """
+    try:
+        refusal = recheck.listed_refusal(check)
+    except (PublishError, github.GitHubError) as exc:
+        fail(
+            args,
+            result,
+            f"could not re-read the issue's author ({exc}); no pull request "
+            "opened, fork branch kept",
+            exc,
+        )
+    if refusal is None:
+        return False
+    result["verdict"] = "rejected"
+    result[recheck.AUTHOR_UNLISTED] = True
+    reason = refusal.reason.removesuffix("; nothing published")
+    cast("list[str]", result["reasons"]).append(
+        f"{reason}; no pull request opened, fork branch kept"
+    )
+    return True
+
+
 def run_open(args: argparse.Namespace) -> dict[str, Any]:
     """Open the pull request on the target for a branch ``push`` left in the fork.
 
     A failure here never removes the fork branch: the next run's
     selection sees it as a prior attempt, and its publisher adopts
-    the branch and opens the pull request then.
+    the branch and opens the pull request then. The issue's author
+    and last editor are re-read against the listed issue authors
+    first (``unlisted_before_open``).
     """
     result = model.load_json(args.result, "result")
     check = model.load_json(args.check, "check")
     if result.get("key") != check.get("key"):
         raise PublishError("result.json and check.json describe different proposals")
     if not needs_pull_request(result):
+        return result
+    if unlisted_before_open(args, check, result):
         return result
     target = str(check["repository"])
     branch = str(check["branch"])

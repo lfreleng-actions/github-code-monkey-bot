@@ -20,10 +20,11 @@ from typing import Any, NamedTuple, cast
 
 import bot_github as github
 import issue_authors as authors
+import issue_edits as edits
 
 SEARCH_LIMIT = 1000
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-COMMENT_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
+COMMENT_ASSOCIATIONS = authors.COMMENT_ASSOCIATIONS
 MAX_COMMENTS = 20
 # Comment pages read per issue; the count cap above fills long before.
 MAX_COMMENT_PAGES = 3
@@ -157,9 +158,6 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
         raise github.GitHubError("issue response does not match the request")
     if issue.get("pull_request") is not None:
         raise NotAnIssue(f"{repo}#{number} is a pull request")
-    body = issue.get("body")
-    if body is not None and not isinstance(body, str):
-        raise github.GitHubError("invalid issue body")
     issue_type = issue.get("type")
     type_name: str | None = None
     if isinstance(issue_type, dict):
@@ -177,10 +175,13 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
     state = issue.get("state")
     if state not in ("open", "closed"):
         raise github.GitHubError(f"{repo}#{number}: unexpected state {state!r}")
+    # The body handed on is the one the edit read saw, so its last
+    # editor is the one the issue author list checks.
+    edit = edits.last_edit(repo, number)
     return {
         "state": state,
         "title": github.require_str(issue, "title", "issue"),
-        "body": truncate_utf8(body or "", MAX_BODY_BYTES),
+        "body": truncate_utf8(edit.pop("body"), MAX_BODY_BYTES),
         "labels": label_names(issue.get("labels")),
         "type": type_name,
         "assignees": assignees,
@@ -190,6 +191,7 @@ def issue_details(repo: str, number: int) -> dict[str, Any]:
         "url": github.require_str(issue, "html_url", "issue"),
         "created_at": github.require_str(issue, "created_at", "issue"),
         **authors.author_fields(issue),
+        **edit,
     }
 
 
@@ -342,8 +344,10 @@ def branch_head(repo: str, ref: str) -> str:
     raise github.GitHubError(f"no branch or tag named {ref!r} in {repo}")
 
 
-def filtered_comments(repo: str, number: int) -> tuple[list[dict[str, Any]], int, bool]:
-    """Keep comments from owners and members, bounded by pages, count and bytes.
+def filtered_comments(
+    repo: str, number: int, listed: frozenset[str] | None = None
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Keep owners' and members' comments, from listed authors given ``listed``.
 
     Reads at most ``MAX_COMMENT_PAGES`` pages, oldest first, and stops
     once the count is full. Returns the kept comments, how many it
@@ -358,7 +362,7 @@ def filtered_comments(repo: str, number: int) -> tuple[list[dict[str, Any]], int
             f"?per_page={COMMENTS_PER_PAGE}&page={page}"
         )
         for entry in entries:
-            comment = member_comment(entry)
+            comment = authors.member_comment(entry, listed)
             size = len(str(comment["body"]).encode("utf-8")) if comment else 0
             if (
                 comment is None
@@ -375,28 +379,6 @@ def filtered_comments(repo: str, number: int) -> tuple[list[dict[str, Any]], int
             break
     # A full last page means newer comments may exist that were not read.
     return kept, dropped, True
-
-
-def member_comment(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """An owner's or member's comment in packet form, or None."""
-    association = entry.get("author_association")
-    body = entry.get("body")
-    user = entry.get("user")
-    login = (
-        cast("dict[str, Any]", user).get("login") if isinstance(user, dict) else None
-    )
-    if (
-        association not in COMMENT_ASSOCIATIONS
-        or not isinstance(body, str)
-        or not isinstance(login, str)
-    ):
-        return None
-    return {
-        "author": login,
-        "association": association,
-        "created_at": entry.get("created_at"),
-        "body": body,
-    }
 
 
 def fetch_guidance(repository: str, ref: str, path: str) -> tuple[bytes, str]:

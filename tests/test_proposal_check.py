@@ -254,6 +254,11 @@ class Fixture:
             "type": "Bug",
             "created_at": "2026-09-01T00:00:00Z",
             "author_association": "MEMBER",
+            "author": "alice",
+            "author_is_bot": False,
+            "edited": False,
+            "editor": None,
+            "editor_is_bot": False,
             "default_branch": "main",
             "base_sha": self.base_sha,
             "branch": BRANCH,
@@ -274,6 +279,7 @@ class Fixture:
             "guidance": {},
             "candidates_seen": 1,
             "skipped": {},
+            "issue_authors": ["alice"],
             "issues": [entry],
         }
         if self.allow_workflow_edits is not None:
@@ -293,7 +299,12 @@ class Fixture:
         return path
 
     def run(
-        self, *, key: str = KEY, zizmor: Any = None, zizmor_token: str | None = "t0ken"
+        self,
+        *,
+        key: str = KEY,
+        zizmor: Any = None,
+        zizmor_token: str | None = "t0ken",
+        selection: dict[str, Any] | None = None,
     ) -> Any:
         """Run the check with the clone pointed at the local upstream.
 
@@ -310,7 +321,7 @@ class Fixture:
             patch.dict(os.environ, {"PATH": path}),
         ):
             return checks.run_check(
-                selection_path=self.write_selection(),
+                selection_path=self.write_selection(selection),
                 key=key,
                 proposal_dir=self.proposal,
                 workdir=self.workdir,
@@ -730,6 +741,27 @@ class RunCheckOutcomeTest(GitCase):
         """Only a revision round can lose a race to another run's push."""
         self.fixture.manifest(outcome="abstain", reason="r", superseded=True)
         self.assertIs(self.fixture.run().superseded, False)
+
+    def test_listed_author_is_rechecked(self) -> None:
+        """An entry the recorded list does not admit, or no list, is rejected."""
+        self.fixture.manifest(outcome="abstain", reason="r")
+        cases: tuple[tuple[dict[str, Any], str], ...] = (
+            ({"author": "mallory"}, "author_not_listed"),
+            ({"edited": True, "editor": "mallory"}, "editor_not_listed"),
+            ({"issue_authors": None}, "no CODE_MONKEY_ISSUE_AUTHORS list was recorded"),
+            ({"issue_authors": []}, "CODE_MONKEY_ISSUE_AUTHORS is empty"),
+        )
+        for change, reason in cases:
+            selection = self.fixture.selection()
+            if "issue_authors" in change:
+                selection["issue_authors"] = change["issue_authors"]
+            else:
+                selection["issues"][0].update(change)
+            with self.subTest(change=change):
+                check = self.fixture.run(selection=selection)
+                self.assertEqual(check.verdict, "rejected")
+                self.assertIn(reason, check.reasons[0])
+                self.assertIs(check.to_json()["author_unlisted"], True)
 
     def test_author_failed(self) -> None:
         """author-failed without a reason gets a placeholder."""

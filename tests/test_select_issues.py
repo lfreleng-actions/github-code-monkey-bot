@@ -30,6 +30,7 @@ choose_module = import_module("selection_choose")
 categories = import_module("issue_categories")
 
 ALL = frozenset(categories.ALL_CATEGORIES)
+LISTED = frozenset({"alice"})
 outputs = import_module("selection_outputs")
 document = import_module("selection_document")
 sudo_marker = import_module("sudo_marker")
@@ -88,6 +89,8 @@ def candidate(
         "url": f"https://github.com/org/{repo}/issues/{number}",
         "created_at": created_at or f"2026-01-{number:02d}T00:00:00Z",
         "author_association": "MEMBER",
+        "author": "alice",
+        "edited": False,
         "default_branch": "main",
         "title": f"Issue {number}",
         "body": "",
@@ -131,6 +134,8 @@ def fresh_skipped() -> dict[str, int]:
             "pull_request",
             "repository",
             "label",
+            "author_not_listed",
+            "editor_not_listed",
             "no_type",
             "closed",
             "category",
@@ -261,6 +266,8 @@ class ExplicitIssuesTest(NoSubprocessCase):
             "url": "https://github.com/org/x/issues/1",
             "created_at": "2026-01-01T00:00:00Z",
             "author_association": "MEMBER",
+            "author": "alice",
+            "edited": False,
         }
         data.update(overrides)
         return data
@@ -279,6 +286,8 @@ class ExplicitIssuesTest(NoSubprocessCase):
             [
                 "--org",
                 "org",
+                "--issue-authors",
+                "alice",
                 "--output-dir",
                 "out",
                 "--mode",
@@ -467,6 +476,44 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertEqual([i["key"] for i in selection["issues"]], ["alpha-3"])
         self.assertEqual(selection["skipped_issues"], [])
 
+    def test_named_issue_must_pass_the_listed_authors(self) -> None:
+        """Naming waives the association rule, not the list or its last editor."""
+        self.details[("org/alpha", 3)] = self.detail(author="mallory")
+        self.details[("org/delta", 7)] = self.detail(edited=True, editor="mallory")
+        selection, _ = select.build_selection(self.args("org/alpha#3,org/delta#7"))
+        self.assertEqual(selection["issues"], [])
+        self.assertEqual(selection["skipped"]["author_not_listed"], 1)
+        self.assertEqual(selection["skipped"]["editor_not_listed"], 1)
+        reasons = [entry["reason"] for entry in selection["skipped_issues"]]
+        self.assertIn(
+            "issue author mallory is not in CODE_MONKEY_ISSUE_AUTHORS", reasons[0]
+        )
+        self.assertIn("last edited by mallory", reasons[1])
+        self.assertEqual(selection["issue_authors"], ["alice"])
+
+    def test_issue_comments_need_a_listed_author(self) -> None:
+        """The packet's issue comments are read through the list."""
+        selection, _ = select.build_selection(self.args("org/alpha#3"))
+        self.assertEqual(len(selection["issues"]), 1)
+        reads.filtered_comments.assert_called_once_with(
+            "org/alpha", 3, frozenset({"alice"})
+        )
+
+    def test_an_empty_or_bad_list_stops_the_run(self) -> None:
+        """No list, or a malformed one, fails the selection before any read."""
+        for text in ("", "alice,@bob"):
+            args = self.args("org/alpha#3")
+            args.issue_authors = text
+            with (
+                self.subTest(text=text),
+                patch.object(reads, "issue_details") as read,
+                self.assertRaisesRegex(
+                    reads.SelectionError, "CODE_MONKEY_ISSUE_AUTHORS"
+                ),
+            ):
+                select.build_selection(args)
+            read.assert_not_called()
+
     def test_summary_shows_each_named_issues_author(self) -> None:
         """The operator sees the association of every named issue admitted."""
         self.details[("org/alpha", 3)] = self.detail(author_association="NONE")
@@ -552,6 +599,8 @@ class RevisionIntegrationTest(NoSubprocessCase):
             [
                 "--org",
                 "org",
+                "--issue-authors",
+                "alice",
                 "--output-dir",
                 "out",
                 "--mode",
@@ -866,6 +915,8 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 "url": "u",
                 "created_at": "t",
                 "author_association": "MEMBER",
+                "author": "alice",
+                "edited": False,
             },
         ).start()
         patch.object(
@@ -888,6 +939,51 @@ class RevisionIntegrationTest(NoSubprocessCase):
         self.assertEqual(selection["issues"], [])
         self.assertEqual(selection["skipped"]["attempted"], 1)
 
+    def test_named_issue_edited_before_its_round_counts_the_list(self) -> None:
+        """An unlisted edit between the issue read and the round read is a list skip."""
+        patch.object(
+            repository_reads, "repository_meta", return_value=repo_meta("alpha")
+        ).start()
+        patch.object(
+            reads,
+            "issue_details",
+            return_value={
+                "state": "open",
+                "title": "T",
+                "body": "",
+                "labels": [],
+                "type": "Bug",
+                "assignees": [],
+                "priority": None,
+                "url": "u",
+                "created_at": "t",
+                "author_association": "MEMBER",
+                "author": "alice",
+                "edited": False,
+            },
+        ).start()
+        patch.object(
+            reads,
+            "prior_attempt",
+            return_value=reads.PriorAttempt("pull_request", "open", 41),
+        ).start()
+        patch.object(
+            revision_rounds, "pull_request_for_branch", return_value=41
+        ).start()
+        reason = "issue #7: editor_not_listed: issue body last edited by mallory"
+        patch.object(
+            revision_rounds,
+            "build_entry",
+            side_effect=revision_rounds.Skip(reason, "editor_not_listed"),
+        ).start()
+        selection, _ = select.build_selection(self.args("--issues", "org/alpha#7"))
+        self.assertEqual(selection["issues"], [])
+        self.assertEqual(selection["skipped"]["editor_not_listed"], 1)
+        self.assertEqual(selection["skipped"]["attempted"], 0)
+        self.assertEqual(
+            selection["skipped_issues"], [{"issue": "org/alpha#7", "reason": reason}]
+        )
+
     def test_named_pull_request_and_its_issue_admit_one_entry(self) -> None:
         """The same round named twice runs once."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
@@ -908,6 +1004,8 @@ class RevisionIntegrationTest(NoSubprocessCase):
                 "url": "u",
                 "created_at": "t",
                 "author_association": "MEMBER",
+                "author": "alice",
+                "edited": False,
             },
         ).start()
         patch.object(
@@ -1408,7 +1506,11 @@ class EnrichTest(NoSubprocessCase):
 
         with patch.object(reads, "issue_details", side_effect=lookup) as read:
             enriched = select.enrich(
-                base, include_assigned=False, enabled=ALL, skipped=skipped
+                base,
+                include_assigned=False,
+                enabled=ALL,
+                skipped=skipped,
+                listed=LISTED,
             )
         self.assertEqual(read.call_count, 4)
         self.assertEqual([c["number"] for c in enriched], [4])
@@ -1421,7 +1523,7 @@ class EnrichTest(NoSubprocessCase):
         skipped = fresh_skipped()
         with patch.object(reads, "issue_details", side_effect=lookup):
             enriched = select.enrich(
-                base, include_assigned=True, enabled=ALL, skipped=skipped
+                base, include_assigned=True, enabled=ALL, skipped=skipped, listed=LISTED
             )
         self.assertEqual([c["number"] for c in enriched], [2, 4])
         self.assertEqual(skipped["assigned"], 0)
@@ -1445,11 +1547,44 @@ class EnrichTest(NoSubprocessCase):
 
         with patch.object(reads, "issue_details", side_effect=lookup):
             enriched = select.enrich(
-                base, include_assigned=False, enabled=ALL, skipped=skipped
+                base,
+                include_assigned=False,
+                enabled=ALL,
+                skipped=skipped,
+                listed=LISTED,
             )
         self.assertEqual([c["number"] for c in enriched], [2, 4, 6])
         self.assertEqual(skipped["untrusted_author"], 3)
         self.assertEqual(sum(skipped.values()), 3)
+
+
+class EnrichListedTest(NoSubprocessCase):
+    """``enrich`` applies the listed-author rule to the direct read."""
+
+    def test_unlisted_author_or_editor_is_skipped(self) -> None:
+        """A member not on the list, or an issue an unlisted login edited, is skipped."""
+        details: dict[int, dict[str, Any]] = {
+            1: {"author": "mallory"},
+            2: {"edited": True, "editor": "mallory", "editor_is_bot": False},
+            3: {"edited": True, "editor": "Alice", "editor_is_bot": False},
+        }
+
+        def lookup(_repo: str, number: int) -> dict[str, Any]:
+            """The issue as the direct read reports it."""
+            return {**candidate("r", number), "state": "open", **details[number]}
+
+        skipped = fresh_skipped()
+        with patch.object(reads, "issue_details", side_effect=lookup):
+            enriched = select.enrich(
+                [candidate("r", n) for n in details],
+                include_assigned=False,
+                enabled=ALL,
+                skipped=skipped,
+                listed=LISTED,
+            )
+        self.assertEqual([c["number"] for c in enriched], [3])
+        self.assertEqual(skipped["author_not_listed"], 1)
+        self.assertEqual(skipped["editor_not_listed"], 1)
 
 
 class ChooseTest(NoSubprocessCase):
@@ -1666,7 +1801,11 @@ class CategoryFilterTest(NoSubprocessCase):
         skipped = fresh_skipped()
         with patch.object(reads, "issue_details", return_value=details):
             kept = select.enrich(
-                base, include_assigned=False, enabled=enabled, skipped=skipped
+                base,
+                include_assigned=False,
+                enabled=enabled,
+                skipped=skipped,
+                listed=LISTED,
             )
         return kept, skipped
 
@@ -1715,7 +1854,11 @@ class ClosedSinceSearchTest(NoSubprocessCase):
         skipped = fresh_skipped()
         with patch.object(reads, "issue_details", return_value=details):
             kept = select.enrich(
-                base, include_assigned=False, enabled=ALL, skipped=skipped
+                base,
+                include_assigned=False,
+                enabled=ALL,
+                skipped=skipped,
+                listed=LISTED,
             )
         self.assertEqual(kept, [])
         self.assertEqual(skipped["closed"], 1)
@@ -1879,6 +2022,8 @@ class MainTest(NoSubprocessCase):
             "url": "https://github.com/org/alpha/issues/1",
             "created_at": "2026-01-01T00:00:00Z",
             "author_association": "MEMBER",
+            "author": "alice",
+            "edited": False,
         }
         patch.object(
             repository_reads, "repository_meta", return_value=repo_meta("alpha")
@@ -1917,6 +2062,8 @@ class MainTest(NoSubprocessCase):
                     [
                         "--org",
                         "org",
+                        "--issue-authors",
+                        "alice",
                         "--output-dir",
                         str(out),
                         "--mode",
@@ -1974,6 +2121,8 @@ class MainTest(NoSubprocessCase):
                     [
                         "--org",
                         "org",
+                        "--issue-authors",
+                        "alice",
                         "--output-dir",
                         tmp,
                         "--mode",
@@ -2006,6 +2155,8 @@ class MainTest(NoSubprocessCase):
                     [
                         "--org",
                         "org",
+                        "--issue-authors",
+                        "alice",
                         "--output-dir",
                         tmp,
                         "--mode",
@@ -2035,6 +2186,8 @@ class MainTest(NoSubprocessCase):
                     [
                         "--org",
                         "org",
+                        "--issue-authors",
+                        "alice",
                         "--output-dir",
                         tmp,
                         "--mode",

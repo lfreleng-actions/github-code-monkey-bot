@@ -34,6 +34,7 @@ from typing import Any, cast
 
 import bot_github as github
 import head_checks
+import issue_recheck as recheck
 import proposal_model as model
 import review_request
 import review_verdict as verdicts
@@ -338,11 +339,18 @@ def run_request(args: argparse.Namespace) -> None:
     asked and, on a refusal, each warning and one ``::warning``
     annotation, so the run shows what the ``result.json`` record
     holds and a lapsed review token shows as a refusal under its name.
+    An issue the listed issue authors refuse gets no request or notice.
     """
     result = model.load_json(args.result, "result")
     target = published(result)
     if target is None:
         print("no pull request to request a review of")
+        return
+    withheld = "no review requested and the description left alone"
+    if not recheck.listed_issue(result, result, withheld):
+        result["review"] = {**(result.get("review") or {}), "requested": False}
+        write_result(args.output, result)
+        print(f"review request: withheld; {withheld}")
         return
     outcome = review_request.request_review(*target, published_head(result))
     warning = outcome.warning

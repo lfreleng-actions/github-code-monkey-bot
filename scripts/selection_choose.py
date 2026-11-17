@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 import fork_orgs as forks
+import issue_authors as authors
 import issue_reads as reads
 from fork_orgs import ForkOrgError
 from issue_reads import SelectionError
@@ -87,6 +88,7 @@ def choose(
     skipped_issues: list[dict[str, str]] | None = None,
     revisions: list[tuple[str, Callable[[], dict[str, Any] | None]]] | None = None,
     reviser: Callable[[dict[str, Any], str, str], dict[str, Any] | None] | None = None,
+    listed: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the expensive checks and cap; keep one issue per repository on a scan.
 
@@ -99,7 +101,9 @@ def choose(
     holds back a new issue of a repository already chosen, by a round
     or an issue, before any read.
     ``reviser`` turns an issue whose earlier attempt is open into a
-    revision entry, or returns None to skip it as before.
+    revision entry, or returns None to skip it as before; a refusal by
+    the listed issue authors it raises counts under its own counter.
+    ``listed``, when given, keeps only the listed authors' issue comments.
     ``named`` marks issues the operator named, which a closed earlier
     pull request does not keep out.
     ``skipped_issues`` collects a reason per skipped issue: every skip
@@ -164,7 +168,11 @@ def choose(
         prior = reads.prior_attempt(repo, fork_repository, branch)
         if prior is not None and prior.kind == "pull_request":
             if prior.state == "open":
-                revision = reviser(candidate, fork_org, branch) if reviser else None
+                try:
+                    revision = reviser(candidate, fork_org, branch) if reviser else None
+                except authors.Refused as exc:
+                    skip(candidate, exc.unlisted.counter, exc.unlisted.reason)
+                    continue
                 if revision is None:
                     skip(candidate, "attempted", prior.describe())
                 elif not budget.admit(revision):
@@ -176,7 +184,7 @@ def choose(
         if reads.has_open_linked_pr(repo, number):
             skip(candidate, "linked_pr", "an open pull request is linked to close it")
             continue
-        comments, dropped, truncated = reads.filtered_comments(repo, number)
+        comments, dropped, truncated = reads.filtered_comments(repo, number, listed)
         base_sha = reads.branch_head(repo, str(candidate["default_branch"]))
         entry = {
             "key": f"{candidate['repo_name']}-{number}",

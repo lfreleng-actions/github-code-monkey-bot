@@ -235,6 +235,9 @@ jobs:
       revise_only: ${{ inputs.revise_only }}
       outstanding_only: ${{ inputs.outstanding_only }}
       continues_run: "${{ inputs.continues_run }}"
+      # The repository variable alone sets the list: no dispatch form
+      # field can widen it. Unset, the run fails at pre-flight.
+      issue_authors: "${{ vars.CODE_MONKEY_ISSUE_AUTHORS || '' }}"
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       harden_runner_egress: 'block'

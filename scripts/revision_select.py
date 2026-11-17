@@ -42,7 +42,15 @@ INFRASTRUCTURE_ONLY = "infrastructure-only check failures; needs a re-run"
 
 
 class Skip(Exception):
-    """The pull request cannot be revised; the message says why."""
+    """The pull request cannot be revised; the message says why.
+
+    ``counter`` is the skip counter the recording site increments.
+    """
+
+    def __init__(self, reason: str, counter: str = "revision") -> None:
+        """Carry the reason as the message, and the counter beside it."""
+        super().__init__(reason)
+        self.counter = counter
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,8 @@ class Inputs:
     reviewers: frozenset[str] = frozenset()
     max_rounds: int = revisions.MAX_ROUNDS
     stale: StaleRule = OFF
+    # The listed issue authors; empty lists no one, so every round skips.
+    listed: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -129,6 +139,7 @@ def outstanding(
     *,
     repository: str,
     since: str | None,
+    listed: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Why the pull request needs a round, by the organisation definition.
 
@@ -140,8 +151,10 @@ def outstanding(
     (``check_reads``), when the head conflicts with
     the default branch, so no CI ran on it, or when a maintainer
     commented on the issue or the pull request after the bot's last
-    round. A maintainer's word on a review thread after that round,
-    an opener or a reply, counts as a comment, since the issue and
+    round; on the issue, only a ``listed`` author's comment counts, as
+    only theirs reaches the packet. A maintainer's word on a review
+    thread after that round, an opener or a reply, counts as a
+    comment, since the issue and
     pull request comments do not carry it; the thread
     reads heard it over every thread, the packet's bounds aside. A
     stale status (``stale_statuses``) is no work. A head with nothing
@@ -167,8 +180,11 @@ def outstanding(
         reasons.append("failing checks")
     if pull.get("mergeable") is False:
         reasons.append("conflicts with the default branch")
-    for number, what in ((issue, "issue"), (int(pull["number"]), "pull request")):
-        if rounds_of.newer_member_comment(repository, number, since):
+    for number, what, only in (
+        (issue, "issue", listed),
+        (int(pull["number"]), "pull request", None),
+    ):
+        if rounds_of.newer_member_comment(repository, number, since, only):
             reasons.append(f"a maintainer commented on the {what} since the last round")
     if packet.maintainer_since:
         reasons.append("a maintainer commented on a review thread since the last round")
@@ -243,12 +259,15 @@ def build_entry(
     reasons = (
         ["named by the operator"]
         if explicit and not require_outstanding
-        else scan_reasons(pull, findings, history, repository=repository)
+        else scan_reasons(
+            pull, findings, history, repository=repository, listed=inputs.listed
+        )
     )
     details = packet_of(
         read_issue(repository, issue) if prefetched is None else prefetched.details,
         issue,
         explicit=explicit and not require_outstanding,
+        listed=inputs.listed,
     )
     rebase_sha = reads.branch_head(repository, str(meta["default_branch"]))
     return {
@@ -286,7 +305,7 @@ def build_entry(
         "checks_dropped": findings.checks.dropped,
         "checks_unsettled": findings.checks.unsettled,
         "checks_stale": findings.checks.stale,
-        **rounds_of.conversation(repository, issue, pull_number, since),
+        **rounds_of.conversation(repository, issue, pull_number, since, inputs.listed),
     }
 
 
@@ -336,6 +355,7 @@ def scan_reasons(
     history: rounds_of.RoundHistory,
     *,
     repository: str,
+    listed: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Why a scan gives the pull request a round, or ``Skip`` when it does not.
 
@@ -344,7 +364,9 @@ def scan_reasons(
     records one, so the scan records it rather than reading it as
     done: no round can request a review (DESIGN.md section 20.1).
     """
-    reasons = outstanding(pull, findings, repository=repository, since=history.since)
+    reasons = outstanding(
+        pull, findings, repository=repository, since=history.since, listed=listed
+    )
     if not reasons:
         if findings.checks.unsettled:
             raise Skip("checks still running")
@@ -373,12 +395,25 @@ def read_issue(repository: str, issue: int) -> dict[str, Any]:
         raise Skip(f"issue #{issue} is gone") from exc
 
 
-def packet_of(details: dict[str, Any], issue: int, *, explicit: bool) -> dict[str, Any]:
-    """The entry's view of the issue, after its safety tests."""
+def packet_of(
+    details: dict[str, Any],
+    issue: int,
+    *,
+    explicit: bool,
+    listed: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """The entry's view of the issue, after its safety tests.
+
+    The listed-author rule binds a named round too: naming waives the
+    association rule, never the list.
+    """
     if details["state"] != "open":
         raise Skip(f"issue #{issue} is closed")
     if "no-agent" in details["labels"]:
         raise Skip(f"issue #{issue} carries the no-agent label")
     if not explicit and not authors.admits(details):
         raise Skip(f"issue #{issue}'s author needs the {authors.APPROVAL_LABEL} label")
+    refused = authors.unlisted(details, listed)
+    if refused is not None:
+        raise Skip(f"issue #{issue}: {refused.reason}", refused.counter)
     return {k: v for k, v in details.items() if k not in ("state", "assignees")}

@@ -127,6 +127,8 @@ jobs:
       dry_run: true
       # Name the work: no run scans for new issues.
       issues: 'test-python-project#1'
+      # Required: the logins trusted to open and edit issues.
+      issue_authors: ${{ vars.CODE_MONKEY_ISSUE_AUTHORS }}
       # Trusted jobs default to block mode; name the allow-list.
       harden_runner_allowlist: '@<allow-list commit sha>'
       # Optional: a further allow-list merged with the baseline, and
@@ -156,6 +158,26 @@ sets `allow_workflow_edits: true`; the publisher rejects a proposal
 that changes a workflow file without it. A revision round may change
 the workflow files its pull request already changes and no other,
 whatever the switch says (design document sections 8 and 20.3).
+
+## Trusted issue authors
+
+The bot works an issue when a listed login opened it and, if
+anyone edited its body, a listed login made the last edit. The list
+adds to the `OWNER`/`MEMBER`/`agent-approved` rule and never
+replaces it. It also filters the issue comments the agent reads and
+those that start a revision round, and the publisher re-checks it
+before every write, the outcome comment on the issue included. The
+dispatch workflow reads the list from the repository variable
+`CODE_MONKEY_ISSUE_AUTHORS`, as logins separated by commas and/or
+spaces. When the variable is unset or empty, every run fails at
+pre-flight:
+
+```bash
+gh variable set CODE_MONKEY_ISSUE_AUTHORS --body "alice bob"
+```
+
+GitHub records no editor for a title edit, so the check covers the
+author and the last body edit (design document section 6).
 
 ## Sudo and containers in a target repository
 

@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, cast
 
+import issue_authors as authors
 import issue_reads as reads
 from revision_reads import MAX_ROUNDS
 from thread_reads import MAX_THREAD_BODY
@@ -224,9 +225,15 @@ def rounds_so_far(
 
 
 def member_comments_since(
-    repository: str, number: int, since: str | None
+    repository: str,
+    number: int,
+    since: str | None,
+    listed: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Every maintainer comment after ``since``, across every page."""
+    """Every maintainer comment after ``since``, across every page.
+
+    ``listed``, when given, keeps only the listed authors' comments.
+    """
     found: list[dict[str, Any]] = []
     for page in range(1, MAX_HISTORY_PAGES + 1):
         query = f"?per_page={reads.COMMENTS_PER_PAGE}&page={page}"
@@ -234,7 +241,7 @@ def member_comments_since(
             query += f"&since={since}"
         entries = reads.api_page(f"repos/{repository}/issues/{number}/comments{query}")
         for entry in entries:
-            comment = reads.member_comment(entry)
+            comment = authors.member_comment(entry, listed)
             if comment is None:
                 continue
             created = comment.get("created_at")
@@ -247,24 +254,33 @@ def member_comments_since(
     )
 
 
-def newer_member_comment(repository: str, number: int, since: str | None) -> bool:
+def newer_member_comment(
+    repository: str,
+    number: int,
+    since: str | None,
+    listed: frozenset[str] | None = None,
+) -> bool:
     """Whether a maintainer commented on the issue or pull request after ``since``.
 
     ``since`` is the bot's latest footer, round zero included; None
-    means any maintainer comment counts.
+    means any maintainer comment counts. ``listed``, when given, counts
+    only the listed authors' comments, as the packet keeps them.
     """
-    return bool(member_comments_since(repository, number, since))
+    return bool(member_comments_since(repository, number, since, listed))
 
 
 def comments_since(
-    repository: str, number: int, since: str | None
+    repository: str,
+    number: int,
+    since: str | None,
+    listed: frozenset[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """The maintainers' comments since the last round, for the packet, bounded.
 
     The comment that caused the round must reach the agent whatever
     the issue's older comments number; the newest are kept.
     """
-    found = member_comments_since(repository, number, since)
+    found = member_comments_since(repository, number, since, listed)
     kept: list[dict[str, Any]] = []
     total = 0
     for comment in reversed(found):
@@ -281,12 +297,20 @@ def comments_since(
 
 
 def conversation(
-    repository: str, issue: int, pull_number: int, since: str | None
+    repository: str,
+    issue: int,
+    pull_number: int,
+    since: str | None,
+    listed: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """The maintainers' comments, on the issue and the pull request, old and new."""
-    comments, dropped, truncated = reads.filtered_comments(repository, issue)
+    """The maintainers' comments, on the issue and the pull request, old and new.
+
+    ``listed`` narrows the issue's comments to the listed authors; the
+    pull request's comments keep the association rule alone.
+    """
+    comments, dropped, truncated = reads.filtered_comments(repository, issue, listed)
     pr_comments, pr_dropped, _ = reads.filtered_comments(repository, pull_number)
-    new_comments, new_dropped = comments_since(repository, issue, since)
+    new_comments, new_dropped = comments_since(repository, issue, since, listed)
     new_pr_comments, new_pr_dropped = comments_since(repository, pull_number, since)
     return {
         "comments": comments,

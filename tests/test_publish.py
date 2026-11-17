@@ -173,6 +173,11 @@ class NoNetworkCase(unittest.TestCase):
             )
             guard.start()
             self.addCleanup(guard.stop)
+        # A revision's push re-reads the issue's author; it holds here
+        # unless a test says otherwise.
+        listed = patch.object(publish.recheck, "listed_refusal", return_value=None)
+        self.listed_refusal = listed.start()
+        self.addCleanup(listed.stop)
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
         self.root = Path(holder.name)
@@ -1105,10 +1110,25 @@ class RecheckPushTest(NoNetworkCase):
         self.assert_no_write()
         self.assertEqual(result["verdict"], "rejected")
         self.assertNotIn("issue_closed", result)
+        self.assertIs(result["author_unlisted"], False)
         body = comments.comment_body(result, "https://run")
         assert body is not None
         self.assertIn("failed a policy check", body)
         self.assertIn("#304", body)
+
+    def test_unlisted_author_refusal_marks_the_result(self) -> None:
+        """A listed-author refusal carries the flag that forbids the comment."""
+        refusal = publish.recheck.Refusal(
+            "issue #7: author_not_listed: issue author mallory is not in "
+            "CODE_MONKEY_ISSUE_AUTHORS; nothing published",
+            unlisted=True,
+        )
+        path = self.write_check(check_json())
+        with patch.object(publish.recheck, "stale_selection", return_value=refusal):
+            result = publish.run_push(self.push_args(path))
+        self.assert_no_write()
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIs(result["author_unlisted"], True)
 
     def test_failed_reread_fails_the_step(self) -> None:
         """A re-read that fails is a failed step, never a publish on trust."""
@@ -1232,6 +1252,21 @@ class RunPushRevisionTest(NoNetworkCase):
             "pull request #41 is merged; nothing to publish", result["reasons"]
         )
         self.assertIsNone(result["pull_request_url"])
+        for mock in writes.values():
+            mock.assert_not_called()
+
+    def test_an_unlisted_issue_author_is_a_rejection(self) -> None:
+        """The live re-read refuses before any write when the list no longer admits."""
+        self.listed_refusal.return_value = publish.recheck.Refusal(
+            "issue #7: author_not_listed: issue author mallory is not in "
+            "CODE_MONKEY_ISSUE_AUTHORS; nothing published",
+            unlisted=True,
+        )
+        result, writes = self.push_untouched({"state": "open"}, HEAD)
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIn("author_not_listed", result["reasons"][0])
+        self.assertIs(result["author_unlisted"], True)
+        self.assertIs(result["superseded"], False)
         for mock in writes.values():
             mock.assert_not_called()
 
@@ -1570,6 +1605,26 @@ class HandoffTest(NoNetworkCase):
         self.assertEqual(stored["_replied"], 0)
         self.assertIsNone(stored["_error"])
 
+    def test_a_handoff_for_an_unlisted_issue_author_is_refused(self) -> None:
+        """The live list check guards the replies; an unreadable issue fails."""
+        self.listed_refusal.return_value = publish.recheck.Refusal(
+            "issue #7: editor_not_listed: issue body last edited by mallory, "
+            "who is not in CODE_MONKEY_ISSUE_AUTHORS; nothing published"
+        )
+        stored = self.respond_handoff(HEAD)
+        self.assertEqual(stored["verdict"], "rejected")
+        self.assertTrue(any("editor_not_listed" in r for r in stored["reasons"]))
+        self.assertIs(stored["author_unlisted"], True)
+        self.assertIsNone(stored["pull_request_url"])
+        self.assertEqual(stored["_replied"], 0)
+        self.assertIsNone(stored["_error"])
+        self.listed_refusal.return_value = None
+        self.listed_refusal.side_effect = github.GitHubError("unreachable")
+        stored = self.respond_handoff(HEAD)
+        self.assertEqual(stored["verdict"], "publish-failed")
+        self.assertEqual(stored["_replied"], 0)
+        self.assertIsInstance(stored["_error"], SystemExit)
+
     def test_a_handoff_on_a_closed_pull_request_is_refused(self) -> None:
         """Closed unmerged at the selected head: rejected, no reply."""
         stored = self.respond_handoff(HEAD, CLOSED_PULL)
@@ -1843,6 +1898,67 @@ class RunRespondTest(NoNetworkCase):
             stored["responded"],
             {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
+
+    def test_an_unlisted_issue_gets_no_proposal_answers(self) -> None:
+        """The live list check guards a proposal's replies and description.
+
+        A refusal records ``author_unlisted``; a failed read a warning.
+        Neither writes, and the published verdict and commits stand.
+        """
+        refusal = publish.recheck.Refusal(
+            "issue #7: author_not_listed: issue opened by mallory, who is not "
+            "in CODE_MONKEY_ISSUE_AUTHORS; nothing published",
+            unlisted=True,
+        )
+        check = self.write_check(revision_check())
+        for listed, unlisted, warning in (
+            ({"return_value": refusal}, True, "author_not_listed"),
+            (
+                {"side_effect": github.GitHubError("unreachable")},
+                False,
+                "could not re-read the issue's author",
+            ),
+        ):
+            result = self.root / "result.json"
+            result.write_text(
+                json.dumps(
+                    result_json(
+                        key="repo-7",
+                        pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                        commits=[NEW_HEAD],
+                        round=2,
+                    )
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(publish.recheck, "listed_refusal", **listed),
+                patch.object(review, "pull_head", return_value=NEW_HEAD),
+                patch.object(publish.revision_publish, "reply") as reply,
+                patch.object(publish.revision_publish, "resolve") as resolve,
+                patch.object(publish.revision_publish, "update_pull_request") as update,
+                redirect_stdout(io.StringIO()),
+            ):
+                publish.main(
+                    [
+                        "respond",
+                        "--result",
+                        str(result),
+                        "--check",
+                        str(check),
+                        "--output",
+                        str(result),
+                    ]
+                )
+            reply.assert_not_called()
+            resolve.assert_not_called()
+            update.assert_not_called()
+            stored = json.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual(stored["verdict"], "proposed")
+            self.assertEqual(stored["commits"], [NEW_HEAD])
+            self.assertIs(stored.get("author_unlisted", False), unlisted)
+            self.assertTrue(any(warning in w for w in stored["warnings"]))
+            self.assertEqual(stored["responded"]["replied"], 0)
 
     def test_rerun_posts_no_reply_twice(self) -> None:
         """A retry finds the round's reply already on a thread and posts it no more.
@@ -2277,6 +2393,52 @@ class RunRetitleTest(NoNetworkCase):
         write = self.restore(result_json(verdict="publish-failed"), HEAD, "Fix: Both")
         write.assert_not_called()
 
+    def test_an_unlisted_issue_author_keeps_the_title(self) -> None:
+        """The live list check runs before the title write; a refusal writes nothing."""
+        self.listed_refusal.return_value = publish.recheck.Refusal(
+            "issue #7: author_not_listed: issue author mallory is not in "
+            "CODE_MONKEY_ISSUE_AUTHORS; nothing published"
+        )
+        write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
+        write.assert_not_called()
+        self.assertFalse(self.record.is_file())
+        self.listed_refusal.return_value = None
+        write = self.retitle(revision_check(pr_title="Fix: New subject"), "Fix: Old")
+        write.assert_called_once()
+
+    def test_an_unlisted_issue_author_restores_no_title(self) -> None:
+        """A list refusal, recorded by the push or read live, keeps the round's title."""
+        check = revision_check(pr_title="Fix: New subject", issue_authors=["alice"])
+        self.retitle(check, "Fix: Old")
+        record = json.loads(self.record.read_text(encoding="utf-8"))
+        self.assertEqual(record["issue"], check["issue"])
+        self.assertEqual(record["issue_authors"], check["issue_authors"])
+        refused = result_json(verdict="rejected", reasons=["author_not_listed"])
+        refused["author_unlisted"] = True
+        self.listed_refusal.reset_mock()
+        write = self.restore(refused, HEAD, "Fix: New subject")
+        write.assert_not_called()
+        self.listed_refusal.assert_not_called()
+        # No push result: the restore re-reads the list before writing.
+        self.listed_refusal.return_value = publish.recheck.Refusal(
+            "issue #7: editor_not_listed: issue body last edited by mallory",
+            unlisted=True,
+        )
+        (self.root / "result.json").unlink(missing_ok=True)
+        write = self.restore(None, HEAD, "Fix: New subject")
+        write.assert_not_called()
+        self.assertEqual(self.listed_refusal.call_args.args[0]["issue"], check["issue"])
+        self.listed_refusal.return_value = None
+        self.listed_refusal.side_effect = github.GitHubError("unreachable")
+        titles = import_module("revision_title")
+        with (
+            patch.object(titles, "set_title") as set_title,
+            redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            self.restore(None, HEAD, "Fix: New subject")
+        set_title.assert_not_called()
+
     def test_a_lost_retitle_reply_is_still_restored(self) -> None:
         """The record is written before the PATCH, so a lost reply loses no rollback.
 
@@ -2531,6 +2693,45 @@ class RunOpenTest(NoNetworkCase):
             self.assertRaisesRegex(policy.PublishError, "fork branch kept"),
         ):
             publish.run_open(self.open_args(result_json(pull_request_url=None), check))
+
+    def test_an_unlisted_issue_opens_no_pull_request(self) -> None:
+        """The live list check guards the open; an unreadable issue fails it.
+
+        Either way the fork branch stays and nothing is opened.
+        """
+        check = self.write_check(check_json())
+        self.listed_refusal.return_value = publish.recheck.Refusal(
+            "issue #7: editor_not_listed: issue body last edited by mallory, "
+            "who is not in CODE_MONKEY_ISSUE_AUTHORS; nothing published",
+            unlisted=True,
+        )
+        with (
+            patch.object(publish, "open_pull_request") as pull,
+            patch.object(publish, "delete_branch") as delete,
+        ):
+            result = publish.run_open(
+                self.open_args(result_json(pull_request_url=None), check)
+            )
+        pull.assert_not_called()
+        delete.assert_not_called()
+        self.assertEqual(result["verdict"], "rejected")
+        self.assertIs(result["author_unlisted"], True)
+        self.assertIn("editor_not_listed", result["reasons"][-1])
+        self.assertIn("fork branch kept", result["reasons"][-1])
+        self.assertIsNone(result["pull_request_url"])
+        self.listed_refusal.return_value = None
+        self.listed_refusal.side_effect = github.GitHubError("unreachable")
+        with (
+            patch.object(publish, "open_pull_request") as pull,
+            patch.object(publish, "delete_branch") as delete,
+            self.assertRaisesRegex(policy.PublishError, "fork branch kept"),
+        ):
+            publish.run_open(self.open_args(result_json(pull_request_url=None), check))
+        pull.assert_not_called()
+        delete.assert_not_called()
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertIn("could not re-read the issue's author", written["reasons"][-1])
 
     def test_unknown_pr_state_keeps_the_branch(self) -> None:
         """PR call and lookup both failing: keep the branch, record the failure."""
@@ -3098,6 +3299,59 @@ class RunCommentTest(NoNetworkCase):
         self.assertTrue(body.endswith("<!-- code-monkey https://run proposed -->"))
         stored = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(stored["comment_url"], "https://x/c/1")
+        self.listed_refusal.assert_called_once()
+
+    def test_unlisted_issue_gets_no_comment(self) -> None:
+        """A recorded or a live listed-author refusal writes nothing to the issue."""
+        refusal = publish.recheck.Refusal(
+            "issue #7: editor_not_listed: issue body last edited by mallory, "
+            "who is not in CODE_MONKEY_ISSUE_AUTHORS; nothing published",
+            unlisted=True,
+        )
+        for recorded, verdict in ((True, "rejected"), (False, "abstain")):
+            path = self.write_result(
+                result_json(
+                    bot_login=BOT,
+                    verdict=verdict,
+                    reasons=["r"],
+                    author_unlisted=recorded,
+                )
+            )
+            self.listed_refusal.reset_mock()
+            self.listed_refusal.return_value = None if recorded else refusal
+            with (
+                self.subTest(recorded=recorded),
+                patch.object(reads, "api_page") as search,
+                patch.object(github, "api_write") as write,
+                redirect_stdout(io.StringIO()),
+            ):
+                comments.run_comment(
+                    argparse.Namespace(result=path, run_url="https://run", since="t")
+                )
+                search.assert_not_called()
+                write.assert_not_called()
+                self.assertEqual(self.listed_refusal.called, not recorded)
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                self.assertIs(stored["author_unlisted"], True)
+                self.assertIsNone(stored["comment_url"])
+                if not recorded:
+                    self.assertIn("editor_not_listed", stored["warnings"][0])
+
+    def test_unreadable_issue_gets_no_comment(self) -> None:
+        """A re-read that fails posts nothing and fails the step."""
+        path = self.write_result(result_json(bot_login=BOT, verdict="author-failed"))
+        self.listed_refusal.side_effect = github.GitHubError("unreachable")
+        with (
+            patch.object(github, "api_write") as write,
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(policy.PublishError),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        write.assert_not_called()
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn("could not re-read the issue's author", stored["warnings"][0])
 
     def test_retry_finds_its_earlier_comment(self) -> None:
         """A marked comment by the bot from this run means no second post."""
@@ -4053,6 +4307,7 @@ class HeadChecksTest(unittest.TestCase):
                 return {"html_url": "https://x/c/1"}
 
             with (
+                patch.object(comments.recheck, "listed_refusal", return_value=None),
                 patch.object(reads, "api_page", return_value=[]),
                 patch.object(github, "api_write", side_effect=write),
                 redirect_stdout(io.StringIO()),
@@ -4126,6 +4381,7 @@ class HeadChecksTest(unittest.TestCase):
                 path = Path(work) / "result.json"
                 path.write_text(json.dumps(data), encoding="utf-8")
                 with (
+                    patch.object(comments.recheck, "listed_refusal", return_value=None),
                     patch.object(reads, "api_page", return_value=[earlier]),
                     patch.object(
                         github, "api_write", return_value={"html_url": "https://x/c/10"}

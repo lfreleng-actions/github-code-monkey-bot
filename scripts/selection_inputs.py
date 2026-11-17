@@ -8,7 +8,11 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
+from typing import Any
 
+import fork_orgs as forks
+import issue_authors as authors
+import issue_categories as categories
 import stale_statuses as stale
 from issue_reads import SelectionError
 
@@ -85,6 +89,25 @@ def parse_max_pull_requests(text: str) -> int:
     return int(text)
 
 
+def load_policy(
+    args: argparse.Namespace,
+) -> tuple[frozenset[str], dict[str, Any], frozenset[str]]:
+    """Read the enabled categories, the fork organisations and the listed authors.
+
+    An empty or malformed issue author list stops the run (DESIGN.md §6).
+    """
+    try:
+        enabled = categories.parse_categories(args.categories)
+        listed = authors.parse_listed(args.issue_authors)
+    except (categories.CategoryError, authors.AuthorListError) as exc:
+        raise SelectionError(str(exc)) from exc
+    try:
+        fork_orgs = forks.load(args.fork_orgs)
+    except forks.ForkOrgError as exc:
+        raise SelectionError(str(exc)) from exc
+    return enabled, fork_orgs, listed
+
+
 def selection_parser(description: str | None) -> argparse.ArgumentParser:
     """The selection's command line, described by ``description``."""
     parser = argparse.ArgumentParser(description=description)
@@ -121,4 +144,5 @@ def selection_parser(description: str | None) -> argparse.ArgumentParser:
     parser.add_argument("--bot-slug", default="")
     parser.add_argument("--results-repository", default="")
     parser.add_argument("--held-file", type=Path)
+    parser.add_argument("--issue-authors", default="")
     return parser

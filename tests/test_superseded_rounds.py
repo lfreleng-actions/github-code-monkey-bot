@@ -150,6 +150,7 @@ def posted(data: dict[str, Any]) -> str:
         path = Path(tmp) / "result.json"
         path.write_text(json.dumps(data), encoding="utf-8")
         with (
+            patch.object(comments.recheck, "listed_refusal", return_value=None),
             patch.object(reads, "api_page", return_value=[]),
             patch.object(
                 github, "api_write", return_value={"html_url": "https://x/c/1"}
@@ -367,6 +368,7 @@ def recounted(
         path = Path(tmp) / "result.json"
         path.write_text(json.dumps(data), encoding="utf-8")
         with (
+            patch.object(comments.recheck, "listed_refusal", return_value=None),
             patch.object(reads, "api_page", return_value=entries),
             patch.object(
                 github, "api_write", return_value={"html_url": "https://x/c/1"}

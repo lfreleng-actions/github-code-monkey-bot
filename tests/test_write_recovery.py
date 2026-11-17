@@ -484,6 +484,7 @@ class TargetRecoveryTest(unittest.TestCase):
         )
         with (
             patch.object(review, "pull_head", return_value=tip),
+            patch.object(revision.recheck, "listed_refusal", return_value=None),
             patch.object(revision.threads_of, "read_thread", side_effect=thread),
             patch.object(github, "api_write", side_effect=write) as writes,
             patch.object(github, "api_object", return_value=pull),
@@ -592,6 +593,7 @@ class TargetRecoveryTest(unittest.TestCase):
 
         with (
             patch.object(review, "pull_head", return_value="e" * 40),
+            patch.object(publish.recheck, "listed_refusal", return_value=None),
             patch.object(github, "api_object", side_effect=pull_read),
             patch.object(github, "api_write", side_effect=replies) as write,
             redirect_stdout(io.StringIO()),
@@ -650,6 +652,7 @@ class TargetRecoveryTest(unittest.TestCase):
             encoding="utf-8",
         )
         with (
+            patch.object(comments.recheck, "listed_refusal", return_value=None),
             patch.object(comments.reads, "api_page", side_effect=pages),
             patch.object(github, "api_write", side_effect=bad_gateway()) as write,
             redirect_stdout(io.StringIO()),

@@ -31,6 +31,7 @@ BASE = "b" * 40
 TIP = "c" * 40
 BOT = {"login": "lf-code-monkey[bot]", "email": "e"}
 FORK_ORGS: dict[str, Any] = {"default": "lfreleng-bot-forks", "organisations": {}}
+LISTED = frozenset({"alice"})
 APP = "lf-releng-antagonistic-review-bot"
 REVIEWERS = frozenset({APP})
 # The body shapes an antagonistic review takes (DESIGN.md section 20.1).
@@ -157,6 +158,8 @@ class RevisionCase(unittest.TestCase):
                 "url": "https://github.com/org/alpha/issues/7",
                 "created_at": "2026-09-01T00:00:00Z",
                 "author_association": "MEMBER",
+                "author": "alice",
+                "edited": False,
             },
         ).start()
         patch.object(reads, "filtered_comments", return_value=([], 0, False)).start()
@@ -205,7 +208,10 @@ class RevisionCase(unittest.TestCase):
     def build(self, *, explicit: bool) -> dict[str, Any]:
         """Build the entry for the fixture pull request."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS), "alpha", 41, explicit=explicit
+            select.Inputs("org", BOT, FORK_ORGS, listed=LISTED),
+            "alpha",
+            41,
+            explicit=explicit,
         )
 
 
@@ -280,7 +286,7 @@ class BuildEntryTest(RevisionCase):
             check_reads, "failing_checks", return_value=self.checks
         ) as read:
             entry = select.build_entry(
-                select.Inputs("org", BOT, FORK_ORGS, stale=rule),
+                select.Inputs("org", BOT, FORK_ORGS, stale=rule, listed=LISTED),
                 "alpha",
                 41,
                 explicit=False,
@@ -347,6 +353,27 @@ class BuildEntryTest(RevisionCase):
         # The operator may still name it.
         self.assertEqual(self.build(explicit=True)["round"], 3)
 
+    def test_unlisted_issue_comment_does_not_resume(self) -> None:
+        """Only a listed author's issue comment counts; the packet drops the rest."""
+        self.threads = [thread()]
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+
+        def unlisted_member(
+            _repository: str, number: int, _since: Any, listed: Any
+        ) -> bool:
+            # A member's issue comment that the list does not admit.
+            return number == 7 and listed is None
+
+        with patch.object(
+            round_reads, "newer_member_comment", side_effect=unlisted_member
+        ) as newer:
+            with self.assertRaisesRegex(select.Skip, "handed"):
+                self.build(explicit=False)
+        self.assertEqual(
+            [(c.args[1], c.args[3]) for c in newer.call_args_list],
+            [(7, LISTED), (41, None)],
+        )
+
     def test_maintainer_reply_on_a_thread_resumes_after_a_handoff(self) -> None:
         """A maintainer's word on any unresolved thread, kept or dropped, resumes."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
@@ -384,7 +411,7 @@ class BuildEntryTest(RevisionCase):
         with self.assertRaisesRegex(select.Skip, "round cap of 10"):
             self.build(explicit=True)
         # An operator may raise the cap for a run; the entry records it.
-        raised = select.Inputs("org", BOT, FORK_ORGS, max_rounds=12)
+        raised = select.Inputs("org", BOT, FORK_ORGS, max_rounds=12, listed=LISTED)
         entry = select.build_entry(raised, "alpha", 41, explicit=True)
         self.assertEqual((entry["round"], entry["max_rounds"]), (11, 12))
         self.rounds = (12, [], "t", "proposed")
@@ -417,6 +444,8 @@ class BuildEntryTest(RevisionCase):
             "url": "u",
             "created_at": "t",
             "author_association": "MEMBER",
+            "author": "alice",
+            "edited": False,
         }
         with patch.object(reads, "issue_details", return_value=details):
             with self.assertRaisesRegex(select.Skip, "closed"):
@@ -440,6 +469,8 @@ class BuildEntryTest(RevisionCase):
             "url": "u",
             "created_at": "t",
             "author_association": "CONTRIBUTOR",
+            "author": "alice",
+            "edited": False,
         }
         with patch.object(reads, "issue_details", return_value=details):
             with self.assertRaisesRegex(select.Skip, "agent-approved"):
@@ -475,9 +506,49 @@ class BuildEntryTest(RevisionCase):
             "url": "u",
             "created_at": "t",
             "author_association": "NONE",
+            "author": "alice",
+            "edited": False,
         }
         with patch.object(reads, "issue_details", return_value=details):
             self.assertEqual(self.build(explicit=True)["number"], 7)
+
+    def test_rounds_need_a_listed_author(self) -> None:
+        """A named or scanned round skips an issue the list does not admit."""
+        self.threads = [thread()]
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": ["bug"],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "MEMBER",
+            "author": "mallory",
+            "edited": False,
+        }
+        with patch.object(reads, "issue_details", return_value=details):
+            for explicit in (True, False):
+                with (
+                    self.subTest(explicit=explicit),
+                    self.assertRaisesRegex(select.Skip, "author_not_listed"),
+                ):
+                    self.build(explicit=explicit)
+            details.update(author="alice", edited=True, editor="mallory")
+            with self.assertRaisesRegex(select.Skip, "editor_not_listed"):
+                self.build(explicit=True)
+
+    def test_issue_comments_are_read_through_the_list(self) -> None:
+        """The issue's comments pass the list; the pull request's keep the old rule."""
+        self.threads = [thread()]
+        self.build(explicit=True)
+        calls = reads.filtered_comments.call_args_list
+        self.assertEqual(
+            [call.args for call in calls],
+            [("org/alpha", 7, LISTED), ("org/alpha", 41)],
+        )
 
     def test_packet_carries_the_comments_since_the_last_round(self) -> None:
         """The instruction that caused the round reaches the agent, whatever the cap."""
@@ -522,7 +593,7 @@ class RequireOutstandingTest(RevisionCase):
     def build_outstanding(self) -> dict[str, Any]:
         """Build the fixture pull request as a named continuation would."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS),
+            select.Inputs("org", BOT, FORK_ORGS, listed=LISTED),
             "alpha",
             41,
             explicit=True,
@@ -569,6 +640,8 @@ class RequireOutstandingTest(RevisionCase):
             "url": "u",
             "created_at": "t",
             "author_association": "NONE",
+            "author": "alice",
+            "edited": False,
         }
         with patch.object(reads, "issue_details", return_value=details):
             with self.assertRaisesRegex(select.Skip, "agent-approved"):
@@ -589,7 +662,7 @@ class ContinuedRoundTest(RevisionCase):
     def build_continued(self, parent: str = PARENT) -> dict[str, Any]:
         """Build the fixture pull request as a continuation of ``parent``."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS),
+            select.Inputs("org", BOT, FORK_ORGS, listed=LISTED),
             "alpha",
             41,
             explicit=True,
@@ -677,6 +750,7 @@ class NoReviewTest(RevisionCase):
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped=skipped,
@@ -780,6 +854,7 @@ class ScanTest(RevisionCase):
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped=skipped,
@@ -810,6 +885,7 @@ class ScanTest(RevisionCase):
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped=skipped,
@@ -823,6 +899,7 @@ class ScanTest(RevisionCase):
             # The default cap stops the same pull request.
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped=skipped,
@@ -833,6 +910,7 @@ class ScanTest(RevisionCase):
         # Rounds hands its cap to the scan.
         rounds = rounding.Rounds(
             "org",
+            listed=LISTED,
             bot=BOT,
             fork_orgs=FORK_ORGS,
             enabled=True,
@@ -883,6 +961,8 @@ class ScanTest(RevisionCase):
                 "url": f"https://github.com/org/x/issues/{number}",
                 "created_at": "2026-09-01T00:00:00Z",
                 "author_association": "MEMBER",
+                "author": "alice",
+                "edited": False,
             }
 
         patch.object(revisions, "bot_pull_request", side_effect=per_pull).start()
@@ -891,6 +971,7 @@ class ScanTest(RevisionCase):
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped={"revision": 0},
@@ -921,6 +1002,7 @@ class ScanTest(RevisionCase):
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped={"revision": 0},
@@ -959,6 +1041,7 @@ class ScanTest(RevisionCase):
         ):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped={"revision": 0},
@@ -986,6 +1069,7 @@ class ScanTest(RevisionCase):
 
         rounds = rounding.Rounds(
             "org",
+            listed=LISTED,
             bot=BOT,
             fork_orgs=FORK_ORGS,
             enabled=True,
@@ -1016,6 +1100,8 @@ class ScanTest(RevisionCase):
             "url": "u",
             "created_at": "t",
             "author_association": "NONE",
+            "author": "alice",
+            "edited": False,
         }
         skipped = {"revision": 0}
         named: list[dict[str, str]] = []
@@ -1023,6 +1109,7 @@ class ScanTest(RevisionCase):
         with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
             builders = scanning.scan(
                 "org",
+                listed=LISTED,
                 bot=BOT,
                 fork_orgs=FORK_ORGS,
                 skipped=skipped,
@@ -1032,6 +1119,54 @@ class ScanTest(RevisionCase):
         self.assertEqual(skipped["revision"], 1)
         self.assertEqual(named[0]["issue"], "org/alpha#41")
         self.assertIn("agent-approved", named[0]["reason"])
+
+    def test_unlisted_rounds_count_under_their_own_reason(self) -> None:
+        """A scanned or named round refused by the list counts once, as its reason."""
+        hits = [{"repository": "org/alpha", "number": 41, "created_at": "t1"}]
+        self.threads = [thread()]
+        details: dict[str, Any] = {
+            "state": "open",
+            "title": "T",
+            "body": "B",
+            "labels": [],
+            "type": "Bug",
+            "assignees": [],
+            "priority": None,
+            "url": "u",
+            "created_at": "t",
+            "author_association": "MEMBER",
+            "author": "mallory",
+            "edited": False,
+        }
+        skipped = {"revision": 0, "author_not_listed": 0, "editor_not_listed": 0}
+        named: list[dict[str, str]] = []
+        patch.object(reads, "issue_details", return_value=details).start()
+        with patch.object(revisions, "search_bot_pull_requests", return_value=hits):
+            builders = scanning.scan(
+                "org",
+                listed=LISTED,
+                bot=BOT,
+                fork_orgs=FORK_ORGS,
+                skipped=skipped,
+                skipped_issues=named,
+            )
+        self.assertIsNone(builders[0][1]())
+        details.update(author="alice", edited=True, editor="mallory")
+        rounds = rounding.Rounds(
+            "org",
+            listed=LISTED,
+            bot=BOT,
+            fork_orgs=FORK_ORGS,
+            enabled=True,
+            explicit=True,
+            skips=(skipped, named),
+        )
+        self.assertIsNone(rounds.named([("alpha", 41)])[0][1]())
+        self.assertEqual(
+            skipped, {"revision": 0, "author_not_listed": 1, "editor_not_listed": 1}
+        )
+        self.assertIn("author_not_listed", named[0]["reason"])
+        self.assertIn("editor_not_listed", named[1]["reason"])
 
 
 class PullRequestForBranchTest(unittest.TestCase):
@@ -1074,7 +1209,7 @@ class HandbackSelectionTest(RevisionCase):
     def scan(self, max_rounds: int = revisions.MAX_ROUNDS) -> dict[str, Any]:
         """The entry a scan builds with the App listed, at the run's cap."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, max_rounds),
+            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, max_rounds, listed=LISTED),
             "alpha",
             41,
             explicit=False,
@@ -1179,7 +1314,7 @@ class HandbackSelectionTest(RevisionCase):
             self.scan()
         with self.assertRaises(github.GitHubError):
             select.build_entry(
-                select.Inputs("org", BOT, FORK_ORGS, REVIEWERS),
+                select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, listed=LISTED),
                 "alpha",
                 41,
                 explicit=True,
@@ -1215,7 +1350,7 @@ class SegmentCapTest(RevisionCase):
     def scan(self, max_rounds: int = revisions.MAX_ROUNDS) -> dict[str, Any]:
         """The entry a scan builds with the App listed, at the run's cap."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, max_rounds),
+            select.Inputs("org", BOT, FORK_ORGS, REVIEWERS, max_rounds, listed=LISTED),
             "alpha",
             41,
             explicit=False,
@@ -1396,7 +1531,10 @@ class SupersededGuardTest(RevisionCase):
     def scan(self) -> dict[str, Any]:
         """The entry a scan builds."""
         return select.build_entry(
-            select.Inputs("org", BOT, FORK_ORGS), "alpha", 41, explicit=False
+            select.Inputs("org", BOT, FORK_ORGS, listed=LISTED),
+            "alpha",
+            41,
+            explicit=False,
         )
 
     def test_superseded_rounds_skip_at_their_limit(self) -> None:

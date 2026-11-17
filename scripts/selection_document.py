@@ -26,6 +26,8 @@ class Settings:
     max_pull_requests: int
     guidance: bytes
     commit: str
+    # The issue author list the run applied; the publisher re-checks it.
+    listed: frozenset[str]
 
 
 def selection_document(
@@ -71,6 +73,7 @@ def selection_document(
             f"{args.org}/{repo}#{number}" for repo, number in pulls
         ],
         "skipped_issues": skipped_issues,
+        "issue_authors": sorted(settings.listed),
         "candidates_seen": seen,
         "skipped": skipped,
         "issues": chosen,

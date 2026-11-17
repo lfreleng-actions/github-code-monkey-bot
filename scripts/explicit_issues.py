@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 import bot_github as github
+import issue_authors as authors
 import issue_categories as categories
 import issue_reads as reads
 import repository_reads as repositories
@@ -78,6 +79,7 @@ def repository_obstacle(meta: dict[str, Any] | None) -> str | None:
 def candidates(
     org: str,
     targets: list[tuple[str, int]],
+    listed: frozenset[str],
     *,
     skipped: dict[str, int],
     skipped_issues: list[dict[str, str]],
@@ -88,7 +90,9 @@ def candidates(
     (Type, labels, assignee, category) do not apply; what remains is
     what the pipeline cannot work around: a repository the author job
     cannot clone or the publisher cannot fork, a closed or absent
-    issue, a pull request's number, and the per-issue human opt-out.
+    issue, a pull request's number, the per-issue human opt-out, and
+    the listed-author rule: naming an issue waives the association
+    rule, not the ``listed`` authors (empty lists no one).
     Each skip is named with its reason and the rest proceed. The
     repositories are read one by one, never listed: an owner at the
     listing ceiling can still have an issue named.
@@ -127,6 +131,10 @@ def candidates(
             continue
         if "no-agent" in details["labels"]:
             skip(reference, "label", "carries the no-agent label")
+            continue
+        refused = authors.unlisted(details, listed)
+        if refused is not None:
+            skip(reference, refused.counter, refused.reason)
             continue
         found = categories.categories_of(details["labels"], details["type"])
         candidates.append(

@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -1034,6 +1036,10 @@ class HandlersTest(unittest.TestCase):
         patcher = patch.object(request.time, "sleep")
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The issue's author is listed unless a test says otherwise.
+        listed = patch.object(review.recheck, "listed_refusal", return_value=None)
+        listed.start()
+        self.addCleanup(listed.stop)
 
     def write(self, **overrides: Any) -> None:
         """Write a proposed, published result."""
@@ -1100,6 +1106,56 @@ class HandlersTest(unittest.TestCase):
         self.assertTrue(body.startswith(request.REFUSAL_NOTICE_MARKER))
         self.assertIn("could not request a Copilot review", body)
         self.assertTrue(body.endswith("Closes #7\n\nbody"))
+
+    def test_unlisted_issue_gets_no_request_or_notice(self) -> None:
+        """A recorded, live or unreadable list refusal writes nothing to the target.
+
+        The published verdict and commits stand; the request is
+        recorded as not made, so the wait is the short grace.
+        """
+        refusal = review.recheck.Refusal(
+            "issue #7: editor_not_listed: issue last edited by mallory, who is "
+            "not in CODE_MONKEY_ISSUE_AUTHORS; nothing published",
+            unlisted=True,
+        )
+        for overrides, listed, flagged, warning in (
+            ({"author_unlisted": True}, None, True, "not listed"),
+            ({}, refusal, True, "editor_not_listed"),
+            (
+                {},
+                github.GitHubError("unreachable"),
+                False,
+                "could not re-read the issue's author",
+            ),
+        ):
+            with self.subTest(warning=warning):
+                self.write(**overrides)
+                with (
+                    patch.object(
+                        review.recheck, "listed_refusal", side_effect=[listed]
+                    ),
+                    patch.object(github, "graphql", side_effect=AssertionError),
+                    patch.object(github, "api_write", side_effect=AssertionError),
+                    patch.object(review.review_request, "request_review") as requested,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    review.run_request(
+                        argparse.Namespace(
+                            result=self.path, output=self.path, credential=APP
+                        )
+                    )
+                requested.assert_not_called()
+                stored = self.stored()
+                self.assertIs(stored["review"]["requested"], False)
+                self.assertEqual(stored.get("author_unlisted") is True, flagged)
+                self.assertEqual(stored["verdict"], "proposed")
+                self.assertEqual(stored["commits"], [HEAD])
+                self.assertTrue(
+                    any(
+                        warning in w and "no review requested" in w
+                        for w in stored["warnings"]
+                    )
+                )
 
     def test_request_that_added_no_reviewer_is_refused(self) -> None:
         """An accepted request with no reviewer takes the refusal path."""
