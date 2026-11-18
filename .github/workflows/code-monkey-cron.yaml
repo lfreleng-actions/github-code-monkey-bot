@@ -253,6 +253,7 @@ jobs:
       github_app_private_key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
       copilot_review_token: "${{ secrets.COPILOT_REVIEW_TOKEN }}"
       antagonistic_dispatch_token: "${{ secrets.CODE_REVIEW_DISPATCH_TOKEN }}"
+      fork_pool_token: "${{ secrets.FORK_POOL_TOKEN }}"
 
   # Dispatch the next round of each pull request whose round left work
   # outstanding (docs/DESIGN.md section 20.6). The job holds one

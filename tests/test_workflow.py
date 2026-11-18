@@ -361,12 +361,12 @@ class TopLevelContracts(ReusableWorkflowCase):
                     self.assertEqual(value, "false")
 
     def test_every_trusted_job_loads_the_allow_list(self) -> None:
-        """Select, publish, report and antagonistic load the allow-list first.
+        """Select, forks, publish, report and antagonistic load the allow-list first.
 
         CONNECTION_ALLOW_LIST does not cross job boundaries, and
         harden-runner in block mode with an empty list enforces nothing.
         """
-        for job in ("select", "publish", "report", "antagonistic"):
+        for job in ("select", "forks", "publish", "report", "antagonistic"):
             with self.subTest(job=job):
                 loaders = self.actions(job, BLOCK_ACTION)
                 self.assertEqual(len(loaders), 1)
@@ -399,7 +399,7 @@ class TopLevelContracts(ReusableWorkflowCase):
         loaders = [
             (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
         ]
-        self.assertEqual(len(loaders), 4)
+        self.assertEqual(len(loaders), 5)
         for job, step in loaders:
             with_ = cast(dict[str, Any], step["with"])
             self.assertEqual(set(with_) - {"allow_list_summary"}, set(expected))
@@ -1319,19 +1319,17 @@ class RevisionContracts(ReusableWorkflowCase):
             )
 
     def test_a_handoff_reaches_push_without_a_token(self) -> None:
-        """Both fork mints need a proposal, so a handoff's push step holds no token.
+        """The fork mint needs a proposal, so a handoff's push step holds no token.
 
         Any GitHub read a handoff needs, the head check above all,
         therefore belongs in ``respond``, which holds the pull request
         token; the push step must stay offline for a handoff.
         """
-        for identity in ("fork-token", "fork-create-token"):
-            condition = unwrap(str(self.step("publish", identity)["if"]))
-            self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        condition = unwrap(str(self.step("publish", "fork-token")["if"]))
+        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
         push = self.step("publish", "push")
         self.assertEqual(
-            unwrap(str(push["env"]["GH_TOKEN"])),
-            "steps.fork-token.outputs.token || steps.fork-create-token.outputs.token",
+            unwrap(str(push["env"]["GH_TOKEN"])), "steps.fork-token.outputs.token"
         )
         self.assertNotIn("github.token", str(push["env"]["GH_TOKEN"]))
         respond = self.step("publish", "respond")
@@ -1522,7 +1520,7 @@ class PublishJobContracts(ReusableWorkflowCase):
     def test_publish_runs_after_author_with_read_grants(self) -> None:
         """Every author entry gets a verdict; the job itself can write nothing."""
         publish = self.jobs["publish"]
-        self.assertEqual(publish["needs"], ["select", "author"])
+        self.assertEqual(publish["needs"], ["select", "author", "forks"])
         condition = unwrap(str(publish["if"]))
         self.assertIn("!cancelled()", condition)
         self.assertIn("needs.select.result == 'success'", condition)
@@ -1563,7 +1561,7 @@ class PublishJobContracts(ReusableWorkflowCase):
         self.assertLess(steps.index(verified), steps.index(fetch))
 
     def test_offline_check_and_scoped_token_mints(self) -> None:
-        """The check has no token; each fork mint grants workflows always."""
+        """The check has no token; the fork mint names one fork, workflows always."""
         check = self.step("publish", "check")
         script = flatten(check["run"])
         self.assertIn("publish.py check", script)
@@ -1572,36 +1570,24 @@ class PublishJobContracts(ReusableWorkflowCase):
         # No step may gate on the proposal's workflow edits any longer.
         self.assertNotIn("needs_workflows", script)
 
-        for identity, exists in (
-            ("fork-token", "true"),
-            ("fork-create-token", "false"),
-        ):
-            with self.subTest(mint=identity):
-                mint = self.step("publish", identity)
-                self.assertTrue(is_action(mint, APP_TOKEN))
-                condition = unwrap(str(mint["if"]))
-                self.assertIn("!inputs.dry_run", condition)
-                self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
-                self.assertIn("inputs.github_app_client_id != ''", condition)
-                self.assertIn(
-                    f"steps.fork-state.outputs.exists == '{exists}'", condition
-                )
-                with_ = cast(dict[str, Any], mint["with"])
-                self.assert_expression(with_["owner"], "matrix.fork_org")
-                self.assertEqual(with_["permission-contents"], "write")
-                self.assertEqual(with_["permission-metadata"], "read")
-                self.assertNotIn("permission-pull-requests", with_)
-                self.assertNotIn("permission-issues", with_)
-                # Syncing the fork can fast-forward over upstream
-                # workflow commits, so the grant cannot depend on the
-                # proposal's own diff.
-                self.assertEqual(with_["permission-workflows"], "write")
-        write = cast(dict[str, Any], self.step("publish", "fork-token")["with"])
-        self.assert_expression(write["repositories"], "matrix.repo_name")
-        # The fork does not exist yet, so no repository can be named.
-        create = cast(dict[str, Any], self.step("publish", "fork-create-token")["with"])
-        self.assertNotIn("repositories", create)
-        self.assertEqual(create["permission-administration"], "write")
+        mint = self.step("publish", "fork-token")
+        self.assertTrue(is_action(mint, APP_TOKEN))
+        condition = unwrap(str(mint["if"]))
+        self.assertIn("!inputs.dry_run", condition)
+        self.assertIn("steps.check.outputs.verdict == 'proposed'", condition)
+        self.assertIn("inputs.github_app_client_id != ''", condition)
+        # The forks job made the fork; with none, nothing is minted.
+        self.assertIn("steps.fork-state.outputs.exists == 'true'", condition)
+        with_ = cast(dict[str, Any], mint["with"])
+        self.assert_expression(with_["owner"], "matrix.fork_org")
+        self.assert_expression(with_["repositories"], "matrix.repo_name")
+        self.assertEqual(with_["permission-contents"], "write")
+        self.assertEqual(with_["permission-metadata"], "read")
+        self.assertNotIn("permission-pull-requests", with_)
+        self.assertNotIn("permission-issues", with_)
+        # Syncing the fork can fast-forward over upstream workflow
+        # commits, so the grant cannot depend on the proposal's own diff.
+        self.assertEqual(with_["permission-workflows"], "write")
 
         pr = self.step("publish", "pr-token")
         self.assertTrue(is_action(pr, APP_TOKEN))
@@ -1778,8 +1764,7 @@ class PublishJobContracts(ReusableWorkflowCase):
         """Branch, pull request and comment writes use App tokens alone."""
         push = self.step("publish", "push")
         self.assert_expression(
-            push["env"]["GH_TOKEN"],
-            "steps.fork-token.outputs.token || steps.fork-create-token.outputs.token",
+            push["env"]["GH_TOKEN"], "steps.fork-token.outputs.token"
         )
         self.assertIn("publish.py push", flatten(push["run"]))
         opened = self.step("publish", "open")
@@ -1926,7 +1911,7 @@ class PreflightContracts(ReusableWorkflowCase):
         fork = self.step("publish", "Pre-flight: fork token identity")
         self.assertEqual(
             squash(fork["env"]["MINTED_SLUG"]),
-            "${{ steps.fork-token.outputs.app-slug || steps.fork-create-token.outputs.app-slug }}",
+            "${{ steps.fork-token.outputs.app-slug }}",
         )
         self.assertLess(
             self.position("publish", "Pre-flight: fork token identity"),
@@ -2049,7 +2034,7 @@ class PublishAuditInstallContracts(ReusableWorkflowCase):
 class MintProvenanceContracts(ReusableWorkflowCase):
     """Every App token names a known owner and carries the least it needs."""
 
-    FORK_MINTS = ("fork-token", "fork-create-token")
+    FORK_MINTS = ("fork-token",)
     TARGET_MINTS = (
         ("select", "app-token"),
         ("publish", "pr-token"),
@@ -2106,7 +2091,6 @@ class MintProvenanceContracts(ReusableWorkflowCase):
                     "permission-checks": "read",
                 },
                 "fork-token": fork,
-                "fork-create-token": {**fork, "permission-administration": "write"},
                 "pr-token": {
                     "permission-pull-requests": "write",
                     "permission-metadata": "read",
@@ -2126,16 +2110,6 @@ class MintProvenanceContracts(ReusableWorkflowCase):
                 env = cast(dict[str, Any], step.get("env") or {})
                 self.assertNotIn("permission-actions", with_)
                 self.assertNotIn("INPUT_PERMISSION-ACTIONS", env)
-
-    def test_administration_belongs_to_the_creation_mint_alone(self) -> None:
-        """Only the mint that forks a missing repository may administer."""
-        for job, step in self.mints():
-            with_ = cast(dict[str, Any], step["with"])
-            with self.subTest(job=job, mint=step["id"]):
-                if step["id"] == "fork-create-token":
-                    self.assertEqual(with_["permission-administration"], "write")
-                else:
-                    self.assertNotIn("permission-administration", with_)
 
     def test_target_mints_cannot_write_code(self) -> None:
         """No token for the target organisation can push, run or administer."""
@@ -2193,7 +2167,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
     included. A machine account's token does it in a job of its own.
     """
 
-    @unittest.expectedFailure
     def test_forks_job_runs_beside_the_author_on_live_writing_runs(self) -> None:
         """After select, before publish, never in a dry run or select mode."""
         job = self.jobs["forks"]
@@ -2208,7 +2181,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
         self.assertEqual(self.actions("forks", APP_TOKEN), [])
         self.assertEqual(self.jobs["publish"]["needs"], ["select", "author", "forks"])
 
-    @unittest.expectedFailure
     def test_forks_job_is_hardened_like_the_other_trusted_jobs(self) -> None:
         """The allow-list loads first and harden-runner blocks against it."""
         steps = self.steps("forks")
@@ -2221,7 +2193,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
             steps[1]["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
         )
 
-    @unittest.expectedFailure
     def test_forks_job_runs_trusted_assets_alone(self) -> None:
         """It checks out the pinned assets, never a target, and reads the matrix."""
         guard = flatten(self.step("forks", "Require trusted provenance")["run"])
@@ -2243,7 +2214,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
             self.position("forks", "prepare"),
         )
 
-    @unittest.expectedFailure
     def test_pool_token_reaches_one_step_of_one_job(self) -> None:
         """The fork pool token is optional and the prepare step's alone."""
         secrets = cast(
@@ -2268,7 +2238,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
             Counter({POOL_TOKEN: 1}),
         )
 
-    @unittest.expectedFailure
     def test_no_mint_requests_administration(self) -> None:
         """The App never administers: no mint asks for it at any level."""
         mints = [
@@ -2285,7 +2254,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
                     "INPUT_PERMISSION-ADMINISTRATION", step.get("env") or {}
                 )
 
-    @unittest.expectedFailure
     def test_publish_requires_the_fork_and_never_creates_it(self) -> None:
         """Push holds the fork write token alone and learns when it is missing."""
         ids = [step.get("id") for step in self.steps("publish")]
@@ -3822,6 +3790,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "github_app_private_key",
                 "copilot_review_token",
                 "antagonistic_dispatch_token",
+                "fork_pool_token",
             },
         )
         for name, secret in secrets.items():
@@ -4169,6 +4138,7 @@ class CronCallerContracts(WorkflowCase):
                 "github_app_private_key",
                 "copilot_review_token",
                 "antagonistic_dispatch_token",
+                "fork_pool_token",
             },
         )
         self.assert_expression(secrets["copilot_token"], "secrets.COPILOT_CLI_TOKEN")
@@ -4176,7 +4146,6 @@ class CronCallerContracts(WorkflowCase):
             secrets["github_app_private_key"], "secrets.BOT_APP_PRIVATE_KEY"
         )
 
-    @unittest.expectedFailure
     def test_caller_forwards_the_fork_pool_token(self) -> None:
         """The machine account's token arrives under its repository secret name."""
         secrets = cast(dict[str, Any], self.jobs["code-monkey"]["secrets"])

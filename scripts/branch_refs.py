@@ -4,7 +4,9 @@
 """The fork, the bot branch and its pull request, as GitHub holds them.
 
 Branch writes address the fork (DESIGN.md section 4.3); the pull
-request lives on the target with the fork branch as its head.
+request lives on the target with the fork branch as its head. The
+fork itself is the forks job's to make (``fork_pool.py``): the
+publisher requires it and never creates or renames one.
 """
 
 from __future__ import annotations
@@ -23,8 +25,6 @@ import proposal_policy as policy
 import write_recovery as recovery
 from proposal_policy import PublishError, Rejection
 
-FORK_WAIT_SECONDS = 60
-FORK_POLL_SECONDS = 5
 # Two publishes in one run may sync the same fork at once: one
 # merge-upstream wins and the other answers 422 with the fork synced
 # all the same (issue #38). A concurrent sync finishes in seconds,
@@ -58,18 +58,6 @@ def is_fork_of(data: dict[str, Any], target: str) -> bool:
     )
 
 
-def await_fork(fork: str) -> dict[str, Any]:
-    """Poll for a fork GitHub is still creating; forking is asynchronous."""
-    deadline = time.monotonic() + FORK_WAIT_SECONDS
-    while True:
-        try:
-            return github.api_object(f"repos/{fork}")
-        except github.GitHubError as exc:
-            if not github.is_absent(exc) or time.monotonic() >= deadline:
-                raise PublishError(f"fork {fork} did not appear: {exc}") from exc
-        time.sleep(FORK_POLL_SECONDS)
-
-
 def listed_fork(target: str, fork_org: str) -> str | None:
     """The full name of the target's fork in the pool, under any name."""
     try:
@@ -93,56 +81,30 @@ def listed_fork(target: str, fork_org: str) -> str | None:
     return None
 
 
-def create_fork(target: str, fork_org: str) -> str:
-    """Fork the target into the pool; return the name GitHub replies with.
+def missing_fork(fork: str) -> str:
+    """The reason a publish fails when the fork it needs does not exist."""
+    return (
+        f"fork {fork} does not exist; the Prepare forks job creates it, "
+        "so read that job's log, or create the fork by hand"
+    )
 
-    GitHub never holds two forks of one parent in one organisation, and
-    answers a repeat request with the existing fork, so the reply, not
-    the target's name, says where the fork is. Forking is asynchronous:
-    the caller polls for a new fork before using it.
+
+def require_fork(fork: str, target: str) -> None:
+    """Require the target's fork as the forks job left it; never make one.
+
+    The forks job finds, creates or renames the fork before the publish
+    job starts (DESIGN.md section 4.3). A repository of that name which
+    is not a fork of the target is a failure, never a push destination:
+    the publisher writes only into forks it can prove are the target's.
     """
-    try:
-        reply = github.api_write(
-            "POST",
-            f"repos/{target}/forks",
-            {"organization": fork_org, "default_branch_only": True},
-        )
-    except github.GitHubError as exc:
-        raise PublishError(f"could not fork {target} into {fork_org}: {exc}") from exc
-    name = reply.get("full_name")
-    if not isinstance(name, str) or not name.lower().startswith(f"{fork_org.lower()}/"):
-        raise PublishError(f"forking {target} named no fork in {fork_org}: {name!r}")
-    return name
-
-
-def ensure_fork(target: str, fork_org: str, repo_name: str) -> str:
-    """Find or create the target's fork in the fork organisation.
-
-    A fork kept from before the target was renamed still carries the
-    old name; it is found by parent and renamed after the target, so
-    everything that reads ``<fork_org>/<repo_name>`` finds it again.
-    A repository of that name which is not a fork of the target is a
-    failure, never a push destination: the publisher writes only into
-    forks it can prove are its own.
-    """
-    fork = f"{fork_org}/{repo_name}"
     try:
         data = github.api_object(f"repos/{fork}")
     except github.GitHubError as exc:
-        if not github.is_absent(exc):
-            raise PublishError(f"could not read fork {fork}: {exc}") from exc
-        found = listed_fork(target, fork_org) or create_fork(target, fork_org)
-        if found.lower() != fork.lower():
-            try:
-                github.api_write("PATCH", f"repos/{found}", {"name": repo_name})
-            except github.GitHubError as failure:
-                raise PublishError(
-                    f"could not rename fork {found} to {repo_name}: {failure}"
-                ) from failure
-        data = await_fork(fork)
+        if github.is_absent(exc):
+            raise PublishError(missing_fork(fork)) from exc
+        raise PublishError(f"could not read fork {fork}: {exc}") from exc
     if not is_fork_of(data, target):
         raise PublishError(f"{fork} exists but is not a fork of {target}")
-    return fork
 
 
 def sync_fork(fork: str, default_branch: str, base_sha: str) -> None:

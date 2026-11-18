@@ -588,8 +588,8 @@ class RunPushTest(NoNetworkCase):
     def setUp(self) -> None:
         """Make the fork ready without a network; tests override to fail it."""
         super().setUp()
-        self.ensure_fork = patch.object(
-            publish, "ensure_fork", return_value=None
+        self.require_fork = patch.object(
+            publish, "require_fork", return_value=None
         ).start()
         self.sync_fork = patch.object(publish, "sync_fork", return_value=None).start()
         # The issue still stands; RecheckPushTest covers the re-read itself.
@@ -606,7 +606,7 @@ class RunPushTest(NoNetworkCase):
             patch.object(publish, "replay_commits") as replay,
         ):
             result = publish.run_push(self.push_args(path))
-        self.ensure_fork.assert_not_called()
+        self.require_fork.assert_not_called()
         branch.assert_not_called()
         replay.assert_not_called()
         self.assertEqual(result["verdict"], "rejected")
@@ -645,7 +645,7 @@ class RunPushTest(NoNetworkCase):
             dry = publish.run_push(self.push_args(path, dry_run=True))
             select = publish.run_push(self.push_args(path, mode="select"))
         branch.assert_not_called()
-        self.ensure_fork.assert_not_called()
+        self.require_fork.assert_not_called()
         self.assertTrue(dry["dry_run"])
         self.assertEqual(dry["verdict"], "proposed")
         self.assertIsNone(dry["branch_url"])
@@ -660,7 +660,7 @@ class RunPushTest(NoNetworkCase):
             patch.object(publish, "replay_commits", return_value=["f" * 40]) as replay,
         ):
             result = publish.run_push(self.push_args(path, mode="branches"))
-        self.ensure_fork.assert_called_once_with(REPOSITORY, FORK_ORG, "repo")
+        self.require_fork.assert_called_once_with(FORK, REPOSITORY)
         self.sync_fork.assert_called_once_with(FORK, "main", BASE)
         branch.assert_called_once_with(FORK, BRANCH, BASE)
         replay.assert_called_once()
@@ -690,7 +690,9 @@ class RunPushTest(NoNetworkCase):
     def test_fork_not_ready_fails_without_rollback(self) -> None:
         """A fork that cannot be made or synced fails before any branch exists."""
         path = self.write_check(check_json())
-        self.ensure_fork.side_effect = policy.PublishError("x exists but is not a fork")
+        self.require_fork.side_effect = policy.PublishError(
+            "x exists but is not a fork"
+        )
         with (
             patch.object(publish, "create_branch") as branch,
             patch.object(publish, "delete_branch") as delete,
@@ -703,7 +705,6 @@ class RunPushTest(NoNetworkCase):
         self.assertEqual(written["verdict"], "publish-failed")
         self.assertIn("not a fork", written["reasons"][0])
 
-    @unittest.expectedFailure
     def test_missing_fork_fails_before_any_read_or_write(self) -> None:
         """No fork token exists for a missing fork, so push touches nothing.
 
@@ -1102,14 +1103,14 @@ class RecheckPushTest(NoNetworkCase):
     def setUp(self) -> None:
         """Watch the fork writes; each test sets the re-read's answer."""
         super().setUp()
-        self.ensure_fork = patch.object(publish, "ensure_fork").start()
+        self.require_fork = patch.object(publish, "require_fork").start()
         self.sync_fork = patch.object(publish, "sync_fork").start()
         self.create = patch.object(publish, "create_branch").start()
         self.addCleanup(patch.stopall)
 
     def assert_no_write(self) -> None:
         """Neither the fork nor the branch was touched."""
-        self.ensure_fork.assert_not_called()
+        self.require_fork.assert_not_called()
         self.sync_fork.assert_not_called()
         self.create.assert_not_called()
 
@@ -1233,7 +1234,7 @@ class RunPushRevisionTest(NoNetworkCase):
         path = self.write_check(revision_check())
         with (
             patch.object(github, "api_object", side_effect=target_reads(pull, head)),
-            patch.object(refs, "ensure_fork") as fork,
+            patch.object(refs, "require_fork") as fork,
             patch.object(refs, "sync_fork") as sync,
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(refs, "create_branch") as create,
@@ -1288,7 +1289,7 @@ class RunPushRevisionTest(NoNetworkCase):
         """The compare-and-swap's own refusal marks the round, as the pre-read does."""
         path = self.write_check(revision_check())
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(
@@ -1342,7 +1343,7 @@ class RunPushRevisionTest(NoNetworkCase):
         path = self.write_check(revision_check())
 
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(refs, "create_branch") as create,
@@ -1364,7 +1365,7 @@ class RunPushRevisionTest(NoNetworkCase):
         bad = github.GitHubError("Bad Gateway (HTTP 502)", status=502)
         with (
             patch.object(github, "api_object", side_effect=target_reads(head=bad)),
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(publish.revision_publish, "move_branch") as move,
@@ -1381,7 +1382,7 @@ class RunPushRevisionTest(NoNetworkCase):
         generic = github.GitHubError("gh: Something went wrong while executing")
         with (
             patch.object(reads, "branch_head", return_value="b" * 40),
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(refs, "create_branch"),
@@ -1399,7 +1400,6 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertTrue(any("unknown" in r for r in written["reasons"]))
         self.assertFalse(any("unchanged" in r for r in written["reasons"]))
 
-    @unittest.expectedFailure
     def test_missing_fork_fails_the_revision_before_any_read(self) -> None:
         """Without a fork there is no fork token, so the push reads nothing."""
         path = self.write_check(revision_check())
@@ -1422,7 +1422,7 @@ class RunPushRevisionTest(NoNetworkCase):
         """Sync, temporary branch, replay, compare-and-swap, cleanup; the PR is known."""
         path = self.write_check(revision_check())
         with (
-            patch.object(refs, "ensure_fork") as fork,
+            patch.object(refs, "require_fork") as fork,
             patch.object(refs, "sync_fork") as sync,
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(
@@ -1454,7 +1454,7 @@ class RunPushRevisionTest(NoNetworkCase):
         path = self.write_check(revision_check())
         chain = ["c" * 40, NEW_HEAD]
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=chain) as matches,
             patch.object(publish.revision_publish, "move_branch") as move,
@@ -1473,7 +1473,7 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertTrue(any("earlier attempt" in w for w in result["warnings"]))
         # A branch holding anything else goes to the swap, which decides.
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(
@@ -1488,7 +1488,7 @@ class RunPushRevisionTest(NoNetworkCase):
         """A head that changed since selection is refused, nothing forced."""
         path = self.write_check(revision_check())
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(
@@ -1549,7 +1549,7 @@ class HandoffTest(NoNetworkCase):
         """No sync, no move: the branch is untouched; respond gets the pull request."""
         path = self.write_check(revision_check(verdict="handoff", commits=[]))
         with (
-            patch.object(refs, "ensure_fork") as fork,
+            patch.object(refs, "require_fork") as fork,
             patch.object(publish.revision_publish, "move_branch") as move,
             patch.object(review, "pull_head") as head,
         ):
@@ -1833,7 +1833,7 @@ class HandoffTest(NoNetworkCase):
         for check, mode, dry_run in cases:
             with (
                 self.subTest(verdict=check["verdict"], mode=mode, dry_run=dry_run),
-                patch.object(refs, "ensure_fork"),
+                patch.object(refs, "require_fork"),
                 patch.object(publish.revision_publish, "move_branch"),
             ):
                 path = self.write_check(check)
@@ -1846,7 +1846,7 @@ class HandoffTest(NoNetworkCase):
         """A branch-only run never moves a live pull request's head."""
         path = self.write_check(revision_check())
         with (
-            patch.object(refs, "ensure_fork") as fork,
+            patch.object(refs, "require_fork") as fork,
             patch.object(publish.revision_publish, "move_branch") as move,
         ):
             result = publish.run_push(self.push_args(path, mode="branches"))
@@ -1865,7 +1865,7 @@ class HandoffTest(NoNetworkCase):
             raise policy.PublishError("replay broke")
 
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(publish.revision_publish, "move_branch", side_effect=move),
@@ -1882,7 +1882,7 @@ class HandoffTest(NoNetworkCase):
         self.target_at_selection()
         path = self.write_check(revision_check())
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(
@@ -1910,7 +1910,7 @@ class HandoffTest(NoNetworkCase):
             raise policy.Rejection("head moved")
 
         with (
-            patch.object(refs, "ensure_fork"),
+            patch.object(refs, "require_fork"),
             patch.object(refs, "sync_fork"),
             patch.object(refs, "branch_matches", return_value=None),
             patch.object(publish.revision_publish, "move_branch", side_effect=move),

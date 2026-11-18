@@ -53,6 +53,9 @@ def build_parser(
         "--mode", required=True, choices=("select", "branches", "pull-requests")
     )
     push.add_argument("--dry-run", action="store_true")
+    # The publish job found no fork, so it minted no fork token; the
+    # forks job creates forks, and the push reports the gap.
+    push.add_argument("--fork-missing", action="store_true")
     push.add_argument("--run-attempt", type=int, default=1)
     # The proposal's artifact ID; empty when none arrived.
     push.add_argument("--author-session", default="")
