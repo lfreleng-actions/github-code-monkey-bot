@@ -267,6 +267,58 @@ class EnsureForkTest(NoNetworkCase):
             refs.ensure_fork(TARGET, FORK_ORG, "repo")
 
 
+class RequireForkTest(NoNetworkCase):
+    """``require_fork`` reads the fork the forks job made and never writes."""
+
+    @unittest.expectedFailure
+    def test_existing_fork_passes_with_one_read(self) -> None:
+        """A fork of the target is accepted, and nothing is written."""
+        with (
+            patch.object(github, "api_object", return_value=repo_object()) as read,
+            patch.object(github, "api_list") as listing,
+            patch.object(github, "api_write") as write,
+        ):
+            refs.require_fork(FORK, TARGET)
+        read.assert_called_once_with(f"repos/{FORK}")
+        listing.assert_not_called()
+        write.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_missing_fork_names_the_forks_job(self) -> None:
+        """A 404 is neither created nor looked up by parent; it is reported."""
+        with (
+            patch.object(github, "api_object", side_effect=absent()),
+            patch.object(github, "api_list") as listing,
+            patch.object(github, "api_write") as write,
+            self.assertRaisesRegex(
+                policy.PublishError, f"fork {FORK} does not exist.*Prepare forks"
+            ),
+        ):
+            refs.require_fork(FORK, TARGET)
+        listing.assert_not_called()
+        write.assert_not_called()
+
+    @unittest.expectedFailure
+    def test_unrelated_repository_is_refused(self) -> None:
+        """A same-named repository that is not the target's fork is an error."""
+        with (
+            patch.object(github, "api_object", return_value=repo_object(fork=False)),
+            self.assertRaisesRegex(policy.PublishError, "not a fork of"),
+        ):
+            refs.require_fork(FORK, TARGET)
+
+    @unittest.expectedFailure
+    def test_read_failure_is_operational(self) -> None:
+        """A 500 on the fork read is a failure, not a missing fork."""
+        with (
+            patch.object(
+                github, "api_object", side_effect=github.GitHubError("x (HTTP 500)")
+            ),
+            self.assertRaisesRegex(policy.PublishError, "could not read fork"),
+        ):
+            refs.require_fork(FORK, TARGET)
+
+
 class SyncForkTest(NoNetworkCase):
     """``sync_fork`` merges upstream, then requires the base commit."""
 

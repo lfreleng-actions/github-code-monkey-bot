@@ -2182,6 +2182,126 @@ class MintProvenanceContracts(ReusableWorkflowCase):
         )
 
 
+POOL_TOKEN = "secrets.fork_pool_token"
+
+
+class ForkPreparationContracts(ReusableWorkflowCase):
+    """Forks are made outside the App, so no mint may administer (#202).
+
+    Creating or renaming a fork needs Administration: write, which an
+    App holds on every installation at once, the target organisation
+    included. A machine account's token does it in a job of its own.
+    """
+
+    @unittest.expectedFailure
+    def test_forks_job_runs_beside_the_author_on_live_writing_runs(self) -> None:
+        """After select, before publish, never in a dry run or select mode."""
+        job = self.jobs["forks"]
+        self.assertEqual(job["name"], "Prepare forks")
+        self.assertEqual(job["needs"], "select")
+        self.assert_expression(
+            job["if"],
+            "needs.select.outputs.run_agent == 'true' &&"
+            " !inputs.dry_run && inputs.mode != 'select'",
+        )
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertEqual(self.actions("forks", APP_TOKEN), [])
+        self.assertEqual(self.jobs["publish"]["needs"], ["select", "author", "forks"])
+
+    @unittest.expectedFailure
+    def test_forks_job_is_hardened_like_the_other_trusted_jobs(self) -> None:
+        """The allow-list loads first and harden-runner blocks against it."""
+        steps = self.steps("forks")
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        loader = cast(dict[str, Any], steps[0]["with"])
+        self.assert_expression(loader["config"], "inputs.harden_runner_allowlist")
+        self.assertEqual(loader["allow_list_summary"], "false")
+        self.assert_expression(
+            steps[1]["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
+        )
+
+    @unittest.expectedFailure
+    def test_forks_job_runs_trusted_assets_alone(self) -> None:
+        """It checks out the pinned assets, never a target, and reads the matrix."""
+        guard = flatten(self.step("forks", "Require trusted provenance")["run"])
+        self.assertIn('[[ "$ASSETS_SHA" =~ ^[0-9a-f]{40}$ ]]', guard)
+        checkout = self.action("forks", CHECKOUT)
+        with_ = cast(dict[str, Any], checkout["with"])
+        self.assert_expression(with_["repository"], "inputs.assets_repository")
+        self.assert_expression(with_["ref"], "needs.select.outputs.assets_sha")
+        self.assertEqual(with_["path"], "monkey-assets")
+        prepare = self.step("forks", "prepare")
+        script = flatten(prepare["run"])
+        self.assertIn("monkey-assets/scripts/fork_pool.py prepare", script)
+        self.assertIn("--config monkey-assets/config/fork-orgs.json", script)
+        env = cast(dict[str, Any], prepare["env"])
+        self.assert_expression(env["MATRIX"], "needs.select.outputs.matrix")
+        self.assert_expression(env["ORG"], "inputs.org")
+        self.assertLess(
+            self.position("forks", "Require trusted provenance"),
+            self.position("forks", "prepare"),
+        )
+
+    @unittest.expectedFailure
+    def test_pool_token_reaches_one_step_of_one_job(self) -> None:
+        """The fork pool token is optional and the prepare step's alone."""
+        secrets = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["secrets"]
+        )
+        self.assertIs(secrets["fork_pool_token"]["required"], False)
+        holders = [
+            (job, step.get("id"))
+            for job in self.jobs
+            for step in self.jobs[job].get("steps", [])
+            if "fork_pool_token" in dumped(step)
+        ]
+        self.assertEqual(holders, [("forks", "prepare")])
+        for job, body in self.jobs.items():
+            outside = {k: v for k, v in body.items() if k != "steps"}
+            with self.subTest(job=job):
+                self.assertNotIn("fork_pool_token", dumped(outside))
+        prepare = self.step("forks", "prepare")
+        self.assert_expression(prepare["env"]["GH_TOKEN"], POOL_TOKEN)
+        self.assertEqual(
+            Counter(SECRET_REFERENCE.findall(dumped(self.jobs["forks"]))),
+            Counter({POOL_TOKEN: 1}),
+        )
+
+    @unittest.expectedFailure
+    def test_no_mint_requests_administration(self) -> None:
+        """The App never administers: no mint asks for it at any level."""
+        mints = [
+            (job, step)
+            for job in self.jobs
+            if "steps" in self.jobs[job]
+            for step in self.actions(job, APP_TOKEN)
+        ]
+        self.assertTrue(mints)
+        for job, step in mints:
+            with self.subTest(job=job, mint=step["id"]):
+                self.assertNotIn("permission-administration", step["with"])
+                self.assertNotIn(
+                    "INPUT_PERMISSION-ADMINISTRATION", step.get("env") or {}
+                )
+
+    @unittest.expectedFailure
+    def test_publish_requires_the_fork_and_never_creates_it(self) -> None:
+        """Push holds the fork write token alone and learns when it is missing."""
+        ids = [step.get("id") for step in self.steps("publish")]
+        self.assertNotIn("fork-create-token", ids)
+        push = self.step("publish", "push")
+        env = cast(dict[str, Any], push["env"])
+        self.assert_expression(env["GH_TOKEN"], "steps.fork-token.outputs.token")
+        self.assert_expression(env["FORK_EXISTS"], "steps.fork-state.outputs.exists")
+        script = flatten(push["run"])
+        self.assertIn('if [ "$FORK_EXISTS" = false ]; then', script)
+        self.assertIn("extra+=(--fork-missing)", script)
+        self.assertLess(
+            self.position("publish", "fork-state"), self.position("publish", "push")
+        )
+
+
 class SelectAndReportContracts(ReusableWorkflowCase):
     """Trusted selection outputs, org-wide read mint, result gathering."""
 
@@ -4055,6 +4175,12 @@ class CronCallerContracts(WorkflowCase):
         self.assert_expression(
             secrets["github_app_private_key"], "secrets.BOT_APP_PRIVATE_KEY"
         )
+
+    @unittest.expectedFailure
+    def test_caller_forwards_the_fork_pool_token(self) -> None:
+        """The machine account's token arrives under its repository secret name."""
+        secrets = cast(dict[str, Any], self.jobs["code-monkey"]["secrets"])
+        self.assert_expression(secrets["fork_pool_token"], "secrets.FORK_POOL_TOKEN")
 
     def test_options_job_loads_the_allow_list(self) -> None:
         """The options job blocks egress against the forwarded allow-list.

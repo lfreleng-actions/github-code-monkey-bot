@@ -199,7 +199,12 @@ class NoNetworkCase(unittest.TestCase):
         return path
 
     def push_args(
-        self, check: Path, *, mode: str = "pull-requests", dry_run: bool = False
+        self,
+        check: Path,
+        *,
+        mode: str = "pull-requests",
+        dry_run: bool = False,
+        fork_missing: bool = False,
     ) -> argparse.Namespace:
         """The namespace ``run_push`` receives."""
         return argparse.Namespace(
@@ -207,6 +212,7 @@ class NoNetworkCase(unittest.TestCase):
             workdir=self.root / "work",
             mode=mode,
             dry_run=dry_run,
+            fork_missing=fork_missing,
             run_attempt=1,
             author_session="",
             output=self.root / "result.json",
@@ -696,6 +702,39 @@ class RunPushTest(NoNetworkCase):
         written = self.written_result()
         self.assertEqual(written["verdict"], "publish-failed")
         self.assertIn("not a fork", written["reasons"][0])
+
+    @unittest.expectedFailure
+    def test_missing_fork_fails_before_any_read_or_write(self) -> None:
+        """No fork token exists for a missing fork, so push touches nothing.
+
+        The forks job creates forks; the publisher reports the gap and
+        names that job, before the issue re-read that needs a token.
+        """
+        path = self.write_check(check_json())
+        with (
+            patch.object(publish, "create_branch") as branch,
+            self.assertRaisesRegex(policy.PublishError, "does not exist"),
+        ):
+            publish.run_push(self.push_args(path, fork_missing=True))
+        self.recheck.assert_not_called()
+        self.sync_fork.assert_not_called()
+        branch.assert_not_called()
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertIn("Prepare forks", written["reasons"][0])
+
+    def test_a_missing_fork_is_not_reported_without_a_write(self) -> None:
+        """Dry runs, select mode and other verdicts need no fork at all."""
+        path = self.write_check(check_json())
+        abstain = self.write_check(check_json(verdict="abstain"))
+        for args in (
+            self.push_args(path, dry_run=True, fork_missing=True),
+            self.push_args(path, mode="select", fork_missing=True),
+            self.push_args(abstain, fork_missing=True),
+        ):
+            with self.subTest(mode=args.mode, dry_run=args.dry_run):
+                result = publish.run_push(args)
+                self.assertNotEqual(result["verdict"], "publish-failed")
 
     def test_replay_failure_rolls_back_the_branch(self) -> None:
         """A failure after branch creation deletes the fork branch and fails.
@@ -1359,6 +1398,25 @@ class RunPushRevisionTest(NoNetworkCase):
         self.assertEqual(written["verdict"], "publish-failed")
         self.assertTrue(any("unknown" in r for r in written["reasons"]))
         self.assertFalse(any("unchanged" in r for r in written["reasons"]))
+
+    @unittest.expectedFailure
+    def test_missing_fork_fails_the_revision_before_any_read(self) -> None:
+        """Without a fork there is no fork token, so the push reads nothing."""
+        path = self.write_check(revision_check())
+        with (
+            patch.object(github, "api_object") as read,
+            patch.object(refs, "sync_fork") as sync,
+            patch.object(publish.revision_publish, "move_branch") as move,
+            self.assertRaisesRegex(policy.PublishError, "does not exist"),
+        ):
+            publish.run_push(self.push_args(path, fork_missing=True))
+        read.assert_not_called()
+        sync.assert_not_called()
+        move.assert_not_called()
+        written = self.written_result()
+        self.assertEqual(written["verdict"], "publish-failed")
+        self.assertIn("Prepare forks", written["reasons"][-1])
+        self.assertIn("branch is unchanged", written["reasons"][-1])
 
     def test_revision_moves_the_branch_and_records_the_pull_request(self) -> None:
         """Sync, temporary branch, replay, compare-and-swap, cleanup; the PR is known."""
