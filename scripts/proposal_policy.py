@@ -324,10 +324,10 @@ def defuse_mentions(text: str) -> str:
 def log_safe(text: str) -> str:
     """Make untrusted text safe to print from a job whose log GitHub parses.
 
-    A newline followed by ``::error::`` or ``::stop-commands::`` would
-    let agent output spoof annotations or alter log-command parsing.
+    A newline then ``::error::`` or ``::stop-commands::`` would spoof log
+    commands; a lone surrogate from JSON, which UTF-8 refuses, is U+FFFD.
     """
-    flat = " ".join(text.split())
+    flat = re.sub("[\ud800-\udfff]", "\ufffd", " ".join(text.split()))
     return flat.replace("::", ": :").replace("##[", "# #[")
 
 

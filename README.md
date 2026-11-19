@@ -212,3 +212,29 @@ uv run python -B -m unittest discover -s tests -v
 prek run --files <changed files>
 aislop ci
 ```
+
+### Fuzzing
+
+`fuzz/` holds [Atheris](https://github.com/google/atheris) harnesses
+for the code that reads untrusted text:
+
+- `fuzz_proposal_rules.py`: the proposal rules in `proposal_policy`
+  (paths, modes, commit messages, comment and log text, reasons) and
+  `proposal_check.read_manifest`.
+- `fuzz_review_classifier.py`: `review_verdict.classify`,
+  `review_text` and `review_sections` on Copilot review bodies.
+- `fuzz_operator_input.py`: `explicit_issues.parse_issues` and
+  `issue_authors.parse_listed`.
+
+Atheris is not a project dependency; install it in a scratch
+environment to fuzz. A harness with no input file named fuzzes from
+its own seeds; naming a file replays that one input:
+
+```bash
+python fuzz/fuzz_review_classifier.py -max_total_time=60 corpus/
+python fuzz/fuzz_review_classifier.py crash-<hash>
+```
+
+The unit suite needs no Atheris: `tests/test_fuzz_harnesses.py`
+replays every seed through each harness's `check` function. Add an
+input the fuzzer finds to the harness's `SEEDS` along with the fix.
