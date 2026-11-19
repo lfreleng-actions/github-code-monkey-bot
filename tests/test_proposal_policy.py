@@ -374,6 +374,12 @@ class LogSafeTest(unittest.TestCase):
         self.assertNotIn("##[", safe)
         self.assertIn("spoofed", safe)
 
+    @unittest.expectedFailure
+    def test_lone_surrogate_encodes(self) -> None:
+        """A lone surrogate from JSON leaves text a UTF-8 file can hold."""
+        safe = policy.log_safe(json.loads('"a\\ud800b"'))
+        self.assertEqual(safe.encode("utf-8"), "a\ufffdb".encode())
+
 
 class CommentSafeTest(unittest.TestCase):
     """``comment_safe`` keeps an outcome comment to one quiet line."""
