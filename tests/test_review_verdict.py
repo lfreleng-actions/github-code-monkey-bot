@@ -303,6 +303,17 @@ class UntrustedTextTest(unittest.TestCase):
                 self.assertEqual(verdict.verdict, "findings")
                 self.assertIn("no assessment", verdict.reasons)
 
+    def test_lone_surrogate_classifies(self) -> None:
+        """A lone surrogate, which a JSON body can carry, is read, not raised on.
+
+        It counts as the three bytes it decoded from, so a body of them
+        past the bound is still over it.
+        """
+        clean = verdicts.classify(BODIES["v2-green-clean"] + "\ud800", 0)
+        self.assertEqual(clean.verdict, "clean")
+        over = verdicts.classify("\ud800" * (verdicts.MAX_BODY_BYTES // 3 + 1), 0)
+        self.assertIn(f"review body over {verdicts.MAX_BODY_BYTES} bytes", over.reasons)
+
     def test_body_over_the_bound_is_findings(self) -> None:
         """A body the classifier cannot read whole is never clean.
 

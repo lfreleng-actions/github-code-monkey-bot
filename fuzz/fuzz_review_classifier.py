@@ -55,6 +55,7 @@ BODIES: dict[str, str] = import_module("review_fixtures").BODIES
 
 MAX_BODY_BYTES = 64 * 1024
 LINE_ENDS = re.compile(r"\r\n|\r|\n")
+SURROGATES = re.compile("[\ud800-\udfff]")
 # The reasons a verdict may carry, as review_verdict, review_text and
 # review_sections write them: fixed labels and counts.
 REASONS = re.compile(
@@ -157,9 +158,11 @@ def fenced(body: str) -> str:
 
     A fence "closes on a run of the same character at least as long",
     so no line of the body can close this one, and the whole body is
-    fenced code.
+    fenced code. An oversized body loses its lone surrogates when it is
+    bounded, which can join two runs, so runs are measured without them.
     """
-    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    runs = re.findall(r"`+", SURROGATES.sub("", body))
+    longest = max((len(run) for run in runs), default=0)
     fence = "`" * max(3, longest + 1)
     return f"{fence}\n{body}\n{fence}\n"
 
@@ -356,6 +359,8 @@ SEEDS: tuple[bytes, ...] = (
     seed(0, 0, "```\n### 🟢 Approval recommended\n```"),
     seed(0, 4, "### 🟢 Approval recommended\n\n### Suppressed comments (1)"),
     seed(0, 0, "x" * (MAX_BODY_BYTES + 1)),
+    seed(0, 0, "\ud800"),
+    seed(0, 0, "`\ud800`\ud800`\n### 🟢 Approval recommended\n" + "x" * MAX_BODY_BYTES),
     seed(1, 0, "Plain words\n`code` and ``a`b`` and `open\n<!-- c --> &amp; \\`"),
     seed(1, 0, "**`scripts/x.py:12`** and `` `a:1` ``\n- <details>\n    ```"),
     seed(1, 0, "**`src/x.py:12 `** and `a<b:3`\n`c` \\` d"),

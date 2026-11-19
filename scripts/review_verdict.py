@@ -110,7 +110,8 @@ def bounded(body: str | None) -> tuple[str, bool]:
     """The body as text, and whether it exceeded the size the classifier reads."""
     if not isinstance(body, str):
         return "", False
-    raw = body.encode("utf-8")
+    # JSON can carry a lone surrogate; it counts as the bytes it decoded from.
+    raw = body.encode("utf-8", "surrogatepass")
     if len(raw) <= MAX_BODY_BYTES:
         return body, False
     return raw[:MAX_BODY_BYTES].decode("utf-8", "ignore"), True
