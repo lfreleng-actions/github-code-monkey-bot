@@ -909,6 +909,17 @@ class RunCheckRejectionTest(GitCase):
         self.fixture.manifest(pr_title="Chore: Enable sudo")
         self.assertIn(".enable-sudo-and-containers is protected", self.rejected())
 
+    @unittest.expectedFailure
+    def test_zizmor_configuration_addition(self) -> None:
+        """A proposal cannot switch off its target's zizmor audits (#207)."""
+        self.fixture.commit(
+            "Chore: Add zizmor config\n\nBody.\n",
+            {".github/zizmor.yml": "rules:\n  unpinned-uses:\n    disable: true\n"},
+        )
+        self.fixture.bundle()
+        self.fixture.manifest(pr_title="Chore: Add zizmor config")
+        self.assertIn(".github/zizmor.yml is protected", self.rejected())
+
     def test_subject_without_type(self) -> None:
         """A subject lacking a Conventional Commit type is rejected."""
         self.fixture.commit("fix readme\n\nBody.\n", {"README.md": "x\n"})

@@ -3805,6 +3805,18 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
                 self.assertIn("sudo and containers: not available", text)
                 self.assertIn("do not work around", text)
 
+    @unittest.expectedFailure
+    def test_prompts_name_the_zizmor_configuration(self) -> None:
+        """Both prompts protect the files zizmor reads by their names (#207)."""
+        for path in (PROMPT, REVISE_PROMPT):
+            text = squash(path.read_text(encoding="utf-8"))
+            with self.subTest(prompt=path.name):
+                self.assertIn(
+                    "the zizmor configuration (`zizmor.yml` or `zizmor.yaml`,"
+                    " at the root or directly under `.github/`)",
+                    text,
+                )
+
 
 class WorkflowEditSwitchContracts(ReusableWorkflowCase):
     """``allow_workflow_edits`` reaches selection, prompt and publisher (#143)."""
