@@ -60,7 +60,7 @@ URL_RE = re.compile(r"https?://")
 # Files an agent harness reads as instructions, or that decide who
 # reviews and which gates run: a proposal that changed one would be
 # the agent rewriting its own instructions or the checks it reports.
-# Names and directories compare in lower case.
+# Names, directories and paths compare in lower case.
 PROTECTED_NAMES = frozenset(
     {
         "agents.md",
@@ -76,9 +76,10 @@ PROTECTED_NAMES = frozenset(
         ".gitlint",
     }
 )
-PROTECTED_ROOT_FILES = frozenset(
+ZIZMOR_CONFIGS = {f"{d}zizmor.{x}" for d in ("", ".github/") for x in ("yml", "yaml")}
+PROTECTED_PATHS = frozenset(
     {"security.md", ".pre-commit-config.yaml", ".zizmor.yml", ".zizmor.yaml"}
-) | {".enable-sudo-and-containers"}
+) | {".enable-sudo-and-containers", *ZIZMOR_CONFIGS}
 PROTECTED_DIRS = frozenset(
     {
         ".copilot",
@@ -185,9 +186,7 @@ def protected(path: str) -> bool:
     parts = path.split("/")
     name = parts[-1]
     lowered = [part.lower() for part in parts]
-    if lowered[-1] in PROTECTED_NAMES:
-        return True
-    if len(parts) == 1 and lowered[0] in PROTECTED_ROOT_FILES:
+    if lowered[-1] in PROTECTED_NAMES or "/".join(lowered) in PROTECTED_PATHS:
         return True
     if name.startswith(LICENCE_PREFIXES) or LICENCE_DIR in parts[:-1]:
         return True

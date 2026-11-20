@@ -162,7 +162,6 @@ class ProtectedTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(policy.protected(path))
 
-    @unittest.expectedFailure
     def test_zizmor_configuration(self) -> None:
         """The names zizmor reads, at the root or under .github/ (#207)."""
         paths: list[str] = []

@@ -909,7 +909,6 @@ class RunCheckRejectionTest(GitCase):
         self.fixture.manifest(pr_title="Chore: Enable sudo")
         self.assertIn(".enable-sudo-and-containers is protected", self.rejected())
 
-    @unittest.expectedFailure
     def test_zizmor_configuration_addition(self) -> None:
         """A proposal cannot switch off its target's zizmor audits (#207)."""
         self.fixture.commit(

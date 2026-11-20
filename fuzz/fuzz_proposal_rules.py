@@ -113,6 +113,13 @@ ROOT_FILES = (
     ".zizmor.yaml",
     ".enable-sudo-and-containers",
 )
+# zizmor's discovery paths: the root or directly under .github/.
+ZIZMOR_PATHS = (
+    "zizmor.yml",
+    "zizmor.yaml",
+    ".github/zizmor.yml",
+    ".github/zizmor.yaml",
+)
 TYPES = "Fix|Feat|Chore|Docs|Style|Refactor|Perf|Test|Revert|CI|Build"
 SUBJECT = re.compile(rf"(?:{TYPES})(?:\([^()]+\))?!?: [A-Z].*")
 NAMES_SOMEONE = re.compile(r"[A-Za-z][A-Za-z-]*-by:", re.I)
@@ -131,6 +138,7 @@ def listed_protected(path: str) -> bool:
     return (
         lowered[-1] in INSTRUCTION_NAMES
         or (len(parts) == 1 and lowered[0] in ROOT_FILES)
+        or "/".join(lowered) in ZIZMOR_PATHS
         or parts[-1].startswith(("LICENSE", "LICENCE"))
         or "LICENSES" in parts[:-1]
         or any(part in INSTRUCTION_DIRS for part in lowered[:-1])
@@ -358,6 +366,9 @@ SEEDS: tuple[bytes, ...] = (
     seed(0, "docs/AGENTS.md"),
     seed(0, ".GitHub/Prompts/x.md"),
     seed(0, "src/LICENSES/x.txt"),
+    seed(0, ".GitHub/Zizmor.YML"),
+    seed(0, "ZIZMOR.yaml"),
+    seed(0, ".github/workflows/zizmor.yaml"),
     seed(0, "a/../../etc/passwd"),
     seed(0, "a/.git/config"),
     seed(1, "M\x00100644\x00100644"),
