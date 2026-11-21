@@ -249,6 +249,7 @@ class RecoveryCase(unittest.TestCase):
             workdir=self.root / "work",
             mode="pull-requests",
             dry_run=False,
+            fork_missing=False,
             run_attempt=1,
             author_session="",
             output=self.root / "result.json",

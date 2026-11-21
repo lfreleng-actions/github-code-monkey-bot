@@ -56,10 +56,11 @@ from branch_refs import (
     branch_matches,
     create_branch,
     delete_branch,
-    ensure_fork,
     existing_pull_request,
+    missing_fork,
     open_pull_request,
     replay_commits,
+    require_fork,
     sync_fork,
 )
 from proposal_policy import PublishError, Rejection
@@ -109,7 +110,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
 
 
 def run_push(args: argparse.Namespace) -> dict[str, Any]:
-    """Find or create the fork, create the branch there and replay commits.
+    """Require the fork, create the branch there and replay commits.
 
     A write recovered from a transient failure adds a result warning.
     """
@@ -120,10 +121,15 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
             return revision_publish.run_push(args, check, result, fail=fail)
         if result["verdict"] != "proposed" or args.dry_run or args.mode == "select":
             return result
+        fork = str(check["fork_repository"])
+        if args.fork_missing:
+            # No fork token was minted for a fork that does not exist,
+            # so this fails before the issue re-read that needs one.
+            reason = missing_fork(fork)
+            fail(args, result, reason, PublishError(reason))
         if recheck.rejected(args, check, result, fail=fail):
             return result
         target = str(check["repository"])
-        fork = str(check["fork_repository"])
         branch = str(check["branch"])
         attempted = False
         created = False
@@ -131,7 +137,7 @@ def run_push(args: argparse.Namespace) -> dict[str, Any]:
         progress: list[str] = []
         owned: list[bool] = []
         try:
-            ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
+            require_fork(fork, target)
             sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
             # Inside the rollback boundary, but a create without a clear
             # answer, or found only by reading it back, leaves ``created``
