@@ -3798,12 +3798,23 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
             text = squash(path.read_text(encoding="utf-8"))
             with self.subTest(prompt=path.name):
                 self.assertIn(
-                    "`SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml`"
-                    f" and `{self.MARKER}`",
+                    "`SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml`,"
+                    f" `.zizmor.yaml` and `{self.MARKER}`",
                     text,
                 )
                 self.assertIn("sudo and containers: not available", text)
                 self.assertIn("do not work around", text)
+
+    def test_prompts_name_the_zizmor_configuration(self) -> None:
+        """Both prompts protect the files zizmor reads by their names (#207)."""
+        for path in (PROMPT, REVISE_PROMPT):
+            text = squash(path.read_text(encoding="utf-8"))
+            with self.subTest(prompt=path.name):
+                self.assertIn(
+                    "the zizmor configuration (`zizmor.yml` or `zizmor.yaml`,"
+                    " at the root or directly under `.github/`)",
+                    text,
+                )
 
 
 class WorkflowEditSwitchContracts(ReusableWorkflowCase):

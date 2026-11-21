@@ -52,6 +52,8 @@ class OracleTest(unittest.TestCase):
         cases = (
             lambda: rules.oracle_path("../x", True, False),
             lambda: rules.oracle_path("AGENTS.md", True, False),
+            lambda: rules.oracle_path(".GitHub/Zizmor.YAML", True, False),
+            lambda: rules.oracle_path("zizmor.yml", True, False),
             lambda: rules.oracle_mode("A", "000000", "100755", True),
             lambda: rules.oracle_comment("@alice", "@alice"),
             lambda: rules.oracle_mentions("@alice", "@alice"),
