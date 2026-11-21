@@ -146,7 +146,10 @@ Consider everything on the author runner (packet, checkout, model
 PAT, Actions runtime token) exposed to the issue text and repository
 content the agent reads. A prompt-injected issue can waste model
 spend and produce a bad diff. It cannot push, cannot open a pull
-request, and cannot reach another repository.
+request, and cannot reach another repository. Block-mode egress
+(§7.5) limits where a steered session can send what it holds, but
+the list still allows GitHub hosts and the package registries, so
+it narrows the exfiltration paths rather than closing them.
 
 The hosted runner gives its user passwordless `sudo` and Docker, and
 root on the runner is the means to undo what harden-runner sets up.
@@ -1059,19 +1062,40 @@ home directory and the checkout, under `continue-on-error`.
 
 ### 7.5 Egress
 
-The author job runs harden-runner in `audit` mode, with `sudo` and
-containers disabled unless the target opted in (§4.1). It needs the npm
-registry for the locked toolchain tarballs, PyPI, GitHub, the
-Copilot API and whatever hook repositories the target's
-`.pre-commit-config.yaml` pins. A block-mode allow-list
-that covers every repository's toolchain is a maintenance load this
-design defers; the audit log records what each session reached.
+The author job runs harden-runner in `block` mode, with `sudo` and
+containers disabled unless the target opted in (§4.1). Its allow-list
+is the organisation's list for this job alone,
+`bots/code_monkey.txt` in the `.github` repository, built from
+harden-runner's audit records of past sessions and pinned at the
+v0.22.0 commit; 92% of the 1,070 audited sessions reached nothing
+outside it. The job loads it with `harden-runner-block-action`
+before harden-runner, as the trusted jobs do, from a coordinate
+written as a literal in the job: no input, variable or dispatch
+field can widen what the agent reaches, and no supplemental list or
+extra endpoint merges in. The loader keeps `agent_not_ready` at its
+default, `error`, so a job whose egress agent does not report ready
+fails rather than run a session unfiltered. When harden-runner
+installed no agent at all, the loader reports `agent_status:
+skipped` and succeeds without consulting `agent_not_ready`, so a
+`Require egress enforcement` step after the hardening steps fails
+the job on any status but `ready`, on every matrix entry, opted in
+to `sudo` and containers or not. The list leaves out
+aislop's telemetry host on purpose, so the job sets
+`AISLOP_NO_TELEMETRY` for the session's hooks to inherit.
+
+Block mode narrows the exfiltration paths rather than closing them:
+the list still allows GitHub hosts and the package registries, and a
+steered session can send what it holds there. A target whose hooks
+or tests need a host outside the list (a container registry, a live
+service) fails at that connection; widening this list is not the
+fix.
 
 The select, publish and report jobs run in `block` mode with the
 organisation's allow-list from `harden-runner-block-action`, pinned
 by commit in both callers, with `allow_list_summary: 'true'` on the
 select job alone. `block` is the reusable workflow's default; a
-caller may pass `audit` to diagnose a blocked endpoint. The dispatch
+caller may pass `audit` to diagnose a blocked endpoint, and the
+author job blocks whatever it passes. The dispatch
 caller's `options` job runs in `block` mode too, loading the same
 coordinate it forwards, without a token or a summary.
 
@@ -1665,7 +1689,7 @@ For each selected issue:
 | `only_known_authors` | string | `''` | §6: `false` turns `issue_authors` off; empty or `true` keeps it; else fails |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
-| `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
+| `harden_runner_egress` | string | `block` | Trusted jobs; author always blocks to its own list (§7.5) |
 | `harden_runner_allowlist` | string | `''` | Allow-list action coordinate |
 | `harden_runner_supplemental_allowlist` | string | `''` | Merged with the baseline; required when set |
 | `harden_runner_supplemental_unpinned` | boolean | `false` | Same-org supplemental may omit `@ref` |
@@ -2075,7 +2099,7 @@ conflicts while producer artifacts survive.
 | ------- | ------ | ---------- |
 | Agent times out | No proposal artifact | Publisher records `author-failed`; issue eligible next run |
 | Agent abstains | Manifest says why | Recorded; publisher comments the reason on the issue (§8 step 8) |
-| Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
+| Hooks or tests need a host outside the author job's allow-list | Agent cannot pass gates; the connection fails | The list covers what most audited sessions reached (§7.5); per-repository lists for such targets are later work, and widening this list is not the fix |
 | Task needs `sudo` or containers (an image build, a loop mount) in a target without the marker | Runner refuses both; the step cannot run | Prompt tells the agent not to work around it: it abstains, or leaves the step out and says so, naming `.enable-sudo-and-containers`; a maintainer adds the marker to the default branch where the repository needs it (§4.1, §7.3) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |

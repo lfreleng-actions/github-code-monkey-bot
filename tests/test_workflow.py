@@ -53,6 +53,12 @@ TRIGGERS = True
 
 HARDEN_RUNNER = "step-security/harden-runner"
 BLOCK_ACTION = "lfreleng-actions/harden-runner-block-action"
+# The author job's own allow-list (#202): a literal, never an input.
+AGENT_ALLOW_LIST = (
+    "lfreleng-actions//.github/harden-runner/bots/code_monkey.txt"
+    "@dfa09089d9d88230380539d2116810910347d378"
+)
+TRUSTED_JOBS = ("select", "publish", "report", "antagonistic")
 CHECKOUT = "actions/checkout"
 APP_TOKEN = "actions/create-github-app-token"
 SPLITTER = "lfreleng-actions/list-splitter-action"
@@ -366,7 +372,7 @@ class TopLevelContracts(ReusableWorkflowCase):
         CONNECTION_ALLOW_LIST does not cross job boundaries, and
         harden-runner in block mode with an empty list enforces nothing.
         """
-        for job in ("select", "publish", "report", "antagonistic"):
+        for job in TRUSTED_JOBS:
             with self.subTest(job=job):
                 loaders = self.actions(job, BLOCK_ACTION)
                 self.assertEqual(len(loaders), 1)
@@ -377,10 +383,9 @@ class TopLevelContracts(ReusableWorkflowCase):
                 self.assert_expression(
                     harden["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
                 )
-        self.assertEqual(self.actions("author", BLOCK_ACTION), [])
 
     def test_every_loader_passes_the_supplemental_inputs(self) -> None:
-        """Every loader forwards all five allow-list keys, even when empty.
+        """Every trusted loader forwards all five allow-list keys, even when empty.
 
         A key passed at one site and not another would leave that job
         blocking endpoints the caller allowed.
@@ -397,7 +402,9 @@ class TopLevelContracts(ReusableWorkflowCase):
             "extra_endpoints": "inputs.harden_runner_extra_endpoints",
         }
         loaders = [
-            (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
+            (job, step)
+            for job in TRUSTED_JOBS
+            for step in self.actions(job, BLOCK_ACTION)
         ]
         self.assertEqual(len(loaders), 4)
         for job, step in loaders:
@@ -418,7 +425,9 @@ class TopLevelContracts(ReusableWorkflowCase):
 
 
 class AuthorJobContracts(ReusableWorkflowCase):
-    """The untrusted job: no App key, audit egress, evidence before checkout."""
+    """The untrusted job: no App key, blocked egress, evidence before checkout."""
+
+    EGRESS_GUARD = "Require egress enforcement"
 
     def test_author_holds_no_app_key(self) -> None:
         """The agent runner never mints, receives or references the App key."""
@@ -433,11 +442,78 @@ class AuthorJobContracts(ReusableWorkflowCase):
             agent["env"]["COPILOT_GITHUB_TOKEN"], "secrets.copilot_token"
         )
 
-    def test_author_budget_and_gating_come_from_select(self) -> None:
-        """Audit egress; timeouts, parallelism and matrix from select outputs."""
+    def test_author_blocks_egress_to_the_bot_list(self) -> None:
+        """The agent reaches only the pinned bot list, and fails closed.
+
+        The coordinate is a literal so no caller can widen it, nothing
+        merges into it, and the loader cannot be skipped or told to
+        carry on when the egress agent does not report ready.
+        """
         author = self.jobs["author"]
-        harden = self.action("author", HARDEN_RUNNER)
-        self.assertEqual(harden["with"]["egress-policy"], "audit")
+        steps = self.steps("author")
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        loader = steps[0]
+        self.assertNotIn("if", loader)
+        with_ = cast(dict[str, Any], loader["with"])
+        self.assertEqual(with_["config"], AGENT_ALLOW_LIST)
+        self.assertRegex(
+            with_["config"],
+            r"^lfreleng-actions//\.github/harden-runner/bots/code_monkey\.txt"
+            r"@[0-9a-f]{40}$",
+        )
+        self.assertLessEqual(
+            set(with_), {"config", "allow_list_summary", "agent_not_ready"}
+        )
+        self.assertEqual(with_.get("agent_not_ready", "error"), "error")
+        harden = cast(dict[str, Any], steps[1]["with"])
+        self.assertEqual(harden["egress-policy"], "block")
+        self.assert_expression(harden["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST")
+        self.assertEqual(author["env"]["AISLOP_NO_TELEMETRY"], "1")
+
+    def test_author_requires_the_egress_agent_ready(self) -> None:
+        """The session never starts unless the egress agent reported ready.
+
+        The pinned loader succeeds with ``agent_status: skipped`` when
+        harden-runner installed no agent, whatever ``agent_not_ready``
+        says, so a guard right after the hardening steps requires
+        ``ready`` on every matrix entry, opted in to sudo or not.
+        """
+        steps = self.steps("author")
+        loader = steps[0]
+        self.assertRegex(str(loader.get("id", "")), r"^[a-z][a-z0-9-]*$")
+        guard = self.step("author", self.EGRESS_GUARD)
+        self.assertNotIn("if", guard)
+        self.assertNotIn("continue-on-error", guard)
+        position = self.position("author", self.EGRESS_GUARD)
+        self.assertEqual(
+            [s.get("name") for s in steps[2:position]],
+            ["Require sudo and containers off"],
+        )
+        self.assert_expression(
+            guard["env"]["AGENT_STATUS"],
+            f"steps.{loader['id']}.outputs.agent_status",
+        )
+        for status, code in (
+            ("ready", 0),
+            ("skipped", 1),
+            ("disabled", 1),
+            ("timeout", 1),
+            ("", 1),
+        ):
+            with self.subTest(status=status):
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(guard["run"])],
+                    env={"PATH": os.environ["PATH"], "AGENT_STATUS": status},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, code, proc.stdout)
+
+    def test_author_budget_and_gating_come_from_select(self) -> None:
+        """Timeouts, parallelism and matrix come from select outputs."""
+        author = self.jobs["author"]
         self.assert_expression(
             author["timeout-minutes"],
             "fromJSON(needs.select.outputs.author_timeout)",
@@ -3751,21 +3827,20 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
     MARKER = ".enable-sudo-and-containers"
     GUARD = "Require sudo and containers off"
 
-    def test_first_step_disables_both_unless_the_entry_opted_in(self) -> None:
-        """Harden-runner leads the job and turns both off by default."""
-        first = self.steps("author")[0]
-        self.assertTrue(is_action(first, HARDEN_RUNNER))
-        with_ = cast(dict[str, Any], first["with"])
-        self.assertEqual(with_["egress-policy"], "audit")
+    def test_harden_runner_disables_both_unless_the_entry_opted_in(self) -> None:
+        """Harden-runner follows the allow-list and turns both off by default."""
+        harden = self.steps("author")[1]
+        self.assertTrue(is_action(harden, HARDEN_RUNNER))
+        with_ = cast(dict[str, Any], harden["with"])
         self.assert_expression(
             with_["disable-sudo-and-containers"],
             "matrix.sudo_and_containers != true",
         )
 
-    def test_second_step_refuses_both_left_usable(self) -> None:
+    def test_guard_after_harden_runner_refuses_both_left_usable(self) -> None:
         """A hardener that skipped its setup cannot hand a session root or Docker."""
         guard = self.step("author", self.GUARD)
-        self.assertEqual(self.position("author", self.GUARD), 1)
+        self.assertEqual(self.position("author", self.GUARD), 2)
         self.assert_expression(guard["if"], "matrix.sudo_and_containers != true")
         lines = command_lines(str(guard["run"]))
         self.assertIn("if sudo -n true >/dev/null 2>&1; then", lines)
