@@ -110,26 +110,39 @@ def targets(matrix: str, config: dict[str, Any], org: str) -> list[Target]:
     return list(found.values())
 
 
-def token_scopes() -> frozenset[str] | None:
-    """The classic token's scopes, or None for a token that reports none.
+def token_identity() -> tuple[frozenset[str] | None, str | None]:
+    """The classic token's scopes and the login of the account it serves.
 
     GitHub reports a classic token's scopes in the X-OAuth-Scopes
-    header of any API reply; fine-grained and App tokens carry none.
+    header of any API reply; fine-grained and App tokens carry none,
+    and the scopes are None for them. The login comes from the body.
     """
-    raw = github.run_gh(["api", "--include", "user"])
-    for line in raw.splitlines():
-        if not line.strip():
-            break
+    lines = github.run_gh(["api", "--include", "user"]).splitlines()
+    end = next((i for i, line in enumerate(lines) if not line.strip()), len(lines))
+    scopes: frozenset[str] | None = None
+    for line in lines[:end]:
         name, sep, value = line.partition(":")
         if sep and name.strip().lower() == SCOPES_HEADER:
-            return frozenset(s.strip() for s in value.split(",") if s.strip())
-    return None
-
-
-def check_token() -> None:
-    """Refuse any token but a classic one scoped to public_repo alone."""
+            scopes = frozenset(s.strip() for s in value.split(",") if s.strip())
+            break
     try:
-        scopes = token_scopes()
+        user: Any = json.loads("\n".join(lines[end + 1 :]))
+    except (ValueError, RecursionError):
+        user = None
+    login = (
+        cast("dict[str, Any]", user).get("login") if isinstance(user, dict) else None
+    )
+    return scopes, login if isinstance(login, str) and login else None
+
+
+def check_token() -> str:
+    """Refuse any token but a classic one scoped to public_repo alone.
+
+    Return the login of the pool account the token belongs to, which
+    names that account in a failure it alone can fix.
+    """
+    try:
+        scopes, login = token_identity()
     except github.GitHubError as exc:
         raise PoolError(f"could not read the fork pool token's scopes: {exc}") from exc
     if scopes is None:
@@ -142,6 +155,34 @@ def check_token() -> None:
         raise PoolError(
             f"the fork pool token carries scopes {shown}; it must carry "
             "public_repo alone"
+        )
+    if login is None:
+        raise PoolError("the fork pool token's account reports no login")
+    return login
+
+
+def check_rename_rights(found: str, fork_org: str, account: str) -> None:
+    """Fail unless the pool account may rename ``found``: that needs admin.
+
+    The account is admin of the forks it creates, but not of those
+    already in a pool that another account created, unless it owns
+    the fork organisation or the organisation's base permission is
+    admin. The repository read carries the token's own permissions.
+    """
+    try:
+        data = github.api_object(f"repos/{found}")
+    except github.GitHubError as exc:
+        raise PublishError(f"could not read fork {found}: {exc}") from exc
+    permissions = data.get("permissions")
+    admin = (
+        cast("dict[str, Any]", permissions).get("admin")
+        if isinstance(permissions, dict)
+        else None
+    )
+    if admin is not True:
+        raise PublishError(
+            f"{account} cannot rename {found}: it needs admin on the fork, "
+            f"or owner of {fork_org}"
         )
 
 
@@ -189,12 +230,14 @@ class Pending(NamedTuple):
     outcome: str
 
 
-def start(target: Target) -> str | Pending:
+def start(target: Target, account: str) -> str | Pending:
     """Find the target's fork, or request or rename it; never wait.
 
     A fork kept from before the target was renamed still carries the
     old name; it is found by parent and renamed after the target, so
-    the publisher's reads of ``<fork_org>/<repo_name>`` find it. A
+    the publisher's reads of ``<fork_org>/<repo_name>`` find it, once
+    a read of it proves ``account`` may rename it; a fork just created
+    is the account's own and needs no such read. A
     repository of that name which is not a fork of the target is a
     failure, never a push destination: the publisher writes only into
     forks it can prove are the target's. A fork found ready returns
@@ -216,6 +259,8 @@ def start(target: Target) -> str | Pending:
     listed = refs.listed_fork(target.repository, target.fork_org)
     found = listed or create_fork(target.repository, target.fork_org)
     if found.lower() != fork.lower():
+        if listed is not None:
+            check_rename_rights(found, target.fork_org, account)
         try:
             github.api_write("PATCH", f"repos/{found}", {"name": target.repo_name})
         except github.GitHubError as exc:
@@ -290,12 +335,12 @@ def run_prepare(args: argparse.Namespace) -> int:
     if not chosen:
         print("No targets: no fork to prepare")
         return 0
-    check_token()
+    account = check_token()
     summary = Summary(args.summary)
     waiting: list[Pending] = []
     for target in chosen:
         try:
-            state = start(target)
+            state = start(target, account)
         except (PublishError, github.GitHubError) as exc:
             summary.fail(target.fork, exc)
             continue

@@ -24,7 +24,9 @@ TARGET = f"{ORG}/repo"
 FORK_ORG = "lfreleng-bot-forks"
 FORK = f"{FORK_ORG}/repo"
 CONFIG: dict[str, Any] = {"default": FORK_ORG, "organisations": {}}
-SCOPED = "HTTP/2.0 200 OK\nX-Oauth-Scopes: public_repo\n\n{}"
+ACCOUNT = "pool-bot"
+SCOPED = f'HTTP/2.0 200 OK\nX-Oauth-Scopes: public_repo\n\n{{"login": "{ACCOUNT}"}}'
+OLD = f"{FORK_ORG}/old-repo"
 
 
 def repo_object(**overrides: Any) -> dict[str, Any]:
@@ -71,7 +73,7 @@ TARGET_ENTRY = pool.Target(TARGET, FORK_ORG, "repo")
 
 def prepare(target: Any) -> str:
     """Start one target and, when it is pending, wait for it as the command does."""
-    state = pool.start(target)
+    state = pool.start(target, ACCOUNT)
     if isinstance(state, pool.Pending):
         return pool.finish(state, pool.time.monotonic() + pool.FORK_WAIT_SECONDS)
     return state
@@ -153,16 +155,28 @@ class TargetsTest(unittest.TestCase):
 class TokenCheckTest(NoNetworkCase):
     """The pool token must be classic and scoped to public_repo alone."""
 
-    def check(self, reply: str) -> None:
+    def check(self, reply: str) -> str:
         """Run the check against one ``gh api --include user`` reply."""
         with patch.object(github, "run_gh", return_value=reply) as run:
-            pool.check_token()
+            login = pool.check_token()
         run.assert_called_once_with(["api", "--include", "user"])
+        return login
 
     def test_public_repo_alone_passes(self) -> None:
         """The scope header is matched without regard to its case."""
-        self.check(SCOPED)
-        self.check("HTTP/2.0 200 OK\nx-oauth-scopes: public_repo\n\n{}")
+        self.assertEqual(self.check(SCOPED), ACCOUNT)
+        lower = SCOPED.replace("X-Oauth-Scopes", "x-oauth-scopes")
+        self.assertEqual(self.check(lower.replace("\n", "\r\n")), ACCOUNT)
+
+    def test_account_without_login_is_refused(self) -> None:
+        """A failure the account must fix names it, so its login is required."""
+        for body in ("{}", "[]", "not json", '{"login": ""}'):
+            reply = f"HTTP/2.0 200 OK\nX-Oauth-Scopes: public_repo\n\n{body}"
+            with (
+                self.subTest(body=body),
+                self.assertRaisesRegex(pool.PoolError, "reports no login"),
+            ):
+                self.check(reply)
 
     def test_broader_scopes_are_refused(self) -> None:
         """An operator's token, or one that can do more, never writes."""
@@ -199,7 +213,7 @@ class PrepareTest(NoNetworkCase):
     """``start`` finds, renames or requests the fork; ``finish`` waits for it."""
 
     def test_existing_fork_is_used(self) -> None:
-        """A repository that is a fork of the target needs nothing."""
+        """A repository that is a fork of the target needs nothing, not even a permission read."""
         with (
             patch.object(github, "api_object", return_value=repo_object()) as read,
             patch.object(github, "api_list") as listing,
@@ -286,6 +300,8 @@ class PrepareTest(NoNetworkCase):
         ):
             self.assertEqual(prepare(TARGET_ENTRY), f"created as {old}, then renamed")
         write.assert_called_with("PATCH", f"repos/{old}", {"name": "repo"})
+        # The account's own new fork needs no permission read before its rename.
+        self.assertEqual(read.call_count, 2)
         self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
 
     def test_create_reply_outside_the_pool_is_refused(self) -> None:
@@ -304,15 +320,16 @@ class PrepareTest(NoNetworkCase):
             sleep.assert_not_called()
 
     def test_fork_under_an_old_name_is_renamed(self) -> None:
-        """A fork kept from before a target rename is found and renamed."""
-        old = f"{FORK_ORG}/old-repo"
+        """A fork kept from before a target rename, which the account administers, is renamed."""
+        old = OLD
         listed = [
             {"full_name": "someone/repo", "owner": {"login": "someone"}},
             {"full_name": old, "owner": {"login": FORK_ORG.upper()}},
         ]
+        admin = repo_object(full_name=old, permissions={"admin": True})
         with (
             patch.object(
-                github, "api_object", side_effect=[absent(), repo_object()]
+                github, "api_object", side_effect=[absent(), admin, repo_object()]
             ) as read,
             patch.object(github, "api_list", return_value=listed),
             patch.object(github, "api_write", return_value={}) as write,
@@ -321,13 +338,51 @@ class PrepareTest(NoNetworkCase):
         ):
             self.assertEqual(prepare(TARGET_ENTRY), f"renamed from {old}")
         write.assert_called_once_with("PATCH", f"repos/{old}", {"name": "repo"})
+        self.assertEqual(read.call_args_list[1].args, (f"repos/{old}",))
         self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
+
+    def test_listed_fork_without_admin_is_not_renamed(self) -> None:
+        """A pool fork the account cannot administer fails, naming the right it lacks."""
+        listed = [{"full_name": OLD, "owner": {"login": FORK_ORG}}]
+        reason = (
+            f"{ACCOUNT} cannot rename {OLD}: it needs admin on the fork, "
+            f"or owner of {FORK_ORG}"
+        )
+        for permissions in ({"admin": False, "push": True}, None, "admin"):
+            data = repo_object(full_name=OLD, permissions=permissions)
+            with (
+                self.subTest(permissions=permissions),
+                patch.object(github, "api_object", side_effect=[absent(), data]),
+                patch.object(github, "api_list", return_value=listed),
+                patch.object(github, "api_write") as write,
+                self.assertRaises(policy.PublishError) as raised,
+            ):
+                prepare(TARGET_ENTRY)
+            self.assertEqual(str(raised.exception), reason)
+            write.assert_not_called()
+
+    def test_unreadable_listed_fork_is_not_renamed(self) -> None:
+        """A failed permission read makes no write."""
+        listed = [{"full_name": OLD, "owner": {"login": FORK_ORG}}]
+        with (
+            patch.object(
+                github,
+                "api_object",
+                side_effect=[absent(), github.GitHubError("x (HTTP 500)")],
+            ),
+            patch.object(github, "api_list", return_value=listed),
+            patch.object(github, "api_write") as write,
+            self.assertRaisesRegex(policy.PublishError, f"could not read fork {OLD}"),
+        ):
+            prepare(TARGET_ENTRY)
+        write.assert_not_called()
 
     def test_rename_refusal_is_operational(self) -> None:
         """A 422 because the target's name is taken fails this target."""
-        listed = [{"full_name": f"{FORK_ORG}/old-repo", "owner": {"login": FORK_ORG}}]
+        listed = [{"full_name": OLD, "owner": {"login": FORK_ORG}}]
+        admin = repo_object(full_name=OLD, permissions={"admin": True})
         with (
-            patch.object(github, "api_object", side_effect=absent()),
+            patch.object(github, "api_object", side_effect=[absent(), admin]),
             patch.object(github, "api_list", return_value=listed),
             patch.object(
                 github,
