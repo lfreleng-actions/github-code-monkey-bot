@@ -207,9 +207,9 @@ def fork_identity(check: dict[str, Any]) -> str:
     """The target's fork as GitHub names it now, found with reads alone.
 
     A fork kept from before the target was renamed still carries the
-    old name until ``ensure_fork`` renames it, after this check, and
-    its pull requests name it so. Found by parent, as ``ensure_fork``
-    finds it; with no fork at all, the designated name stands. The
+    old name until the forks job renames it (``fork_pool.py``), and its
+    pull requests name it so. Found by parent, as the forks job finds
+    it; with no fork at all, the designated name stands. The
     read by name follows a rename's redirect, so the name kept is the
     one the reply carries, not the one asked for.
     """

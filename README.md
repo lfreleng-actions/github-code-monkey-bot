@@ -143,6 +143,7 @@ jobs:
       copilot_token: ${{ secrets.COPILOT_CLI_TOKEN }}
       github_app_private_key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
       copilot_review_token: ${{ secrets.COPILOT_REVIEW_TOKEN }}
+      fork_pool_token: ${{ secrets.FORK_POOL_TOKEN }}
 ```
 
 Live runs need a GitHub App installed on the organisation with the
@@ -154,6 +155,14 @@ fine-grained PAT of a user with a Copilot seat, carrying Pull
 requests: write on the organisation, which bills the reviews to that
 seat (section 10.4). Without it the request falls back to the App's
 token and the review stays `pending (not requested)`.
+
+The App never creates or renames a fork, so it needs no
+Administration permission. A caller that targets repositories whose
+fork does not exist yet passes `fork_pool_token`: a classic token,
+scoped to `public_repo` alone, of a machine account that belongs to
+the bot fork organisations and no other (section 10.6). Without it,
+existing forks keep working and a target with no fork fails its
+publish.
 
 New pull requests leave `.github/workflows/` alone unless the caller
 sets `allow_workflow_edits: true`; the publisher rejects a proposal

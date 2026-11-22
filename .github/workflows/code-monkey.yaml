@@ -226,6 +226,12 @@ on:
           Fine-grained PAT with Actions write on antagonistic_repository
           and nothing else; used by the antagonistic request step alone
         required: false
+      fork_pool_token:
+        description: >-
+          Classic PAT with the public_repo scope alone, of a machine
+          account that belongs to the bot fork organisations and no
+          other; the forks job creates and renames forks with it
+        required: false
     outputs:
       pull_requests:
         description: >-
@@ -1490,12 +1496,88 @@ jobs:
           echo "Cleared $removed spilled tool-output file(s), the CLI home" \
             "and the checkout."
 
+  # Creating or renaming a fork needs Administration: write, which an
+  # App can hold only App-wide: on the target organisation as much as
+  # on the fork pools. A machine account that belongs to the fork pools
+  # alone does it here instead, with a classic token scoped to
+  # public_repo, so no App mint ever administers (docs/DESIGN.md
+  # section 4.3). The job runs beside the author matrix, checks out
+  # the trusted assets and nothing else, and its token reaches one
+  # step. A fork it could not ready fails that target's publish alone.
+  forks:
+    name: 'Prepare forks'
+    needs: 'select'
+    if: >-
+      needs.select.outputs.run_agent == 'true' &&
+      !inputs.dry_run && inputs.mode != 'select'
+    runs-on: 'ubuntu-latest'
+    # Every missing fork is requested before any is awaited, against one
+    # one-minute deadline, so the budget is the API calls: four or so
+    # per new fork, across a matrix of up to 256 targets.
+    timeout-minutes: 30
+    permissions:
+      contents: read  # Checkout trusted assets
+    steps:
+      - name: 'Load egress allow-list'
+        if: inputs.harden_runner_egress == 'block'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          config: "${{ inputs.harden_runner_allowlist }}"
+          # yamllint disable-line rule:line-length
+          supplemental_config: "${{ inputs.harden_runner_supplemental_allowlist }}"
+          # A caller naming a list depends on it, so its absence fails
+          # here rather than at the first blocked connection.
+          # yamllint disable-line rule:line-length
+          supplemental_required: "${{ inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false' }}"
+          # yamllint disable-line rule:line-length
+          supplemental_unpinned: "${{ inputs.harden_runner_supplemental_unpinned && 'true' || 'false' }}"
+          extra_endpoints: "${{ inputs.harden_runner_extra_endpoints }}"
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: "${{ inputs.harden_runner_egress }}"
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      - name: 'Require trusted provenance'
+        env:
+          ASSETS_SHA: "${{ needs.select.outputs.assets_sha }}"
+        run: |
+          [[ "$ASSETS_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: 'Checkout trusted assets'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: "${{ inputs.assets_repository }}"
+          ref: "${{ needs.select.outputs.assets_sha }}"
+          path: 'monkey-assets'
+          persist-credentials: false
+
+      # The matrix is the select job's trusted output; fork_pool.py
+      # still proves each entry against the committed mapping, and
+      # refuses a token that is not classic and scoped to public_repo.
+      - name: 'Find, create or rename forks'
+        id: prepare
+        env:
+          GH_TOKEN: "${{ secrets.fork_pool_token }}"
+          ORG: "${{ inputs.org }}"
+          MATRIX: "${{ needs.select.outputs.matrix }}"
+        run: |
+          python3 monkey-assets/scripts/fork_pool.py prepare \
+            --config monkey-assets/config/fork-orgs.json --org "$ORG" \
+            --matrix-env MATRIX --summary "$GITHUB_STEP_SUMMARY"
+
   publish:
     name: 'Publish (${{ matrix.key }})'
-    needs: [select, author]
+    needs: [select, author, forks]
     # Runs after every author entry, including failed ones, so each
     # issue gets a verdict; never after cancellation or a failed
-    # selection.
+    # selection. A failed or skipped forks job does not stop it: a
+    # target without its fork fails its own publish, naming that job.
     if: >-
       !cancelled() && needs.select.result == 'success' &&
       needs.select.outputs.run_agent == 'true'
@@ -1788,7 +1870,8 @@ jobs:
           echo "$resolved" >> "$GITHUB_OUTPUT"
 
       # Forks are public, so the native token can see whether one
-      # exists; the answer picks which of the two fork mints runs.
+      # exists. The forks job has readied it by now; when it could not,
+      # no fork token is minted and the push reports the missing fork.
       - name: 'Check fork exists'
         id: fork-state
         env:
@@ -1808,14 +1891,13 @@ jobs:
             exit 1
           fi
 
-      # Two mints, one per fork state, because a token scoped to a
-      # repository that does not exist yet cannot be minted. The
-      # creation token is the sole holder of administration, and it
-      # runs only when there is no fork to administer. Both always
-      # grant workflows: syncing the fork fast-forwards over whatever
-      # upstream merged, workflow changes included, whether or not the
-      # proposal edits one. Fork organisations hold bot forks alone and
-      # have Actions disabled, so the grant runs nothing there.
+      # A token scoped to the one fork, minted only once it exists: the
+      # forks job creates and renames forks, so no mint here needs
+      # administration. It always grants workflows: syncing the fork
+      # fast-forwards over whatever upstream merged, workflow changes
+      # included, whether or not the proposal edits one. Fork
+      # organisations hold bot forks alone and have Actions disabled,
+      # so the grant runs nothing there.
       - name: 'Mint fork write token'
         id: fork-token
         if: >-
@@ -1835,33 +1917,12 @@ jobs:
           permission-metadata: 'read'
           permission-workflows: 'write'
 
-      - name: 'Mint fork creation token'
-        id: fork-create-token
-        if: >-
-          !inputs.dry_run && steps.check.outputs.verdict == 'proposed' &&
-          inputs.github_app_client_id != '' &&
-          steps.fork-state.outputs.exists == 'false'
-        # yamllint disable-line rule:line-length
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: "${{ inputs.github_app_client_id }}"
-          private-key: "${{ secrets.github_app_private_key }}"
-          # yamllint disable-line rule:line-length
-          owner: "${{ matrix.fork_org }}"  # zizmor: ignore[github-app] no repository exists yet to scope to; the fork pool holds only bot forks
-          permission-administration: 'write'
-          permission-contents: 'write'
-          permission-metadata: 'read'
-          permission-workflows: 'write'
-
       # Every write token is checked against the configured App before
       # it is used; a key for another App fails here rather than acts.
       - name: 'Pre-flight: fork token identity'
-        if: >-
-          steps.fork-token.outcome == 'success' ||
-          steps.fork-create-token.outcome == 'success'
+        if: steps.fork-token.outcome == 'success'
         env:
-          # yamllint disable-line rule:line-length
-          MINTED_SLUG: "${{ steps.fork-token.outputs.app-slug || steps.fork-create-token.outputs.app-slug }}"
+          MINTED_SLUG: "${{ steps.fork-token.outputs.app-slug }}"
         run: |
           python3 monkey-assets/scripts/preflight.py identity \
             --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
@@ -1915,8 +1976,10 @@ jobs:
       - name: 'Push branch to fork'
         id: push
         env:
-          # yamllint disable-line rule:line-length
-          GH_TOKEN: "${{ steps.fork-token.outputs.token || steps.fork-create-token.outputs.token }}"
+          GH_TOKEN: "${{ steps.fork-token.outputs.token }}"
+          # 'false' when the forks job could not ready the fork: no fork
+          # token exists then, and the push fails naming that job.
+          FORK_EXISTS: "${{ steps.fork-state.outputs.exists }}"
           MODE: "${{ inputs.mode }}"
           DRY_RUN: "${{ inputs.dry_run }}"
           RUN_ATTEMPT: "${{ github.run_attempt }}"
@@ -1926,6 +1989,7 @@ jobs:
         run: |
           extra=()
           if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
+          if [ "$FORK_EXISTS" = false ]; then extra+=(--fork-missing); fi
           python3 monkey-assets/scripts/publish.py push \
             --check artefacts/check.json --workdir work \
             --run-attempt "$RUN_ATTEMPT" \

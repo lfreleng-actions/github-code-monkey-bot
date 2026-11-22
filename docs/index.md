@@ -23,9 +23,12 @@ author (untrusted, one runner per issue)
   | checkout + Copilot CLI; no credential that can write
   | git bundle + manifest
   v
+  (forks, trusted, beside the author jobs: a machine account's
+   token finds, creates or renames each target's fork)
+  v
 publish (trusted, one runner per issue)
   | verify the bundle offline
-  | fork token: find or create the fork, push the branch
+  | fork token: require the fork, push the branch
   | target token: open the pull request, comment on the issue
   v
 report (trusted)

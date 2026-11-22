@@ -116,7 +116,9 @@ produces. Triage's agent emits JSON that a trusted applier turns
 into label writes. This agent emits **commits**: a git bundle and a
 manifest. The trusted publisher turns those into a branch and a pull
 request. The agent job never holds a credential that can write to
-any repository, and it never holds the App key.
+any repository, and it never holds the App key. A fourth job,
+`forks`, runs beside the author matrix with a machine account's
+token and readies the forks the publisher writes into (§4.3, §10.6).
 
 ### 4.1 Why tool policy cannot contain this agent
 
@@ -253,20 +255,25 @@ names agreed, the organisation `AGENTS.md` is its right home.
 
 Publishing then works as follows, with the §5 signing unchanged:
 
-1. The publisher resolves the fork organisation for the target's
-   owner from the table, and finds or creates the fork there. It
-   looks the fork up by the target's name first, then by parent
-   among the target's forks: a fork made before a rename of the
-   target keeps its old name, and the publisher renames it after the
+1. The forks job (`Prepare forks`) resolves the fork organisation
+   for the target's owner from the table, and finds or creates the
+   fork there, beside the author matrix and before the publish job
+   starts. It looks the fork up by the target's name first, then by
+   parent among the target's forks: a fork made before a rename of
+   the target keeps its old name, and the job renames it after the
    target. A `422` because another repository holds that name fails
-   the publish. GitHub answers a fork request for a parent the
+   that target alone. GitHub answers a fork request for a parent the
    organisation already forks with the existing fork, and the
    reply's name, not the target's, is the one renamed or polled.
-   Creating or renaming a fork through the API needs the App
-   installed on the fork organisation with access to all its
-   repositories and Administration: write, plus Contents: read on
-   the source. A fork under an old name reads as missing by name,
-   and the creation token of §8 step 6 is the one that renames it.
+   Creating or renaming a fork needs Administration: write on the
+   fork organisation, and a GitHub App holds its permissions on
+   every installation at once: an App able to create forks could
+   administer every repository in the target organisation too. The
+   job holds the fork pool token of §10.6, a machine
+   account's, and the App holds no Administration grant at all. The
+   publisher requires the fork and never makes one: with no fork it
+   mints no fork token, and the push fails that issue, naming the
+   forks job.
 2. It syncs the fork's default branch with the target
    (`merge-upstream`), so the recorded base commit is present. The
    sync fast-forwards over every commit upstream merged since the
@@ -307,8 +314,9 @@ Publishing then works as follows, with the §5 signing unchanged:
 
 **Installation.** The publisher has no same-repository path. The
 four organisations exist and each holds an installation of the App
-on all repositories with Contents: write, Workflows: write and
-Administration: write (§10.1). Every fork organisation has Actions
+on all repositories with Contents: write and Workflows: write
+(§10.1), and the machine account of §10.6 as a member. Every fork
+organisation has Actions
 switched off, which means a bot branch triggers no workflow where it
 lands, and Workflows: write on a fork token can run nothing there;
 the target organisation requires approval before workflows
@@ -1219,15 +1227,15 @@ For each selected issue:
    from the target organisation, and to equal what the committed
    mapping (`config/fork-orgs.json`) resolves for the target's owner.
    It then reads, with the native token, whether the public fork
-   exists. Dry-run and `select` mode go no further than this step.
-6. **Mint a fork token** on the fork organisation's installation:
-   for an existing fork, `repositories:` the bare `repo_name` with
-   `contents: write` and `metadata: read`; for a missing fork, no
-   repository (none exists to name) and `administration: write`
-   besides, the sole mint in the pipeline that holds it. Both always
-   add `workflows: write`, since the step 7 sync can fast-forward
-   over upstream workflow changes (§4.3). The two
-   mints exclude each other on the fork's existence.
+   exists; the forks job has readied it by now (§4.3). Dry-run and
+   `select` mode go no further than this step.
+6. **Mint a fork token** on the fork organisation's installation,
+   once the fork exists: `repositories:` the bare `repo_name` with
+   `contents: write`, `metadata: read` and `workflows: write`, since
+   the step 8 sync can fast-forward over upstream workflow changes
+   (§4.3). No mint in the pipeline requests Administration. A
+   missing fork gets no token; the push then fails that issue before
+   any read, naming the forks job.
 7. **Mint a pull request token** on the target organisation's
    installation for that repository alone, with `pull_requests:
    write` and `metadata: read`: the one token in the pipeline that
@@ -1252,13 +1260,13 @@ For each selected issue:
    lets through is the bot's own carrying this proposal's chain: a
    rerun after an earlier attempt opened it, which the adoption
    below records. The re-read takes the fork's name as GitHub
-   holds it now, before anything renames it: a fork kept from before
-   a rename of the target still carries the old name, so the re-read
-   finds it by parent as `ensure_fork` does and counts its pull
+   holds it now: a fork kept from before a rename of the target
+   carries the old name until the forks job renames it, so the
+   re-read finds it by parent as that job does and counts its pull
    requests and chain under that name. A read by name that GitHub
    redirects to a renamed fork takes the name its reply carries. A
    failed read is a failed step: nothing publishes on trust. A
-   `branches` run makes the same reads. Then find or create the fork
+   `branches` run makes the same reads. Then require the fork
    (§4.3), sync its default branch, create
    `code-monkey/issue-<n>` there at the base SHA (an existing branch
    is a rejection unless it holds this proposal's own chain, or is a
@@ -1681,8 +1689,9 @@ For each selected issue:
 Secrets: `copilot_token` (model PAT, §10.2), `github_app_private_key`
 (select and publish alone), `copilot_review_token` (the review
 request step alone, §10.4), `antagonistic_dispatch_token` (the
-antagonistic request job's dispatch step alone, §10.5). All four are
-optional.
+antagonistic request job's dispatch step alone, §10.5),
+`fork_pool_token` (the forks job's prepare step alone, §10.6). All
+five are optional.
 
 Numeric inputs are strings because reusable-workflow `number`
 inputs cannot carry validation and `fromJSON` handles the
@@ -1798,17 +1807,22 @@ OAuth and webhooks stay off. Its permissions:
 | Contents | write | publish | Fork sync, branch, commits (fork organisations alone) |
 | Pull requests | write | publish | Open PR, label |
 | Workflows | write | publish | Fork sync over upstream workflow changes; commits that touch `.github/workflows/` (fork organisations alone) |
-| Administration | write | publish | Create a missing fork (fork organisations alone) |
 
 <!-- markdownlint-enable MD013 -->
+
+The App holds no Administration permission and no mint requests one:
+an App holds its permissions on every installation at once, so the
+grant that would let it create a fork would let it administer every
+repository in the target organisation as well. The forks job creates
+and renames forks with the fork pool token instead (§10.6).
 
 The App holds two kinds of installation. On the target organisation
 the publisher mints Pull requests: write to open the pull request
 and Issues: write for the comment, and no mint there ever requests
-Contents, Workflows or Administration. On each fork organisation it
+Contents or Workflows. On each fork organisation it
 mints the writes that build the branch; the installation covers all
-repositories of the organisation, since the fork it writes to may
-not exist until the run creates it.
+repositories of the organisation, since the forks job may create the
+fork it writes to during the run.
 
 | Fork organisation | Installed | Actions |
 | ----------------- | --------- | ------- |
@@ -1822,7 +1836,6 @@ not exist until the run creates it.
 | Metadata | read | Repository listing |
 | Contents | write | Sync the fork, branch, commits |
 | Workflows | write | Fork sync; commits under `.github/workflows/` |
-| Administration | write | Create a missing fork |
 
 The App holds no Actions permission and no mint requests one: job
 logs stay out of every trusted job (§20.1). Checks: read is a later
@@ -1846,7 +1859,7 @@ change with the widest reach, so a new proposal may make one when
 the operator sets `allow_workflow_edits` and not otherwise (§9.1,
 §8 step 3); a
 revision round stays within the workflow files its pull request
-already changes (§20.3). Both fork mints request
+already changes (§20.3). The fork mint requests
 `workflows: write` on every run, whatever the verified diff holds:
 the fork sync (§4.3 step 2) fast-forwards over upstream
 workflow changes too, and a proposal that edits no workflow would
@@ -1958,6 +1971,39 @@ records the nomination, holds no new credential.
 step warns, dispatches nothing and succeeds, so the default stays
 harmless until a maintainer sets it. Its expiry needs the same owner and
 rotation reminder as the model PAT (§10.2).
+
+### 10.6 The fork pool credential
+
+Creating a fork, or renaming one to follow a renamed target, needs
+Administration: write on the fork organisation (§4.3 step 1). The
+App cannot hold it without holding it on the target organisation
+too, so a machine account does this one job: a dedicated
+GitHub account, a member of the four fork organisations and of no
+other, with no access to any target. Its classic token, scoped to
+`public_repo` alone, is the repository secret `FORK_POOL_TOKEN`: with
+that membership it can fork a public repository into a pool and
+rename a fork there, and it can write to no target repository. A
+classic token rather than fine-grained ones, because a fine-grained
+token has one resource owner and the pools are four organisations.
+
+The dispatch caller passes it as the optional `fork_pool_token`, and
+the forks job's `Find, create or rename forks` step is the one place
+that reads it. That job holds `contents: read`, runs beside the
+author matrix, and checks out the trusted assets at the pinned
+commit and nothing else; no agent output or target code runs beside
+it. `fork_pool.py` reads the token's `X-OAuth-Scopes` and refuses
+one that is not classic or carries any scope besides `public_repo`,
+so an operator's own token, which could reach far more, never makes
+a write. It proves each matrix entry against `config/fork-orgs.json`
+before touching a fork, requests every missing fork before it waits
+for any, against one shared deadline, so a large first run waits
+about as long as one fork, and writes each fork's row to the step
+summary as its outcome is final. It tries every target and fails the
+job when any fork is not ready; the publish job still runs, and the
+targets without a fork fail alone. Without the secret the step warns,
+reads nothing and succeeds, and every fork that already exists keeps
+working. `tests/test_workflow.py` pins that reach. The token's expiry
+needs the same owner and rotation reminder as the model PAT (§10.2).
 
 ## 11. Dispatch and Concurrency
 
@@ -2080,7 +2126,8 @@ conflicts while producer artifacts survive.
 | Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
 | Task needs `sudo` or containers (an image build, a loop mount) in a target without the marker | Runner refuses both; the step cannot run | Prompt tells the agent not to work around it: it abstains, or leaves the step out and says so, naming `.enable-sudo-and-containers`; a maintainer adds the marker to the default branch where the repository needs it (§4.1, §7.3) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
-| Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The publisher finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that publish runs |
+| Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The forks job finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that job runs |
+| Fork pool token absent, expired or too broad | The forks job makes and renames no fork; a target without its fork fails its publish, naming the forks job | The job warns when the secret is absent and fails naming the scopes otherwise; existing forks keep working; restore the token (§10.6) |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
 | Two runs overlap | A wasted session on one target; never a second pull request | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected and waits for an older run still selecting (§6 "Overlapping runs"), failing open; the publisher re-reads the issue and the branch's pull requests before any write (§8 step 8), so a run that loses the race publishes nothing |
@@ -2155,6 +2202,7 @@ scripts/workflow_gate.py                 which workflow files a proposal may cha
 scripts/publish.py                       replay, open PR, reconcile
 scripts/publish_cli.py                   its eight commands' command line
 scripts/branch_refs.py                   bot branch and its PR on GitHub
+scripts/fork_pool.py                     the forks job: find, create, rename (§4.3)
 scripts/stale_branch.py                  a closed attempt's branch (§5)
 scripts/issue_recheck.py                 the issue re-read before a push (§8)
 scripts/branch_chain.py                  a branch read back as replayed work

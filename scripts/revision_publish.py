@@ -132,6 +132,9 @@ def run_push(
     target = str(check["repository"])
     fork = str(check["fork_repository"])
     try:
+        if args.fork_missing:
+            # No fork token was minted, so nothing below could read.
+            raise PublishError(refs.missing_fork(fork))
         closed = closed_pull_request(target, int(check["pull_number"]))
         if closed is not None:
             raise Rejection(closed)
@@ -139,7 +142,7 @@ def run_push(
         if unlisted is not None:
             result[recheck.AUTHOR_UNLISTED] = True
             raise Rejection(unlisted.reason)
-        refs.ensure_fork(target, str(check["fork_org"]), target.partition("/")[2])
+        refs.require_fork(fork, target)
         refs.sync_fork(fork, str(check["default_branch"]), str(check["base_sha"]))
         published = already_moved(check)
         if published is not None:
