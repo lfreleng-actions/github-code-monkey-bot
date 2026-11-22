@@ -91,9 +91,11 @@ part and note it in your manifest reason.
      `.github/instructions/`, `.github/prompts/`, `.github/agents/`,
      `.github/skills/` and `.github/copilot/`), review and gate
      configuration (`CODEOWNERS`,
-     `REUSE.toml`, `.gitlint`, `.aislop/`, and at the root
-     `SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml` and
-     `.enable-sudo-and-containers`),
+     `REUSE.toml`, `.gitlint`, `.aislop/`, the zizmor configuration
+     (`zizmor.yml` or `zizmor.yaml`, at the root or directly under
+     `.github/`),
+     and at the root `SECURITY.md`, `.pre-commit-config.yaml`,
+     `.zizmor.yml`, `.zizmor.yaml` and `.enable-sudo-and-containers`),
      and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When the
      change cannot avoid one, abstain and name the file in your
      reason. Files under `.github/workflows/` follow the runtime

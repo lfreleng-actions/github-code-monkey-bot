@@ -97,9 +97,11 @@ round summary.
      `.github/instructions/`, `.github/prompts/`, `.github/agents/`,
      `.github/skills/` and `.github/copilot/`), review and gate
      configuration (`CODEOWNERS`,
-     `REUSE.toml`, `.gitlint`, `.aislop/`, and at the root
-     `SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml` and
-     `.enable-sudo-and-containers`),
+     `REUSE.toml`, `.gitlint`, `.aislop/`, the zizmor configuration
+     (`zizmor.yml` or `zizmor.yaml`, at the root or directly under
+     `.github/`),
+     and at the root `SECURITY.md`, `.pre-commit-config.yaml`,
+     `.zizmor.yml`, `.zizmor.yaml` and `.enable-sudo-and-containers`),
      and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When a fix
      cannot avoid a protected file, abstain and name the file in
      your reason. The workflow cannot add or edit

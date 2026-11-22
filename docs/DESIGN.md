@@ -1152,7 +1152,9 @@ For each selected issue:
      `.github/skills/` or `.github/copilot/`;
    - *review and gate configuration*: `CODEOWNERS`, `REUSE.toml` and
      `.gitlint` at any depth, an `.aislop` directory at any depth,
-     and `SECURITY.md`, `.pre-commit-config.yaml`,
+     the zizmor configuration by the names zizmor discovers
+     (`zizmor.yml`/`zizmor.yaml` at the root or directly under
+     `.github/`), and `SECURITY.md`, `.pre-commit-config.yaml`,
      `.zizmor.yml`/`.zizmor.yaml` and `.enable-sudo-and-containers`
      (§4.1) at the root;
    - *licences*: a file whose name starts with `LICENSE` or

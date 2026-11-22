@@ -97,6 +97,7 @@ PROTECTED_ROOT_FILES = (
     ".zizmor.yaml",
     ".enable-sudo-and-containers",
 )
+ZIZMOR_CONFIG_NAMES = ("zizmor.yml", "zizmor.yaml")
 PROTECTED_DIRS = (
     ".copilot",
     ".claude",
@@ -158,6 +159,24 @@ class ProtectedTest(unittest.TestCase):
         name = ".enable-sudo-and-containers"
         self.assert_protected([name, *cased(name)])
         for path in (f"docs/{name}", f"a/b/{name}"):
+            with self.subTest(path=path):
+                self.assertFalse(policy.protected(path))
+
+    def test_zizmor_configuration(self) -> None:
+        """The names zizmor reads, at the root or under .github/ (#207)."""
+        paths: list[str] = []
+        for name in ZIZMOR_CONFIG_NAMES:
+            for path in (name, f".github/{name}"):
+                paths += [path, *cased(path)]
+        self.assert_protected(paths)
+
+    def test_zizmor_names_elsewhere(self) -> None:
+        """A zizmor name outside the discovery paths stays editable (#207)."""
+        for path in (
+            "docs/zizmor.yml",
+            "a/.github/zizmor.yml",
+            ".github/workflows/zizmor.yaml",
+        ):
             with self.subTest(path=path):
                 self.assertFalse(policy.protected(path))
 
