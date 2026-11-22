@@ -160,9 +160,12 @@ The App never creates or renames a fork, so it needs no
 Administration permission. A caller that targets repositories whose
 fork does not exist yet passes `fork_pool_token`: a classic token,
 scoped to `public_repo` alone, of a machine account that belongs to
-the bot fork organisations and no other (section 10.6). Without it,
-existing forks keep working and a target with no fork fails its
-publish.
+the bot fork organisations and no other (section 10.6). The account
+needs admin on every repository in those organisations, as an owner
+or through a base permission of admin: renaming a fork to follow a
+renamed target needs admin on the fork, and the forks already in
+the pools are not the account's own. Without the token, existing
+forks keep working and a target with no fork fails its publish.
 
 New pull requests leave `.github/workflows/` alone unless the caller
 sets `allow_workflow_edits: true`; the publisher rejects a proposal

@@ -1986,6 +1986,16 @@ rename a fork there, and it can write to no target repository. A
 classic token rather than fine-grained ones, because a fine-grained
 token has one resource owner and the pools are four organisations.
 
+Membership alone does not cover renames. Renaming a repository needs
+admin on it, and the account holds admin on the forks it creates
+but not on those the App created before it. So the account needs
+admin on every repository in the fork organisations: as an owner of
+each, or through a base permission of admin there. Before renaming
+a fork it did not create in the same run, `fork_pool.py` reads the
+fork and checks the token's `permissions.admin`; without it, that
+target fails naming the account and the right it lacks, and the
+job makes no write to that fork.
+
 The dispatch caller passes it as the optional `fork_pool_token`, and
 the forks job's `Find, create or rename forks` step is the one place
 that reads it. That job holds `contents: read`, runs beside the
