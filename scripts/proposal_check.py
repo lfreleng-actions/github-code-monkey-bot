@@ -143,20 +143,7 @@ def read_manifest(path: Path, check: Check) -> dict[str, Any]:
         )
         revision.read_handoff(manifest, check)
         return manifest
-    commands = manifest.get("commands")
-    if isinstance(commands, list):
-        for item in cast("list[Any]", commands)[:50]:
-            if isinstance(item, dict):
-                data = cast("dict[str, Any]", item)
-                command = data.get("command")
-                code = data.get("exit_code")
-                if isinstance(command, str):
-                    check.commands.append(
-                        {
-                            "command": command[:200],
-                            "exit_code": code if type(code) is int else None,
-                        }
-                    )
+    check.commands.extend(hook_runs.read_commands(manifest))
     return manifest
 
 
@@ -370,6 +357,7 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
         base_sha=check.base_sha,
         commands=check.commands,
         changes_precommit_config=check.changes_precommit_config,
+        precommit_edits_label=check.precommit_edits_label,
     )
     # The body is agent output: defuse mentions before a human has
     # read it, as the issue comments already do. The publisher's text
@@ -416,8 +404,8 @@ def run_check(
         run_url=run_url,
         issue_url=str(entry["url"]),
         zizmor_token=zizmor_token,
-        workflow_grant=workflow_grant.read(selection, entry),
-        allow_precommit_edits=selection.get("allow_precommit_config_edits") is True,
+        workflow_grant=workflow_grant.read(selection, entry, workflow_grant.WORKFLOWS),
+        precommit_grant=workflow_grant.read(selection, entry, workflow_grant.PRECOMMIT),
     )
     check = Check.from_entry(key, entry)
     check.bot_login = context.identity.bot_login

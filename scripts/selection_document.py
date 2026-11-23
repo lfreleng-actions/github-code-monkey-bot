@@ -64,7 +64,8 @@ def selection_document(
         "revise_only": bool(args.revise_only),
         "allow_workflow_edits": bool(args.allow_workflow_edits),
         "allow_precommit_config_edits": bool(args.allow_precommit_config_edits),
-        "workflow_edits_label": workflow_grant.LABEL,
+        "workflow_edits_label": workflow_grant.WORKFLOWS.label,
+        "precommit_edits_label": workflow_grant.PRECOMMIT.label,
         "guidance": {
             "repository": args.guidance_repository,
             "path": args.guidance_path,

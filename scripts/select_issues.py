@@ -12,7 +12,8 @@ keeps the revision rounds alone. For each survivor it records the
 default-branch SHA the agent will build on, the filtered comments,
 the branch name the publisher will create, and whether the target
 opts its sessions into ``sudo`` and containers (``sudo_marker``), and
-whether it may change workflow files (``workflow_grant``).
+whether it may change workflow files or the root pre-commit
+configuration (``workflow_grant``).
 It also fetches the organisation's ``AGENTS.md`` at a recorded commit
 so the author job never reads it live.
 
@@ -304,7 +305,14 @@ def annotate(
             chosen, results_repository=args.results_repository, bot_login=bot_login
         )
     sudo_marker.attach(chosen)
-    workflow_grant.attach(chosen, run_wide=bool(args.allow_workflow_edits))
+    workflow_grant.attach(
+        chosen, workflow_grant.WORKFLOWS, run_wide=bool(args.allow_workflow_edits)
+    )
+    workflow_grant.attach(
+        chosen,
+        workflow_grant.PRECOMMIT,
+        run_wide=bool(args.allow_precommit_config_edits),
+    )
     stamp(chosen, args.session, collected_at)
 
 

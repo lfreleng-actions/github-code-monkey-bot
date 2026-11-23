@@ -355,6 +355,24 @@ class ExplicitIssuesTest(NoSubprocessCase):
         ]
         self.assertEqual(grants, [(True, None), (True, None)])
 
+    def test_the_label_grants_precommit_edits_to_its_issue_alone(self) -> None:
+        """``precommit-edits-ok``, in any case, grants its issue alone (#231)."""
+        self.details[("org/alpha", 3)] = self.detail(labels=["PreCommit-Edits-OK"])
+        selection, _ = select.build_selection(self.args("org/alpha#1,org/alpha#3"))
+        grants = {
+            e["number"]: (
+                e["allow_precommit_config_edits"],
+                e["precommit_edits_label"],
+                e["allow_workflow_edits"],
+            )
+            for e in selection["issues"]
+        }
+        self.assertEqual(
+            grants, {1: (False, None, False), 3: (True, "precommit-edits-ok", False)}
+        )
+        self.assertIs(selection["allow_precommit_config_edits"], False)
+        self.assertEqual(selection["precommit_edits_label"], "precommit-edits-ok")
+
     def test_named_issues_are_worked_in_order_without_triage_filters(self) -> None:
         """No scan, no Type, label, assignee, category or one-per-repository rule."""
         selection, _ = select.build_selection(
@@ -777,6 +795,25 @@ class RevisionIntegrationTest(NoSubprocessCase):
             for e in selection["issues"]
         }
         self.assertEqual(grants, {7: (True, "workflow-edits-ok"), 8: (False, None)})
+
+    def test_a_round_takes_the_precommit_label_alone(self) -> None:
+        """The run's pre-commit switch never widens a round; the label does."""
+        labelled = self.revision("alpha", 41, 7)
+        labelled["labels"] = ["precommit-edits-ok"]
+        self.entries[("alpha", 41)] = labelled
+        self.entries[("alpha", 42)] = self.revision("alpha", 42, 8)
+        selection, _ = select.build_selection(
+            self.args(
+                "--pull-requests",
+                "org/alpha#41,org/alpha#42",
+                "--allow-precommit-config-edits",
+            )
+        )
+        grants = {
+            e["number"]: (e["allow_precommit_config_edits"], e["precommit_edits_label"])
+            for e in selection["issues"]
+        }
+        self.assertEqual(grants, {7: (True, "precommit-edits-ok"), 8: (False, None)})
 
     def test_outstanding_only_asks_for_the_scan_test(self) -> None:
         """A continuation's named pull request is built with the scan's test (#167)."""
@@ -2056,6 +2093,7 @@ class WriteOutputsTest(unittest.TestCase):
                             "pull_number": 0,
                             "sudo_and_containers": False,
                             "allow_workflow_edits": False,
+                            "allow_precommit_config_edits": False,
                         }
                     ]
                 },
@@ -2100,6 +2138,19 @@ class WriteOutputsTest(unittest.TestCase):
                 matrix = json.loads((Path(tmp) / "matrix.json").read_text("utf-8"))
                 (entry,) = matrix["include"]
                 self.assertIs(entry["allow_workflow_edits"], expected)
+
+    def test_matrix_carries_the_precommit_config_grant(self) -> None:
+        """Only a JSON ``true`` grants an entry pre-commit config edits (#231)."""
+        cases = ((True, True), (False, False), ("true", False), (None, False))
+        for recorded, expected in cases:
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                issue = self.chosen_issue()
+                if recorded is not None:
+                    issue["allow_precommit_config_edits"] = recorded
+                outputs.write_outputs(Path(tmp), sample_selection([issue]), b"g\n")
+                matrix = json.loads((Path(tmp) / "matrix.json").read_text("utf-8"))
+                (entry,) = matrix["include"]
+                self.assertIs(entry["allow_precommit_config_edits"], expected)
 
     def test_title_cannot_inject_rows(self) -> None:
         """Line breaks in a public title stay inside its table cell."""

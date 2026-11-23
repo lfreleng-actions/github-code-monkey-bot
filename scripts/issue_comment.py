@@ -99,14 +99,15 @@ def _proposed_comment(
 
 
 def granted(opening: str, result: dict[str, Any]) -> str:
-    """Name the label that let the change touch workflow files, when one did."""
-    label = workflow_grant.label_of(result.get("workflow_edits_label"))
-    if not label:
-        return opening
-    return (
-        opening.rstrip(".")
-        + f". The `{label}` label on this issue granted its workflow edits"
-    )
+    """Name each label that let the change touch its gated files, when one did."""
+    for kind in workflow_grant.KINDS:
+        label = workflow_grant.label_of(result.get(kind.label_field))
+        if label:
+            opening = (
+                opening.rstrip(".")
+                + f". The `{label}` label on this issue granted its {kind.edits}"
+            )
+    return opening
 
 
 def antagonistic_sentence(result: dict[str, Any]) -> str:

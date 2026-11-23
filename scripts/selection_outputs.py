@@ -139,6 +139,9 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
             # Likewise only a JSON true lets the session change
             # workflow files; the publisher's check decides again.
             "allow_workflow_edits": issue.get("allow_workflow_edits") is True,
+            "allow_precommit_config_edits": (
+                issue.get("allow_precommit_config_edits") is True
+            ),
         }
         for issue in cast("list[dict[str, Any]]", selection["issues"])
     ]

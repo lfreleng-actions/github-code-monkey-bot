@@ -15,7 +15,7 @@ import hook_runs
 import proposal_policy as policy
 import review_outcome as outcome
 from proposal_policy import Identity, PublishError
-from workflow_grant import Grant
+from workflow_grant import KINDS, Grant
 
 SCHEMA = 1
 
@@ -54,8 +54,10 @@ class Check:
     # Whether the chain changes the root .pre-commit-config.yaml, the
     # one protected path an operator switch unlocks (DESIGN.md 8).
     changes_precommit_config: bool = False
-    # The label that let the proposal change workflow files, or blank.
+    # The labels that let the proposal change workflow files and the
+    # root .pre-commit-config.yaml, or blank (workflow_grant.KINDS).
     workflow_edits_label: str = ""
+    precommit_edits_label: str = ""
     commits: list[dict[str, Any]] = field(
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
@@ -217,6 +219,7 @@ class Check:
             "needs_workflows": self.needs_workflows,
             "changes_precommit_config": self.changes_precommit_config,
             "workflow_edits_label": self.workflow_edits_label,
+            "precommit_edits_label": self.precommit_edits_label,
             "commits": self.commits,
             "pr_title": self.pr_title,
             "pr_body": self.pr_body,
@@ -300,11 +303,10 @@ class Context:
     run_url: str
     issue_url: str
     zizmor_token: str = ""
-    # The entry's grant to change workflow files.
+    # The entry's grants to change workflow files and the root
+    # .pre-commit-config.yaml: the run's switch or the issue's label.
     workflow_grant: Grant = field(default_factory=Grant)
-    # The run's allow_precommit_config_edits switch, for new proposals
-    # that change the root .pre-commit-config.yaml.
-    allow_precommit_edits: bool = False
+    precommit_grant: Grant = field(default_factory=Grant)
 
 
 def check_summary(check: Check) -> str:
@@ -326,12 +328,11 @@ def check_summary(check: Check) -> str:
             f"Changes `{policy.PRECOMMIT_CONFIG}`: {check.changes_precommit_config}",
             "",
         ]
-        if check.workflow_edits_label:
-            lines += [
-                f"Workflow edits granted by the `{check.workflow_edits_label}`"
-                " label on the issue.",
-                "",
-            ]
+        for kind in KINDS:
+            label = getattr(check, kind.label_field)
+            if label:
+                edits = kind.edits.capitalize()
+                lines += [f"{edits} granted by the `{label}` label on the issue.", ""]
     if check.online_audit:
         lines += [policy.log_safe(check.online_audit), ""]
     return "\n".join(lines) + "\n"
@@ -345,11 +346,13 @@ def provenance_block(
     base_sha: str,
     commands: list[dict[str, Any]],
     changes_precommit_config: bool = False,
+    precommit_edits_label: str = "",
 ) -> str:
     """The block that heads every pull request body, before agent text.
 
     A change to the lint gate shows in the summary line as well as the
-    list, so a reviewer sees it with the block collapsed.
+    list, so a reviewer sees it with the block collapsed; the list
+    names the label that granted it, when one did.
     """
     summary = "Authored by an AI agent; human review required"
     if changes_precommit_config:
@@ -364,10 +367,15 @@ def provenance_block(
         f"- Base: `{base_sha}`",
     ]
     if changes_precommit_config:
+        granted = (
+            f"; the `{precommit_edits_label}` label on the issue granted it"
+            if precommit_edits_label
+            else ""
+        )
         lines.append(
             f"- Lint gate: this pull request changes `{policy.PRECOMMIT_CONFIG}`, "
-            "which decides the checks the repository runs; review every "
-            "hook change"
+            f"which decides the checks the repository runs{granted}; review "
+            "every hook change"
         )
     lines.append("")
     if commands:

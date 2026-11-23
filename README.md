@@ -186,7 +186,11 @@ runs, so new pull requests leave it alone unless the caller sets
 proposal that changes it without the switch, and a pull request that
 does change it says so in its provenance block. A revision round may
 change it when its pull request already changes it and not otherwise,
-whatever the switch says.
+whatever the switch says. A maintainer labels an issue
+`precommit-edits-ok` to let it change `.pre-commit-config.yaml`
+without the switch, in its revision rounds too; the provenance block,
+the issue comment and the run report name the label. Neither label
+unlocks the other's files or any other protected file.
 
 ## Trusted issue authors
 

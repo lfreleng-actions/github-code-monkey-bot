@@ -491,6 +491,21 @@ class ReportTest(unittest.TestCase):
         )
         self.assertEqual(grant.report_lines([result()], reporting.cell), [])
 
+    def test_report_lists_proposals_a_label_granted_precommit_edits(self) -> None:
+        """The pre-commit grant has its own section, silent when unused (#231)."""
+        grant = import_module("workflow_grant")
+        granted = [result(precommit_edits_label="precommit-edits-ok"), result(issue=8)]
+        self.assertEqual(
+            grant.report_lines(granted, reporting.cell, grant.PRECOMMIT),
+            [
+                "Pre-commit config edits granted by a label on the issue:",
+                "",
+                f"- {REPOSITORY}#7: {PULL_URL}, by the `precommit-edits-ok` label",
+                "",
+            ],
+        )
+        self.assertEqual(grant.report_lines(granted, reporting.cell), [])
+
     def test_a_conflict_at_the_cap_is_handed_to_a_human(self) -> None:
         """No promise of a later round for a pull request at the round cap."""
         lines = reporting.conflict_lines(
