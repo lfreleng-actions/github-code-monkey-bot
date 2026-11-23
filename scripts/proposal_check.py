@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import hook_runs
 import issue_authors as authors
 import online_audit
 import proposal_policy as policy
@@ -373,11 +374,11 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
     # read it, as the issue comments already do. The publisher's text
     # comes first, the closing line and then the provenance, so no
     # unclosed construct in the agent's text can hide either, and the
-    # merge closes the issue.
+    # merge closes the issue. A failing last hook run is named there too.
+    hooks = hook_runs.mark(check.commands, check.warnings)
     check.pr_body = (
-        f"Closes #{check.issue}\n\n{provenance}\n{revision.round_note(check)}---\n\n"
-        + policy.defuse_mentions(body)
-        + "\n"
+        f"Closes #{check.issue}\n\n{provenance}\n{hooks}{revision.round_note(check)}"
+        "---\n\n" + policy.defuse_mentions(body) + "\n"
     )
     policy.check_pull_request_body_size(check.pr_body)
     # Last, so a proposal the offline rules reject never spends the

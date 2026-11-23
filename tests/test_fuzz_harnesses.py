@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fuzz"))
 support = import_module("harness_support")
@@ -60,6 +61,14 @@ class OracleTest(unittest.TestCase):
             lambda: rules.oracle_log("::error::x"),
             lambda: rules.oracle_log("a\ud800b"),
             lambda: rules.oracle_reasons(["a"], ["b"]),
+            lambda: rules.oracle_hooks(
+                SimpleNamespace(warnings=["last hook run a"] * 2),
+                "x\n\n",
+            ),
+            lambda: rules.oracle_hooks(
+                SimpleNamespace(warnings=["last hook run\na"]),
+                "x\n\n",
+            ),
         )
         for index, case in enumerate(cases):
             with self.subTest(case=index), self.assertRaises(Breach):

@@ -3835,6 +3835,23 @@ class ReportRowTest(unittest.TestCase):
         self.assertNotIn("::error::", row)
         self.assertEqual(row.count("|") - row.count("\\|"), 7)
 
+    def test_hook_warning_survives_a_long_rejection(self) -> None:
+        """A failing hook run stays in the cell behind a reason past its bound."""
+        warning = "last hook run did not exit 0 (exit 1): `prek run --files x`"
+        row = reporting.report_row(
+            {
+                "repository": "o/r",
+                "issue": 1,
+                "verdict": "rejected",
+                "reasons": ["online audit: " + "z" * 400],
+                "warnings": ["thread unanswered", warning],
+            }
+        )
+        self.assertIn(warning, row)
+        self.assertIn("online audit: zzz", row)
+        self.assertLessEqual(len(row.rsplit(" | ", 1)[1]), 302)
+        self.assertEqual(row.count("|") - row.count("\\|"), 7)
+
 
 class RunReportTest(NoNetworkCase):
     """``run_report`` merges nested result files into one table."""

@@ -652,6 +652,107 @@ class RunCheckProposedTest(GitCase):
         self.assertTrue(any("usage.json unreadable" in r for r in check.reasons))
 
 
+ROUND_6 = [
+    {"command": "uv run --extra test pytest -q", "exit_code": 0},
+    {
+        "command": "uvx tox --root . -c ./tox.ini -e build -- /tmp (expected rejection)",
+        "exit_code": 1,
+    },
+    {
+        "command": "prek run --files scripts/build_pinned.py "
+        "tests/test_build_pinned.py (basedpyright hook could not spawn its binary)",
+        "exit_code": 1,
+    },
+    {"command": "uvx gitlint --commits HEAD~1..HEAD", "exit_code": 0},
+]
+ROUND_7 = [
+    {
+        "command": "SKIP=no-commit-to-branch prek run --files <changed files> "
+        "(before fix; reproduced mypy no-any-return)",
+        "exit_code": 1,
+    },
+    {
+        "command": "SKIP=no-commit-to-branch,basedpyright prek run --files "
+        "<changed files>",
+        "exit_code": 0,
+    },
+    {"command": "prek run mypy --all-files", "exit_code": 0},
+    {"command": "uv run pytest -q", "exit_code": 0},
+]
+HOOKS_FAILED = "**Hooks did not pass.**"
+
+
+class RunCheckHookRunTest(GitCase):
+    """A failing last hook run is marked outside the provenance block."""
+
+    def propose(self, commands: list[dict[str, Any]]) -> Any:
+        """Run the check on one clean commit recording ``commands``."""
+        self.fixture.commit("Fix(readme): Correct typo\n", {"README.md": "x\n"})
+        self.fixture.bundle()
+        self.fixture.manifest(commands=commands)
+        check = self.fixture.run()
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        return check
+
+    def test_round_6_is_marked(self) -> None:
+        """One warning, and one line between ``</details>`` and the rule."""
+        check = self.propose(ROUND_6)
+        self.assertEqual(len(check.warnings), 1)
+        self.assertIn("exit 1", check.warnings[0])
+        self.assertIn("prek run --files scripts/build_pinned.py", check.warnings[0])
+        body = check.pr_body
+        self.assertEqual(body.count(HOOKS_FAILED), 1)
+        line = body.index(HOOKS_FAILED)
+        self.assertLess(body.index("</details>"), line)
+        self.assertLess(line, body.index("\n---\n"))
+        self.assertIn("could not spawn its binary)`, did not exit 0 (exit 1)", body)
+
+    def test_round_7_is_not_marked(self) -> None:
+        """A later passing hook run leaves the body as it was."""
+        check = self.propose(ROUND_7)
+        self.assertEqual(check.warnings, [])
+        provenance = model.provenance_block(
+            model="claude-opus-5.5",
+            run_url=RUN_URL,
+            issue_url=ISSUE_URL,
+            base_sha=self.fixture.base_sha,
+            commands=check.commands,
+        )
+        self.assertEqual(
+            check.pr_body,
+            f"Closes #{ISSUE}\n\n{provenance}\n---\n\n"
+            f"Fix the typo in the readme.\n\nCloses #{ISSUE}\n",
+        )
+
+    def test_an_exit_code_that_is_not_the_integer_0_is_marked(self) -> None:
+        """Omitted, ``true`` or ``"0"``: none is a pass."""
+        extras: tuple[dict[str, Any], ...] = (
+            {},
+            {"exit_code": True},
+            {"exit_code": "0"},
+        )
+        for index, extra in enumerate(extras):
+            with self.subTest(extra=extra):
+                root = self.root / f"case-{index}"
+                root.mkdir()
+                self.fixture = Fixture(root)
+                check = self.propose([{"command": "prek run --files x", **extra}])
+                self.assertEqual(len(check.warnings), 1)
+                self.assertEqual(check.pr_body.count(HOOKS_FAILED), 1)
+
+    def test_hostile_command_stays_on_one_inert_line(self) -> None:
+        """A newline, backtick, ``</details>``, pipe or mention cannot escape."""
+        command = "prek run\n`x` </details> a | b @alice\n\n---\n# H"
+        check = self.propose([{"command": command, "exit_code": 2}])
+        (line,) = [x for x in check.pr_body.splitlines() if HOOKS_FAILED in x]
+        self.assertIn("`prek run 'x' &lt;/details> a \\| b @alice --- # H`", line)
+        self.assertEqual(check.pr_body.count("</details>"), 1)
+        self.assertEqual(line.count("`"), 2)
+        (warning,) = check.warnings
+        self.assertNotIn("\n", warning)
+        self.assertEqual(warning.count("`"), 2)
+
+
 class RunCheckOnlineAuditTest(GitCase):
     """The check audits every proposal online with zizmor."""
 
