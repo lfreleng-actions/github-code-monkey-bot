@@ -164,8 +164,12 @@ the bot fork organisations and no other (section 10.6). The account
 needs admin on every repository in those organisations, as an owner
 or through a base permission of admin: renaming a fork to follow a
 renamed target needs admin on the fork, and the forks already in
-the pools are not the account's own. Without the token, existing
-forks keep working and a target with no fork fails its publish.
+the pools are not the account's own. Create the token with an
+expiry no more than 90 days ahead: the forks job refuses one that
+never expires or expires later, and warns on every run from 14 days
+before the expiry, when the owner rotates the secret. Without the
+token, existing forks keep working and a target with no fork fails
+its publish.
 
 New pull requests leave `.github/workflows/` alone unless the caller
 sets `allow_workflow_edits: true`; the publisher rejects a proposal

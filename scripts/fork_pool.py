@@ -8,9 +8,9 @@ The forks job runs this beside the author matrix (DESIGN.md section
 a GitHub App can hold only App-wide, on the target organisation as
 much as on the fork pools. A machine account that belongs to the bot
 fork organisations alone does it instead, through a classic token
-with the ``public_repo`` scope and nothing more; the token check
-below refuses any other kind, so an operator's own token, or one
-with broader scopes, never reaches a write.
+with the ``public_repo`` scope and nothing more. The token check in
+``pool_token.py`` refuses any other kind, and a token that never
+expires or expires more than 90 days ahead, before any write.
 
 ``fork_pool.py prepare --config FILE --org ORG --matrix-env NAME``
 reads the select job's matrix from the environment variable ``NAME``
@@ -34,18 +34,11 @@ from typing import Any, NamedTuple, cast
 import bot_github as github
 import branch_refs as refs
 import fork_orgs as forks
+from pool_token import PoolError, check_token
 from proposal_policy import PublishError
 
-# The one scope the token may carry: enough to fork a public repository
-# into, and rename it within, an organisation the account belongs to.
-REQUIRED_SCOPES = frozenset({"public_repo"})
-SCOPES_HEADER = "x-oauth-scopes"
 FORK_WAIT_SECONDS = 60
 FORK_POLL_SECONDS = 5
-
-
-class PoolError(Exception):
-    """The matrix, the mapping or the token rules out preparing forks."""
 
 
 class Target(NamedTuple):
@@ -108,57 +101,6 @@ def targets(matrix: str, config: dict[str, Any], org: str) -> list[Target]:
             raise PoolError(f"{target.repository} names another fork repository")
         found.setdefault(target.fork.lower(), target)
     return list(found.values())
-
-
-def token_identity() -> tuple[frozenset[str] | None, str | None]:
-    """The classic token's scopes and the login of the account it serves.
-
-    GitHub reports a classic token's scopes in the X-OAuth-Scopes
-    header of any API reply; fine-grained and App tokens carry none,
-    and the scopes are None for them. The login comes from the body.
-    """
-    lines = github.run_gh(["api", "--include", "user"]).splitlines()
-    end = next((i for i, line in enumerate(lines) if not line.strip()), len(lines))
-    scopes: frozenset[str] | None = None
-    for line in lines[:end]:
-        name, sep, value = line.partition(":")
-        if sep and name.strip().lower() == SCOPES_HEADER:
-            scopes = frozenset(s.strip() for s in value.split(",") if s.strip())
-            break
-    try:
-        user: Any = json.loads("\n".join(lines[end + 1 :]))
-    except (ValueError, RecursionError):
-        user = None
-    login = (
-        cast("dict[str, Any]", user).get("login") if isinstance(user, dict) else None
-    )
-    return scopes, login if isinstance(login, str) and login else None
-
-
-def check_token() -> str:
-    """Refuse any token but a classic one scoped to public_repo alone.
-
-    Return the login of the pool account the token belongs to, which
-    names that account in a failure it alone can fix.
-    """
-    try:
-        scopes, login = token_identity()
-    except github.GitHubError as exc:
-        raise PoolError(f"could not read the fork pool token's scopes: {exc}") from exc
-    if scopes is None:
-        raise PoolError(
-            "the fork pool token reports no scopes; use a classic token "
-            "with the public_repo scope alone"
-        )
-    if scopes != REQUIRED_SCOPES:
-        shown = ", ".join(sorted(scopes)) or "none"
-        raise PoolError(
-            f"the fork pool token carries scopes {shown}; it must carry "
-            "public_repo alone"
-        )
-    if login is None:
-        raise PoolError("the fork pool token's account reports no login")
-    return login
 
 
 def check_rename_rights(found: str, fork_org: str, account: str) -> None:

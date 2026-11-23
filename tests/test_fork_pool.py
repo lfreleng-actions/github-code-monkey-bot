@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -25,7 +28,28 @@ FORK_ORG = "lfreleng-bot-forks"
 FORK = f"{FORK_ORG}/repo"
 CONFIG: dict[str, Any] = {"default": FORK_ORG, "organisations": {}}
 ACCOUNT = "pool-bot"
-SCOPED = f'HTTP/2.0 200 OK\nX-Oauth-Scopes: public_repo\n\n{{"login": "{ACCOUNT}"}}'
+
+
+def expiring(days: float) -> str:
+    """The expiry header of a token that lapses ``days`` from now."""
+    when = datetime.now(UTC) + timedelta(days=days)
+    return f"GitHub-Authentication-Token-Expiration: {when:%Y-%m-%d %H:%M:%S} UTC"
+
+
+def reply(
+    scopes: str = "public_repo",
+    expiry: str | None = None,
+    body: str = f'{{"login": "{ACCOUNT}"}}',
+) -> str:
+    """A ``gh api --include user`` reply; a 30-day expiry unless given."""
+    expiry = expiring(30) if expiry is None else expiry
+    headers = ["HTTP/2.0 200 OK", f"X-Oauth-Scopes: {scopes}"]
+    if expiry:
+        headers.append(expiry)
+    return "\n".join([*headers, "", body])
+
+
+SCOPED = reply()
 OLD = f"{FORK_ORG}/old-repo"
 
 
@@ -171,22 +195,23 @@ class TokenCheckTest(NoNetworkCase):
     def test_account_without_login_is_refused(self) -> None:
         """A failure the account must fix names it, so its login is required."""
         for body in ("{}", "[]", "not json", '{"login": ""}'):
-            reply = f"HTTP/2.0 200 OK\nX-Oauth-Scopes: public_repo\n\n{body}"
             with (
                 self.subTest(body=body),
                 self.assertRaisesRegex(pool.PoolError, "reports no login"),
             ):
-                self.check(reply)
+                self.check(reply(body=body))
 
     def test_broader_scopes_are_refused(self) -> None:
-        """An operator's token, or one that can do more, never writes."""
+        """An operator's token, or one that can do more, never writes.
+
+        A well-formed expiry does not excuse a scope beyond public_repo.
+        """
         for scopes in ("repo", "public_repo, workflow", "public_repo, admin:org", ""):
-            reply = f"HTTP/2.0 200 OK\nX-Oauth-Scopes: {scopes}\n\n{{}}"
             with (
                 self.subTest(scopes=scopes),
                 self.assertRaisesRegex(pool.PoolError, "must carry public_repo alone"),
             ):
-                self.check(reply)
+                self.check(reply(scopes=scopes, body="{}"))
 
     def test_token_without_scopes_is_refused(self) -> None:
         """Fine-grained and App tokens report no scopes header."""
@@ -197,6 +222,46 @@ class TokenCheckTest(NoNetworkCase):
         """Only the header block before the first blank line is read."""
         with self.assertRaisesRegex(pool.PoolError, "reports no scopes"):
             self.check('HTTP/2.0 200 OK\n\n{"x":"X-Oauth-Scopes: public_repo"}')
+
+    def test_token_that_never_expires_is_refused(self) -> None:
+        """A classic token may be made without expiry; this one may not."""
+        with self.assertRaisesRegex(
+            pool.PoolError, "never expires; create it with an expiry"
+        ):
+            self.check(reply(expiry=""))
+
+    def test_unparsable_expiry_is_refused(self) -> None:
+        """An expiry the job cannot read fails, as a missing scope header does."""
+        for value in ("soon", "2027-13-40 10:39:33 UTC", "2027-01-18"):
+            header = f"GitHub-Authentication-Token-Expiration: {value}"
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(pool.PoolError, "expiry .* cannot be read"),
+            ):
+                self.check(reply(expiry=header))
+
+    def test_expiry_beyond_ninety_days_is_refused(self) -> None:
+        """A token must be rotated at least every 90 days."""
+        header = expiring(91)
+        date = header.partition(": ")[2]
+        with self.assertRaisesRegex(pool.PoolError, f"expires {date}.*90 days"):
+            self.check(reply(expiry=header))
+
+    def test_expiry_within_fourteen_days_warns_and_passes(self) -> None:
+        """A rotation falling due is announced on every run, without failing."""
+        header = expiring(13)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(self.check(reply(expiry=header)), ACCOUNT)
+        self.assertIn("::warning", output.getvalue())
+        self.assertIn(header.partition(": ")[2], output.getvalue())
+
+    def test_expiry_in_between_passes_silently(self) -> None:
+        """A token with weeks to run neither warns nor fails."""
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(self.check(reply(expiry=expiring(60))), ACCOUNT)
+        self.assertEqual(output.getvalue(), "")
 
     def test_unreadable_token_is_refused(self) -> None:
         """A rejected token fails before any fork is touched."""
@@ -532,13 +597,29 @@ class MainTest(NoNetworkCase):
     def test_a_wrong_token_stops_before_any_fork(self) -> None:
         """A token with broader scopes exits 1 before reading a fork."""
         env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
-        broad = "HTTP/2.0 200 OK\nX-Oauth-Scopes: repo\n\n{}"
+        broad = reply(scopes="repo", body="{}")
         with (
             patch.object(github, "run_gh", return_value=broad),
             patch.object(github, "api_object") as read,
         ):
             self.assertEqual(self.run_main(env), 1)
         read.assert_not_called()
+
+    def test_a_bad_expiry_stops_before_any_fork(self) -> None:
+        """No expiry, an unreadable one or a distant one exits 1 before reading."""
+        env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
+        for expiry in (
+            "",
+            "GitHub-Authentication-Token-Expiration: soon",
+            expiring(91),
+        ):
+            with (
+                self.subTest(expiry=expiry),
+                patch.object(github, "run_gh", return_value=reply(expiry=expiry)),
+                patch.object(github, "api_object") as read,
+            ):
+                self.assertEqual(self.run_main(env), 1)
+            read.assert_not_called()
 
     def test_an_empty_selection_needs_no_token_check(self) -> None:
         """Nothing selected means no API call at all."""
