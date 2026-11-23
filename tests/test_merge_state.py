@@ -473,6 +473,25 @@ class ReportTest(unittest.TestCase):
         lines = github_output.read_text(encoding="utf-8").splitlines()
         self.assertIn(f'unmergeable_pull_requests=["{conflicting}"]', lines)
 
+    @unittest.expectedFailure
+    def test_report_lists_proposals_a_label_granted_workflow_edits(self) -> None:
+        """Each proposal a label let change workflow files is listed once."""
+        grant = import_module("workflow_grant")
+        lines = grant.report_lines(
+            [result(workflow_edits_label="workflow-edits-ok"), result(issue=8)],
+            reporting.cell,
+        )
+        self.assertEqual(
+            lines,
+            [
+                "Workflow edits granted by a label on the issue:",
+                "",
+                f"- {REPOSITORY}#7: {PULL_URL}, by the `workflow-edits-ok` label",
+                "",
+            ],
+        )
+        self.assertEqual(grant.report_lines([result()], reporting.cell), [])
+
     def test_a_conflict_at_the_cap_is_handed_to_a_human(self) -> None:
         """No promise of a later round for a pull request at the round cap."""
         lines = reporting.conflict_lines(

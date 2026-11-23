@@ -331,6 +331,32 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertEqual(entry["checkout_sha"], SHA_A)
         self.assertIs(entry["sudo_and_containers"], True)
 
+    @unittest.expectedFailure
+    def test_the_label_grants_workflow_edits_to_its_issue_alone(self) -> None:
+        """A labelled issue gets the grant; another in the same run does not."""
+        self.details[("org/alpha", 3)] = self.detail(labels=["Workflow-Edits-OK"])
+        selection, _ = select.build_selection(self.args("org/alpha#1,org/alpha#3"))
+        grants = {
+            e["number"]: (e["allow_workflow_edits"], e["workflow_edits_label"])
+            for e in selection["issues"]
+        }
+        self.assertEqual(grants, {1: (False, None), 3: (True, "workflow-edits-ok")})
+        self.assertIs(selection["allow_workflow_edits"], False)
+        self.assertEqual(selection["workflow_edits_label"], "workflow-edits-ok")
+
+    @unittest.expectedFailure
+    def test_the_switch_grants_every_issue_without_naming_the_label(self) -> None:
+        """With the run's switch on, the label adds nothing to report."""
+        self.details[("org/alpha", 3)] = self.detail(labels=["workflow-edits-ok"])
+        args = self.args("org/alpha#1,org/alpha#3")
+        args.allow_workflow_edits = True
+        selection, _ = select.build_selection(args)
+        grants = [
+            (e["allow_workflow_edits"], e["workflow_edits_label"])
+            for e in selection["issues"]
+        ]
+        self.assertEqual(grants, [(True, None), (True, None)])
+
     def test_named_issues_are_worked_in_order_without_triage_filters(self) -> None:
         """No scan, no Type, label, assignee, category or one-per-repository rule."""
         selection, _ = select.build_selection(
@@ -736,6 +762,24 @@ class RevisionIntegrationTest(NoSubprocessCase):
             self.args(*named, "--allow-precommit-config-edits")
         )
         self.assertIs(selection["allow_precommit_config_edits"], True)
+
+    @unittest.expectedFailure
+    def test_a_round_takes_the_label_alone(self) -> None:
+        """The run's switch never widens a round; the issue's label does."""
+        labelled = self.revision("alpha", 41, 7)
+        labelled["labels"] = ["workflow-edits-ok"]
+        self.entries[("alpha", 41)] = labelled
+        self.entries[("alpha", 42)] = self.revision("alpha", 42, 8)
+        selection, _ = select.build_selection(
+            self.args(
+                "--pull-requests", "org/alpha#41,org/alpha#42", "--allow-workflow-edits"
+            )
+        )
+        grants = {
+            e["number"]: (e["allow_workflow_edits"], e["workflow_edits_label"])
+            for e in selection["issues"]
+        }
+        self.assertEqual(grants, {7: (True, "workflow-edits-ok"), 8: (False, None)})
 
     def test_outstanding_only_asks_for_the_scan_test(self) -> None:
         """A continuation's named pull request is built with the scan's test (#167)."""
@@ -2045,6 +2089,20 @@ class WriteOutputsTest(unittest.TestCase):
                 matrix = json.loads((Path(tmp) / "matrix.json").read_text("utf-8"))
                 (entry,) = matrix["include"]
                 self.assertIs(entry["sudo_and_containers"], expected)
+
+    @unittest.expectedFailure
+    def test_matrix_carries_the_workflow_edit_grant(self) -> None:
+        """Only a JSON ``true`` grants an entry workflow edits (#223)."""
+        cases = ((True, True), (False, False), ("true", False), (None, False))
+        for recorded, expected in cases:
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                issue = self.chosen_issue()
+                if recorded is not None:
+                    issue["allow_workflow_edits"] = recorded
+                outputs.write_outputs(Path(tmp), sample_selection([issue]), b"g\n")
+                matrix = json.loads((Path(tmp) / "matrix.json").read_text("utf-8"))
+                (entry,) = matrix["include"]
+                self.assertIs(entry["allow_workflow_edits"], expected)
 
     def test_title_cannot_inject_rows(self) -> None:
         """Line breaks in a public title stay inside its table cell."""

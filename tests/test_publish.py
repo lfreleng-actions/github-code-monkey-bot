@@ -243,6 +243,19 @@ class CommentBodyTest(unittest.TestCase):
             f"https://github.com/{REPOSITORY}/pull/8 (head {'e' * 12})",
         )
 
+    @unittest.expectedFailure
+    def test_proposed_names_the_label_that_granted_workflow_edits(self) -> None:
+        """A label that let the change touch workflows is named; junk is not."""
+        body = comments.comment_body(
+            result_json(workflow_edits_label="workflow-edits-ok"), ""
+        )
+        self.assertIn(
+            "The `workflow-edits-ok` label on this issue granted its workflow edits",
+            body or "",
+        )
+        junk = comments.comment_body(result_json(workflow_edits_label="a`b"), "")
+        self.assertNotIn("granted", junk or "")
+
     def test_proposed_branch_only(self) -> None:
         """Without a pull request the branch URL is named."""
         body = comments.comment_body(result_json(pull_request_url=None), "")
