@@ -1047,6 +1047,21 @@ The workflow facts the prompt adds, four in all:
    `.enable-sudo-and-containers` as what a maintainer adds to the
    repository. `prompt/revise.md` carries the same rule for a round.
 
+Both prompts also say, in *Recording checks*, how a session takes
+the record `commands` holds on this runner; which checks a change
+needs stays the guidance's. The `exit_code` is the check's own
+status, never a pipeline's last stage. The session reads the whole
+output of a non-zero exit, and a failure it expected accounts for
+that exit once the session has excluded it and run the check again.
+The session makes a hook the runner cannot run runnable where no
+tracked file changes, and otherwise excludes it by id
+(`SKIP=<id>`), runs the hooks again, runs its tool directly where it
+can and names the exclusion in the pull request body; it never
+excludes a hook that reported a finding. The last hook run listed is
+the session's run over the files its commits change, after its last
+commit, as it ran. The publisher marks a proposal whose last hook
+run did not exit 0 and publishes it all the same (§18.2).
+
 The publisher's mechanical checks (§8) do overlap the guidance on
 purpose: they are the gate that decides whether a proposal can merge,
 not a second statement of the policy, and they cover the subset a
@@ -1293,7 +1308,11 @@ For each selected issue:
    statement of how a later round answers review findings, §11.6
    of the organisation guidance), which nothing the agent writes
    can precede, hide or turn into code, so the merge closes the issue and the disclosure
-   always shows; then, below a rule, the manifest's body with
+   always shows; after the block, when the manifest's last hook run
+   did not exit 0 (§18.2), one line of the publisher's own naming
+   that command, in a code span escaped as a provenance table cell,
+   and its exit code, so a failing run shows outside the collapsed
+   block; then, below a rule, the manifest's body with
    `@mentions` defused, so agent text cannot notify anyone before a
    human reads it; label `code-monkey` if the label exists. Not a
    draft: a ready pull request notifies code owners, and a draft
@@ -2173,6 +2192,7 @@ conflicts while producer artifacts survive.
 | The request for an antagonistic review fails (a rate limit, an outage) | No review bot run starts; the issue comment already says the workflow asked for the review | The step tries a dispatch GitHub refused (HTTP 4xx) on up to four passes over 315 seconds (§20.5); a nominee that never goes is an error annotation, appears in the job's `failed` output as kind `failed` and turns the run red; the `antagonistic-notice` job then comments on that pull request, once per head and kind, while its head is still the one the request was for (§20.5). Any other failure may have started a run, so the step never sends it again: an error annotation, an `uncertain` summary line, an entry of kind `uncertain` whose notice says the request may not have arrived, and a red run |
 | A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
 | A status service (pre-commit.ci) queues for hours and never reports | A pending status holds the head unsettled: the wait runs out and the scan reads `checks still running` round after round | A listed context pending past `stale_status_minutes` is stale (§13.1): not waited for, not failing, named in the record, the comment and the report; the next round runs the hooks itself |
+| A session misreads its own failing hook run (a pipeline's status taken for the hook's, a hook that always fails on the runner hiding one that newly fails) | Proposal publishes on hooks that did not pass; the exit code shows in the collapsed provenance table alone | The prompts say how to take a check's exit status, read a failure whole and exclude a hook the runner cannot run by id (§7.3). A `proposed` manifest whose last hook run did not exit 0 stays `proposed`, gains a line after the provenance block (§8 step 9) and a `warnings` line in `check.json` and `result.json`, which the report shows (§18.2, §18.3) |
 | Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, and the report; a later round, continued or dispatched, picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
 
 <!-- markdownlint-enable MD013 -->
@@ -2621,6 +2641,22 @@ comment_id, reply, resolve}` per thread answered (§20). `usage.json`
 is the CLI's own usage output. Bounds on acceptance: manifest
 1 MiB, bundle 32 MiB, usage 1 MiB; regular files, no symlinks.
 
+`commands` lists the checks the session ran, each `{command,
+exit_code}`; the check keeps the first 50 entries with a string
+`command`, cut to 200 characters, and records an `exit_code` that is
+not an integer as `null`. They fill the provenance table (§8 step
+9). A *hook run* is a kept entry whose `command` names `prek run` or
+`pre-commit run` as whole words: `SKIP=a,b prek run --files x` and
+`uvx pre-commit run --all-files` are, `prek install` and
+`git commit -s (pre-commit and commit-msg hooks)` are not. The
+prompts make the last hook run the session's run of the hooks over
+the files its commits change, after its last commit (§7.3); when it
+exits anything but the integer `0`, a missing exit code included,
+the proposal stays `proposed` and the publisher marks it (§18.3). No other entry
+affects a verdict, and nothing marks a manifest with no hook run, or
+one whose failing hook run a passing one follows. `hook_runs.py`
+holds the rule.
+
 ### 18.3 `check.json` (publish, offline verdict; trusted)
 
 The output of `publish.py check`, produced with no credential but
@@ -2652,6 +2688,7 @@ the native token it hands zizmor for the online audit (§8 step 3).
   "pr_title": "Feat(sbom): Add CycloneDX 1.6 output",
   "pr_body": "...",
   "stats": {"files_changed": 2, "added_bytes": 1234},
+  "warnings": [],
   "online_audit": "online audit: no new zizmor findings"
 }
 ```
@@ -2671,7 +2708,14 @@ trailers §5 describes. `pr_body` is the composed body: the closing
 line and provenance block first, then the agent's text.
 `online_audit` is the online zizmor audit's pass note, blank
 when the check rejected the proposal before reaching it; its
-rejections land in `reasons`.
+rejections land in `reasons`. `warnings` holds notes that change no
+verdict: an unanswered thread or a round summary that misses its
+hand-back on a revision (§20.3), and on any proposal one line naming
+a last hook run that did not exit 0 and its exit code (§18.2).
+`result.json` starts its own `warnings` with these, once, for a
+first attempt and a revision alike, so the run report shows them.
+The report row's notes cell keeps the hook line a share of its own,
+which a long rejection reason cannot take.
 
 ### 18.4 `result.json` (publish, per issue; trusted)
 

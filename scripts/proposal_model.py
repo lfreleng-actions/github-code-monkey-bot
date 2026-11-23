@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+import hook_runs
 import proposal_policy as policy
 import review_outcome as outcome
 from proposal_policy import Identity, PublishError
@@ -362,10 +363,8 @@ def provenance_block(
     if commands:
         lines += ["| Command | Exit |", "| --- | --- |"]
         for item in commands:
-            # Agent-written text: one line, then escaped, so it stays in
-            # its cell and cannot close the details block.
-            command = " ".join(str(item["command"]).split())
-            command = command.replace("|", "\\|").replace("`", "'").replace("<", "&lt;")
+            # Agent text, one inert line: it cannot leave its cell or block.
+            command = hook_runs.cell(str(item["command"]))
             code = item["exit_code"]
             lines.append(f"| `{command}` | {code if code is not None else '?'} |")
         lines.append("")

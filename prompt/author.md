@@ -54,7 +54,8 @@ part and note it in your manifest reason.
    `HEAD` and commit there. Never commit to the default branch.
 4. **Meet the guidance.** Make, test and commit the change the way
    the guidance and the repository require, and record each check you
-   ran with its exit code in the manifest.
+   ran with its exit code in the manifest, as *Recording checks*
+   below says.
 5. **Workflow facts the guidance cannot know:**
    - *Signing.* Commit with `git commit -s` and no `-S`: this runner
      has no signing key. The workflow replays your commits through
@@ -146,6 +147,43 @@ part and note it in your manifest reason.
    `manifest.json` back before you end the session: confirm the file
    parses as JSON and, when `outcome` is `proposed`, carries a
    non-empty `pr_title` and `pr_body`.
+
+## Recording checks
+
+`commands` records the checks you ran on this runner, each with its
+exit status. These rules say how to take that record here; the
+guidance says which checks a change needs.
+
+1. **The exit status is the check's own.** Each `exit_code` is the
+   exit status of the command recorded beside it. A pipeline between
+   a check and its status replaces it: after `check | tail`,
+   `| head` or `| grep`, `$?` belongs to the last stage. Send the
+   check's output to a file (`prek run --files a b > hooks.log 2>&1`)
+   and take the status from the check itself.
+2. **Explain a failure from its whole output.** When a check
+   exits non-zero, read its complete output and find every failing
+   hook or test before you say why. A failure you expected does not
+   account for a non-zero exit until you have excluded that failure
+   and run the check again.
+3. **Exclude by id a hook this runner cannot run.** Some hooks
+   cannot run here: the runner lacks their tool, or its own setup
+   breaks them. First make such a hook runnable where that changes
+   no tracked file (`uv sync`, `npm ci`, installing the tool). Where
+   it still cannot run, exclude it by id (`SKIP=<id> prek run …`).
+   Then run the hooks again, so the exit status speaks for every
+   other hook, and run the hook's tool directly where you can. Name
+   each excluded hook and the reason in the pull request body. Never exclude a
+   hook that ran and reported a finding.
+4. **The last hook run listed is the one the proposal stands on.**
+   The last `prek run` or `pre-commit run` entry in `commands` is
+   your run of the repository's hooks over the files your commits change,
+   taken after your last commit and written as it ran, `SKIP=`
+   included. List every other hook run (one before a fix, a single
+   hook, the commit-message stage) before it. When that run still
+   does not exit 0, the pull request body names each failing hook and says why
+   the change leaves it failing. The workflow then publishes the
+   proposal as usual, with one line of its own above your text and
+   a warning in its run report naming that run and its exit code.
 
 ## The manifest
 

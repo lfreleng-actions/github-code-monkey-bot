@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import antagonistic_request as antagonistic
 import continuation
+import hook_runs
 import proposal_model as model
 import proposal_policy as policy
 import report_outputs as outputs
@@ -24,6 +25,8 @@ from proposal_policy import PublishError
 
 SCHEMA = 1
 REVIEW_COLUMNS = (*review_outcome.REVIEW_VERDICTS, "none")
+# The notes cell's share kept for a failing hook run's warning.
+HOOK_NOTE = 150
 
 
 def cell(value: Any, limit: int = 300) -> str:
@@ -51,10 +54,19 @@ def report_row(item: dict[str, Any]) -> str:
     output = item.get("pull_request_url") or item.get("branch_url") or "—"
     if item.get("dry_run") and verdict == "proposed":
         output = "dry run"
-    notes = notes_of(item.get("reasons")) + notes_of(item.get("warnings"))
+    warnings = notes_of(item.get("warnings"))
+    hook = next((w for w in warnings if w.startswith(hook_runs.WARNING)), None)
+    notes = notes_of(item.get("reasons")) + [w for w in warnings if w is not hook]
     # Choose the text first, then make it one cell: the title and the
-    # reasons alike descend from agent output.
-    text = "; ".join(notes) or str(item.get("pr_title") or "")
+    # reasons alike descend from agent output. A failing hook run keeps
+    # room of its own, so a long reason cannot cut it from the cell.
+    text = "; ".join(notes) or ("" if hook else str(item.get("pr_title") or ""))
+    if hook is None:
+        text = cell(text)
+    else:
+        room = 298 - len(policy.log_safe(hook)[:HOOK_NOTE])
+        mark = cell(hook, HOOK_NOTE)
+        text = f"{cell(text, room)}; {mark}" if text else mark
     label = f"{item.get('repository')}#{item.get('issue')}"
     round_number = item.get("round")
     if type(round_number) is int and round_number > 0:
@@ -63,7 +75,7 @@ def report_row(item: dict[str, Any]) -> str:
     copilot = review_cell(item)
     return (
         f"| {issue} | {cell(verdict)} | {cell(output)} | {copilot} "
-        f"| {'—' if requests is None else f'{requests:g}'} | {cell(text)} |"
+        f"| {'—' if requests is None else f'{requests:g}'} | {text} |"
     )
 
 

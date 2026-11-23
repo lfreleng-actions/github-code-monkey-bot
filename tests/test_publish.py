@@ -687,6 +687,18 @@ class RunPushTest(NoNetworkCase):
         self.assertIsNone(result["pull_request_url"])
         self.assertTrue(publish.needs_pull_request(result))
 
+    def test_check_warnings_reach_the_result_once(self) -> None:
+        """A first attempt's check warning reaches its result, and the report row."""
+        warning = "last hook run did not exit 0 (exit 1): `prek run`"
+        path = self.write_check(check_json(warnings=[warning]))
+        with (
+            patch.object(publish, "create_branch"),
+            patch.object(publish, "replay_commits", return_value=["f" * 40]),
+        ):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["warnings"], [warning])
+        self.assertIn("last hook run did not exit 0", reporting.report_row(result))
+
     def test_fork_not_ready_fails_without_rollback(self) -> None:
         """A fork that cannot be made or synced fails before any branch exists."""
         path = self.write_check(check_json())
@@ -1841,6 +1853,27 @@ class HandoffTest(NoNetworkCase):
                     self.push_args(path, mode=mode, dry_run=dry_run)
                 )
             self.assertIn(warning, result["warnings"])
+
+    def test_check_warnings_reach_a_moved_round_once(self) -> None:
+        """A revision's check warning appears once beside the move's own."""
+        self.target_at_selection()
+        warning = "last hook run did not exit 0 (exit 1): `prek run`"
+        path = self.write_check(revision_check(warnings=[warning]))
+
+        def move(_clone: Path, check: dict[str, Any]) -> list[str]:
+            check["warnings"].append("branch x stays")
+            return ["f" * 40]
+
+        with (
+            patch.object(refs, "require_fork"),
+            patch.object(refs, "sync_fork"),
+            patch.object(refs, "branch_matches", return_value=None),
+            patch.object(publish.revision_publish, "move_branch", side_effect=move),
+        ):
+            result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["verdict"], "proposed")
+        self.assertEqual(result["warnings"], [warning, "branch x stays"])
+        self.assertIn("last hook run did not exit 0", reporting.report_row(result))
 
     def test_branches_mode_publishes_no_revision(self) -> None:
         """A branch-only run never moves a live pull request's head."""
@@ -3800,6 +3833,23 @@ class ReportRowTest(unittest.TestCase):
         self.assertEqual(row.count("\n"), 0)
         self.assertIn("A \\| B", row)
         self.assertNotIn("::error::", row)
+        self.assertEqual(row.count("|") - row.count("\\|"), 7)
+
+    def test_hook_warning_survives_a_long_rejection(self) -> None:
+        """A failing hook run stays in the cell behind a reason past its bound."""
+        warning = "last hook run did not exit 0 (exit 1): `prek run --files x`"
+        row = reporting.report_row(
+            {
+                "repository": "o/r",
+                "issue": 1,
+                "verdict": "rejected",
+                "reasons": ["online audit: " + "z" * 400],
+                "warnings": ["thread unanswered", warning],
+            }
+        )
+        self.assertIn(warning, row)
+        self.assertIn("online audit: zzz", row)
+        self.assertLessEqual(len(row.rsplit(" | ", 1)[1]), 302)
         self.assertEqual(row.count("|") - row.count("\\|"), 7)
 
 

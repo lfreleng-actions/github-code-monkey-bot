@@ -919,6 +919,31 @@ class PromptReviewContracts(ReusableWorkflowCase):
         prompt = PROMPT.read_text(encoding="utf-8")
         self.assertEqual(skip_instructions(prompt), [])
 
+    def test_prompts_say_how_a_check_is_recorded(self) -> None:
+        """Both prompts carry the four rules on ``commands`` (issue #224).
+
+        Rule 3's ``SKIP=`` sits beside no word for review, so the
+        skip detector still finds nothing in either prompt.
+        """
+        phrases = (
+            "**The exit status is the check's own.**",
+            "`$?` belongs to the last stage",
+            "**Explain a failure from its whole output.**",
+            "until you have excluded that failure and run the check again",
+            "**Exclude by id a hook this runner cannot run.**",
+            "`SKIP=<id> prek run …`",
+            "Never exclude a hook that ran and reported a finding.",
+            "**The last hook run listed is the one the proposal stands on.**",
+            "taken after your last commit and written as it ran, `SKIP=` included",
+            "a warning in its run report naming that run and its exit code",
+        )
+        for path in (PROMPT, REVISE_PROMPT):
+            text = squash(path.read_text(encoding="utf-8"))
+            for phrase in phrases:
+                with self.subTest(prompt=path.name, phrase=phrase):
+                    self.assertIn(phrase, text)
+            self.assertEqual(skip_instructions(text), [])
+
 
 class RevisionContracts(ReusableWorkflowCase):
     """A revision round reuses the pipeline; what differs is pinned here.

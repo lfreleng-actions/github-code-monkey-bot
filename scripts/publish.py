@@ -85,7 +85,9 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "issue": check.get("issue"),
         "verdict": verdict,
         "reasons": policy.bounded_reasons(check.get("reasons")),
-        "warnings": [],
+        # The check's own warnings reach the result whatever the push
+        # does, so the run report shows them for every task.
+        "warnings": [str(w) for w in cast("list[Any]", check.get("warnings") or [])],
         "dry_run": bool(args.dry_run),
         "mode": args.mode,
         "branch_url": None,

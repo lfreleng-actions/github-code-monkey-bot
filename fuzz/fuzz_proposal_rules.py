@@ -34,6 +34,8 @@ documents:
 - ``proposal_check.read_manifest``: "Agent output; malformed is a
   verdict, not an operational fault": any manifest is read or raises
   ``Rejection``, and one it reads matches the trusted selection.
+- ``hook_runs.mark``: at most one warning for the last hook run, on
+  one line, and a body line exactly when it warns.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from harness_support import Breach, arguments, as_text, encodes, on_path
 on_path()
 policy = import_module("proposal_policy")
 proposal_check = import_module("proposal_check")
+hook_runs = import_module("hook_runs")
 model = import_module("proposal_model")
 
 IDENTITY = policy.Identity(
@@ -265,6 +268,14 @@ def oracle_manifest(raw: bytes, check: Any, manifest: dict[str, Any]) -> None:
             raise Breach(f"read_manifest kept a command outside its shape: {command}")
 
 
+def oracle_hooks(check: Any, line: str) -> None:
+    """At most one hook warning, on one line, and a body line exactly beside it."""
+    marked = [w for w in check.warnings if w.startswith("last hook run")]
+    broken = any(c in w + line.rstrip("\n") for w in marked for c in LINE_BREAKS)
+    if len(marked) > 1 or broken or bool(line) != bool(marked):
+        raise Breach(f"hook_runs.mark left {marked!r} and {line!r}")
+
+
 def check_path(payload: bytes) -> None:
     """``safe_path`` and ``protected`` together, as the diff walk applies them."""
     path = as_text(payload)
@@ -325,6 +336,8 @@ def check_manifest(payload: bytes) -> None:
         except policy.Rejection:
             return
     oracle_manifest(raw, check, manifest)
+    if manifest.get("outcome") == "proposed":
+        oracle_hooks(check, hook_runs.mark(check.commands, check.warnings))
 
 
 TARGETS = (
@@ -392,6 +405,7 @@ SEEDS: tuple[bytes, ...] = (
     seed(4, json.dumps(["one", "two" * 1200, 3, None])),
     seed(4, json.dumps({"reasons": "not a list"})),
     manifest_seed("i", outcome="proposed", commands=[{"command": "t", "exit_code": 0}]),
+    manifest_seed("i", outcome="proposed", commands=[{"command": "prek run\n`x`|@b"}]),
     manifest_seed("i", outcome="abstain", reason="Needs a product decision."),
     manifest_seed("i", outcome="handoff"),
     manifest_seed("i", schema=True, outcome="proposed"),
