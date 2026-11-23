@@ -25,7 +25,7 @@ from collections import Counter
 from collections.abc import Mapping
 from importlib import import_module
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, NamedTuple, cast
 
 import yaml  # pyright: ignore[reportMissingModuleSource]
 
@@ -3016,6 +3016,27 @@ ANTAGONISTIC_TOKEN = "secrets.antagonistic_dispatch_token"
 ANTAGONISTIC_WORKFLOW = "code-review-antagonistic.yaml"
 
 
+class Dispatch(NamedTuple):
+    """What one run of the dispatch step did."""
+
+    status: int
+    output: str
+    calls: list[str]
+    stdout: str
+    summary: str
+    sleeps: list[str]
+
+
+def published_head(pull: str) -> str:
+    """A distinct published head for a nominee, as the report names it."""
+    return f"{sum(map(ord, pull)):040x}"
+
+
+def step_outputs(text: str) -> dict[str, str]:
+    """Read a ``GITHUB_OUTPUT`` file of single-line ``key=value`` entries."""
+    return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+
 class AntagonisticRequestContracts(ReusableWorkflowCase):
     """The request for an antagonistic review and its one credential (#138)."""
 
@@ -3102,23 +3123,57 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         )
 
     def dispatch(
-        self, nominees: object, token: str = "t", fail: str = ""
-    ) -> tuple[int, str, list[str], str, str]:
-        """Run the dispatch step with a fake gh; return status, outputs, calls."""
+        self,
+        nominees: object,
+        token: str = "t",
+        fail: str = "",
+        failures: int = 99,
+        delays: str = "0 0 0",
+        lost: str = "",
+        lost_answer: str = "connection reset by peer",
+        heads: object = None,
+    ) -> Dispatch:
+        """Run the dispatch step with a fake gh and sleep; return what it did.
+
+        A call naming ``fail`` is refused, as a rate limit is, its first
+        ``failures`` times, then goes. A call naming ``lost`` fails with
+        ``lost_answer``, as a dispatch GitHub may have accepted does when
+        its response is lost. The fake sleep records each wait instead
+        of taking it. ``heads`` defaults to a published head for each
+        nominee, as the report outputs them.
+        """
+        if heads is None:
+            named = cast(list[object], nominees if isinstance(nominees, list) else [])
+            heads = {
+                pull: published_head(pull) for pull in named if isinstance(pull, str)
+            }
         step = self.step("antagonistic", "dispatch")
         with tempfile.TemporaryDirectory() as holder:
             work = Path(holder)
             fake = work / "bin"
             fake.mkdir()
             calls = work / "calls"
+            sleeps = work / "sleeps"
+            count = work / "count"
             calls.touch()
+            sleeps.touch()
+            count.write_text("0\n", encoding="utf-8")
             (fake / "gh").write_text(
                 "#!/bin/bash\n"
                 f'printf "%s\\n" "$*" >> "{calls}"\n'
-                f'case "$*" in *"{fail or "never"}"*) exit 1 ;; esac\n',
+                f'case "$*" in *"{fail or "never"}"*)\n'
+                f'  n=$(( $(cat "{count}") + 1 )); echo "$n" > "{count}"\n'
+                f'  [ "$n" -gt {failures} ] && exit 0\n'
+                "  echo 'HTTP 403: API rate limit exceeded' >&2; exit 1 ;;\n"
+                f'  *"{lost or "never"}"*) echo "{lost_answer}" >&2; exit 1 ;;\n'
+                "esac\n",
                 encoding="utf-8",
             )
+            (fake / "sleep").write_text(
+                f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{sleeps}"\n', encoding="utf-8"
+            )
             (fake / "gh").chmod(0o755)
+            (fake / "sleep").chmod(0o755)
             output = work / "output"
             summary = work / "summary"
             output.touch()
@@ -3131,6 +3186,8 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
                 "NOMINEES": nominees
                 if isinstance(nominees, str)
                 else json.dumps(nominees),
+                "HEADS": heads if isinstance(heads, str) else json.dumps(heads),
+                "RETRY_DELAYS": delays,
                 "GITHUB_OUTPUT": str(output),
                 "GITHUB_STEP_SUMMARY": str(summary),
             }
@@ -3141,53 +3198,246 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
                 text=True,
                 check=False,
             )
-            return (
-                run.returncode,
-                output.read_text(encoding="utf-8"),
-                calls.read_text(encoding="utf-8").splitlines(),
-                run.stdout,
-                summary.read_text(encoding="utf-8"),
+            return Dispatch(
+                status=run.returncode,
+                output=output.read_text(encoding="utf-8"),
+                calls=calls.read_text(encoding="utf-8").splitlines(),
+                stdout=run.stdout,
+                summary=summary.read_text(encoding="utf-8"),
+                sleeps=sleeps.read_text(encoding="utf-8").splitlines(),
             )
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_one_nominee_dispatches_once_live(self) -> None:
         """One dispatch per pull request, with dry_run=false."""
-        status, output, calls, _, summary = self.dispatch(["lfreleng-actions/a#1"])
-        self.assertEqual(status, 0)
+        run = self.dispatch(["lfreleng-actions/a#1"])
+        self.assertEqual(run.status, 0)
         self.assertEqual(
-            calls,
+            run.calls,
             [
                 f"workflow run {ANTAGONISTIC_WORKFLOW} --repo"
                 " lfreleng-actions/github-code-review-bot -f dry_run=false"
                 " -f pull_requests=lfreleng-actions/a#1"
             ],
         )
-        self.assertIn('requested=["lfreleng-actions/a#1"]', output)
-        self.assertIn("requested: lfreleng-actions/a#1", summary)
+        self.assertIn('requested=["lfreleng-actions/a#1"]', run.output)
+        self.assertIn("requested: lfreleng-actions/a#1", run.summary)
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_empty_token_warns_and_dispatches_nothing(self) -> None:
         """The default stays harmless until the secret is configured."""
-        status, output, calls, stdout, _ = self.dispatch(
-            ["lfreleng-actions/a#1"], token=""
-        )
-        self.assertEqual(status, 0)
-        self.assertEqual(calls, [])
-        self.assertIn("::warning::", stdout)
-        self.assertIn("requested=[]", output)
+        run = self.dispatch(["lfreleng-actions/a#1"], token="")
+        self.assertEqual(run.status, 0)
+        self.assertEqual(run.calls, [])
+        self.assertIn("::warning::", run.stdout)
+        self.assertIn("requested=[]", run.output)
 
+    @unittest.expectedFailure
+    def test_retry_delays_are_the_steps_own(self) -> None:
+        """The waits before passes two to four live in the step's env."""
+        step = self.step("antagonistic", "dispatch")
+        self.assertEqual(step["env"]["RETRY_DELAYS"], "15 60 240")
+
+    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    def test_a_failed_dispatch_is_a_warning(self) -> None:
-        """Three nominees, one failing: two requested, one warned, success."""
-        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2", "lfreleng-actions/c#3"]
-        status, output, calls, stdout, summary = self.dispatch(pulls, fail="b#2")
-        self.assertEqual(status, 0)
-        self.assertEqual(len(calls), 3)
-        self.assertIn(
-            'requested=["lfreleng-actions/a#1","lfreleng-actions/c#3"]', output
+    def test_a_dispatch_that_fails_once_goes_on_the_next_pass(self) -> None:
+        """A failure is a notice; the second pass requests it and the step passes."""
+        run = self.dispatch(
+            ["lfreleng-actions/a#1"], fail="a#1", failures=1, delays="15 60 240"
         )
-        self.assertEqual(stdout.count("::warning::"), 1)
-        self.assertIn("failed: lfreleng-actions/b#2", summary)
+        self.assertEqual(run.status, 0)
+        self.assertEqual(len(run.calls), 2)
+        self.assertEqual(run.sleeps, ["15"])
+        outputs = step_outputs(run.output)
+        self.assertEqual(outputs["requested"], '["lfreleng-actions/a#1"]')
+        self.assertEqual(outputs["failed_count"], "0")
+        self.assertEqual(json.loads(outputs["failed"]), {"include": []})
+        self.assertIn("::notice::", run.stdout)
+        self.assertIn("lfreleng-actions/a#1", run.stdout)
+        self.assertIn("pass 1", run.stdout)
+        self.assertNotIn("::error::", run.stdout)
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_a_nominee_that_never_goes_fails_the_step(self) -> None:
+        """Four passes, three waits, then an error, every output and a red step."""
+        run = self.dispatch(["lfreleng-actions/a#1"], fail="a#1", delays="15 60 240")
+        self.assertNotEqual(run.status, 0)
+        self.assertEqual(len(run.calls), 4)
+        self.assertEqual(run.sleeps, ["15", "60", "240"])
+        outputs = step_outputs(run.output)
+        self.assertEqual(outputs["requested"], "[]")
+        self.assertEqual(outputs["failed_count"], "1")
+        self.assertEqual(
+            json.loads(outputs["failed"]),
+            {
+                "include": [
+                    {
+                        "pull": "lfreleng-actions/a#1",
+                        "repository": "lfreleng-actions/a",
+                        "repo_name": "a",
+                        "number": 1,
+                        "kind": "failed",
+                        "head": published_head("lfreleng-actions/a#1"),
+                    }
+                ]
+            },
+        )
+        self.assertEqual(run.stdout.count("::notice::"), 3)
+        self.assertEqual(run.stdout.count("::error::"), 1)
+        self.assertIn("failed: lfreleng-actions/a#1", run.summary)
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_one_failing_nominee_of_three(self) -> None:
+        """Two requested on the first pass; the third alone is retried, then failed."""
+        pulls = [
+            "lfreleng-actions/a#1",
+            "lfreleng-actions/b.c#2",
+            "lfreleng-actions/d#3",
+        ]
+        run = self.dispatch(pulls, fail="b.c#2")
+        self.assertNotEqual(run.status, 0)
+        self.assertEqual(len(run.calls), 6)
+        self.assertEqual(run.sleeps, ["0", "0", "0"])
+        outputs = step_outputs(run.output)
+        self.assertEqual(
+            outputs["requested"], '["lfreleng-actions/a#1","lfreleng-actions/d#3"]'
+        )
+        self.assertEqual(outputs["failed_count"], "1")
+        failed = json.loads(outputs["failed"])["include"]
+        self.assertEqual(
+            failed,
+            [
+                {
+                    "pull": "lfreleng-actions/b.c#2",
+                    "repository": "lfreleng-actions/b.c",
+                    "repo_name": "b.c",
+                    "number": 2,
+                    "kind": "failed",
+                    "head": published_head("lfreleng-actions/b.c#2"),
+                }
+            ],
+        )
+        self.assertIn("requested: lfreleng-actions/a#1", run.summary)
+        self.assertIn("failed: lfreleng-actions/b.c#2", run.summary)
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_the_waits_come_from_retry_delays(self) -> None:
+        """Each later pass waits the next value, once, whatever the nominees."""
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/a#2"]
+        run = self.dispatch(pulls, fail="lfreleng-actions/a#", delays="1 2 3")
+        self.assertEqual(run.sleeps, ["1", "2", "3"])
+        self.assertEqual(len(run.calls), 8)
+        self.assertEqual(step_outputs(run.output)["failed_count"], "2")
+        for bad in ("1 2", "1 2 3 4", "1 x 3", "-1 2 3"):
+            with self.subTest(delays=bad):
+                run = self.dispatch(["lfreleng-actions/a#1"], delays=bad)
+                self.assertNotEqual(run.status, 0)
+                self.assertEqual(run.calls, [])
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_the_loop_ends_when_nothing_is_left(self) -> None:
+        """A first pass that requests everything waits for nothing."""
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2"]
+        run = self.dispatch(pulls, delays="15 60 240")
+        self.assertEqual(run.status, 0)
+        self.assertEqual(len(run.calls), 2)
+        self.assertEqual(run.sleeps, [])
+        self.assertEqual(step_outputs(run.output)["failed_count"], "0")
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_a_failure_github_did_not_refuse_is_never_sent_again(self) -> None:
+        """A lost response or a server error may have started a run.
+
+        It is sent once, is an error and an ``uncertain`` summary line,
+        in ``failed`` as kind ``uncertain`` for its own notice, and
+        fails the step; the others still go.
+        """
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2"]
+        for answer in (
+            "connection reset by peer",
+            "could not create workflow dispatch event: HTTP 502: Bad Gateway",
+        ):
+            with self.subTest(answer=answer):
+                run = self.dispatch(pulls, lost="b#2", lost_answer=answer)
+                self.assertNotEqual(run.status, 0)
+                self.assertEqual(len(run.calls), 2)
+                self.assertEqual(run.sleeps, [])
+                outputs = step_outputs(run.output)
+                self.assertEqual(outputs["requested"], '["lfreleng-actions/a#1"]')
+                self.assertEqual(outputs["failed_count"], "1")
+                self.assertEqual(
+                    json.loads(outputs["failed"]),
+                    {
+                        "include": [
+                            {
+                                "pull": "lfreleng-actions/b#2",
+                                "repository": "lfreleng-actions/b",
+                                "repo_name": "b",
+                                "number": 2,
+                                "kind": "uncertain",
+                                "head": published_head("lfreleng-actions/b#2"),
+                            }
+                        ]
+                    },
+                )
+                self.assertEqual(run.stdout.count("::error::"), 1)
+                self.assertNotIn("::notice::", run.stdout)
+                self.assertIn("uncertain: lfreleng-actions/b#2", run.summary)
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_both_kinds_are_in_failed_with_their_heads(self) -> None:
+        """A refused nominee and an uncertain one each get a notice entry."""
+        pulls = ["lfreleng-actions/a#1", "lfreleng-actions/b#2", "lfreleng-actions/c#3"]
+        run = self.dispatch(pulls, fail="a#1", lost="c#3")
+        self.assertNotEqual(run.status, 0)
+        outputs = step_outputs(run.output)
+        self.assertEqual(outputs["requested"], '["lfreleng-actions/b#2"]')
+        self.assertEqual(outputs["failed_count"], "2")
+        entries = json.loads(outputs["failed"])["include"]
+        self.assertEqual(
+            [(e["pull"], e["kind"], e["head"]) for e in entries],
+            [
+                ("lfreleng-actions/a#1", "failed", published_head(pulls[0])),
+                ("lfreleng-actions/c#3", "uncertain", published_head(pulls[2])),
+            ],
+        )
+
+    @unittest.expectedFailure
+    def test_heads_come_from_the_report(self) -> None:
+        """The report names each nominee's published head for the step."""
+        self.assert_expression(
+            str(self.jobs["report"]["outputs"]["antagonistic_heads"]),
+            "steps.report.outputs.antagonistic_heads",
+        )
+        step = self.step("antagonistic", "dispatch")
+        self.assert_expression(
+            step["env"]["HEADS"], "needs.report.outputs.antagonistic_heads"
+        )
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_a_nominee_without_a_published_head_is_refused(self) -> None:
+        """A head map that is not an object, or lacks a nominee's SHA."""
+        pull = "lfreleng-actions/a#1"
+        for name, heads in (
+            ("not json", "nope"),
+            ("list", [published_head(pull)]),
+            ("missing", {}),
+            ("short", {pull: "a" * 12}),
+            ("upper", {pull: "A" * 40}),
+            ("number", {pull: 1}),
+        ):
+            with self.subTest(name):
+                run = self.dispatch([pull], heads=heads)
+                self.assertNotEqual(run.status, 0)
+                self.assertEqual(run.calls, [])
+                self.assertIn("::error::", run.stdout)
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_malformed_nominees_are_refused_before_any_dispatch(self) -> None:
@@ -3202,15 +3452,15 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             "{}",
         ):
             with self.subTest(nominee=bad):
-                status, _, calls, _, _ = self.dispatch([good, bad])
-                self.assertNotEqual(status, 0)
-                self.assertEqual(calls, [])
-        status, _, calls, _, _ = self.dispatch("not json")
-        self.assertNotEqual(status, 0)
-        self.assertEqual(calls, [])
-        status, _, calls, _, _ = self.dispatch([good, 3])
-        self.assertNotEqual(status, 0)
-        self.assertEqual(calls, [])
+                run = self.dispatch([good, bad])
+                self.assertNotEqual(run.status, 0)
+                self.assertEqual(run.calls, [])
+        run = self.dispatch("not json")
+        self.assertNotEqual(run.status, 0)
+        self.assertEqual(run.calls, [])
+        run = self.dispatch([good, 3])
+        self.assertNotEqual(run.status, 0)
+        self.assertEqual(run.calls, [])
 
 
 class OutstandingOnlyContracts(ReusableWorkflowCase):
