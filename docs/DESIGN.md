@@ -2214,6 +2214,7 @@ scripts/merge_state.py                   whether a pull request can merge
 scripts/proposal_report.py               merge results into the report
 scripts/report_outputs.py                the run's pull request links (§18.6)
 scripts/continuation.py                  which rounds continue (§20.6)
+scripts/request_notice.py                a failed review request's notice (§20.5)
 scripts/review_verdict.py                classify a Copilot review (§8 step 11)
 scripts/review_sections.py               its suppressed and unchanged-code counts
 scripts/review_text.py                   what one line of it the classifier reads
@@ -2780,6 +2781,10 @@ publish.py respond --result result.json --check check.json
     --output result.json
 antagonistic_request.py --result result.json --output result.json
     --switch true|false [--repository O/R]
+request_notice.py --repository O/R --number N --kind failed|uncertain
+    --head SHA --bot-slug SLUG
+    --run-id RUN_ID --run-url URL --review-repository O/R
+    --branches JSON [--summary FILE]
 publish.py report --results DIR --output-md PATH --output-json PATH
     [--org ORG --github-output PATH] [--unreviewed-heads PATH]
 merge_state.py --result result.json --check check.json
@@ -2793,9 +2798,9 @@ The workflow no longer passes `--repositories`, `--include-assigned`
 or `--categories`, which the retired new-issue scan alone reads
 (§16).
 
-`select_issues.py`, `merge_state.py`, `publish.py push`, `open`,
-`respond`, `comment`, `review-request` and `review-await` read
-`GH_TOKEN`; `report` reads the select job's `unreviewed-heads.json`
+`select_issues.py`, `merge_state.py`, `request_notice.py`,
+`publish.py push`, `open`, `respond`, `comment`, `review-request`
+and `review-await` read `GH_TOKEN`; `report` reads the select job's `unreviewed-heads.json`
 when given one (§20.1). Everything else
 runs offline. A verdict other than
 `proposed` is data, not an error: the scripts exit non-zero for
