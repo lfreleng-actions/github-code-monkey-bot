@@ -393,7 +393,7 @@ class RunCheckProposedTest(GitCase):
         self.assertTrue(policy.SHA_RE.fullmatch(addition["blob"]))
         self.assertEqual(addition["size"], len(fixed.encode("utf-8")))
         self.assertEqual(check.pr_title, "Fix(readme): Correct typo")
-        provenance = policy.provenance_block(
+        provenance = model.provenance_block(
             model="claude-opus-5.5",
             run_url=RUN_URL,
             issue_url=ISSUE_URL,

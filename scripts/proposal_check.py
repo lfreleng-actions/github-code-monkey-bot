@@ -24,7 +24,7 @@ import revision_check as revision
 import workflow_gate
 from fork_orgs import ALLOWED_RE
 from git_bounded import git
-from proposal_model import Check, Context, load_json, read_usage
+from proposal_model import Check, Context, load_json, provenance_block, read_usage
 from proposal_policy import Identity, PublishError, Rejection
 
 
@@ -361,7 +361,7 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
         single_headline=single,
     )
     check.pr_title = title
-    provenance = policy.provenance_block(
+    provenance = provenance_block(
         model=context.model,
         run_url=context.run_url,
         issue_url=context.issue_url,
