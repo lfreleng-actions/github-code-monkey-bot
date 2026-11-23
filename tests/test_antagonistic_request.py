@@ -210,7 +210,6 @@ class CommentTest(unittest.TestCase):
 class ReportNominationTest(unittest.TestCase):
     """The report recomputes the nomination and outputs ``owner/repo#N``."""
 
-    @unittest.expectedFailure
     def test_report_outputs_the_nominees(self) -> None:
         """A clean result is named; the rest, and a stray link, are not."""
         with tempfile.TemporaryDirectory() as work:

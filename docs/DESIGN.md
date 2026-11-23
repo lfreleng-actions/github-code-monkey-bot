@@ -2139,6 +2139,7 @@ conflicts while producer artifacts survive.
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Transient GitHub `5xx` during the review wait | None beyond a later poll | The wait repeats the read at the next poll within the same deadline (§8 step 11); one line in `result.json` `warnings` counts the retries and names the last error. A wait spent on them is `pending` and the checks `unknown`, never clean or passing |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
+| The request for an antagonistic review fails (a rate limit, an outage) | No review bot run starts; the issue comment already says the workflow asked for the review | The step tries a dispatch GitHub refused (HTTP 4xx) on up to four passes over 315 seconds (§20.5); a nominee that never goes is an error annotation, appears in the job's `failed` output and turns the run red. Any other failure may have started a run, so the step never sends it again: an error annotation, an `uncertain` summary line and a red run |
 | A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
 | A status service (pre-commit.ci) queues for hours and never reports | A pending status holds the head unsettled: the wait runs out and the scan reads `checks still running` round after round | A listed context pending past `stale_status_minutes` is stale (§13.1): not waited for, not failing, named in the record, the comment and the report; the next round runs the hooks itself |
 | Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, and the report; a later round, continued or dispatched, picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
@@ -2851,7 +2852,21 @@ at most add a link to another pull request in the organisation to
 the run's outputs. The report's
 `antagonistic_pull_requests` output, the request job's input, and
 the `continue_pull_requests` output, the caller's `continue` job's
-input, are the two exceptions; §20.5 and §20.6 bound them.
+input, are the two exceptions; §20.5 and §20.6 bound them. Beside
+the first, the report's `antagonistic_heads` output, which is not a
+workflow output, maps each nominee to the published head its clean
+review covered, so a notice of a failed request names that head.
+
+The antagonistic job also sets two job outputs that are not workflow
+outputs. `failed` is `{"include": [...]}`, one entry per nominee whose
+review request did not certainly go, each with `pull`
+(`owner/repo#N`), `repository`, `repo_name`, `number`, `kind` and
+`head`, the nominee's entry in `antagonistic_heads`; `failed_count`
+is its length, as a string. `kind` is `failed` for a nominee GitHub
+refused on every pass and `uncertain` for one whose single dispatch
+failed without an answer saying GitHub refused it. The step builds
+both from the nominees it has already validated, and both are empty
+when the job did not run or had no token (§20.5).
 
 ## 19. Activity Log and Blockers
 
@@ -3610,15 +3625,34 @@ Three jobs share the work. The publish job's offline
 `antagonistic` record (§18.4) for the comment, with no token. The
 report job recomputes the rule from every result, ignoring the
 recorded state, over the URLs `report_outputs.py` already accepted,
-and emits the nominees as `owner/repo#N`. The `antagonistic` job,
+and emits the nominees as `owner/repo#N`, with each one's published
+head in `antagonistic_heads`. The `antagonistic` job,
 skipped in a dry run, outside `pull-requests` mode, with the switch
 off, `antagonistic_repository` empty or no nominee, re-validates each
 nominee against the run's `org`, refuses the whole list on one bad
-entry, and runs `gh workflow run code-review-antagonistic.yaml
+entry or one nominee without a published head, and runs
+`gh workflow run code-review-antagonistic.yaml
 -f dry_run=false -f pull_requests=<nominee>` once per pull request
-with the token of §10.5. A failed dispatch is a warning naming the
-pull request and the job goes on; its `requested` output feeds
-`antagonistic_pull_requests` (§18.6).
+with the token of §10.5. The step tries a dispatch GitHub refused
+again: it makes up to four passes, the first over every nominee and each later
+one, after a wait, over those that have not gone. The waits before
+the second, third and fourth pass are 15, 60 and 240 seconds, one
+per pass whatever the list holds, from the step's `RETRY_DELAYS`; at
+315 seconds the worst case sits inside the job's ten minutes, and a
+pass with nothing left ends the loop. An answer carrying an HTTP 4xx
+status, a rate limit among them, proves GitHub refused the dispatch
+and applied nothing; nothing else does. Any other failure, a lost response or
+a server error, may follow a dispatch GitHub accepted, and sending it
+again could start a second review run, so the step never does: it
+becomes an error annotation and an `uncertain` line in the summary.
+A refusal the step will try again is a notice naming
+the pull request and the pass; a nominee refused on every pass is an
+error annotation. The `requested` output, the nominees dispatched,
+feeds `antagonistic_pull_requests` (§18.6); the `failed` output lists
+the refused ones as kind `failed` and the uncertain ones as kind
+`uncertain`, each with its published head, and once the step has
+written both and the summary it fails when any nominee failed or
+stays uncertain, so the run goes red.
 
 **Trust.** Nothing authenticates a result yet (§18.4), so a forged
 result can nominate another bot pull request in the organisation.

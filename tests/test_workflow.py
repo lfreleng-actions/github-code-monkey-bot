@@ -3232,13 +3232,11 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertIn("::warning::", run.stdout)
         self.assertIn("requested=[]", run.output)
 
-    @unittest.expectedFailure
     def test_retry_delays_are_the_steps_own(self) -> None:
         """The waits before passes two to four live in the step's env."""
         step = self.step("antagonistic", "dispatch")
         self.assertEqual(step["env"]["RETRY_DELAYS"], "15 60 240")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_a_dispatch_that_fails_once_goes_on_the_next_pass(self) -> None:
         """A failure is a notice; the second pass requests it and the step passes."""
@@ -3257,7 +3255,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertIn("pass 1", run.stdout)
         self.assertNotIn("::error::", run.stdout)
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_a_nominee_that_never_goes_fails_the_step(self) -> None:
         """Four passes, three waits, then an error, every output and a red step."""
@@ -3287,7 +3284,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertEqual(run.stdout.count("::error::"), 1)
         self.assertIn("failed: lfreleng-actions/a#1", run.summary)
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_one_failing_nominee_of_three(self) -> None:
         """Two requested on the first pass; the third alone is retried, then failed."""
@@ -3322,7 +3318,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertIn("requested: lfreleng-actions/a#1", run.summary)
         self.assertIn("failed: lfreleng-actions/b.c#2", run.summary)
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_the_waits_come_from_retry_delays(self) -> None:
         """Each later pass waits the next value, once, whatever the nominees."""
@@ -3337,7 +3332,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
                 self.assertNotEqual(run.status, 0)
                 self.assertEqual(run.calls, [])
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_the_loop_ends_when_nothing_is_left(self) -> None:
         """A first pass that requests everything waits for nothing."""
@@ -3348,7 +3342,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertEqual(run.sleeps, [])
         self.assertEqual(step_outputs(run.output)["failed_count"], "0")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_a_failure_github_did_not_refuse_is_never_sent_again(self) -> None:
         """A lost response or a server error may have started a run.
@@ -3389,7 +3382,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
                 self.assertNotIn("::notice::", run.stdout)
                 self.assertIn("uncertain: lfreleng-actions/b#2", run.summary)
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_both_kinds_are_in_failed_with_their_heads(self) -> None:
         """A refused nominee and an uncertain one each get a notice entry."""
@@ -3408,7 +3400,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             ],
         )
 
-    @unittest.expectedFailure
     def test_heads_come_from_the_report(self) -> None:
         """The report names each nominee's published head for the step."""
         self.assert_expression(
@@ -3420,7 +3411,6 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             step["env"]["HEADS"], "needs.report.outputs.antagonistic_heads"
         )
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_a_nominee_without_a_published_head_is_refused(self) -> None:
         """A head map that is not an object, or lacks a nominee's SHA."""

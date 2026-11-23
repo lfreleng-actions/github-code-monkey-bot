@@ -2258,6 +2258,8 @@ jobs:
       failing_check_pull_requests: "${{ steps.report.outputs.failing_check_pull_requests }}"
       # yamllint disable-line rule:line-length
       antagonistic_pull_requests: "${{ steps.report.outputs.antagonistic_pull_requests }}"
+      # Each nominee's published head, for a notice of a failed request.
+      antagonistic_heads: "${{ steps.report.outputs.antagonistic_heads }}"
       # Only a live pull-requests run moves a pull request's head, so
       # no other run names one to continue, whatever its results say.
       continue_pull_requests: >-
@@ -2377,6 +2379,10 @@ jobs:
     permissions: {}
     outputs:
       requested: "${{ steps.dispatch.outputs.requested }}"
+      # The nominees no pass dispatched, or whose one dispatch may not
+      # have gone, as a matrix for the notice job.
+      failed: "${{ steps.dispatch.outputs.failed }}"
+      failed_count: "${{ steps.dispatch.outputs.failed_count }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'
@@ -2403,10 +2409,18 @@ jobs:
           allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
 
       # Every nominee is checked as a JSON string literal, so one
-      # holding a newline cannot pass as two. A malformed list or
-      # repository refuses the whole request before any dispatch; an
-      # empty token or a failed dispatch is a warning, since the next
-      # publication or revision round asks again.
+      # holding a newline cannot pass as two, and must have a published
+      # head. A malformed list, head map or repository refuses the whole
+      # request before any dispatch; an empty token is a warning and
+      # dispatches nothing. A dispatch GitHub refused (an HTTP 4xx
+      # answer) is tried again on up to three later passes, one wait
+      # each from RETRY_DELAYS, 315 seconds at worst; a nominee that
+      # never goes is in `failed` as kind `failed`. Any other failure
+      # may have started a run, so it is never sent again: it is an
+      # error and an `uncertain` summary line, and in `failed` as kind
+      # `uncertain`. Each entry names its published head, for the notice
+      # job. Either fails the step once every output and the summary
+      # are written.
       - name: 'Dispatch antagonistic reviews'
         id: dispatch
         env:
@@ -2414,6 +2428,8 @@ jobs:
           REPOSITORY: "${{ inputs.antagonistic_repository }}"
           ORG: "${{ inputs.org }}"
           NOMINEES: "${{ needs.report.outputs.antagonistic_pull_requests }}"
+          HEADS: "${{ needs.report.outputs.antagonistic_heads }}"
+          RETRY_DELAYS: '15 60 240'
         run: |
           set -euo pipefail
           export LC_ALL=C
@@ -2421,6 +2437,11 @@ jobs:
             echo '::error::antagonistic_repository is not owner/repo'
             exit 1
           fi
+          if ! [[ "$RETRY_DELAYS" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+            echo '::error::RETRY_DELAYS is not three whole numbers of seconds'
+            exit 1
+          fi
+          read -r -a delays <<< "$RETRY_DELAYS"
           if ! items=$(jq -r 'if type == "array" then .[] | @json
               else error("not an array") end' <<< "$NOMINEES"); then
             echo '::error::The nominated pull requests are not a JSON array'
@@ -2437,8 +2458,21 @@ jobs:
             fi
             pulls+=("${item:1:${#item}-2}")
           done <<< "$items"
+          if ! heads=$(jq -ce 'select(type == "object")' <<< "$HEADS" \
+              2> /dev/null); then
+            echo '::error::The nominated heads are not a JSON object'
+            exit 1
+          fi
+          for pull in "${pulls[@]}"; do
+            if ! jq -e --arg pull "$pull" '.[$pull] | type == "string"
+                and test("^[0-9a-f]{40}$")' <<< "$heads" > /dev/null; then
+              echo "::error::Nominee $pull has no published head"
+              exit 1
+            fi
+          done
           requested=()
           failed=()
+          uncertain=()
           if [ -z "$GH_TOKEN" ]; then
             echo '::warning::antagonistic_dispatch_token is not set;' \
               'no antagonistic review requested'
@@ -2447,21 +2481,63 @@ jobs:
             echo 'requested=[]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          for pull in "${pulls[@]}"; do
-            if gh workflow run code-review-antagonistic.yaml \
-              --repo "$REPOSITORY" -f dry_run=false -f pull_requests="$pull"
-            then
-              requested+=("$pull")
-            else
-              echo "::warning::Antagonistic review request failed: $pull"
-              failed+=("$pull")
-            fi
+          passes=$(( ${#delays[@]} + 1 ))
+          pending=("${pulls[@]}")
+          for (( pass = 1; pass <= passes; pass++ )); do
+            [ "${#pending[@]}" -gt 0 ] || break
+            if [ "$pass" -gt 1 ]; then sleep "${delays[pass - 2]}"; fi
+            left=()
+            for pull in "${pending[@]}"; do
+              status=0
+              answer=$(gh workflow run code-review-antagonistic.yaml \
+                --repo "$REPOSITORY" -f dry_run=false -f pull_requests="$pull" \
+                2>&1) || status=$?
+              [ -z "$answer" ] || printf '%s\n' "$answer"
+              if [ "$status" -eq 0 ]; then
+                requested+=("$pull")
+              elif ! [[ "$answer" =~ HTTP\ 4[0-9][0-9]: ]]; then
+                echo "::error::Antagonistic review request for $pull got" \
+                  "no answer saying GitHub refused it; it may have started" \
+                  "a run, so it is not tried again"
+                uncertain+=("$pull")
+              elif [ "$pass" -lt "$passes" ]; then
+                echo "::notice::Antagonistic review request for $pull failed" \
+                  "on pass $pass of $passes; trying again"
+                left+=("$pull")
+              else
+                echo "::error::Antagonistic review request failed on every" \
+                  "pass: $pull"
+                failed+=("$pull")
+              fi
+            done
+            pending=("${left[@]}")
           done
           {
             echo '## Antagonistic review requests'
             echo
             for pull in "${requested[@]}"; do echo "- requested: $pull"; done
             for pull in "${failed[@]}"; do echo "- failed: $pull"; done
+            for pull in "${uncertain[@]}"; do echo "- uncertain: $pull"; done
           } >> "$GITHUB_STEP_SUMMARY"
           json=$(jq -cn '$ARGS.positional' --args "${requested[@]}")
           echo "requested=$json" >> "$GITHUB_OUTPUT"
+          shape='^(?<repository>[^/]+/(?<repo_name>[^#]+))#(?<number>[0-9]+)$'
+          kinds=$(
+            for pull in "${failed[@]}"; do printf 'failed %s\n' "$pull"; done
+            for pull in "${uncertain[@]}"; do
+              printf 'uncertain %s\n' "$pull"
+            done
+          )
+          matrix=$(jq -cRn --arg shape "$shape" --argjson heads "$heads" '
+              {include: [inputs | select(. != "")
+                | split(" ") as [$kind, $pull]
+                | $pull | capture($shape) as $m
+                | {pull: $pull, repository: $m.repository,
+                   repo_name: $m.repo_name, number: ($m.number | tonumber),
+                   kind: $kind, head: $heads[$pull]}]}' <<< "$kinds")
+          echo "failed=$matrix" >> "$GITHUB_OUTPUT"
+          count=$(( ${#failed[@]} + ${#uncertain[@]} ))
+          echo "failed_count=$count" >> "$GITHUB_OUTPUT"
+          if [ "${#failed[@]}" -gt 0 ] || [ "${#uncertain[@]}" -gt 0 ]; then
+            exit 1
+          fi
