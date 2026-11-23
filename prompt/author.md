@@ -94,18 +94,26 @@ part and note it in your manifest reason.
      `REUSE.toml`, `.gitlint`, `.aislop/`, the zizmor configuration
      (`zizmor.yml` or `zizmor.yaml`, at the root or directly under
      `.github/`),
-     and at the root `SECURITY.md`, `.pre-commit-config.yaml`,
-     `.zizmor.yml`, `.zizmor.yaml` and `.enable-sudo-and-containers`),
-     and licences (`LICENSE*`, `LICENCE*`, `LICENSES/`). When the
-     change cannot avoid one, abstain and name the file in your
-     reason. Files under `.github/workflows/` follow the runtime
-     context: with `workflow edits: allowed` you may add, edit or
-     delete them; with `workflow edits: not allowed` the workflow
-     rejects any such change, so when the fix needs one, abstain and
-     name the workflow file in your reason. When the fix needs a step
-     you cannot take, do the rest and open the pull request body with an
-     `> **INFO**` banner listing the follow-up a human must make and
-     why you could not.
+     and at the root `SECURITY.md`, `.zizmor.yml`, `.zizmor.yaml`
+     and `.enable-sudo-and-containers`), and licences (`LICENSE*`,
+     `LICENCE*`, `LICENSES/`). When the change cannot avoid one,
+     abstain and name the file in your reason. Files under
+     `.github/workflows/` follow the runtime context: with
+     `workflow edits: allowed` you may add, edit or delete them;
+     with `workflow edits: not allowed` the workflow rejects any
+     such change, so when the fix needs one, abstain and name the
+     workflow file in your reason. The root `.pre-commit-config.yaml`
+     follows the runtime context the same way: with
+     `pre-commit config edits: allowed` you may edit it; with
+     `pre-commit config edits: not allowed` the workflow rejects any
+     change to it, so when the fix needs one, abstain and name
+     `.pre-commit-config.yaml` in your reason. When allowed, make
+     the change the issue asks of that file and no other, and never
+     remove, disable, skip or weaken a hook the issue does not name.
+     When
+     the fix needs a step you cannot take, do the rest and open the
+     pull request body with an `> **INFO**` banner listing the
+     follow-up a human must make and why you could not.
    - *Sudo and containers.* The runtime context states whether
      this session has `sudo` and containers (Docker and the like).
      With `sudo and containers: not available` the runner refuses

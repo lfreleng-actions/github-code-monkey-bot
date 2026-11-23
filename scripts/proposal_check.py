@@ -24,7 +24,7 @@ import revision_check as revision
 import workflow_gate
 from fork_orgs import ALLOWED_RE
 from git_bounded import git
-from proposal_model import Check, Context, load_json, read_usage
+from proposal_model import Check, Context, load_json, provenance_block, read_usage
 from proposal_policy import Identity, PublishError, Rejection
 
 
@@ -278,7 +278,7 @@ def walk_diff(clone: Path, parent: str, sha: str, check: Check) -> dict[str, Any
         old_mode, new_mode, _old_blob, new_blob, status = parts
         if not policy.safe_path(path):
             raise Rejection(f"unsafe path {path!r}")
-        if policy.protected(path):
+        if policy.protected(path) and not workflow_gate.precommit_config(path):
             raise Rejection(f"{path} is protected and cannot change")
         if path.startswith(policy.WORKFLOW_PREFIX):
             # Deleting a workflow file needs the grant as much as
@@ -353,7 +353,7 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
             {"sha": sha, "tree": tree, "headline": headline, "body": body, **diff}
         )
         parent = sha
-    workflow_gate.check_workflows(clone, check, allowed=context.allow_workflow_edits)
+    workflow_gate.check_gated(clone, check, context)
     single = check.commits[0]["headline"] if len(check.commits) == 1 else None
     title, body = policy.check_pull_request_text(
         manifest.get("pr_title"),
@@ -361,12 +361,13 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
         single_headline=single,
     )
     check.pr_title = title
-    provenance = policy.provenance_block(
+    provenance = provenance_block(
         model=context.model,
         run_url=context.run_url,
         issue_url=context.issue_url,
         base_sha=check.base_sha,
         commands=check.commands,
+        changes_precommit_config=check.changes_precommit_config,
     )
     # The body is agent output: defuse mentions before a human has
     # read it, as the issue comments already do. The publisher's text
@@ -413,8 +414,9 @@ def run_check(
         run_url=run_url,
         issue_url=str(entry["url"]),
         zizmor_token=zizmor_token,
-        # Only a JSON true turns it on; a selection without it is off.
+        # Only a JSON true turns a switch on; a selection without it is off.
         allow_workflow_edits=selection.get("allow_workflow_edits") is True,
+        allow_precommit_edits=selection.get("allow_precommit_config_edits") is True,
     )
     check = Check.from_entry(key, entry)
     check.bot_login = context.identity.bot_login

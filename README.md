@@ -170,6 +170,14 @@ that changes a workflow file without it. A revision round may change
 the workflow files its pull request already changes and no other,
 whatever the switch says (design document sections 8 and 20.3).
 
+The root `.pre-commit-config.yaml` decides the checks a repository
+runs, so new pull requests leave it alone unless the caller sets
+`allow_precommit_config_edits: true`; the publisher rejects a
+proposal that changes it without the switch, and a pull request that
+does change it says so in its provenance block. A revision round may
+change it when its pull request already changes it and not otherwise,
+whatever the switch says.
+
 ## Trusted issue authors
 
 The bot works an issue when a listed login opened it and, if

@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 policy = import_module("proposal_policy")
+model = import_module("proposal_model")
 
 IDENTITY = policy.Identity(
     coauthor="Claude <noreply@anthropic.com>",
@@ -632,7 +633,7 @@ class ProvenanceCommandTest(unittest.TestCase):
 
     def test_command_cannot_escape_the_block(self) -> None:
         """Newlines flatten and markup cannot close the details block."""
-        block = policy.provenance_block(
+        block = model.provenance_block(
             model="m",
             run_url="r",
             issue_url="i",
@@ -660,7 +661,7 @@ class ProvenanceBlockTest(unittest.TestCase):
 
     def test_contents(self) -> None:
         """Issue, model, run, base and the commands table appear."""
-        block = policy.provenance_block(
+        block = model.provenance_block(
             model="claude-opus-5.5",
             run_url="https://example/run/1",
             issue_url="https://github.com/o/r/issues/7",
@@ -687,7 +688,7 @@ class ProvenanceBlockTest(unittest.TestCase):
 
     def test_without_commands_or_run(self) -> None:
         """No commands means no table; an empty run URL renders n/a."""
-        block = policy.provenance_block(
+        block = model.provenance_block(
             model="m", run_url="", issue_url="u", base_sha="e" * 40, commands=[]
         )
         self.assertNotIn("| Command |", block)
@@ -698,7 +699,7 @@ class ProvenanceBlockTest(unittest.TestCase):
 
         AGENTS.md §11.6 requires that disclosure in each pull request.
         """
-        block = policy.provenance_block(
+        block = model.provenance_block(
             model="m", run_url="", issue_url="u", base_sha="e" * 40, commands=[]
         )
         self.assertIn("revision round", policy.REVISION_DISCLOSURE)
@@ -707,6 +708,29 @@ class ProvenanceBlockTest(unittest.TestCase):
         self.assertLess(
             block.index(policy.REVISION_DISCLOSURE), block.index("</details>")
         )
+
+
+class ProvenanceLintGateTest(unittest.TestCase):
+    """A change to ``.pre-commit-config.yaml`` shows in the provenance block."""
+
+    def test_provenance_names_the_lint_gate(self) -> None:
+        """A block for a change to the file says so, even when collapsed."""
+        block = model.provenance_block(
+            model="m",
+            run_url="",
+            issue_url="u",
+            base_sha="e" * 40,
+            commands=[],
+            changes_precommit_config=True,
+        )
+        summary = block.split("</summary>")[0]
+        self.assertIn(".pre-commit-config.yaml", summary)
+        self.assertIn("lint gate", summary)
+        self.assertIn("- Lint gate: this pull request changes", block)
+        plain = model.provenance_block(
+            model="m", run_url="", issue_url="u", base_sha="e" * 40, commands=[]
+        )
+        self.assertNotIn(".pre-commit-config.yaml", plain)
 
 
 class IdentityTest(unittest.TestCase):

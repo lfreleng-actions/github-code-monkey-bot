@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""Which workflow files a proposal may change (DESIGN.md sections 8 and 20.3).
+"""Which gated files a proposal may change (DESIGN.md sections 8 and 20.3).
 
-A new proposal may add, edit or delete a file under
-``.github/workflows/`` only when the run's ``allow_workflow_edits``
-switch, recorded in the trusted selection, is on. A revision round may
-change only the workflow files its pull request already changes,
-whatever the switch says: a round answers review findings on its pull
-request and never widens it into another workflow.
+The gated files are those under ``.github/workflows/`` and the root
+``.pre-commit-config.yaml``. A new proposal may add, edit or delete a
+workflow file only when the run's ``allow_workflow_edits`` switch,
+recorded in the trusted selection, is on, and may change the
+pre-commit configuration only when ``allow_precommit_config_edits`` is.
+A revision round may change only the gated files its pull request
+already changes, whatever the switches say: a round answers review
+findings on its pull request and never widens it into another
+workflow or into the repository's lint gate.
 """
 
 from __future__ import annotations
@@ -18,12 +21,12 @@ from typing import Any
 
 import proposal_policy as policy
 from git_bounded import git
-from proposal_model import Check
+from proposal_model import Check, Context
 from proposal_policy import PublishError, Rejection
 
 # Paths a reason names before it says how many more there are.
 NAMED = 10
-# Published commits read for the workflow writes a round carries over.
+# Published commits read for the gated writes a round carries over.
 HISTORY = 64
 # The mode git reports for a side of a change where the file is absent.
 ABSENT = "000000"
@@ -34,13 +37,26 @@ State = tuple[str, str]
 Step = tuple[State, State]
 
 
+def precommit_config(path: str) -> bool:
+    """Whether ``path`` is the root pre-commit configuration.
+
+    Compared in lower case, as ``policy.PROTECTED_PATHS`` compares it.
+    """
+    return path.lower() == policy.PRECOMMIT_CONFIG
+
+
+def gated(path: str) -> bool:
+    """Whether a change to ``path`` needs a switch or the pull request's own diff."""
+    return path.startswith(policy.WORKFLOW_PREFIX) or precommit_config(path)
+
+
 def touched(commits: list[dict[str, Any]]) -> list[str]:
-    """Every workflow path the chain adds, edits or deletes, sorted."""
+    """Every gated path the chain adds, edits or deletes, sorted."""
     paths: set[str] = set()
     for commit in commits:
         paths.update(str(item["path"]) for item in commit["additions"])
         paths.update(str(path) for path in commit["deletions"])
-    return sorted(p for p in paths if p.startswith(policy.WORKFLOW_PREFIX))
+    return sorted(p for p in paths if gated(p))
 
 
 def named(paths: list[str]) -> str:
@@ -70,8 +86,8 @@ def fetch_pull_request(clone: Path, check: Check) -> None:
     )
 
 
-def workflow_diff(clone: Path, old: str, new: str) -> set[str]:
-    """The workflow paths that differ between two commits."""
+def gated_diff(clone: Path, old: str, new: str) -> set[str]:
+    """The gated paths that differ between two commits."""
     raw = str(
         git(
             clone,
@@ -84,18 +100,18 @@ def workflow_diff(clone: Path, old: str, new: str) -> set[str]:
             new,
         )
     )
-    return {p for p in raw.split("\0") if p.startswith(policy.WORKFLOW_PREFIX)}
+    return {p for p in raw.split("\0") if gated(p)}
 
 
-def pull_request_workflows(clone: Path, check: Check) -> set[str]:
-    """The workflow paths the pull request changes, base to published head.
+def pull_request_gated(clone: Path, check: Check) -> set[str]:
+    """The gated paths the pull request changes, base to published head.
 
     The base is the one the selection recorded for the pull request,
     not the rebase commit a round may have moved to, so the diff holds
     the pull request's own changes and none from the default branch.
     """
     fetch_pull_request(clone, check)
-    return workflow_diff(clone, check.pull_base_sha, check.head_sha)
+    return gated_diff(clone, check.pull_base_sha, check.head_sha)
 
 
 def published_commits(clone: Path, check: Check) -> list[str]:
@@ -227,20 +243,44 @@ def inherited(clone: Path, chain: list[Step], published: list[Step]) -> bool:
     return carried(chain, replayed(clone, chain[0][0], published))
 
 
-def check_workflows(clone: Path, check: Check, *, allowed: bool) -> None:
-    """Reject a chain that changes a workflow file it may not change."""
+def check_new_proposal(
+    paths: list[str], *, allow_workflows: bool, allow_precommit_config: bool
+) -> None:
+    """Reject a new proposal's gated paths whose switch is off."""
+    workflows = [p for p in paths if p.startswith(policy.WORKFLOW_PREFIX)]
+    if workflows and not allow_workflows:
+        raise Rejection(
+            "workflow edits are off for this run (allow_workflow_edits is "
+            "false), so a new proposal may not add, change or delete files "
+            f"under {policy.WORKFLOW_PREFIX}: {named(workflows)}"
+        )
+    configs = [p for p in paths if precommit_config(p)]
+    if configs and not allow_precommit_config:
+        raise Rejection(
+            f"{named(configs)} is protected and cannot change: pre-commit "
+            "config edits are off for this run "
+            "(allow_precommit_config_edits is false)"
+        )
+
+
+def check_gated(clone: Path, check: Check, context: Context) -> None:
+    """Reject a chain that changes a gated file it may not change.
+
+    Records whether the chain changes the pre-commit configuration, for
+    the check summary and the provenance block.
+    """
     paths = touched(check.commits)
+    check.changes_precommit_config = any(precommit_config(p) for p in paths)
     if not paths:
         return
     if check.task != "revise":
-        if not allowed:
-            raise Rejection(
-                "workflow edits are off for this run (allow_workflow_edits is "
-                "false), so a new proposal may not add, change or delete files "
-                f"under {policy.WORKFLOW_PREFIX}: {named(paths)}"
-            )
+        check_new_proposal(
+            paths,
+            allow_workflows=context.allow_workflow_edits,
+            allow_precommit_config=context.allow_precommit_edits,
+        )
         return
-    changed = pull_request_workflows(clone, check)
+    changed = pull_request_gated(clone, check)
     outside = [p for p in paths if p not in changed]
     if outside:
         # A path the pull request's net diff leaves alone may still
@@ -249,7 +289,7 @@ def check_workflows(clone: Path, check: Check, *, allowed: bool) -> None:
         # path as its base had it and makes no change to it that the
         # published commits, replayed onto that base, did not already
         # make, in the same order and at the same place.
-        net = workflow_diff(clone, check.base_sha, str(check.commits[-1]["sha"]))
+        net = gated_diff(clone, check.base_sha, str(check.commits[-1]["sha"]))
         chain = transitions(clone, [str(c["sha"]) for c in check.commits], outside)
         published = transitions(clone, published_commits(clone, check), outside)
         outside = [
@@ -259,6 +299,7 @@ def check_workflows(clone: Path, check: Check, *, allowed: bool) -> None:
         ]
     if outside:
         raise Rejection(
-            "a revision round may change only the workflow files its pull "
-            f"request already changes; this one also changes {named(outside)}"
+            "a revision round may change only the workflow files and "
+            f"{policy.PRECOMMIT_CONFIG} its pull request already changes; "
+            f"this one also changes {named(outside)}"
         )

@@ -726,6 +726,17 @@ class RevisionIntegrationTest(NoSubprocessCase):
         )
         self.assertIs(selection["allow_workflow_edits"], True)
 
+    def test_selection_records_the_precommit_config_switch(self) -> None:
+        """``allow_precommit_config_edits`` is off unless the run turns it on."""
+        self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
+        named = ("--pull-requests", "org/alpha#41")
+        selection, _ = select.build_selection(self.args(*named))
+        self.assertIs(selection["allow_precommit_config_edits"], False)
+        selection, _ = select.build_selection(
+            self.args(*named, "--allow-precommit-config-edits")
+        )
+        self.assertIs(selection["allow_precommit_config_edits"], True)
+
     def test_outstanding_only_asks_for_the_scan_test(self) -> None:
         """A continuation's named pull request is built with the scan's test (#167)."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)

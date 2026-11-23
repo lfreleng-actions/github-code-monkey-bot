@@ -49,6 +49,9 @@ class Check:
     verdict: str = "proposed"
     reasons: list[str] = field(default_factory=lambda: cast("list[str]", []))
     needs_workflows: bool = False
+    # Whether the chain changes the root .pre-commit-config.yaml, the
+    # one protected path an operator switch unlocks (DESIGN.md 8).
+    changes_precommit_config: bool = False
     commits: list[dict[str, Any]] = field(
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
@@ -208,6 +211,7 @@ class Check:
             "verdict": self.verdict,
             "reasons": self.reasons,
             "needs_workflows": self.needs_workflows,
+            "changes_precommit_config": self.changes_precommit_config,
             "commits": self.commits,
             "pr_title": self.pr_title,
             "pr_body": self.pr_body,
@@ -293,6 +297,9 @@ class Context:
     zizmor_token: str = ""
     # The run's switch for new proposals that change workflow files.
     allow_workflow_edits: bool = False
+    # The run's allow_precommit_config_edits switch, for new proposals
+    # that change the root .pre-commit-config.yaml.
+    allow_precommit_edits: bool = False
 
 
 def check_summary(check: Check) -> str:
@@ -307,7 +314,66 @@ def check_summary(check: Check) -> str:
             size = sum(int(item["size"]) for item in commit["additions"])
             headline = str(commit["headline"]).replace("|", "\\|")
             lines.append(f"| {headline} | {files} | {size} |")
-        lines += ["", f"Needs `workflows: write`: {check.needs_workflows}", ""]
+        lines += [
+            "",
+            f"Needs `workflows: write`: {check.needs_workflows}",
+            "",
+            f"Changes `{policy.PRECOMMIT_CONFIG}`: {check.changes_precommit_config}",
+            "",
+        ]
     if check.online_audit:
         lines += [policy.log_safe(check.online_audit), ""]
     return "\n".join(lines) + "\n"
+
+
+def provenance_block(
+    *,
+    model: str,
+    run_url: str,
+    issue_url: str,
+    base_sha: str,
+    commands: list[dict[str, Any]],
+    changes_precommit_config: bool = False,
+) -> str:
+    """The block that heads every pull request body, before agent text.
+
+    A change to the lint gate shows in the summary line as well as the
+    list, so a reviewer sees it with the block collapsed.
+    """
+    summary = "Authored by an AI agent; human review required"
+    if changes_precommit_config:
+        summary += f"; changes the lint gate, {policy.PRECOMMIT_CONFIG}"
+    lines = [
+        "<details>",
+        f"<summary>{summary}</summary>",
+        "",
+        f"- Issue: {issue_url}",
+        f"- Model: `{model}` via GitHub Copilot CLI",
+        f"- Run: {run_url or 'n/a'}",
+        f"- Base: `{base_sha}`",
+    ]
+    if changes_precommit_config:
+        lines.append(
+            f"- Lint gate: this pull request changes `{policy.PRECOMMIT_CONFIG}`, "
+            "which decides the checks the repository runs; review every "
+            "hook change"
+        )
+    lines.append("")
+    if commands:
+        lines += ["| Command | Exit |", "| --- | --- |"]
+        for item in commands:
+            # Agent-written text: one line, then escaped, so it stays in
+            # its cell and cannot close the details block.
+            command = " ".join(str(item["command"]).split())
+            command = command.replace("|", "\\|").replace("`", "'").replace("<", "&lt;")
+            code = item["exit_code"]
+            lines.append(f"| `{command}` | {code if code is not None else '?'} |")
+        lines.append("")
+    lines += [
+        "The `github-code-monkey-bot` workflow opened this pull request.",
+        "Nobody has merged it; a maintainer must review it first.",
+        policy.REVISION_DISCLOSURE,
+        "</details>",
+        "",
+    ]
+    return "\n".join(lines)

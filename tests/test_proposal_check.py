@@ -126,6 +126,7 @@ class Fixture:
         # The run's switch as the selection records it; None leaves it
         # out, as a selection from before the switch did.
         self.allow_workflow_edits: bool | None = None
+        self.allow_precommit_config_edits: bool | None = None
 
     def commit(
         self,
@@ -284,6 +285,8 @@ class Fixture:
         }
         if self.allow_workflow_edits is not None:
             document["allow_workflow_edits"] = self.allow_workflow_edits
+        if self.allow_precommit_config_edits is not None:
+            document["allow_precommit_config_edits"] = self.allow_precommit_config_edits
         return document
 
     def write_selection(self, selection: dict[str, Any] | None = None) -> Path:
@@ -393,7 +396,7 @@ class RunCheckProposedTest(GitCase):
         self.assertTrue(policy.SHA_RE.fullmatch(addition["blob"]))
         self.assertEqual(addition["size"], len(fixed.encode("utf-8")))
         self.assertEqual(check.pr_title, "Fix(readme): Correct typo")
-        provenance = policy.provenance_block(
+        provenance = model.provenance_block(
             model="claude-opus-5.5",
             run_url=RUN_URL,
             issue_url=ISSUE_URL,
@@ -1154,6 +1157,7 @@ class CheckSummaryTest(unittest.TestCase):
         self.assertIn("- usage.json unreadable: x", summary)
         self.assertIn("| Fix: A \\| B | 2 | 10 |", summary)
         self.assertIn("Needs `workflows: write`: True", summary)
+        self.assertIn("Changes `.pre-commit-config.yaml`: False", summary)
 
     def test_rejected_without_commits(self) -> None:
         """A rejection lists reasons and no table."""

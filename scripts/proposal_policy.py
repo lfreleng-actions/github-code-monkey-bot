@@ -77,8 +77,10 @@ PROTECTED_NAMES = frozenset(
     }
 )
 ZIZMOR_CONFIGS = {f"{d}zizmor.{x}" for d in ("", ".github/") for x in ("yml", "yaml")}
+# The one protected path a switch may unlock (``workflow_gate``).
+PRECOMMIT_CONFIG = ".pre-commit-config.yaml"
 PROTECTED_PATHS = frozenset(
-    {"security.md", ".pre-commit-config.yaml", ".zizmor.yml", ".zizmor.yaml"}
+    {"security.md", PRECOMMIT_CONFIG, ".zizmor.yml", ".zizmor.yaml"}
 ) | {".enable-sudo-and-containers", *ZIZMOR_CONFIGS}
 PROTECTED_DIRS = frozenset(
     {
@@ -398,42 +400,3 @@ def check_pull_request_body_size(body: str) -> None:
         raise Rejection(
             f"pull request body exceeds {MAX_PR_BODY} characters after provenance"
         )
-
-
-def provenance_block(
-    *,
-    model: str,
-    run_url: str,
-    issue_url: str,
-    base_sha: str,
-    commands: list[dict[str, Any]],
-) -> str:
-    """The block that heads every pull request body, before agent text."""
-    lines = [
-        "<details>",
-        "<summary>Authored by an AI agent; human review required</summary>",
-        "",
-        f"- Issue: {issue_url}",
-        f"- Model: `{model}` via GitHub Copilot CLI",
-        f"- Run: {run_url or 'n/a'}",
-        f"- Base: `{base_sha}`",
-        "",
-    ]
-    if commands:
-        lines += ["| Command | Exit |", "| --- | --- |"]
-        for item in commands:
-            # Agent-written text: one line, then escaped, so it stays in
-            # its cell and cannot close the details block.
-            command = " ".join(str(item["command"]).split())
-            command = command.replace("|", "\\|").replace("`", "'").replace("<", "&lt;")
-            code = item["exit_code"]
-            lines.append(f"| `{command}` | {code if code is not None else '?'} |")
-        lines.append("")
-    lines += [
-        "The `github-code-monkey-bot` workflow opened this pull request.",
-        "Nobody has merged it; a maintainer must review it first.",
-        REVISION_DISCLOSURE,
-        "</details>",
-        "",
-    ]
-    return "\n".join(lines)
