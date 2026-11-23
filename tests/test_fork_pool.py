@@ -489,8 +489,9 @@ class PrepareTest(NoNetworkCase):
             prepare(TARGET_ENTRY)
         sleep.assert_not_called()
 
-    def test_poll_timeout_is_operational(self) -> None:
-        """A fork that never appears before the deadline is an error."""
+    @unittest.expectedFailure
+    def test_poll_timeout_is_not_yet_visible(self) -> None:
+        """A requested fork still absent at the deadline is told apart from a failure."""
         with (
             patch.object(github, "api_object", side_effect=absent()),
             patch.object(github, "api_list", return_value=[]),
@@ -501,6 +502,22 @@ class PrepareTest(NoNetworkCase):
                 "monotonic",
                 side_effect=[0.0, 1.0, pool.FORK_WAIT_SECONDS + 1.0],
             ),
+            self.assertRaisesRegex(pool.NotYetVisible, "not yet visible"),
+        ):
+            prepare(TARGET_ENTRY)
+
+    def test_poll_read_failure_is_operational(self) -> None:
+        """A 500 while polling is a failure, not a fork still being made."""
+        with (
+            patch.object(
+                github,
+                "api_object",
+                side_effect=[absent(), github.GitHubError("x (HTTP 500)")],
+            ),
+            patch.object(github, "api_list", return_value=[]),
+            patch.object(github, "api_write", return_value=repo_object()),
+            patch.object(pool.time, "sleep"),
+            patch.object(pool.time, "monotonic", return_value=0.0),
             self.assertRaisesRegex(policy.PublishError, "did not appear"),
         ):
             prepare(TARGET_ENTRY)
@@ -593,6 +610,52 @@ class MainTest(NoNetworkCase):
         summary = self.summary.read_text()
         self.assertIn(f"| `{FORK}` | failed: ", summary)
         self.assertIn(f"| `{FORK_ORG}/other` | present |", summary)
+
+    @unittest.expectedFailure
+    def test_a_fork_not_yet_visible_warns_and_passes(self) -> None:
+        """GitHub can take over a minute to fork; the publish job reads it later."""
+        env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
+        out = io.StringIO()
+        with (
+            patch.object(github, "run_gh", return_value=SCOPED),
+            patch.object(github, "api_object", side_effect=absent()),
+            patch.object(github, "api_list", return_value=[]),
+            patch.object(github, "api_write", return_value=repo_object()),
+            patch.object(pool.time, "sleep"),
+            patch.object(
+                pool.time, "monotonic", side_effect=[0.0, pool.FORK_WAIT_SECONDS + 1.0]
+            ),
+            redirect_stdout(out),
+        ):
+            self.assertEqual(self.run_main(env), 0)
+        self.assertIn(f"::warning title=Fork not yet visible::{FORK}", out.getvalue())
+        self.assertNotIn("::error", out.getvalue())
+        self.assertIn(
+            f"| `{FORK}` | requested; not yet visible |", self.summary.read_text()
+        )
+
+    def test_a_refused_or_wrong_fork_still_fails_the_job(self) -> None:
+        """Only a slow fork is spared: a refusal or a non-fork still exits 1."""
+        env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
+        refused = github.GitHubError("gh: Forbidden (HTTP 403)")
+        cases = {
+            "refused": ([absent()], refused),
+            "not a fork": ([absent(), repo_object(fork=False)], repo_object()),
+        }
+        for name, (reads, created) in cases.items():
+            self.summary.unlink(missing_ok=True)
+            with (
+                self.subTest(name),
+                patch.object(github, "run_gh", return_value=SCOPED),
+                patch.object(github, "api_object", side_effect=reads),
+                patch.object(github, "api_list", return_value=[]),
+                patch.object(github, "api_write", side_effect=[created]),
+                patch.object(pool.time, "sleep"),
+                patch.object(pool.time, "monotonic", return_value=0.0),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(self.run_main(env), 1)
+            self.assertIn(f"| `{FORK}` | failed: ", self.summary.read_text())
 
     def test_a_wrong_token_stops_before_any_fork(self) -> None:
         """A token with broader scopes exits 1 before reading a fork."""

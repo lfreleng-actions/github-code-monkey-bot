@@ -72,14 +72,20 @@ class RequireForkTest(NoNetworkCase):
         listing.assert_not_called()
         write.assert_not_called()
 
+    @unittest.expectedFailure
     def test_missing_fork_names_the_forks_job(self) -> None:
-        """A 404 is neither created nor looked up by parent; it is reported."""
+        """A 404 is neither created nor looked up by parent; it is reported.
+
+        The reason names both causes: the forks job failed, or it
+        recorded a fork GitHub was still creating.
+        """
         with (
             patch.object(github, "api_object", side_effect=absent()),
             patch.object(github, "api_list") as listing,
             patch.object(github, "api_write") as write,
             self.assertRaisesRegex(
-                policy.PublishError, f"fork {FORK} does not exist.*Prepare forks"
+                policy.PublishError,
+                f"fork {FORK} does not exist.*Prepare forks.*not yet visible",
             ),
         ):
             refs.require_fork(FORK, TARGET)
