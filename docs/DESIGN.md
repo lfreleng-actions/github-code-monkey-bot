@@ -2051,22 +2051,38 @@ job makes no write to that fork.
 
 The dispatch caller passes it as the optional `fork_pool_token`, and
 the forks job's `Find, create or rename forks` step is the one place
-that reads it. That job holds `contents: read`, runs beside the
-author matrix, and checks out the trusted assets at the pinned
-commit and nothing else; no agent output or target code runs beside
-it. `fork_pool.py` reads the token's `X-OAuth-Scopes` and refuses
-one that is not classic or carries any scope besides `public_repo`,
-so an operator's own token, which could reach far more, never makes
-a write. It proves each matrix entry against `config/fork-orgs.json`
-before touching a fork, requests every missing fork before it waits
-for any, against one shared deadline, so a large first run waits
-about as long as one fork, and writes each fork's row to the step
-summary as its outcome is final. It tries every target and fails the
-job when any fork is not ready; the publish job still runs, and the
-targets without a fork fail alone. Without the secret the step warns,
-reads nothing and succeeds, and every fork that already exists keeps
-working. `tests/test_workflow.py` pins that reach. The token's expiry
-needs the same owner and rotation reminder as the model PAT (§10.2).
+that reads it. That job holds `contents: read`, runs beside the author
+matrix, and checks out the trusted assets at the pinned commit and
+nothing else; no agent output or target code runs beside it.
+`fork_pool.py` first has `pool_token.py` read the token's
+`X-OAuth-Scopes` and refuse one that is not classic or carries any
+scope besides `public_repo`, so an operator's own token, which could
+reach far more, never makes a write. It proves each matrix entry
+against `config/fork-orgs.json` before touching a fork, requests every
+missing fork before it waits for any, against one shared deadline, so
+a large first run waits about as long as one fork, and writes each
+fork's row to the step summary as its outcome is final. It tries every
+target and fails the job when any fork is not ready; the publish job
+still runs, and the targets without a fork fail alone. Without the
+secret the step warns, reads nothing and succeeds, and every fork that
+already exists keeps working. `tests/test_workflow.py` pins that
+reach.
+
+No classic token stops at chosen organisations: it can write to
+every repository the account can, the forks that head the open pull
+requests among them, and GitHub signs commits made through the API.
+Human approval, last-push approval and stale-review dismissal still
+stand between such a commit and a merge, but a leaked token stays
+useful until it expires, and a classic token may never expire. So
+`pool_token.py` also reads the `GitHub-Authentication-Token-Expiration`
+header of the same reply, which GitHub omits for a token that never
+expires. No header, one it cannot parse, or an expiry more than 90
+days ahead fails the job before any write, naming the date it read:
+the owner rotates the token at least every 90 days. An expiry 14
+days away or less passes with a `::warning` naming the date on every
+run, and the rotation falls due before the job stops. The token's
+owner creates its successor with an expiry within 90 days and
+replaces `FORK_POOL_TOKEN` when the warning appears.
 
 ## 11. Dispatch and Concurrency
 
@@ -2196,7 +2212,7 @@ conflicts while producer artifacts survive.
 | Task needs `sudo` or containers (an image build, a loop mount) in a target without the marker | Runner refuses both; the step cannot run | Prompt tells the agent not to work around it: it abstains, or leaves the step out and says so, naming `.enable-sudo-and-containers`; a maintainer adds the marker to the default branch where the repository needs it (§4.1, §7.3) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The forks job finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that job runs |
-| Fork pool token absent, expired or too broad | The forks job makes and renames no fork; a target without its fork fails its publish, naming the forks job | The job warns when the secret is absent and fails naming the scopes otherwise; existing forks keep working; restore the token (§10.6) |
+| Fork pool token absent, expired or too broad | The forks job makes and renames no fork; a target without its fork fails its publish, naming the forks job | The job warns when the secret is absent or expires within 14 days, and fails naming the scopes or the expiry otherwise; existing forks keep working; restore the token (§10.6) |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
 | Two runs overlap | A wasted session on one target; never a second pull request | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected and waits for an older run still selecting (§6 "Overlapping runs"), failing open; the publisher re-reads the issue and the branch's pull requests before any write (§8 step 8), so a run that loses the race publishes nothing |
@@ -2274,6 +2290,7 @@ scripts/publish.py                       replay, open PR, reconcile
 scripts/publish_cli.py                   its eight commands' command line
 scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/fork_pool.py                     the forks job: find, create, rename (§4.3)
+scripts/pool_token.py                    its token's scopes and expiry (§10.6)
 scripts/stale_branch.py                  a closed attempt's branch (§5)
 scripts/issue_recheck.py                 the issue re-read before a push (§8)
 scripts/branch_chain.py                  a branch read back as replayed work

@@ -223,7 +223,6 @@ class TokenCheckTest(NoNetworkCase):
         with self.assertRaisesRegex(pool.PoolError, "reports no scopes"):
             self.check('HTTP/2.0 200 OK\n\n{"x":"X-Oauth-Scopes: public_repo"}')
 
-    @unittest.expectedFailure
     def test_token_that_never_expires_is_refused(self) -> None:
         """A classic token may be made without expiry; this one may not."""
         with self.assertRaisesRegex(
@@ -231,7 +230,6 @@ class TokenCheckTest(NoNetworkCase):
         ):
             self.check(reply(expiry=""))
 
-    @unittest.expectedFailure
     def test_unparsable_expiry_is_refused(self) -> None:
         """An expiry the job cannot read fails, as a missing scope header does."""
         for value in ("soon", "2027-13-40 10:39:33 UTC", "2027-01-18"):
@@ -242,7 +240,6 @@ class TokenCheckTest(NoNetworkCase):
             ):
                 self.check(reply(expiry=header))
 
-    @unittest.expectedFailure
     def test_expiry_beyond_ninety_days_is_refused(self) -> None:
         """A token must be rotated at least every 90 days."""
         header = expiring(91)
@@ -250,7 +247,6 @@ class TokenCheckTest(NoNetworkCase):
         with self.assertRaisesRegex(pool.PoolError, f"expires {date}.*90 days"):
             self.check(reply(expiry=header))
 
-    @unittest.expectedFailure
     def test_expiry_within_fourteen_days_warns_and_passes(self) -> None:
         """A rotation falling due is announced on every run, without failing."""
         header = expiring(13)
@@ -609,7 +605,6 @@ class MainTest(NoNetworkCase):
             self.assertEqual(self.run_main(env), 1)
         read.assert_not_called()
 
-    @unittest.expectedFailure
     def test_a_bad_expiry_stops_before_any_fork(self) -> None:
         """No expiry, an unreadable one or a distant one exits 1 before reading."""
         env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
