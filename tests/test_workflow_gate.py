@@ -38,6 +38,7 @@ from test_proposal_check import (  # noqa: E402
 checks = import_module("proposal_check")
 gate = import_module("workflow_gate")
 stub = import_module("zizmor_stub")
+PublishError = import_module("proposal_policy").PublishError
 
 CHANGED = ".github/workflows/ci.yaml"
 OTHER = ".github/workflows/other.yaml"
@@ -47,6 +48,8 @@ EDITED = "on: [push, pull_request]\njobs: {}\n"
 FORK = "lfreleng-bot-forks/repo"
 GLOB = ".github/workflows/ci*.yaml"
 SIBLING = ".github/workflows/ci-other.yaml"
+LABEL = "workflow-edits-ok"
+GRANTED = {"allow_workflow_edits": True, "workflow_edits_label": LABEL}
 JOBS = (
     b"on: push\n"
     b"jobs:\n"
@@ -96,18 +99,22 @@ def run_check(
     entry: dict[str, Any] | None = None,
     switch: Any = None,
     precommit_switch: Any = None,
+    label: str | None = None,
 ) -> Any:
     """Run the check with the clone on the local upstream.
 
     ``switch`` and ``precommit_switch``, when given, are written as the
     selection's ``allow_workflow_edits`` and
-    ``allow_precommit_config_edits`` values verbatim, whatever their type.
+    ``allow_precommit_config_edits`` values verbatim, whatever their type;
+    ``label`` likewise as its ``workflow_edits_label``.
     """
     selection = fixture.selection(**(entry or {}))
     if switch is not None:
         selection["allow_workflow_edits"] = switch
     if precommit_switch is not None:
         selection["allow_precommit_config_edits"] = precommit_switch
+    if label is not None:
+        selection["workflow_edits_label"] = label
     zizmor = stub.StubZizmor(root)
     with (
         patch.object(
@@ -136,12 +143,14 @@ class NewProposalSwitchTest(GitCase):
         super().setUp()
         seed_workflows(self.fixture)
 
-    def propose(self, files: dict[str, str | None]) -> Any:
+    def propose(
+        self, files: dict[str, str | None], *, entry: dict[str, Any] | None = None
+    ) -> Any:
         """One commit changing ``files``, bundled and checked."""
         self.fixture.commit("CI: Change workflows\n\nBody.\n", files)
         self.fixture.bundle()
         self.fixture.manifest(pr_title="CI: Change workflows")
-        return run_check(self.fixture, self.root)
+        return run_check(self.fixture, self.root, entry=entry, label=LABEL)
 
     def test_switch_absent_rejects_an_addition(self) -> None:
         """A selection without the switch keeps it off: the default is false."""
@@ -191,6 +200,40 @@ class NewProposalSwitchTest(GitCase):
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertTrue(check.needs_workflows)
 
+    def test_the_label_grants_an_issue_the_switch_does_not(self) -> None:
+        """The entry's grant from the issue's label passes with the switch off."""
+        self.fixture.allow_workflow_edits = False
+        check = self.propose({ADDED: WORKFLOW, OTHER: None}, entry=GRANTED)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["workflow_edits_label"], LABEL)
+
+    def test_an_entry_without_the_grant_is_rejected_whatever_the_switch(
+        self,
+    ) -> None:
+        """The entry's own ``false`` wins, and the rejection names the label."""
+        self.fixture.allow_workflow_edits = True
+        check = self.propose({ADDED: WORKFLOW}, entry={"allow_workflow_edits": False})
+        self.assertEqual(check.verdict, "rejected")
+        (reason,) = check.reasons
+        self.assertIn(f"lacks the {LABEL} label", reason)
+
+    def test_a_present_non_boolean_grant_is_off_whatever_the_switch(
+        self,
+    ) -> None:
+        """Only an absent field falls back to the run's switch."""
+        for index, value in enumerate(("true", "false", 1, None)):
+            with self.subTest(value=value):
+                root = self.root / f"case-{index}"
+                root.mkdir()
+                fixture = Fixture(root)
+                seed_workflows(fixture)
+                fixture.commit("CI: Add a workflow\n\nBody.\n", {ADDED: WORKFLOW})
+                fixture.bundle()
+                fixture.manifest(pr_title="CI: Add a workflow")
+                entry = {"allow_workflow_edits": value}
+                check = run_check(fixture, root, entry=entry, switch=True)
+                self.assertEqual(check.verdict, "rejected")
+
     def test_switch_off_leaves_other_changes_alone(self) -> None:
         """A proposal touching no workflow file is unaffected by the switch."""
         self.fixture.allow_workflow_edits = False
@@ -213,7 +256,11 @@ class RevisionWorkflowTest(GitCase):
         self.tip = self.fixture.advance_upstream()
 
     def revise(
-        self, files: dict[str, str | None], *, base: str | None = None
+        self,
+        files: dict[str, str | None],
+        *,
+        base: str | None = None,
+        grant: dict[str, Any] | None = None,
     ) -> tuple[Any, MagicMock]:
         """Add a round's commit changing ``files``; check it with the fork stubbed."""
         self.fixture.commit("CI: Answer the review\n\nBody.\n", files)
@@ -226,7 +273,11 @@ class RevisionWorkflowTest(GitCase):
             check = run_check(
                 self.fixture,
                 self.root,
-                entry=self.fixture.revision_entry(self.tip, self.head),
+                entry={
+                    **self.fixture.revision_entry(self.tip, self.head),
+                    **(grant or {}),
+                },
+                label=LABEL,
             )
         return check, fork
 
@@ -282,6 +333,47 @@ class RevisionWorkflowTest(GitCase):
         check, _fork = self.revise({OTHER: EDITED})
         self.assertEqual(check.verdict, "rejected")
         self.assertIn(OTHER, check.reasons[0])
+
+    def test_the_label_widens_a_round(self) -> None:
+        """A round of a labelled issue may change any workflow file."""
+        check, _fork = self.revise({OTHER: EDITED, ADDED: WORKFLOW}, grant=GRANTED)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["workflow_edits_label"], LABEL)
+
+    def test_a_labelled_round_within_its_pull_request_credits_no_label(
+        self,
+    ) -> None:
+        """The pull request already changes the file, so the label granted nothing."""
+        check, _fork = self.revise(
+            {CHANGED: "on: pull_request\njobs: {}\n"}, grant=GRANTED
+        )
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["workflow_edits_label"], "")
+
+    def test_a_failed_lookup_keeps_the_grant_and_credits_the_label(self) -> None:
+        """Attribution cannot reject what the label allows; it names the label."""
+        with patch(
+            "workflow_gate.pull_request_gated",
+            side_effect=PublishError("fetch failed"),
+        ):
+            check, _fork = self.revise({CHANGED: EDITED + "# x\n"}, grant=GRANTED)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["workflow_edits_label"], LABEL)
+
+    def test_the_label_does_not_unlock_the_precommit_config(self) -> None:
+        """The label widens a round into workflow files, never the lint gate."""
+        check, _fork = self.revise({OTHER: EDITED, PRECOMMIT: NO_HOOKS}, grant=GRANTED)
+        self.assertEqual(check.verdict, "rejected")
+        (reason,) = check.reasons
+        self.assertIn(PRECOMMIT, reason)
+        self.assertNotIn(OTHER, reason)
+        self.assertNotIn(LABEL, reason)
+
+    def test_a_rejected_round_names_the_label(self) -> None:
+        """A round outside its pull request learns the label would widen it."""
+        check, _fork = self.revise({OTHER: EDITED})
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn(f"lacks the {LABEL} label", check.reasons[0])
 
     def test_the_switch_off_does_not_narrow_a_round(self) -> None:
         """A round within its pull request's workflows passes with the switch off."""
@@ -349,7 +441,9 @@ class InheritedWorkflowTest(GitCase):
         )
         self.tip = self.fixture.advance_upstream()
 
-    def revise(self, *, base: str | None = None) -> Any:
+    def revise(
+        self, *, base: str | None = None, grant: dict[str, Any] | None = None
+    ) -> Any:
         """Add a readme-only round's commit and check the chain."""
         self.fixture.commit(
             "Fix(readme): Answer review\n\nBody.\n", {"README.md": "x\n"}
@@ -362,7 +456,10 @@ class InheritedWorkflowTest(GitCase):
             return run_check(
                 self.fixture,
                 self.root,
-                entry=self.fixture.revision_entry(self.tip, self.head),
+                entry={
+                    **self.fixture.revision_entry(self.tip, self.head),
+                    **(grant or {}),
+                },
             )
 
     def rewrite(self, files: list[tuple[str, dict[str, str | None]]]) -> None:
@@ -376,6 +473,12 @@ class InheritedWorkflowTest(GitCase):
         check = self.revise()
         self.assertEqual(check.verdict, "proposed", check.reasons)
         self.assertTrue(check.needs_workflows)
+
+    def test_a_labelled_round_carrying_its_writes_credits_no_label(self) -> None:
+        """The carried edit and revert pass without the label; none is credited."""
+        check = self.revise(grant=GRANTED)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["workflow_edits_label"], "")
 
     def test_preserved_edit_and_revert_pass_after_a_rebase(self) -> None:
         """Carried-over writes match whichever base the chain sits on."""

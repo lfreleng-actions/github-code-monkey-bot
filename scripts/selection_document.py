@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import issue_authors as authors
+import workflow_grant
 
 SCHEMA = 1
 
@@ -63,6 +64,7 @@ def selection_document(
         "revise_only": bool(args.revise_only),
         "allow_workflow_edits": bool(args.allow_workflow_edits),
         "allow_precommit_config_edits": bool(args.allow_precommit_config_edits),
+        "workflow_edits_label": workflow_grant.LABEL,
         "guidance": {
             "repository": args.guidance_repository,
             "path": args.guidance_path,

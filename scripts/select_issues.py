@@ -11,7 +11,8 @@ given (``explicit_issues``); a revise-only run reads no issue and
 keeps the revision rounds alone. For each survivor it records the
 default-branch SHA the agent will build on, the filtered comments,
 the branch name the publisher will create, and whether the target
-opts its sessions into ``sudo`` and containers (``sudo_marker``).
+opts its sessions into ``sudo`` and containers (``sudo_marker``), and
+whether it may change workflow files (``workflow_grant``).
 It also fetches the organisation's ``AGENTS.md`` at a recorded commit
 so the author job never reads it live.
 
@@ -42,6 +43,7 @@ import run_overlap
 import selection_outputs as outputs
 import stale_statuses as stale
 import sudo_marker
+import workflow_grant
 from issue_reads import SelectionError
 from selection_choose import choose
 from selection_document import Settings, selection_document
@@ -289,6 +291,23 @@ def stamp(chosen: list[dict[str, Any]], session: str, collected_at: str) -> None
         entry["session"] = name
 
 
+def annotate(
+    chosen: list[dict[str, Any]],
+    args: argparse.Namespace,
+    *,
+    bot_login: str,
+    collected_at: str,
+) -> None:
+    """Record on each chosen entry what the later jobs read from it."""
+    if args.results_repository:
+        previous_rejection.attach(
+            chosen, results_repository=args.results_repository, bot_login=bot_login
+        )
+    sudo_marker.attach(chosen)
+    workflow_grant.attach(chosen, run_wide=bool(args.allow_workflow_edits))
+    stamp(chosen, args.session, collected_at)
+
+
 def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     """Run the whole selection and return it with the guidance bytes."""
     # Before any read: a comment posted while the run reads is new
@@ -373,14 +392,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         reviser=rounds.for_issue,
         listed=listed,
     )
-    if args.results_repository:
-        previous_rejection.attach(
-            chosen,
-            results_repository=args.results_repository,
-            bot_login=str(bot["login"]),
-        )
-    sudo_marker.attach(chosen)
-    stamp(chosen, args.session, collected_at)
+    annotate(chosen, args, bot_login=str(bot["login"]), collected_at=collected_at)
     guidance, commit = reads.fetch_guidance(
         args.guidance_repository, args.guidance_ref, args.guidance_path
     )

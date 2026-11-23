@@ -5,13 +5,15 @@
 
 The gated files are those under ``.github/workflows/`` and the root
 ``.pre-commit-config.yaml``. A new proposal may add, edit or delete a
-workflow file only when the run's ``allow_workflow_edits`` switch,
-recorded in the trusted selection, is on, and may change the
-pre-commit configuration only when ``allow_precommit_config_edits`` is.
-A revision round may change only the gated files its pull request
+workflow file only when its selection entry grants it: the run's
+``allow_workflow_edits`` switch, or a maintainer's label on the issue
+(``workflow_grant``). It may change the pre-commit configuration only
+when the run's ``allow_precommit_config_edits`` switch is on. A
+revision round may change only the gated files its pull request
 already changes, whatever the switches say: a round answers review
 findings on its pull request and never widens it into another
-workflow or into the repository's lint gate.
+workflow or into the repository's lint gate. The issue's label alone
+lifts that limit, for workflow files and nothing else.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import proposal_policy as policy
 from git_bounded import git
 from proposal_model import Check, Context
 from proposal_policy import PublishError, Rejection
+from workflow_grant import Grant
 
 # Paths a reason names before it says how many more there are.
 NAMED = 10
@@ -243,43 +246,8 @@ def inherited(clone: Path, chain: list[Step], published: list[Step]) -> bool:
     return carried(chain, replayed(clone, chain[0][0], published))
 
 
-def check_new_proposal(
-    paths: list[str], *, allow_workflows: bool, allow_precommit_config: bool
-) -> None:
-    """Reject a new proposal's gated paths whose switch is off."""
-    workflows = [p for p in paths if p.startswith(policy.WORKFLOW_PREFIX)]
-    if workflows and not allow_workflows:
-        raise Rejection(
-            "workflow edits are off for this run (allow_workflow_edits is "
-            "false), so a new proposal may not add, change or delete files "
-            f"under {policy.WORKFLOW_PREFIX}: {named(workflows)}"
-        )
-    configs = [p for p in paths if precommit_config(p)]
-    if configs and not allow_precommit_config:
-        raise Rejection(
-            f"{named(configs)} is protected and cannot change: pre-commit "
-            "config edits are off for this run "
-            "(allow_precommit_config_edits is false)"
-        )
-
-
-def check_gated(clone: Path, check: Check, context: Context) -> None:
-    """Reject a chain that changes a gated file it may not change.
-
-    Records whether the chain changes the pre-commit configuration, for
-    the check summary and the provenance block.
-    """
-    paths = touched(check.commits)
-    check.changes_precommit_config = any(precommit_config(p) for p in paths)
-    if not paths:
-        return
-    if check.task != "revise":
-        check_new_proposal(
-            paths,
-            allow_workflows=context.allow_workflow_edits,
-            allow_precommit_config=context.allow_precommit_edits,
-        )
-        return
+def beyond_pull_request(clone: Path, check: Check, paths: list[str]) -> list[str]:
+    """The gated paths a round changes beyond its pull request's own."""
     changed = pull_request_gated(clone, check)
     outside = [p for p in paths if p not in changed]
     if outside:
@@ -297,9 +265,98 @@ def check_gated(clone: Path, check: Check, context: Context) -> None:
             for p in outside
             if p in net or not inherited(clone, chain[p], published[p])
         ]
+    return outside
+
+
+def credited(clone: Path, check: Check, paths: list[str], label: str) -> str:
+    """The label a granted chain owes its workflow edits to, or blank.
+
+    A round within its pull request's workflow files passes without
+    the label, so it credits none. The lookup only attributes: the
+    label already allows the chain, so a failed lookup credits the
+    label rather than reject the chain or hide the grant.
+    """
+    if not label or check.task != "revise":
+        return label
+    try:
+        return label if beyond_pull_request(clone, check, paths) else ""
+    except (PublishError, Rejection):
+        return label
+
+
+def workflow_file(path: str) -> bool:
+    """Whether ``path`` lies under ``.github/workflows/``."""
+    return path.startswith(policy.WORKFLOW_PREFIX)
+
+
+def lacking(grant: Grant) -> str:
+    """Why an ungranted entry may not change workflow files, if the run says."""
+    label = grant.configured
+    return f"the issue lacks the {label} label" if label else ""
+
+
+def check_new_proposal(
+    paths: list[str], *, grant: Grant, allow_precommit_config: bool
+) -> None:
+    """Reject a new proposal's gated paths it holds no grant for."""
+    workflows = [p for p in paths if workflow_file(p)]
+    if workflows and not grant.allowed:
+        lacks = lacking(grant)
+        also = f" and {lacks}" if lacks else ""
+        raise Rejection(
+            "workflow edits are off for this issue (allow_workflow_edits is "
+            f"false{also}), so a new proposal may not add, change or delete "
+            f"files under {policy.WORKFLOW_PREFIX}: {named(workflows)}"
+        )
+    configs = [p for p in paths if precommit_config(p)]
+    if configs and not allow_precommit_config:
+        raise Rejection(
+            f"{named(configs)} is protected and cannot change: pre-commit "
+            "config edits are off for this run "
+            "(allow_precommit_config_edits is false)"
+        )
+
+
+def check_round(clone: Path, check: Check, paths: list[str], grant: Grant) -> None:
+    """Reject a round's gated paths beyond its pull request's own.
+
+    The issue's label lifts the limit for workflow files alone; the
+    pre-commit configuration stays within the pull request either way.
+    """
+    limited = [p for p in paths if not (grant.allowed and workflow_file(p))]
+    if not limited:
+        return
+    outside = beyond_pull_request(clone, check, limited)
     if outside:
+        lacks = lacking(grant) if any(workflow_file(p) for p in outside) else ""
         raise Rejection(
             "a revision round may change only the workflow files and "
-            f"{policy.PRECOMMIT_CONFIG} its pull request already changes; "
+            f"{policy.PRECOMMIT_CONFIG} its pull request already changes"
+            f"{f' while {lacks}' if lacks else ''}; "
             f"this one also changes {named(outside)}"
         )
+
+
+def check_gated(clone: Path, check: Check, context: Context) -> None:
+    """Reject a chain that changes a gated file it may not change.
+
+    Records whether the chain changes the pre-commit configuration, for
+    the check summary and the provenance block, and the label that let
+    it change workflow files, for the comment and the report.
+    """
+    paths = touched(check.commits)
+    check.changes_precommit_config = any(precommit_config(p) for p in paths)
+    if not paths:
+        return
+    grant = context.workflow_grant
+    workflows = [p for p in paths if workflow_file(p)]
+    if grant.allowed and workflows:
+        check.workflow_edits_label = credited(clone, check, workflows, grant.label)
+    if check.task != "revise":
+        check_new_proposal(
+            paths,
+            grant=grant,
+            allow_precommit_config=context.allow_precommit_edits,
+        )
+        return
+    check_round(clone, check, paths, grant)

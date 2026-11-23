@@ -171,7 +171,10 @@ New pull requests leave `.github/workflows/` alone unless the caller
 sets `allow_workflow_edits: true`; the publisher rejects a proposal
 that changes a workflow file without it. A revision round may change
 the workflow files its pull request already changes and no other,
-whatever the switch says (design document sections 8 and 20.3).
+whatever the switch says (design document sections 8 and 20.3). A
+maintainer labels an issue `workflow-edits-ok` to let it change
+workflow files without the switch, and its revision rounds change
+any workflow file.
 
 The root `.pre-commit-config.yaml` decides the checks a repository
 runs, so new pull requests leave it alone unless the caller sets

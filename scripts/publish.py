@@ -103,6 +103,7 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         **{k: check.get(k) or 0 for k in ("round", "max_rounds")},
         "failing_checks": list(cast("list[Any]", check.get("failing_checks") or [])),
         "antagonistic_review": check.get("antagonistic_review") or None,
+        "workflow_edits_label": check.get("workflow_edits_label") or None,
         "collected_at": check.get("collected_at") or None,
         # The comment step re-checks the issue under the same mode and list.
         "only_known_authors": check.get("only_known_authors") is not False,

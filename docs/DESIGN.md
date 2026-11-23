@@ -1188,23 +1188,26 @@ For each selected issue:
    without regard to case. Changes
    under `.github/workflows/` set `needs_workflows` in the check
    summary; no token mint depends on it (step 6). Whether they pass
-   is the run's `allow_workflow_edits` switch (§9.1), which the
-   selection records (§18.1): the check rejects a new proposal that
-   adds, edits or deletes a workflow file, naming the file, unless
-   the switch is on, and a selection without the field counts as
-   off. A revision round may change the workflow files its pull
-   request already changes and no other, whatever the switch says
-   (§20.3).
+   is the entry's `allow_workflow_edits` grant (§9.1), which the
+   selection records (§18.1): the run's switch, or the
+   `workflow-edits-ok` label on the issue. The check rejects a new
+   proposal that adds, edits or deletes a workflow file, naming the
+   file, unless the entry grants it; an entry without the field takes
+   the run's value, and a selection without either counts as off. A
+   revision round may change the workflow files its pull request
+   already changes and no other, whatever the switch says, unless the
+   issue carries the label (§20.3).
    The root `.pre-commit-config.yaml` follows the same two rules
-   under its own switch, `allow_precommit_config_edits`, since it
-   decides which checks the repository runs: a change to it sets
-   `changes_precommit_config` in the check summary, the check
-   rejects it on a new proposal unless the switch is on, and a
-   revision round may change it when its pull request already does
-   and not otherwise. A proposal that changes it says so in the provenance
-   block's summary line and in a `Lint gate` line, so a reviewer
-   reads every hook change.
-   `workflow_gate.py` holds these rules.
+   under its own switch, `allow_precommit_config_edits`, which no
+   label widens, since it decides which checks the repository runs:
+   a change to it sets `changes_precommit_config` in the check
+   summary, the check rejects it on a new proposal unless the switch
+   is on, and a revision round may change it when its pull request
+   already does and not otherwise. A proposal that changes it says
+   so in the provenance block's summary line and in a `Lint gate`
+   line, so a reviewer reads every hook change.
+   `workflow_gate.py` holds these rules and `workflow_grant.py` reads
+   the grant.
 
    Every proposal then faces an **online zizmor audit**, the last
    part of the check (`online_audit.py`), since the author job's
@@ -1689,7 +1692,7 @@ For each selected issue:
 | `allow_subagents` | boolean | `true` | §7.2 |
 | `include_dotgithub` | boolean | `false` | §6 |
 | `load_repo_skills` | boolean | `false` | §7.2: trust checkout skills |
-| `allow_workflow_edits` | boolean | `false` | §8 step 3: let new proposals change `.github/workflows/` |
+| `allow_workflow_edits` | boolean | `false` | §8 step 3: let new proposals change `.github/workflows/`; the `workflow-edits-ok` label grants one issue the same, rounds included |
 | `allow_precommit_config_edits` | boolean | `false` | §8 step 3: let new proposals change the root `.pre-commit-config.yaml` |
 | `request_review` | boolean | `true` | §8 steps 10–11: request, await, report |
 | `request_antagonistic_review` | boolean | `true` | §20.5: ask the review bot after a clean review |
@@ -1722,6 +1725,22 @@ request step alone, §10.4), `antagonistic_dispatch_token` (the
 antagonistic request job's dispatch step alone, §10.5),
 `fork_pool_token` (the forks job's prepare step alone, §10.6). All
 five are optional.
+
+`allow_workflow_edits` is the default for every issue in the run. A
+maintainer grants one issue workflow edits with the
+`workflow-edits-ok` label, `LABEL` in `scripts/workflow_grant.py`:
+the select job reads it
+with the issue's other labels and records the grant on that issue's
+selection entry alone (§18.1), so no other issue in the run widens.
+The label also lets the issue's revision rounds change workflow files
+beyond those their pull request already changes (§20.3), which the
+switch never does. Someone with triage permission applies it through
+the GitHub UI or API, as with `no-agent` and `agent-approved`; the
+author job sees it as data in the packet and nothing else, and
+nothing in issue text sets it. No token or permission changes: the fork mint requests
+`workflows: write` on every run (§10.1). The issue comment and the
+report name the label when it let a proposal change workflow files:
+a round whose workflow changes §20.3 already allows credits none.
 
 Numeric inputs are strings because reusable-workflow `number`
 inputs cannot carry validation and `fromJSON` handles the
@@ -1887,10 +1906,10 @@ workflows, and an issue labelled `CI` is as fair a target as any
 other; a bot that cannot touch `.github/workflows/` would abstain
 from a large share of the backlog. A workflow edit is also the
 change with the widest reach, so a new proposal may make one when
-the operator sets `allow_workflow_edits` and not otherwise (§9.1,
-§8 step 3); a
+the operator sets `allow_workflow_edits` or a maintainer labels its
+issue `workflow-edits-ok`, and not otherwise (§9.1, §8 step 3); a
 revision round stays within the workflow files its pull request
-already changes (§20.3). The fork mint requests
+already changes unless its issue carries the label (§20.3). The fork mint requests
 `workflows: write` on every run, whatever the verified diff holds:
 the fork sync (§4.3 step 2) fast-forwards over upstream
 workflow changes too, and a proposal that edits no workflow would
@@ -2376,7 +2395,7 @@ The questions the first draft left open, and how they closed:
 | Mode changes and symlinks | Reject; agent banners the human follow-up in the PR body (§5, §7.3). Unsigned commits are unmergeable and create work |
 | Payload cap | 4 MiB added, 512 KiB per binary; rollout confirms (§5) |
 | Pre-commit config edits | Off by default for new proposals; `allow_precommit_config_edits` turns them on. A revision round leaves `.pre-commit-config.yaml` alone unless its pull request already changes it. The provenance block flags every such change (§8 step 3) |
-| Workflow edits | Off by default for new proposals; `allow_workflow_edits` turns them on. A revision round changes no workflow file beyond those its pull request already changes. App holds `workflows: write`, granted to every fork mint (§8 step 3, §10.1) |
+| Workflow edits | Off by default for new proposals; `allow_workflow_edits` turns them on for the run, the `workflow-edits-ok` label for one issue. A revision round changes no workflow file beyond those its pull request already changes unless its issue carries the label. App holds `workflows: write`, granted to every fork mint (§8 step 3, §10.1) |
 | Assigned issues | No scan, so no assignee filter; an operator who names an assigned issue works it (§6) |
 | Sub-agent tool | `task`; agent-definition tools denied alongside (§7.2) |
 | Skills from the checkout | Off by default; `load_repo_skills` for a repository a maintainer has read (§7.2) |
@@ -2445,6 +2464,7 @@ cross-checked against the trusted `selection.json`.
   "mode": "pull-requests",
   "dry_run": true,
   "allow_workflow_edits": false,
+  "workflow_edits_label": "workflow-edits-ok",
   "allow_precommit_config_edits": false,
   "model": "claude-opus-5.5",
   "bot": {
@@ -2494,6 +2514,8 @@ cross-checked against the trusted `selection.json`.
       "base_sha": "<40 hex>",
       "branch": "code-monkey/issue-40",
       "sudo_and_containers": false,
+      "allow_workflow_edits": false,
+      "workflow_edits_label": null,
       "comments": [
         {"author": "login", "association": "MEMBER",
          "created_at": "...", "body": "..."}
@@ -2530,9 +2552,10 @@ holds one line per older run the overlap tie-break waited for (§6
 "Overlapping runs"), empty when it waited for none. `explicit_pull_requests`,
 `revise` and `revise_only` record the §20 inputs; a `revise_only`
 selection holds revision entries alone and `candidates_seen` is 0.
-`allow_workflow_edits` records the §9.1 switch the publisher's
-check reads (§8 step 3); a JSON `true` turns it on and any other
-value leaves it off. `allow_precommit_config_edits` records the
+`allow_workflow_edits` records the run's §9.1 switch the publisher's
+check reads (§8 step 3) and `workflow_edits_label` the label that
+grants one issue the same; a JSON `true` turns the switch on and any
+other value leaves it off. `allow_precommit_config_edits` records the
 pre-commit config switch the same way.
 A revision entry adds `task: "revise"`, `rebase_sha`, `checkout_sha`,
 `pull_request` (`number`, `url`, `title`, `head_sha`, `mergeable`,
@@ -2582,7 +2605,17 @@ is unknown), `pr_comments`, `new_comments` and
 `checkout_sha` equal to `base_sha`. Every entry carries
 `sudo_and_containers`: `true` when the root tree at its
 `checkout_sha` holds `.enable-sudo-and-containers` as a regular
-file, and `false` otherwise (§4.1). Either kind adds
+file, and `false` otherwise (§4.1). Every entry also carries its own
+`allow_workflow_edits`, which the publisher's check reads (§8 step
+3): on an issue entry `true` when the run's switch is on or the
+issue carries the label, on a revision entry `true` when the issue
+carries the label and `false` otherwise (§20.3).
+`workflow_edits_label` names the label when it granted what the
+run's switch would not, and is null otherwise. A JSON `true` alone
+turns a grant on, and a present value of any other kind is off;
+an entry without the field takes the run's value, and a revision
+entry without it keeps §20.3's rule. Either
+kind adds
 `previous_rejection` when the bot's latest outcome on the issue was
 `rejected` (§6), as `{heading, run_url, reasons, reasons_dropped,
 note}`: `note` is null when the select job read the reasons, and otherwise
@@ -2590,8 +2623,10 @@ a fixed text saying why it could not. Beside it the select job writes
 `matrix.json`
 (`{"include": [{key, repository, repo_name, number, base_sha,
 branch, fork_org, fork_repository, task, checkout_sha, rebase_sha,
-head_sha, pull_number, sudo_and_containers}]}`, the last `false`
-unless the entry's field is a JSON `true`), `agents.md` (the guidance bytes whose
+head_sha, pull_number, sudo_and_containers, allow_workflow_edits}]}`,
+the last two `false` unless the entry's field is a JSON `true`; the
+author job's runtime context states the latter), `agents.md` (the
+guidance bytes whose
 SHA-256 the `guidance` block records), `excluded-repos.txt` and
 `unreviewed-heads.json` (the `skipped_issues` entries whose reason
 says the head has no Copilot review, §20.1, which the report reads
@@ -2675,6 +2710,7 @@ the native token it hands zizmor for the online audit (§8 step 3).
   "reasons": [],
   "needs_workflows": false,
   "changes_precommit_config": false,
+  "workflow_edits_label": "",
   "commits": [
     {
       "sha": "<40 hex>",
@@ -2701,8 +2737,15 @@ whether the proposal edits `.github/workflows/`, for the check
 summary alone; no step gates on it. `changes_precommit_config`
 records whether it edits the root `.pre-commit-config.yaml`, for the
 summary and the provenance block. The workflow and pre-commit config
-rules of §8 step 3
-are part of the check itself, and land in `reasons`. `commits[].body` is the
+rules of §8 step 3 are part of the check itself, and land in
+`reasons`. `workflow_edits_label` names the label that let the
+proposal change workflow files when the run's switch would not, and
+is blank otherwise, including on a round whose workflow changes pass
+§20.3 without the label; when the check cannot read the pull request
+to tell, the label still grants the round and the field names it.
+`result.json` carries it, or null, for the issue comment and the
+report.
+`commits[].body` is the
 composed message the publisher will send: the agent's body plus the
 trailers §5 describes. `pr_body` is the composed body: the closing
 line and provenance block first, then the agent's text.
@@ -3449,9 +3492,15 @@ recorded base and published head from the bot fork, anonymously,
 and rejects a round that touches a workflow file the diff between
 them leaves alone, naming the file, whatever `allow_workflow_edits`
 says; the root `.pre-commit-config.yaml` passes the same test,
-whatever `allow_precommit_config_edits` says. One exception covers
-commits the round carries over, such as an edit and its revert:
-a file outside that diff passes when the
+whatever `allow_precommit_config_edits` says. The `workflow-edits-ok`
+label on the issue lifts the rule for workflow files alone (§9.1):
+its entry's grant lets the round add, edit or delete any workflow
+file, so a round can answer a review's request for a regression test
+in another workflow, and the runtime context tells the session
+`workflow edits: allowed`; the label never widens a round into the
+pre-commit configuration. One exception covers commits the round
+carries over, such as an edit and its revert: a file outside that
+diff passes when the
 chain leaves it as its own base had it and the pull request's
 published commits already made every change the chain makes to it,
 in the same order and no more often, read along the first-parent
