@@ -406,6 +406,24 @@ class PrepareTest(NoNetworkCase):
         self.assertEqual(read.call_args_list[1].args, (f"repos/{old}",))
         self.assertEqual(read.call_args_list[-1].args, (f"repos/{FORK}",))
 
+    def test_renamed_fork_still_absent_at_the_deadline_fails(self) -> None:
+        """A rename with no fork request behind it never warns as not yet visible."""
+        listed = [{"full_name": OLD, "owner": {"login": FORK_ORG}}]
+        admin = repo_object(full_name=OLD, permissions={"admin": True})
+        with (
+            patch.object(github, "api_object", side_effect=[absent(), admin, absent()]),
+            patch.object(github, "api_list", return_value=listed),
+            patch.object(github, "api_write", return_value={}) as write,
+            patch.object(pool.time, "sleep"),
+            patch.object(pool.time, "monotonic", side_effect=past_deadline()),
+            self.assertRaisesRegex(
+                policy.PublishError, f"did not appear .* renamed from {OLD}"
+            ) as raised,
+        ):
+            prepare(TARGET_ENTRY)
+        self.assertNotIsInstance(raised.exception, pool.NotYetVisible)
+        write.assert_called_once_with("PATCH", f"repos/{OLD}", {"name": "repo"})
+
     def test_listed_fork_without_admin_is_not_renamed(self) -> None:
         """A pool fork the account cannot administer fails, naming the right it lacks."""
         listed = [{"full_name": OLD, "owner": {"login": FORK_ORG}}]
@@ -489,8 +507,8 @@ class PrepareTest(NoNetworkCase):
             prepare(TARGET_ENTRY)
         sleep.assert_not_called()
 
-    def test_poll_timeout_is_operational(self) -> None:
-        """A fork that never appears before the deadline is an error."""
+    def test_poll_timeout_is_not_yet_visible(self) -> None:
+        """A requested fork still absent at the deadline is told apart from a failure."""
         with (
             patch.object(github, "api_object", side_effect=absent()),
             patch.object(github, "api_list", return_value=[]),
@@ -501,9 +519,24 @@ class PrepareTest(NoNetworkCase):
                 "monotonic",
                 side_effect=[0.0, 1.0, pool.FORK_WAIT_SECONDS + 1.0],
             ),
-            self.assertRaisesRegex(policy.PublishError, "did not appear"),
+            self.assertRaisesRegex(pool.NotYetVisible, "not yet visible"),
         ):
             prepare(TARGET_ENTRY)
+
+    def test_poll_read_failure_is_operational(self) -> None:
+        """A 500 or a 410 while polling is a failure, not a fork still being made."""
+        for status in (500, 410):
+            failure = github.GitHubError(f"x (HTTP {status})")
+            with (
+                self.subTest(status=status),
+                patch.object(github, "api_object", side_effect=[absent(), failure]),
+                patch.object(github, "api_list", return_value=[]),
+                patch.object(github, "api_write", return_value=repo_object()),
+                patch.object(pool.time, "sleep"),
+                patch.object(pool.time, "monotonic", return_value=0.0),
+                self.assertRaisesRegex(policy.PublishError, "did not appear"),
+            ):
+                prepare(TARGET_ENTRY)
 
     def test_created_repository_must_still_be_a_fork(self) -> None:
         """What appears after the request is checked like a found one."""
@@ -593,6 +626,51 @@ class MainTest(NoNetworkCase):
         summary = self.summary.read_text()
         self.assertIn(f"| `{FORK}` | failed: ", summary)
         self.assertIn(f"| `{FORK_ORG}/other` | present |", summary)
+
+    def test_a_fork_not_yet_visible_warns_and_passes(self) -> None:
+        """GitHub can take over a minute to fork; the publish job reads it later."""
+        env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
+        out = io.StringIO()
+        with (
+            patch.object(github, "run_gh", return_value=SCOPED),
+            patch.object(github, "api_object", side_effect=absent()),
+            patch.object(github, "api_list", return_value=[]),
+            patch.object(github, "api_write", return_value=repo_object()),
+            patch.object(pool.time, "sleep"),
+            patch.object(
+                pool.time, "monotonic", side_effect=[0.0, pool.FORK_WAIT_SECONDS + 1.0]
+            ),
+            redirect_stdout(out),
+        ):
+            self.assertEqual(self.run_main(env), 0)
+        self.assertIn(f"::warning title=Fork not yet visible::{FORK}", out.getvalue())
+        self.assertNotIn("::error", out.getvalue())
+        self.assertIn(
+            f"| `{FORK}` | requested; not yet visible |", self.summary.read_text()
+        )
+
+    def test_a_refused_or_wrong_fork_still_fails_the_job(self) -> None:
+        """Only a slow fork is spared: a refusal or a non-fork still exits 1."""
+        env = {"GH_TOKEN": "t", "MATRIX": matrix(entry())}
+        refused = github.GitHubError("gh: Forbidden (HTTP 403)")
+        cases = {
+            "refused": ([absent()], refused),
+            "not a fork": ([absent(), repo_object(fork=False)], repo_object()),
+        }
+        for name, (reads, created) in cases.items():
+            self.summary.unlink(missing_ok=True)
+            with (
+                self.subTest(name),
+                patch.object(github, "run_gh", return_value=SCOPED),
+                patch.object(github, "api_object", side_effect=reads),
+                patch.object(github, "api_list", return_value=[]),
+                patch.object(github, "api_write", side_effect=[created]),
+                patch.object(pool.time, "sleep"),
+                patch.object(pool.time, "monotonic", return_value=0.0),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(self.run_main(env), 1)
+            self.assertIn(f"| `{FORK}` | failed: ", self.summary.read_text())
 
     def test_a_wrong_token_stops_before_any_fork(self) -> None:
         """A token with broader scopes exits 1 before reading a fork."""

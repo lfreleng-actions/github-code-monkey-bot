@@ -85,7 +85,9 @@ def missing_fork(fork: str) -> str:
     """The reason a publish fails when the fork it needs does not exist."""
     return (
         f"fork {fork} does not exist; the Prepare forks job creates it, "
-        "so read that job's log, or create the fork by hand"
+        "so read that job's log, or create the fork by hand. Either that "
+        "job failed to ready it, or it recorded the fork as requested; "
+        "not yet visible and GitHub may still be creating it"
     )
 
 
