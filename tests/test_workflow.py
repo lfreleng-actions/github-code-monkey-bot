@@ -1735,7 +1735,6 @@ class PublishJobContracts(ReusableWorkflowCase):
         identity = self.step("publish", "Pre-flight: fork token identity")
         self.assertEqual(identity["if"], "steps.fork-token.outcome == 'success'")
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_failed_fork_mint_names_the_installation(self) -> None:
         """A mint refused for an existing fork points at the installation."""

@@ -2196,13 +2196,19 @@ jobs:
       # push wrote is not proof of publication either: in pull-requests
       # mode a proposed verdict with no pull request after open failed
       # or never ran is a publish failure, and the fork branch stays
-      # for the next run to resume.
+      # for the next run to resume. A fork token that will not mint for
+      # a fork that exists means the App's installation on the fork
+      # organisation does not cover it (docs/DESIGN.md 10.1), so the
+      # reason names the installation rather than the step outcomes.
       - name: 'Ensure a result exists'
         if: always()
         env:
           KEY: "${{ matrix.key }}"
           REPOSITORY: "${{ matrix.repository }}"
           FORK_REPOSITORY: "${{ matrix.fork_repository }}"
+          FORK_ORG: "${{ matrix.fork_org }}"
+          FORK_EXISTS: "${{ steps.fork-state.outputs.exists }}"
+          MINT_OUTCOME: "${{ steps.fork-token.outcome }}"
           ISSUE: "${{ matrix.number }}"
           DRY_RUN: "${{ inputs.dry_run }}"
           MODE: "${{ inputs.mode }}"
@@ -2236,8 +2242,16 @@ jobs:
             usage="$(jq -c '{premium_requests, agent_seconds}' \
               artefacts/check.json)" || usage='{}'
           fi
-          reason="publish did not complete (offline check: $CHECK_OUTCOME,"
-          reason="$reason push: $PUSH_OUTCOME, open: $OPEN_OUTCOME)"
+          if [ "$FORK_EXISTS" = true ] && [ "$MINT_OUTCOME" = failure ]; then
+            reason="could not mint a token for $FORK_REPOSITORY; the App's"
+            reason="$reason installation on $FORK_ORG must cover all"
+            reason="$reason repositories"
+            echo "::error::$reason"
+            echo "Publish failed: $reason" >> "$GITHUB_STEP_SUMMARY"
+          else
+            reason="publish did not complete (offline check: $CHECK_OUTCOME,"
+            reason="$reason push: $PUSH_OUTCOME, open: $OPEN_OUTCOME)"
+          fi
           jq -n --arg key "$KEY" --arg repo "$REPOSITORY" \
             --arg fork "$FORK_REPOSITORY" \
             --argjson issue "$ISSUE" --arg reason "$reason" \
