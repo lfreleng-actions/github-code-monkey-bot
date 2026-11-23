@@ -21,6 +21,7 @@ import hook_runs
 import issue_authors as authors
 import online_audit
 import proposal_policy as policy
+import protected_links
 import revision_check as revision
 import workflow_gate
 import workflow_grant
@@ -230,7 +231,9 @@ def is_binary(clone: Path, blob: str) -> bool:
     return b"\0" in content
 
 
-def walk_diff(clone: Path, parent: str, sha: str, check: Check) -> dict[str, Any]:
+def walk_diff(
+    clone: Path, parent: str, sha: str, check: Check, links: protected_links.LinkGuard
+) -> dict[str, Any]:
     """Classify one commit's changes against the file policy."""
     raw = cast(
         "bytes",
@@ -267,6 +270,11 @@ def walk_diff(clone: Path, parent: str, sha: str, check: Check) -> dict[str, Any
         old_mode, new_mode, _old_blob, new_blob, status = parts
         if not policy.safe_path(path):
             raise Rejection(f"unsafe path {path!r}")
+        # The link cause comes first: it names the target or why the
+        # link cannot be resolved, which the name check cannot.
+        cause = links.cause(path)
+        if cause is not None:
+            raise Rejection(f"{path} is protected and cannot change ({cause})")
         if policy.protected(path) and not workflow_gate.precommit_config(path):
             raise Rejection(f"{path} is protected and cannot change")
         if path.startswith(policy.WORKFLOW_PREFIX):
@@ -315,9 +323,10 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
     clone = prepare_clone(context.workdir, check.repository, check.base_sha)
     commits = import_bundle(clone, bundle, check.branch, check.base_sha)
     limit = policy.parse_title_limit(gitlint_text(clone, check.base_sha))
+    links = protected_links.base_links(clone, check.base_sha)
     parent = check.base_sha
     for sha in commits:
-        diff = walk_diff(clone, parent, sha, check)
+        diff = walk_diff(clone, parent, sha, check, links)
         raw = cast(
             "bytes",
             git(

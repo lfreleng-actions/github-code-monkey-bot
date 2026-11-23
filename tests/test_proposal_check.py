@@ -1240,7 +1240,6 @@ class SymlinkTargetTest(GitCase):
             f"{path} is protected and cannot change ({cause}", "; ".join(check.reasons)
         )
 
-    @unittest.expectedFailure
     def test_examples_are_rejected(self) -> None:
         """Each example in the issue is refused, naming its link."""
         for index, (link, target, edited) in enumerate(self.EXAMPLES):
@@ -1264,7 +1263,6 @@ class SymlinkTargetTest(GitCase):
                 )
                 self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_chain_of_two_links_is_followed(self) -> None:
         """The file at the end of a chain is the protected one."""
         check = self.propose(
@@ -1275,7 +1273,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "text/b.md", "target of AGENTS.md)")
 
-    @unittest.expectedFailure
     def test_dangling_target_cannot_be_created(self) -> None:
         """A target missing from the base cannot be added."""
         check = self.propose(
@@ -1283,13 +1280,11 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "docs/guide.md", "target of AGENTS.md)")
 
-    @unittest.expectedFailure
     def test_link_out_of_the_repository_is_refused(self) -> None:
         """Touching a protected link that leaves the repository is refused."""
         check = self.propose(self.fixture, {".claude": None}, {".claude": "../claude"})
         self.assert_rejected(check, ".claude", ".claude -> ../claude")
 
-    @unittest.expectedFailure
     def test_loop_is_refused(self) -> None:
         """Touching the first path of a looping link is refused, naming both."""
         check = self.propose(
@@ -1297,7 +1292,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "a.md", "AGENTS.md -> a.md")
 
-    @unittest.expectedFailure
     def test_loop_hops_cannot_be_replaced(self) -> None:
         """No link on a loop can become a file or directory the name means."""
         cases: tuple[
@@ -1326,7 +1320,6 @@ class SymlinkTargetTest(GitCase):
                 check = self.propose(fixture, added)
                 self.assert_rejected(check, path, f"{link} -> ")
 
-    @unittest.expectedFailure
     def test_byte_distinct_links_stay_distinct(self) -> None:
         """Links whose names differ only in invalid UTF-8 each protect."""
         symlinks = {
@@ -1349,7 +1342,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assertEqual(check.verdict, "proposed", check.reasons)
 
-    @unittest.expectedFailure
     def test_link_past_the_bound_cannot_be_replaced(self) -> None:
         """The link that passes the chain bound cannot become a file."""
         bound = 8  # protected_links.MAX_LINK_CHAIN
@@ -1362,7 +1354,6 @@ class SymlinkTargetTest(GitCase):
         check = self.propose(self.fixture, {last: "new instructions\n"})
         self.assert_rejected(check, last, "AGENTS.md -> a1")
 
-    @unittest.expectedFailure
     def test_child_of_a_target_past_the_chain_bound(self) -> None:
         """A file under the target of an over-long .claude chain is refused."""
         bound = 8  # protected_links.MAX_LINK_CHAIN
@@ -1377,7 +1368,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "settings/options.json", "target of .claude)")
 
-    @unittest.expectedFailure
     def test_child_of_a_target_past_the_alias_depth(self) -> None:
         """A file under a link reached through nine directory links is refused."""
         depth = 9  # protected_links.MAX_LINK_CHAIN + 1
@@ -1389,7 +1379,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, edited, "target of .claude)")
 
-    @unittest.expectedFailure
     def test_child_of_a_target_through_a_repeated_link(self) -> None:
         """A link followed nine times on a finite chain still protects its end."""
         check = self.propose(
@@ -1400,7 +1389,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "settings/options.json", "target of .claude)")
 
-    @unittest.expectedFailure
     def test_link_reached_under_two_names(self) -> None:
         """A link inside a linked .claude counts under the .claude name."""
         check = self.propose(
@@ -1411,7 +1399,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "settings/options.json", "target of .claude)")
 
-    @unittest.expectedFailure
     def test_unresolvable_file_link_names_its_target(self) -> None:
         """Deleting an unresolvable protected file link names its target."""
         check = self.propose(
@@ -1419,7 +1406,6 @@ class SymlinkTargetTest(GitCase):
         )
         self.assert_rejected(check, "AGENTS.md", "AGENTS.md -> ../agents.md")
 
-    @unittest.expectedFailure
     def test_directory_a_link_climbs_out_of_must_stay(self) -> None:
         """Emptying a directory a link climbs out of with .. is refused."""
         check = self.propose(
@@ -1432,7 +1418,6 @@ class SymlinkTargetTest(GitCase):
             check, "scratch/keep.txt", "AGENTS.md passes through scratch)"
         )
 
-    @unittest.expectedFailure
     def test_nul_bearing_link_target_is_refused(self) -> None:
         """A checkout cuts a link target at NUL, so such a base is refused."""
         fixture = self.fixture
@@ -1455,7 +1440,6 @@ class SymlinkTargetTest(GitCase):
         self.assertEqual(check.verdict, "rejected", check.reasons)
         self.assertIn("NUL", "; ".join(check.reasons))
 
-    @unittest.expectedFailure
     def test_submodule_holding_a_target_cannot_be_deleted(self) -> None:
         """Deleting a gitlink that holds a protected link's target is refused."""
         fixture = self.fixture
