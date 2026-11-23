@@ -48,6 +48,12 @@ outside contribution, with no secrets and an approval gate.
 | `o-ran-sc` | `lfreleng-bot-forks-oransc` |
 | every other organisation | `lfreleng-bot-forks` |
 
+The App's installation on every fork organisation must cover **All
+repositories**. A machine account creates the forks, and GitHub adds
+a repository a user creates to no installation limited to selected
+repositories, so the publisher could not mint a token for a new fork;
+such a publish fails naming the installation.
+
 ## Where to go next
 
 - [Design](DESIGN.md): the architecture, trust model, selection,

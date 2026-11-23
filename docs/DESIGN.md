@@ -1882,9 +1882,15 @@ The App holds two kinds of installation. On the target organisation
 the publisher mints Pull requests: write to open the pull request
 and Issues: write for the comment, and no mint there ever requests
 Contents or Workflows. On each fork organisation it
-mints the writes that build the branch; the installation covers all
-repositories of the organisation, since the forks job may create the
-fork it writes to during the run.
+mints the writes that build the branch, and that installation must
+cover **All repositories**. The machine account of §10.6 creates the
+forks, not the App, and GitHub adds a repository a user creates to no
+installation that lists chosen repositories, so the publish job's
+fork mint, scoped to that one fork, would fail for every fork the
+account made after an operator chose the list. When the fork exists
+and the mint fails, the publish result's reason reads `could not mint
+a token for <fork>; the App's installation on <fork_org> must cover
+all repositories`, and the step summary says the same.
 
 | Fork organisation | Installed | Actions |
 | ----------------- | --------- | ------- |
@@ -2060,6 +2066,15 @@ a fork it did not create in the same run, `fork_pool.py` reads the
 fork and checks the token's `permissions.admin`; without it, that
 target fails naming the account and the right it lacks, and the
 job makes no write to that fork.
+
+A fork the account creates belongs to no App installation that
+lists chosen repositories; GitHub adds a repository to such an
+installation when the App itself creates it, and not otherwise. So
+the App's installation on every fork organisation covers **All
+repositories** (§10.1), or the publish job cannot mint a write token
+for a fork this account made. The forks job holds no App key and
+cannot check that setting in advance; a publish that meets it fails
+naming the installation instead.
 
 The dispatch caller passes it as the optional `fork_pool_token`, and
 the forks job's `Find, create or rename forks` step is the one place
