@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""Which workflow files a proposal may change (DESIGN.md sections 8 and 20.3).
+"""Which gated files a proposal may change (DESIGN.md sections 8 and 20.3).
 
 A new proposal may add, edit or delete a file under
 ``.github/workflows/`` only when the trusted selection sets
-``allow_workflow_edits``. A revision round may change only the workflow
-files its pull request already changes, whatever the switch says. Each
-test builds real repositories with the ``test_proposal_check`` fixture
-and runs ``proposal_check.run_check`` against them; the pull request's
+``allow_workflow_edits``, and change the root ``.pre-commit-config.yaml``
+only when it sets ``allow_precommit_config_edits``. A revision round may
+change only the gated files its pull request already changes, whatever
+the switches say. Each test builds real repositories with the
+``test_proposal_check`` fixture and runs ``proposal_check.run_check`` against them; the pull request's
 head comes from the agent clone, which stands in for the bot fork.
 """
 
@@ -35,6 +36,7 @@ from test_proposal_check import (  # noqa: E402
 )
 
 checks = import_module("proposal_check")
+gate = import_module("workflow_gate")
 stub = import_module("zizmor_stub")
 
 CHANGED = ".github/workflows/ci.yaml"
@@ -59,6 +61,21 @@ JOBS = (
 )
 
 
+PRECOMMIT = ".pre-commit-config.yaml"
+HOOKS = "repos:\n  - repo: local\n    hooks:\n      - id: pytest\n"
+NO_HOOKS = "repos: []\n"
+
+
+def seed_precommit(fixture: Any) -> None:
+    """Make the base hold a pre-commit configuration, and the branch start there."""
+    (fixture.upstream / PRECOMMIT).write_text(HOOKS, encoding="utf-8")
+    run_git(fixture.upstream, "add", "-A")
+    run_git(fixture.upstream, "commit", "-q", "-m", "Chore: Add hooks")
+    fixture.base_sha = run_git(fixture.upstream, "rev-parse", "HEAD").strip()
+    run_git(fixture.agent, "fetch", "-q", str(fixture.upstream), "main")
+    run_git(fixture.agent, "reset", "-q", "--hard", "FETCH_HEAD")
+
+
 def seed_workflows(fixture: Any) -> None:
     """Make the base hold two workflow files, and the agent branch start there."""
     for path in (CHANGED, OTHER):
@@ -78,15 +95,19 @@ def run_check(
     *,
     entry: dict[str, Any] | None = None,
     switch: Any = None,
+    precommit_switch: Any = None,
 ) -> Any:
     """Run the check with the clone on the local upstream.
 
-    ``switch``, when given, is written as the selection's
-    ``allow_workflow_edits`` value verbatim, whatever its type.
+    ``switch`` and ``precommit_switch``, when given, are written as the
+    selection's ``allow_workflow_edits`` and
+    ``allow_precommit_config_edits`` values verbatim, whatever their type.
     """
     selection = fixture.selection(**(entry or {}))
     if switch is not None:
         selection["allow_workflow_edits"] = switch
+    if precommit_switch is not None:
+        selection["allow_precommit_config_edits"] = precommit_switch
     zizmor = stub.StubZizmor(root)
     with (
         patch.object(
@@ -571,6 +592,187 @@ class InheritedWorkflowTest(GitCase):
                 self.head = run_git(agent, "rev-parse", "HEAD").strip()
         check = self.revise()
         self.assertEqual(check.verdict, "proposed", check.reasons)
+
+
+class GatedPathTest(unittest.TestCase):
+    """``precommit_config`` names the one protected path a switch unlocks."""
+
+    @unittest.expectedFailure
+    def test_root_file_in_any_case(self) -> None:
+        """The root file, compared as ``PROTECTED_PATHS`` compares it."""
+        for path in (PRECOMMIT, PRECOMMIT.upper(), ".Pre-Commit-Config.yaml"):
+            with self.subTest(path=path):
+                self.assertTrue(gate.precommit_config(path))
+                self.assertTrue(gate.gated(path))
+
+    @unittest.expectedFailure
+    def test_other_paths(self) -> None:
+        """A copy elsewhere, or another protected file, is not the gated one."""
+        for path in (
+            "tests/.pre-commit-config.yaml",
+            ".github/.pre-commit-config.yaml",
+            ".pre-commit-config.yml",
+            "AGENTS.md",
+            ".gitlint",
+            "SECURITY.md",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(gate.precommit_config(path))
+                self.assertFalse(gate.gated(path))
+
+
+class NewProposalPrecommitSwitchTest(GitCase):
+    """``allow_precommit_config_edits`` unlocks the root pre-commit config alone."""
+
+    def setUp(self) -> None:
+        """A base that already holds a pre-commit configuration."""
+        super().setUp()
+        seed_precommit(self.fixture)
+
+    def propose(self, files: dict[str, str | None]) -> Any:
+        """One commit changing ``files``, bundled and checked."""
+        self.fixture.commit("Chore: Drop the pytest hook\n\nBody.\n", files)
+        self.fixture.bundle()
+        self.fixture.manifest(pr_title="Chore: Drop the pytest hook")
+        return run_check(self.fixture, self.root)
+
+    @unittest.expectedFailure
+    def test_switch_absent_rejects_naming_the_switch(self) -> None:
+        """A selection without the switch keeps the file protected."""
+        check = self.propose({PRECOMMIT: NO_HOOKS})
+        self.assertEqual(check.verdict, "rejected")
+        self.assertEqual(check.commits, [])
+        (reason,) = check.reasons
+        self.assertIn(f"{PRECOMMIT} is protected and cannot change", reason)
+        self.assertIn("allow_precommit_config_edits", reason)
+        self.assertTrue(check.changes_precommit_config)
+
+    @unittest.expectedFailure
+    def test_switch_off_rejects_a_deletion(self) -> None:
+        """Deleting the file is gated as much as editing it."""
+        self.fixture.allow_precommit_config_edits = False
+        check = self.propose({PRECOMMIT: None})
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn("allow_precommit_config_edits", check.reasons[0])
+
+    def test_only_a_boolean_true_turns_the_switch_on(self) -> None:
+        """A string or a number in the selection is not the switch."""
+        for index, value in enumerate(("true", 1)):
+            with self.subTest(value=value):
+                root = self.root / f"case-{index}"
+                root.mkdir()
+                fixture = Fixture(root)
+                seed_precommit(fixture)
+                fixture.commit("Chore: Drop the hook\n\nBody.\n", {PRECOMMIT: NO_HOOKS})
+                fixture.bundle()
+                fixture.manifest(pr_title="Chore: Drop the hook")
+                check = run_check(fixture, root, precommit_switch=value)
+                self.assertEqual(check.verdict, "rejected")
+
+    @unittest.expectedFailure
+    def test_switch_on_accepts_and_records_the_change(self) -> None:
+        """The check records the change and the provenance names the lint gate."""
+        self.fixture.allow_precommit_config_edits = True
+        check = self.propose({PRECOMMIT: NO_HOOKS})
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertTrue(check.changes_precommit_config)
+        self.assertIs(check.to_json()["changes_precommit_config"], True)
+        provenance = check.pr_body.split("</details>")[0]
+        self.assertIn(f"changes the lint gate, {PRECOMMIT}", provenance)
+        self.assertIn("- Lint gate: this pull request changes", provenance)
+
+    @unittest.expectedFailure
+    def test_switch_on_unlocks_no_other_protected_file(self) -> None:
+        """Instruction files and other gate configuration stay protected."""
+        for index, path in enumerate(
+            ("AGENTS.md", "docs/AGENTS.md", ".gitlint", "SECURITY.md")
+        ):
+            with self.subTest(path=path):
+                root = self.root / f"other-{index}"
+                root.mkdir()
+                fixture = Fixture(root)
+                seed_precommit(fixture)
+                fixture.allow_precommit_config_edits = True
+                fixture.commit(
+                    "Chore: Drop the hook\n\nBody.\n",
+                    {PRECOMMIT: NO_HOOKS, path: "changed\n"},
+                )
+                fixture.bundle()
+                fixture.manifest(pr_title="Chore: Drop the hook")
+                check = run_check(fixture, root)
+                self.assertEqual(check.verdict, "rejected")
+                self.assertIn(f"{path} is protected", check.reasons[0])
+
+    @unittest.expectedFailure
+    def test_switch_off_leaves_other_changes_alone(self) -> None:
+        """A proposal not touching the file is unaffected by the switch."""
+        self.fixture.allow_precommit_config_edits = False
+        check = self.propose({"README.md": README.replace("typo", "fix")})
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertFalse(check.changes_precommit_config)
+        self.assertNotIn(PRECOMMIT, check.pr_body)
+
+    @unittest.expectedFailure
+    def test_the_workflow_switch_does_not_unlock_it(self) -> None:
+        """Each switch unlocks its own paths alone."""
+        self.fixture.allow_workflow_edits = True
+        check = self.propose({PRECOMMIT: NO_HOOKS})
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn("allow_precommit_config_edits", check.reasons[0])
+
+
+class RevisionPrecommitTest(GitCase):
+    """A round may change the pre-commit config only if its pull request does."""
+
+    def revise(
+        self,
+        switch: bool,
+        published: dict[str, str | None],
+        files: dict[str, str | None],
+    ) -> Any:
+        """Publish ``published``, add a round changing ``files`` and check it.
+
+        Each call builds its own repositories, so one test can try both
+        switch values; the fork is stubbed with the agent clone.
+        """
+        root = self.root / f"switch-{switch}"
+        root.mkdir()
+        fixture = Fixture(root)
+        seed_precommit(fixture)
+        fixture.allow_precommit_config_edits = switch
+        head = fixture.commit("Chore: Drop the pytest hook", published)
+        tip = fixture.advance_upstream()
+        fixture.commit("Chore: Answer the review\n\nBody.\n", files)
+        fixture.bundle()
+        fixture.revision_manifest(pr_title="Chore: Drop the pytest hook")
+        with patch("workflow_gate.fork_url", return_value=str(fixture.agent)):
+            return run_check(fixture, root, entry=fixture.revision_entry(tip, head))
+
+    @unittest.expectedFailure
+    def test_pull_request_changing_it_lets_the_round_change_it(self) -> None:
+        """Whatever the switch says, the pull request's own file is in reach."""
+        for switch in (False, True):
+            with self.subTest(switch=switch):
+                check = self.revise(
+                    switch, {PRECOMMIT: NO_HOOKS}, {PRECOMMIT: "repos: [] # tidy\n"}
+                )
+                self.assertEqual(check.verdict, "proposed", check.reasons)
+                self.assertTrue(check.changes_precommit_config)
+
+    @unittest.expectedFailure
+    def test_pull_request_leaving_it_alone_rejects_the_round(self) -> None:
+        """Whatever the switch says, a round cannot widen into the lint gate."""
+        for switch in (False, True):
+            with self.subTest(switch=switch):
+                check = self.revise(
+                    switch,
+                    {"README.md": README.replace("typo", "fix")},
+                    {PRECOMMIT: NO_HOOKS},
+                )
+                self.assertEqual(check.verdict, "rejected")
+                (reason,) = check.reasons
+                self.assertIn(PRECOMMIT, reason)
+                self.assertIn("revision round", reason)
 
 
 if __name__ == "__main__":

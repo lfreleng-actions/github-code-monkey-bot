@@ -3968,6 +3968,78 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
         self.assertIs(loaded["jobs"]["plumbing"]["with"]["allow_workflow_edits"], False)
 
 
+class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
+    """``allow_precommit_config_edits`` reaches selection and prompt (#227)."""
+
+    @unittest.expectedFailure
+    def test_input_is_an_off_by_default_boolean(self) -> None:
+        """A caller that says nothing gets no pre-commit config edits."""
+        call = cast(dict[str, Any], self.triggers["workflow_call"])
+        switch = cast(dict[str, Any], call["inputs"]["allow_precommit_config_edits"])
+        self.assertEqual(switch["type"], "boolean")
+        self.assertIs(switch["default"], False)
+
+    @unittest.expectedFailure
+    def test_selection_records_the_switch(self) -> None:
+        """The trusted selection carries it, for the publisher to read."""
+        step = self.step("select", "Select issues")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_PRECOMMIT_CONFIG_EDITS"],
+            "inputs.allow_precommit_config_edits",
+        )
+        self.assertIn(
+            'if [ "$ALLOW_PRECOMMIT_CONFIG_EDITS" = true ]; then'
+            " extra+=(--allow-precommit-config-edits) fi",
+            flatten(step["run"]),
+        )
+
+    @unittest.expectedFailure
+    def test_runtime_context_states_the_switch(self) -> None:
+        """An issue session learns whether it may change the lint gate."""
+        step = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_PRECOMMIT_CONFIG_EDITS"],
+            "inputs.allow_precommit_config_edits",
+        )
+        script = flatten(step["run"])
+        self.assertIn("pre-commit config edits: allowed", script)
+        self.assertIn("pre-commit config edits: not allowed", script)
+
+    @unittest.expectedFailure
+    def test_prompts_state_the_precommit_config_rules(self) -> None:
+        """Authoring follows the switch; a round stays within its pull request."""
+        author = squash(PROMPT.read_text(encoding="utf-8"))
+        self.assertIn("pre-commit config edits: not allowed", author)
+        revise = squash(REVISE_PROMPT.read_text(encoding="utf-8"))
+        self.assertIn(".pre-commit-config.yaml", revise)
+        self.assertIn("pull request already changes it", revise)
+
+    @unittest.expectedFailure
+    def test_callers_forward_the_switch(self) -> None:
+        """Both dispatch forms offer it, off; every call passes it on."""
+        for path, job, expected in (
+            (CRON, "code-monkey", "inputs.allow_precommit_config_edits"),
+            (TESTING, "dry-run", "inputs.allow_precommit_config_edits || false"),
+        ):
+            with self.subTest(workflow=path.name):
+                loaded = cast(
+                    dict[Any, Any], yaml.safe_load(path.read_text(encoding="utf-8"))
+                )
+                inputs = loaded[TRIGGERS]["workflow_dispatch"]["inputs"]
+                switch = inputs["allow_precommit_config_edits"]
+                self.assertEqual(switch["type"], "boolean")
+                self.assertIs(switch["default"], False)
+                with_ = loaded["jobs"][job]["with"]
+                self.assert_expression(with_["allow_precommit_config_edits"], expected)
+        loaded = cast(
+            dict[Any, Any], yaml.safe_load(TESTING.read_text(encoding="utf-8"))
+        )
+        plumbing = loaded["jobs"]["plumbing"]["with"]
+        self.assertIs(plumbing["allow_precommit_config_edits"], False)
+
+
 class CronCallerContracts(WorkflowCase):
     """The dispatch-only caller: triggers, dispatch form and what it forwards."""
 

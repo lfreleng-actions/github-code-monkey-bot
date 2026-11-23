@@ -126,6 +126,7 @@ class Fixture:
         # The run's switch as the selection records it; None leaves it
         # out, as a selection from before the switch did.
         self.allow_workflow_edits: bool | None = None
+        self.allow_precommit_config_edits: bool | None = None
 
     def commit(
         self,
@@ -284,6 +285,8 @@ class Fixture:
         }
         if self.allow_workflow_edits is not None:
             document["allow_workflow_edits"] = self.allow_workflow_edits
+        if self.allow_precommit_config_edits is not None:
+            document["allow_precommit_config_edits"] = self.allow_precommit_config_edits
         return document
 
     def write_selection(self, selection: dict[str, Any] | None = None) -> Path:

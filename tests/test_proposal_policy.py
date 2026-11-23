@@ -710,6 +710,30 @@ class ProvenanceBlockTest(unittest.TestCase):
         )
 
 
+class ProvenanceLintGateTest(unittest.TestCase):
+    """A change to ``.pre-commit-config.yaml`` shows in the provenance block."""
+
+    @unittest.expectedFailure
+    def test_provenance_names_the_lint_gate(self) -> None:
+        """A block for a change to the file says so, even when collapsed."""
+        block = model.provenance_block(
+            model="m",
+            run_url="",
+            issue_url="u",
+            base_sha="e" * 40,
+            commands=[],
+            changes_precommit_config=True,
+        )
+        summary = block.split("</summary>")[0]
+        self.assertIn(".pre-commit-config.yaml", summary)
+        self.assertIn("lint gate", summary)
+        self.assertIn("- Lint gate: this pull request changes", block)
+        plain = model.provenance_block(
+            model="m", run_url="", issue_url="u", base_sha="e" * 40, commands=[]
+        )
+        self.assertNotIn(".pre-commit-config.yaml", plain)
+
+
 class IdentityTest(unittest.TestCase):
     """``Identity`` renders the sign-off trailer."""
 
