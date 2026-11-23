@@ -3453,6 +3453,267 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
         self.assertEqual(run.calls, [])
 
 
+NOTICE_STEPS = [
+    "Load egress allow-list",
+    "Harden runner",
+    "nominee",
+    "Checkout trusted assets",
+    "notice-token",
+    "Pre-flight: notice token identity",
+    "notice",
+]
+
+
+class AntagonisticNoticeContracts(ReusableWorkflowCase):
+    """The notice on each pull request whose review request failed (#228)."""
+
+    JOB = "antagonistic-notice"
+
+    def step_keys(self) -> list[str]:
+        """Each notice job step by its id, or its name where it has none."""
+        return [str(s.get("id") or s.get("name")) for s in self.steps(self.JOB)]
+
+    @unittest.expectedFailure
+    def test_job_follows_a_failed_request(self) -> None:
+        """Named, after select and the request, only when a nominee failed."""
+        job = self.jobs[self.JOB]
+        self.assertEqual(job["name"], "Report failed review requests")
+        self.assertEqual(job["needs"], ["select", "antagonistic"])
+        self.assert_expression(
+            job["if"],
+            "!cancelled() && needs.antagonistic.outputs.failed_count != '' &&"
+            " needs.antagonistic.outputs.failed_count != '0'",
+        )
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertEqual(job["timeout-minutes"], 10)
+        strategy = cast(dict[str, Any], job["strategy"])
+        self.assertIs(strategy["fail-fast"], False)
+        self.assert_expression(
+            strategy["matrix"], "fromJSON(needs.antagonistic.outputs.failed)"
+        )
+        outputs = cast(dict[str, str], self.jobs["antagonistic"]["outputs"])
+        self.assert_expression(outputs["failed"], "steps.dispatch.outputs.failed")
+        self.assert_expression(
+            outputs["failed_count"], "steps.dispatch.outputs.failed_count"
+        )
+
+    @unittest.expectedFailure
+    def test_steps_run_in_order_behind_harden_runner(self) -> None:
+        """Loader, harden-runner, check, assets, mint, identity, notice."""
+        self.assertEqual(self.step_keys(), NOTICE_STEPS)
+        steps = self.steps(self.JOB)
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        self.assertTrue(is_action(steps[3], CHECKOUT))
+        self.assertTrue(is_action(steps[4], APP_TOKEN))
+
+    @unittest.expectedFailure
+    def test_notices_serialise_per_pull_request(self) -> None:
+        """One notice job at a time per pull request, across runs.
+
+        Two named runs each lock within their own run, so both can
+        reach this job for one pull request. The script reads the
+        comments before it posts; a later job must wait for the
+        earlier one's comment and find it, never be cancelled.
+        """
+        concurrency = cast(dict[str, Any], self.jobs[self.JOB]["concurrency"])
+        self.assert_expression(
+            concurrency["group"],
+            "format('code-monkey-notice-{0}-pull-{1}',"
+            " matrix.repository, matrix.number)",
+        )
+        self.assertIs(concurrency["cancel-in-progress"], False)
+        self.assertEqual(concurrency["queue"], "max")
+
+    @unittest.expectedFailure
+    def test_offline_check_reads_the_selection_before_the_mint(self) -> None:
+        """The check holds no token and reads the select job's matrix."""
+        check = self.step(self.JOB, "nominee")
+        env = cast(dict[str, str], check["env"])
+        self.assertNotIn("GH_TOKEN", env)
+        self.assert_expression(env["SELECTED"], "needs.select.outputs.matrix")
+        self.assert_expression(env["ORG"], "inputs.org")
+        self.assert_expression(env["REPOSITORY"], "matrix.repository")
+        self.assert_expression(env["REPO_NAME"], "matrix.repo_name")
+        self.assert_expression(env["NUMBER"], "matrix.number")
+        self.assert_expression(env["KIND"], "matrix.kind")
+        self.assert_expression(env["HEAD"], "matrix.head")
+        self.assertLess(
+            self.position(self.JOB, "nominee"),
+            self.position(self.JOB, "notice-token"),
+        )
+        assets = self.step(self.JOB, "Checkout trusted assets")
+        self.assert_expression(assets["with"]["ref"], "needs.select.outputs.assets_sha")
+        self.assert_expression(assets["with"]["repository"], "inputs.assets_repository")
+        self.assertIs(assets["with"]["persist-credentials"], False)
+
+    def check_nominee(self, **changes: str) -> tuple[int, str, dict[str, str]]:
+        """Run the offline check on a nominee; return status, stdout, outputs.
+
+        The selection revises sbom-action#41 on issue 40's branch and
+        works issue 9 in another repository, which opens a new pull
+        request this run.
+        """
+        selected = {
+            "include": [
+                {
+                    "repository": "lfreleng-actions/other",
+                    "number": 9,
+                    "pull_number": 0,
+                    "branch": "code-monkey/issue-9",
+                },
+                {
+                    "repository": "lfreleng-actions/sbom-action",
+                    "number": 40,
+                    "pull_number": 41,
+                    "branch": "code-monkey/issue-40",
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as holder:
+            output = Path(holder) / "output"
+            output.touch()
+            env = {
+                "PATH": os.environ["PATH"],
+                "ORG": "lfreleng-actions",
+                "REPOSITORY": "lfreleng-actions/sbom-action",
+                "REPO_NAME": "sbom-action",
+                "NUMBER": "41",
+                "KIND": "failed",
+                "HEAD": "a" * 40,
+                "SELECTED": json.dumps(selected),
+                "GITHUB_OUTPUT": str(output),
+                **changes,
+            }
+            run = subprocess.run(
+                ["bash", "-c", str(self.step(self.JOB, "nominee")["run"])],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return run.returncode, run.stdout, step_outputs(output.read_text())
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_offline_check_binds_the_selected_pull_request(self) -> None:
+        """A revision binds its number; a new pull request, its issue branch."""
+        status, _, outputs = self.check_nominee()
+        self.assertEqual(status, 0)
+        self.assertEqual(outputs["branches"], '["code-monkey/issue-40"]')
+        self.assertEqual(self.check_nominee(KIND="uncertain")[0], 0)
+        status, _, outputs = self.check_nominee(
+            REPOSITORY="lfreleng-actions/other", REPO_NAME="other", NUMBER="77"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(outputs["branches"], '["code-monkey/issue-9"]')
+        status, stdout, outputs = self.check_nominee(NUMBER="42")
+        self.assertNotEqual(status, 0)
+        self.assertIn("::error::", stdout)
+        self.assertNotIn("branches", outputs)
+
+    @unittest.expectedFailure
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_offline_check_refuses_what_the_selection_does_not_name(self) -> None:
+        """Another owner, a bad name or number, or an unselected repository."""
+        self.assertEqual(self.check_nominee()[0], 0)
+        revision = '{"repository": "lfreleng-actions/sbom-action", "pull_number": 41'
+        for name, changes in (
+            ("owner", {"REPOSITORY": "elsewhere/sbom-action"}),
+            ("name", {"REPO_NAME": "sbom action"}),
+            ("dots", {"REPOSITORY": "lfreleng-actions/..", "REPO_NAME": ".."}),
+            ("mismatch", {"REPO_NAME": "other"}),
+            ("zero", {"NUMBER": "0"}),
+            ("number", {"NUMBER": "4x"}),
+            ("kind", {"KIND": "refused"}),
+            ("short head", {"HEAD": "a" * 12}),
+            ("head", {"HEAD": "g" * 40}),
+            ("unselected", {"SELECTED": '{"include": []}'}),
+            ("unselected pull", {"NUMBER": "42"}),
+            (
+                "bad branch",
+                {"SELECTED": '{"include": [' + revision + ', "branch": "main"}]}'},
+            ),
+            ("no branch", {"SELECTED": '{"include": [' + revision + "}]}"}),
+            ("not json", {"SELECTED": "nope"}),
+            (
+                "newline",
+                {
+                    "REPOSITORY": "lfreleng-actions/a\n::warning::x",
+                    "REPO_NAME": "a\n::warning::x",
+                },
+            ),
+        ):
+            with self.subTest(name):
+                status, stdout, _ = self.check_nominee(**changes)
+                self.assertNotEqual(status, 0)
+                self.assertIn("::error::", stdout)
+                self.assertNotIn("::warning::", stdout)
+
+    @unittest.expectedFailure
+    def test_mint_is_scoped_to_the_checked_repository(self) -> None:
+        """Pull requests: write and metadata on the one repository, no more."""
+        mint = self.step(self.JOB, "notice-token")
+        with_ = cast(dict[str, Any], mint["with"])
+        self.assert_expression(with_["owner"], "inputs.org")
+        self.assert_expression(with_["repositories"], "matrix.repo_name")
+        self.assertEqual(
+            {k: v for k, v in with_.items() if k.startswith("permission-")},
+            {"permission-pull-requests": "write", "permission-metadata": "read"},
+        )
+        identity = self.step(self.JOB, "Pre-flight: notice token identity")
+        self.assert_expression(
+            identity["env"]["MINTED_SLUG"], "steps.notice-token.outputs.app-slug"
+        )
+        self.assertIn(
+            "preflight.py identity --config monkey-assets/config/bot.json",
+            flatten(identity["run"]),
+        )
+
+    @unittest.expectedFailure
+    def test_token_reaches_the_notice_step_alone(self) -> None:
+        """The notice step holds the token; no step sees the dispatch token."""
+        job = self.jobs[self.JOB]
+        self.assertNotIn("antagonistic_dispatch_token", dumped(job))
+        holders = [
+            str(step.get("id") or step.get("name"))
+            for step in self.steps(self.JOB)
+            if "notice-token.outputs.token" in dumped(step)
+        ]
+        self.assertEqual(holders, ["notice"])
+        key = [
+            str(step.get("id") or step.get("name"))
+            for step in self.steps(self.JOB)
+            if "github_app_private_key" in dumped(step)
+        ]
+        self.assertEqual(key, ["notice-token"])
+        step = self.step(self.JOB, "notice")
+        env = cast(dict[str, str], step["env"])
+        self.assert_expression(env["GH_TOKEN"], "steps.notice-token.outputs.token")
+        self.assert_expression(env["BOT_SLUG"], "steps.notice-token.outputs.app-slug")
+        self.assert_expression(
+            env["REVIEW_REPOSITORY"], "inputs.antagonistic_repository"
+        )
+        self.assert_expression(env["BRANCHES"], "steps.nominee.outputs.branches")
+        self.assert_expression(env["KIND"], "matrix.kind")
+        self.assert_expression(env["HEAD"], "matrix.head")
+        run = flatten(step["run"])
+        self.assertIn("python3 monkey-assets/scripts/request_notice.py", run)
+        for flag in (
+            '--repository "$REPOSITORY"',
+            '--number "$NUMBER"',
+            '--kind "$KIND"',
+            '--head "$HEAD"',
+            '--bot-slug "$BOT_SLUG"',
+            '--run-id "$RUN_ID"',
+            '--run-url "$RUN_URL"',
+            '--review-repository "$REVIEW_REPOSITORY"',
+            '--branches "$BRANCHES"',
+            '--summary "$GITHUB_STEP_SUMMARY"',
+        ):
+            self.assertIn(flag, run)
+
+
 class OutstandingOnlyContracts(ReusableWorkflowCase):
     """A continuation names pull requests and asks for the scan's test (#167)."""
 
