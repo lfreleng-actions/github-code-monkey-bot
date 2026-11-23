@@ -192,6 +192,7 @@ class RunReportOutputsTest(unittest.TestCase):
                 "unmergeable_pull_requests=[]",
                 "failing_check_pull_requests=[]",
                 "antagonistic_pull_requests=[]",
+                "antagonistic_heads={}",
                 "continue_pull_requests=[]",
             ],
         )

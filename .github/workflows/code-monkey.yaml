@@ -2277,6 +2277,8 @@ jobs:
       failing_check_pull_requests: "${{ steps.report.outputs.failing_check_pull_requests }}"
       # yamllint disable-line rule:line-length
       antagonistic_pull_requests: "${{ steps.report.outputs.antagonistic_pull_requests }}"
+      # Each nominee's published head, for a notice of a failed request.
+      antagonistic_heads: "${{ steps.report.outputs.antagonistic_heads }}"
       # Only a live pull-requests run moves a pull request's head, so
       # no other run names one to continue, whatever its results say.
       continue_pull_requests: >-
@@ -2396,6 +2398,10 @@ jobs:
     permissions: {}
     outputs:
       requested: "${{ steps.dispatch.outputs.requested }}"
+      # The nominees no pass dispatched, or whose one dispatch may not
+      # have gone, as a matrix for the notice job.
+      failed: "${{ steps.dispatch.outputs.failed }}"
+      failed_count: "${{ steps.dispatch.outputs.failed_count }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'
@@ -2422,10 +2428,18 @@ jobs:
           allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
 
       # Every nominee is checked as a JSON string literal, so one
-      # holding a newline cannot pass as two. A malformed list or
-      # repository refuses the whole request before any dispatch; an
-      # empty token or a failed dispatch is a warning, since the next
-      # publication or revision round asks again.
+      # holding a newline cannot pass as two, and must have a published
+      # head. A malformed list, head map or repository refuses the whole
+      # request before any dispatch; an empty token is a warning and
+      # dispatches nothing. A dispatch GitHub refused (an HTTP 4xx
+      # answer) is tried again on up to three later passes, one wait
+      # each from RETRY_DELAYS, 315 seconds at worst; a nominee that
+      # never goes is in `failed` as kind `failed`. Any other failure
+      # may have started a run, so it is never sent again: it is an
+      # error and an `uncertain` summary line, and in `failed` as kind
+      # `uncertain`. Each entry names its published head, for the notice
+      # job. Either fails the step once every output and the summary
+      # are written.
       - name: 'Dispatch antagonistic reviews'
         id: dispatch
         env:
@@ -2433,6 +2447,8 @@ jobs:
           REPOSITORY: "${{ inputs.antagonistic_repository }}"
           ORG: "${{ inputs.org }}"
           NOMINEES: "${{ needs.report.outputs.antagonistic_pull_requests }}"
+          HEADS: "${{ needs.report.outputs.antagonistic_heads }}"
+          RETRY_DELAYS: '15 60 240'
         run: |
           set -euo pipefail
           export LC_ALL=C
@@ -2440,6 +2456,11 @@ jobs:
             echo '::error::antagonistic_repository is not owner/repo'
             exit 1
           fi
+          if ! [[ "$RETRY_DELAYS" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+            echo '::error::RETRY_DELAYS is not three whole numbers of seconds'
+            exit 1
+          fi
+          read -r -a delays <<< "$RETRY_DELAYS"
           if ! items=$(jq -r 'if type == "array" then .[] | @json
               else error("not an array") end' <<< "$NOMINEES"); then
             echo '::error::The nominated pull requests are not a JSON array'
@@ -2456,8 +2477,21 @@ jobs:
             fi
             pulls+=("${item:1:${#item}-2}")
           done <<< "$items"
+          if ! heads=$(jq -ce 'select(type == "object")' <<< "$HEADS" \
+              2> /dev/null); then
+            echo '::error::The nominated heads are not a JSON object'
+            exit 1
+          fi
+          for pull in "${pulls[@]}"; do
+            if ! jq -e --arg pull "$pull" '.[$pull] | type == "string"
+                and test("^[0-9a-f]{40}$")' <<< "$heads" > /dev/null; then
+              echo "::error::Nominee $pull has no published head"
+              exit 1
+            fi
+          done
           requested=()
           failed=()
+          uncertain=()
           if [ -z "$GH_TOKEN" ]; then
             echo '::warning::antagonistic_dispatch_token is not set;' \
               'no antagonistic review requested'
@@ -2466,21 +2500,216 @@ jobs:
             echo 'requested=[]' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          for pull in "${pulls[@]}"; do
-            if gh workflow run code-review-antagonistic.yaml \
-              --repo "$REPOSITORY" -f dry_run=false -f pull_requests="$pull"
-            then
-              requested+=("$pull")
-            else
-              echo "::warning::Antagonistic review request failed: $pull"
-              failed+=("$pull")
-            fi
+          passes=$(( ${#delays[@]} + 1 ))
+          pending=("${pulls[@]}")
+          for (( pass = 1; pass <= passes; pass++ )); do
+            [ "${#pending[@]}" -gt 0 ] || break
+            if [ "$pass" -gt 1 ]; then sleep "${delays[pass - 2]}"; fi
+            left=()
+            for pull in "${pending[@]}"; do
+              status=0
+              answer=$(gh workflow run code-review-antagonistic.yaml \
+                --repo "$REPOSITORY" -f dry_run=false -f pull_requests="$pull" \
+                2>&1) || status=$?
+              [ -z "$answer" ] || printf '%s\n' "$answer"
+              if [ "$status" -eq 0 ]; then
+                requested+=("$pull")
+              elif ! [[ "$answer" =~ HTTP\ 4[0-9][0-9]: ]]; then
+                echo "::error::Antagonistic review request for $pull got" \
+                  "no answer saying GitHub refused it; it may have started" \
+                  "a run, so it is not tried again"
+                uncertain+=("$pull")
+              elif [ "$pass" -lt "$passes" ]; then
+                echo "::notice::Antagonistic review request for $pull failed" \
+                  "on pass $pass of $passes; trying again"
+                left+=("$pull")
+              else
+                echo "::error::Antagonistic review request failed on every" \
+                  "pass: $pull"
+                failed+=("$pull")
+              fi
+            done
+            pending=("${left[@]}")
           done
           {
             echo '## Antagonistic review requests'
             echo
             for pull in "${requested[@]}"; do echo "- requested: $pull"; done
             for pull in "${failed[@]}"; do echo "- failed: $pull"; done
+            for pull in "${uncertain[@]}"; do echo "- uncertain: $pull"; done
           } >> "$GITHUB_STEP_SUMMARY"
           json=$(jq -cn '$ARGS.positional' --args "${requested[@]}")
           echo "requested=$json" >> "$GITHUB_OUTPUT"
+          shape='^(?<repository>[^/]+/(?<repo_name>[^#]+))#(?<number>[0-9]+)$'
+          kinds=$(
+            for pull in "${failed[@]}"; do printf 'failed %s\n' "$pull"; done
+            for pull in "${uncertain[@]}"; do
+              printf 'uncertain %s\n' "$pull"
+            done
+          )
+          matrix=$(jq -cRn --arg shape "$shape" --argjson heads "$heads" '
+              {include: [inputs | select(. != "")
+                | split(" ") as [$kind, $pull]
+                | $pull | capture($shape) as $m
+                | {pull: $pull, repository: $m.repository,
+                   repo_name: $m.repo_name, number: ($m.number | tonumber),
+                   kind: $kind, head: $heads[$pull]}]}' <<< "$kinds")
+          echo "failed=$matrix" >> "$GITHUB_OUTPUT"
+          count=$(( ${#failed[@]} + ${#uncertain[@]} ))
+          echo "failed_count=$count" >> "$GITHUB_OUTPUT"
+          if [ "${#failed[@]}" -gt 0 ] || [ "${#uncertain[@]}" -gt 0 ]; then
+            exit 1
+          fi
+
+  # Comments on each pull request whose antagonistic review request
+  # never went, or may not have, so its author learns it may hold no
+  # review (docs/DESIGN.md section 20.5). The job never sees the
+  # dispatch token. The failed list comes from a job that read no
+  # artifact, but each entry is still checked offline against this
+  # run's selection before a token for its repository is minted; the
+  # script then posts only on an open pull request the App wrote, on a
+  # branch the selection names, still at the head the request was for,
+  # once per head and kind.
+  antagonistic-notice:
+    name: 'Report failed review requests'
+    needs: [select, antagonistic]
+    if: >-
+      !cancelled() && needs.antagonistic.outputs.failed_count != '' &&
+      needs.antagonistic.outputs.failed_count != '0'
+    runs-on: 'ubuntu-latest'
+    # One notice job at a time per pull request, across runs: two named
+    # runs, or a scan and a named run, hold different workflow locks, so
+    # both can fail a request for one pull request and reach this job
+    # together. The script reads
+    # the comments before it posts, so a later job waits in the queue,
+    # finds the earlier notice for that head and posts nothing.
+    concurrency:
+      group: >-
+        ${{ format('code-monkey-notice-{0}-pull-{1}',
+        matrix.repository, matrix.number) }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 10
+    permissions:
+      contents: read  # Checkout trusted assets
+    strategy:
+      fail-fast: false
+      matrix: "${{ fromJSON(needs.antagonistic.outputs.failed) }}"
+    steps:
+      - name: 'Load egress allow-list'
+        if: inputs.harden_runner_egress == 'block'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          config: "${{ inputs.harden_runner_allowlist }}"
+          # yamllint disable-line rule:line-length
+          supplemental_config: "${{ inputs.harden_runner_supplemental_allowlist }}"
+          # A caller naming a list depends on it, so its absence fails
+          # here rather than at the first blocked connection.
+          # yamllint disable-line rule:line-length
+          supplemental_required: "${{ inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false' }}"
+          # yamllint disable-line rule:line-length
+          supplemental_unpinned: "${{ inputs.harden_runner_supplemental_unpinned && 'true' || 'false' }}"
+          extra_endpoints: "${{ inputs.harden_runner_extra_endpoints }}"
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: "${{ inputs.harden_runner_egress }}"
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      # The nominee must be a pull request this run selected, under the
+      # organisation, before any token exists: a revision entry binds
+      # its repository and number; failing that, an issue entry in the
+      # repository (pull_number 0, the pull request opened this run)
+      # binds only its branch. The selected branches go to the script,
+      # which posts only on a pull request whose head is one of them.
+      # The kind and the head the notice names must be well formed.
+      # The error names no value, so a crafted one cannot add a command.
+      - name: 'Check the nominee offline'
+        id: nominee
+        env:
+          ORG: "${{ inputs.org }}"
+          REPOSITORY: "${{ matrix.repository }}"
+          REPO_NAME: "${{ matrix.repo_name }}"
+          NUMBER: "${{ matrix.number }}"
+          KIND: "${{ matrix.kind }}"
+          HEAD: "${{ matrix.head }}"
+          SELECTED: "${{ needs.select.outputs.matrix }}"
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          refuse() {
+            echo "::error::The failed nominee is not a pull request this" \
+              "run selected; no notice"
+            exit 1
+          }
+          [[ "$REPO_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || refuse
+          [[ "$REPO_NAME" != '.' && "$REPO_NAME" != '..' ]] || refuse
+          [[ "$REPOSITORY" == "$ORG/$REPO_NAME" ]] || refuse
+          [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]] || refuse
+          [[ "$KIND" == 'failed' || "$KIND" == 'uncertain' ]] || refuse
+          [[ "$HEAD" =~ ^[0-9a-f]{40}$ ]] || refuse
+          branches=$(jq -ce --arg repository "$REPOSITORY" \
+            --argjson number "$NUMBER" '
+              [.include[]? | select(.repository == $repository)] as $in
+              | [$in[] | select(.pull_number == $number)] as $pull
+              | (if $pull == [] then [$in[] | select(.pull_number == 0)]
+                 else $pull end)
+              | map(.branch)
+              | select(length > 0 and all(type == "string"
+                  and test("^code-monkey/issue-[1-9][0-9]*$")))' \
+            <<< "$SELECTED" 2> /dev/null) || refuse
+          echo "branches=$branches" >> "$GITHUB_OUTPUT"
+
+      - name: 'Checkout trusted assets'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: "${{ inputs.assets_repository }}"
+          ref: "${{ needs.select.outputs.assets_sha }}"
+          path: 'monkey-assets'
+          persist-credentials: false
+
+      - name: 'Mint notice token'
+        id: notice-token
+        # yamllint disable-line rule:line-length
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: "${{ inputs.github_app_client_id }}"
+          private-key: "${{ secrets.github_app_private_key }}"
+          owner: "${{ inputs.org }}"
+          repositories: "${{ matrix.repo_name }}"
+          permission-pull-requests: 'write'
+          permission-metadata: 'read'
+
+      - name: 'Pre-flight: notice token identity'
+        env:
+          MINTED_SLUG: "${{ steps.notice-token.outputs.app-slug }}"
+        run: |
+          python3 monkey-assets/scripts/preflight.py identity \
+            --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
+
+      - name: 'Post the failed request notice'
+        id: notice
+        env:
+          GH_TOKEN: "${{ steps.notice-token.outputs.token }}"
+          REPOSITORY: "${{ matrix.repository }}"
+          NUMBER: "${{ matrix.number }}"
+          KIND: "${{ matrix.kind }}"
+          HEAD: "${{ matrix.head }}"
+          BOT_SLUG: "${{ steps.notice-token.outputs.app-slug }}"
+          RUN_ID: "${{ github.run_id }}"
+          # yamllint disable-line rule:line-length
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REVIEW_REPOSITORY: "${{ inputs.antagonistic_repository }}"
+          BRANCHES: "${{ steps.nominee.outputs.branches }}"
+        run: |
+          python3 monkey-assets/scripts/request_notice.py \
+            --repository "$REPOSITORY" --number "$NUMBER" \
+            --kind "$KIND" --head "$HEAD" \
+            --bot-slug "$BOT_SLUG" --run-id "$RUN_ID" --run-url "$RUN_URL" \
+            --review-repository "$REVIEW_REPOSITORY" --branches "$BRANCHES" \
+            --summary "$GITHUB_STEP_SUMMARY"

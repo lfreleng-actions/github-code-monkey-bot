@@ -37,6 +37,7 @@ PULL_URL = re.compile(
     r"/pull/(?P<number>[1-9][0-9]*)",
     re.ASCII,
 )
+SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def unmet(item: dict[str, Any]) -> str | None:
@@ -103,15 +104,17 @@ def nominee(url: str) -> str | None:
     return f"{match['owner']}/{match['repo']}#{match['number']}"
 
 
-def nominees(results: list[dict[str, Any]], urls: list[str]) -> list[str]:
-    """``owner/repo#N`` for each validated URL whose result qualifies, in order.
+def nominations(results: list[dict[str, Any]], urls: list[str]) -> dict[str, str]:
+    """Each qualifying ``owner/repo#N`` and its published head, in order.
 
     ``urls`` are the report's own validated links; a result counts only
     when its link is among them, so nothing outside the organisation
-    or of another shape is ever named.
+    or of another shape is ever named. The head is the commit whose
+    clean review the nomination rests on, which a notice of a failed
+    request names (docs/DESIGN.md section 20.5).
     """
     allowed = {url.lower() for url in urls}
-    named: list[str] = []
+    named: dict[str, str] = {}
     for item in results:
         url = item.get("pull_request_url")
         if not isinstance(url, str) or url.lower() not in allowed:
@@ -119,14 +122,21 @@ def nominees(results: list[dict[str, Any]], urls: list[str]) -> list[str]:
         if unmet(item) is not None:
             continue
         pull = nominee(url)
-        if pull is not None and pull.lower() not in {n.lower() for n in named}:
-            named.append(pull)
+        head = review_outcome.published_commit(item)
+        if pull is None or head is None or not SHA.fullmatch(head):
+            continue
+        if pull.lower() not in {n.lower() for n in named}:
+            named[pull] = head
     return named
 
 
-def output_lines(pulls: list[str]) -> str:
-    """The ``$GITHUB_OUTPUT`` line for the nominated pull requests."""
-    return f"antagonistic_pull_requests={json.dumps(pulls, separators=(',', ':'))}\n"
+def output_lines(heads: dict[str, str]) -> str:
+    """The ``$GITHUB_OUTPUT`` lines for the nominees and their heads."""
+    pulls = json.dumps(list(heads), separators=(",", ":"))
+    return (
+        f"antagonistic_pull_requests={pulls}\n"
+        f"antagonistic_heads={json.dumps(heads, separators=(',', ':'))}\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

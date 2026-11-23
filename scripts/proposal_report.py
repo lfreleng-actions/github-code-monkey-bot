@@ -285,13 +285,15 @@ def write_outputs(
     pulls, excluded = outputs.pull_request_urls(results, org)
     unmergeable = outputs.unmergeable_urls(results, org)
     failing = outputs.failing_check_urls(results, org)
-    nominated = antagonistic.nominees(results, pulls)
+    heads = antagonistic.nominations(results, pulls)
+    nominated = list(heads)
     continuing = continuation.continuing(results, pulls)
     extra: dict[str, Any] = {
         "pull_requests": pulls,
         "unmergeable_pull_requests": unmergeable,
         "failing_check_pull_requests": failing,
         "antagonistic_pull_requests": nominated,
+        "antagonistic_heads": heads,
         "continue_pull_requests": continuing,
         "excluded_pull_request_urls": excluded,
     }
@@ -330,7 +332,7 @@ def write_outputs(
             handle.write(outputs.output_lines(pulls))
             handle.write(outputs.unmergeable_lines(unmergeable))
             handle.write(outputs.failing_check_lines(failing))
-            handle.write(antagonistic.output_lines(nominated))
+            handle.write(antagonistic.output_lines(heads))
             handle.write(continuation.output_lines(continuing))
     return extra
 

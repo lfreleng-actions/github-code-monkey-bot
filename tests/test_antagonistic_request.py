@@ -254,6 +254,13 @@ class ReportNominationTest(unittest.TestCase):
             lines,
         )
         self.assertEqual(report["antagonistic_pull_requests"], expected)
+        # The head whose clean review the nomination rests on, for a
+        # notice should the request fail.
+        heads = {f"{ORG}/sbom-action#41": HEAD}
+        self.assertIn(
+            f"antagonistic_heads={json.dumps(heads, separators=(',', ':'))}", lines
+        )
+        self.assertEqual(report["antagonistic_heads"], heads)
         self.assertIn("nominated for an antagonistic review", markdown)
 
     def test_nominee_shape(self) -> None:
