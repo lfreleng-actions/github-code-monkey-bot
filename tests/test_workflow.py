@@ -361,12 +361,19 @@ class TopLevelContracts(ReusableWorkflowCase):
                     self.assertEqual(value, "false")
 
     def test_every_trusted_job_loads_the_allow_list(self) -> None:
-        """Select, forks, publish, report and antagonistic load the allow-list first.
+        """Every job that holds a token loads the allow-list first.
 
         CONNECTION_ALLOW_LIST does not cross job boundaries, and
         harden-runner in block mode with an empty list enforces nothing.
         """
-        for job in ("select", "forks", "publish", "report", "antagonistic"):
+        for job in (
+            "select",
+            "forks",
+            "publish",
+            "report",
+            "antagonistic",
+            "antagonistic-notice",
+        ):
             with self.subTest(job=job):
                 loaders = self.actions(job, BLOCK_ACTION)
                 self.assertEqual(len(loaders), 1)
@@ -399,7 +406,7 @@ class TopLevelContracts(ReusableWorkflowCase):
         loaders = [
             (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
         ]
-        self.assertEqual(len(loaders), 5)
+        self.assertEqual(len(loaders), 6)
         for job, step in loaders:
             with_ = cast(dict[str, Any], step["with"])
             self.assertEqual(set(with_) - {"allow_list_summary"}, set(expected))
@@ -2039,6 +2046,7 @@ class MintProvenanceContracts(ReusableWorkflowCase):
         ("select", "app-token"),
         ("publish", "pr-token"),
         ("publish", "comment-token"),
+        ("antagonistic-notice", "notice-token"),
     )
 
     def mints(self) -> list[tuple[str, dict[str, Any]]]:
@@ -2055,7 +2063,15 @@ class MintProvenanceContracts(ReusableWorkflowCase):
         found = self.mints()
         self.assertEqual(
             sorted(str(step["id"]) for _, step in found),
-            sorted(["app-token", "comment-token", "pr-token", *self.FORK_MINTS]),
+            sorted(
+                [
+                    "app-token",
+                    "comment-token",
+                    "notice-token",
+                    "pr-token",
+                    *self.FORK_MINTS,
+                ]
+            ),
         )
         for job, step in found:
             with self.subTest(job=job, mint=step["id"]):
@@ -2097,6 +2113,10 @@ class MintProvenanceContracts(ReusableWorkflowCase):
                 },
                 "comment-token": {
                     "permission-issues": "write",
+                    "permission-metadata": "read",
+                },
+                "notice-token": {
+                    "permission-pull-requests": "write",
                     "permission-metadata": "read",
                 },
             },
@@ -3473,7 +3493,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
         """Each notice job step by its id, or its name where it has none."""
         return [str(s.get("id") or s.get("name")) for s in self.steps(self.JOB)]
 
-    @unittest.expectedFailure
     def test_job_follows_a_failed_request(self) -> None:
         """Named, after select and the request, only when a nominee failed."""
         job = self.jobs[self.JOB]
@@ -3497,7 +3516,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
             outputs["failed_count"], "steps.dispatch.outputs.failed_count"
         )
 
-    @unittest.expectedFailure
     def test_steps_run_in_order_behind_harden_runner(self) -> None:
         """Loader, harden-runner, check, assets, mint, identity, notice."""
         self.assertEqual(self.step_keys(), NOTICE_STEPS)
@@ -3507,14 +3525,14 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
         self.assertTrue(is_action(steps[3], CHECKOUT))
         self.assertTrue(is_action(steps[4], APP_TOKEN))
 
-    @unittest.expectedFailure
     def test_notices_serialise_per_pull_request(self) -> None:
         """One notice job at a time per pull request, across runs.
 
-        Two named runs each lock within their own run, so both can
-        reach this job for one pull request. The script reads the
-        comments before it posts; a later job must wait for the
-        earlier one's comment and find it, never be cancelled.
+        Two named runs, or a scan and a named run, hold different
+        workflow locks, so both can reach this job for one pull
+        request. The script reads the comments before it posts; a later
+        job must wait for the earlier one's comment and find it, never
+        be cancelled.
         """
         concurrency = cast(dict[str, Any], self.jobs[self.JOB]["concurrency"])
         self.assert_expression(
@@ -3525,7 +3543,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
         self.assertIs(concurrency["cancel-in-progress"], False)
         self.assertEqual(concurrency["queue"], "max")
 
-    @unittest.expectedFailure
     def test_offline_check_reads_the_selection_before_the_mint(self) -> None:
         """The check holds no token and reads the select job's matrix."""
         check = self.step(self.JOB, "nominee")
@@ -3594,7 +3611,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
             )
             return run.returncode, run.stdout, step_outputs(output.read_text())
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_offline_check_binds_the_selected_pull_request(self) -> None:
         """A revision binds its number; a new pull request, its issue branch."""
@@ -3612,7 +3628,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
         self.assertIn("::error::", stdout)
         self.assertNotIn("branches", outputs)
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_offline_check_refuses_what_the_selection_does_not_name(self) -> None:
         """Another owner, a bad name or number, or an unselected repository."""
@@ -3650,7 +3665,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
                 self.assertIn("::error::", stdout)
                 self.assertNotIn("::warning::", stdout)
 
-    @unittest.expectedFailure
     def test_mint_is_scoped_to_the_checked_repository(self) -> None:
         """Pull requests: write and metadata on the one repository, no more."""
         mint = self.step(self.JOB, "notice-token")
@@ -3670,7 +3684,6 @@ class AntagonisticNoticeContracts(ReusableWorkflowCase):
             flatten(identity["run"]),
         )
 
-    @unittest.expectedFailure
     def test_token_reaches_the_notice_step_alone(self) -> None:
         """The notice step holds the token; no step sees the dispatch token."""
         job = self.jobs[self.JOB]

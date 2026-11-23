@@ -2541,3 +2541,156 @@ jobs:
           if [ "${#failed[@]}" -gt 0 ] || [ "${#uncertain[@]}" -gt 0 ]; then
             exit 1
           fi
+
+  # Comments on each pull request whose antagonistic review request
+  # never went, or may not have, so its author learns it may hold no
+  # review (docs/DESIGN.md section 20.5). The job never sees the
+  # dispatch token. The failed list comes from a job that read no
+  # artifact, but each entry is still checked offline against this
+  # run's selection before a token for its repository is minted; the
+  # script then posts only on an open pull request the App wrote, on a
+  # branch the selection names, still at the head the request was for,
+  # once per head and kind.
+  antagonistic-notice:
+    name: 'Report failed review requests'
+    needs: [select, antagonistic]
+    if: >-
+      !cancelled() && needs.antagonistic.outputs.failed_count != '' &&
+      needs.antagonistic.outputs.failed_count != '0'
+    runs-on: 'ubuntu-latest'
+    # One notice job at a time per pull request, across runs: two named
+    # runs, or a scan and a named run, hold different workflow locks, so
+    # both can fail a request for one pull request and reach this job
+    # together. The script reads
+    # the comments before it posts, so a later job waits in the queue,
+    # finds the earlier notice for that head and posts nothing.
+    concurrency:
+      group: >-
+        ${{ format('code-monkey-notice-{0}-pull-{1}',
+        matrix.repository, matrix.number) }}
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 10
+    permissions:
+      contents: read  # Checkout trusted assets
+    strategy:
+      fail-fast: false
+      matrix: "${{ fromJSON(needs.antagonistic.outputs.failed) }}"
+    steps:
+      - name: 'Load egress allow-list'
+        if: inputs.harden_runner_egress == 'block'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          config: "${{ inputs.harden_runner_allowlist }}"
+          # yamllint disable-line rule:line-length
+          supplemental_config: "${{ inputs.harden_runner_supplemental_allowlist }}"
+          # A caller naming a list depends on it, so its absence fails
+          # here rather than at the first blocked connection.
+          # yamllint disable-line rule:line-length
+          supplemental_required: "${{ inputs.harden_runner_supplemental_allowlist != '' && 'true' || 'false' }}"
+          # yamllint disable-line rule:line-length
+          supplemental_unpinned: "${{ inputs.harden_runner_supplemental_unpinned && 'true' || 'false' }}"
+          extra_endpoints: "${{ inputs.harden_runner_extra_endpoints }}"
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: "${{ inputs.harden_runner_egress }}"
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      # The nominee must be a pull request this run selected, under the
+      # organisation, before any token exists: a revision entry binds
+      # its repository and number; failing that, an issue entry in the
+      # repository (pull_number 0, the pull request opened this run)
+      # binds only its branch. The selected branches go to the script,
+      # which posts only on a pull request whose head is one of them.
+      # The kind and the head the notice names must be well formed.
+      # The error names no value, so a crafted one cannot add a command.
+      - name: 'Check the nominee offline'
+        id: nominee
+        env:
+          ORG: "${{ inputs.org }}"
+          REPOSITORY: "${{ matrix.repository }}"
+          REPO_NAME: "${{ matrix.repo_name }}"
+          NUMBER: "${{ matrix.number }}"
+          KIND: "${{ matrix.kind }}"
+          HEAD: "${{ matrix.head }}"
+          SELECTED: "${{ needs.select.outputs.matrix }}"
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          refuse() {
+            echo "::error::The failed nominee is not a pull request this" \
+              "run selected; no notice"
+            exit 1
+          }
+          [[ "$REPO_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || refuse
+          [[ "$REPO_NAME" != '.' && "$REPO_NAME" != '..' ]] || refuse
+          [[ "$REPOSITORY" == "$ORG/$REPO_NAME" ]] || refuse
+          [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]] || refuse
+          [[ "$KIND" == 'failed' || "$KIND" == 'uncertain' ]] || refuse
+          [[ "$HEAD" =~ ^[0-9a-f]{40}$ ]] || refuse
+          branches=$(jq -ce --arg repository "$REPOSITORY" \
+            --argjson number "$NUMBER" '
+              [.include[]? | select(.repository == $repository)] as $in
+              | [$in[] | select(.pull_number == $number)] as $pull
+              | (if $pull == [] then [$in[] | select(.pull_number == 0)]
+                 else $pull end)
+              | map(.branch)
+              | select(length > 0 and all(type == "string"
+                  and test("^code-monkey/issue-[1-9][0-9]*$")))' \
+            <<< "$SELECTED" 2> /dev/null) || refuse
+          echo "branches=$branches" >> "$GITHUB_OUTPUT"
+
+      - name: 'Checkout trusted assets'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: "${{ inputs.assets_repository }}"
+          ref: "${{ needs.select.outputs.assets_sha }}"
+          path: 'monkey-assets'
+          persist-credentials: false
+
+      - name: 'Mint notice token'
+        id: notice-token
+        # yamllint disable-line rule:line-length
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: "${{ inputs.github_app_client_id }}"
+          private-key: "${{ secrets.github_app_private_key }}"
+          owner: "${{ inputs.org }}"
+          repositories: "${{ matrix.repo_name }}"
+          permission-pull-requests: 'write'
+          permission-metadata: 'read'
+
+      - name: 'Pre-flight: notice token identity'
+        env:
+          MINTED_SLUG: "${{ steps.notice-token.outputs.app-slug }}"
+        run: |
+          python3 monkey-assets/scripts/preflight.py identity \
+            --config monkey-assets/config/bot.json --minted-slug "$MINTED_SLUG"
+
+      - name: 'Post the failed request notice'
+        id: notice
+        env:
+          GH_TOKEN: "${{ steps.notice-token.outputs.token }}"
+          REPOSITORY: "${{ matrix.repository }}"
+          NUMBER: "${{ matrix.number }}"
+          KIND: "${{ matrix.kind }}"
+          HEAD: "${{ matrix.head }}"
+          BOT_SLUG: "${{ steps.notice-token.outputs.app-slug }}"
+          RUN_ID: "${{ github.run_id }}"
+          # yamllint disable-line rule:line-length
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REVIEW_REPOSITORY: "${{ inputs.antagonistic_repository }}"
+          BRANCHES: "${{ steps.nominee.outputs.branches }}"
+        run: |
+          python3 monkey-assets/scripts/request_notice.py \
+            --repository "$REPOSITORY" --number "$NUMBER" \
+            --kind "$KIND" --head "$HEAD" \
+            --bot-slug "$BOT_SLUG" --run-id "$RUN_ID" --run-url "$RUN_URL" \
+            --review-repository "$REVIEW_REPOSITORY" --branches "$BRANCHES" \
+            --summary "$GITHUB_STEP_SUMMARY"

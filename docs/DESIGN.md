@@ -1638,8 +1638,9 @@ For each selected issue:
     sessions' spend, so a run's cost is the sum of its reports.
     The report job also exposes the pull requests the run opened or
     revised as the workflow's outputs (§18.6), and names those it
-    nominates for an antagonistic review, which a last job asks the
-    review bot for (§20.5).
+    nominates for an antagonistic review, which a later job asks the
+    review bot for; a last job comments on any pull request whose
+    request did not certainly go (§20.5).
 
 ## 9. Inputs
 
@@ -1966,7 +1967,10 @@ it as the optional `antagonistic_dispatch_token`, and the
 place that reads it. That job holds `permissions: {}`, checks out
 nothing and runs after the report job, so no agent output, script
 from a target or publish step runs beside it; the publish job, which
-records the nomination, holds no new credential.
+records the nomination, holds no new credential. The
+`antagonistic-notice` job that follows a failed request never sees
+this token: it mints the App's own pull requests: write token for
+one repository at a time (§20.5).
 `tests/test_workflow.py` pins that reach. Without the secret the
 step warns, dispatches nothing and succeeds, so the default stays
 harmless until a maintainer sets it. Its expiry needs the same owner and
@@ -2086,6 +2090,12 @@ needs the same owner and rotation reminder as the model PAT (§10.2).
   turn, where the default queue would cancel it with no result, issue
   comment or report row; the revision's compare-and-swap refuses a
   push whose pull request moved while it waited (§20.3).
+- The `antagonistic-notice` job locks on the pull request it reports
+  (`code-monkey-notice-<repository>-pull-<n>`), with
+  `cancel-in-progress: false` and `queue: max`, so two runs whose
+  requests for one pull request both failed post one notice for its
+  head: the later leg reads the earlier notice and posts nothing
+  (§20.5).
 - `testing.yaml` keys pull request runs on the ref, so a newer push
   cancels a stale run, and gives each manual dispatch a group of its
   own.
@@ -2139,7 +2149,7 @@ conflicts while producer artifacts survive.
 | Copilot ignores the App's review request | No review arrives | The review token asks instead (§10.4); without it, or when it lapses, the read-back of the issue's events shows the refusal, recorded as a warning, a `::warning` annotation on the run, the credential's name in the log and `pending (not requested)` (§8 steps 10–11) |
 | Transient GitHub `5xx` during the review wait | None beyond a later poll | The wait repeats the read at the next poll within the same deadline (§8 step 11); one line in `result.json` `warnings` counts the retries and names the last error. A wait spent on them is `pending` and the checks `unknown`, never clean or passing |
 | Review never arrives within the wait | Verdict `pending` | Reported as pending, never clean; a maintainer requests one by hand |
-| The request for an antagonistic review fails (a rate limit, an outage) | No review bot run starts; the issue comment already says the workflow asked for the review | The step tries a dispatch GitHub refused (HTTP 4xx) on up to four passes over 315 seconds (§20.5); a nominee that never goes is an error annotation, appears in the job's `failed` output and turns the run red. Any other failure may have started a run, so the step never sends it again: an error annotation, an `uncertain` summary line and a red run |
+| The request for an antagonistic review fails (a rate limit, an outage) | No review bot run starts; the issue comment already says the workflow asked for the review | The step tries a dispatch GitHub refused (HTTP 4xx) on up to four passes over 315 seconds (§20.5); a nominee that never goes is an error annotation, appears in the job's `failed` output as kind `failed` and turns the run red; the `antagonistic-notice` job then comments on that pull request, once per head and kind, while its head is still the one the request was for (§20.5). Any other failure may have started a run, so the step never sends it again: an error annotation, an `uncertain` summary line, an entry of kind `uncertain` whose notice says the request may not have arrived, and a red run |
 | A check fails at harden-runner's egress agent (a transient resolver failure, the agent reverting at job start) | The run fails before the job's own steps, saying nothing of the change | Classified `infrastructure` from its failure-level annotation (§8 step 11): no revision round, no withheld nomination, reported apart as needing a re-run; a repository that fakes the wording can at most make its own failure spend nothing (§20.1) |
 | A status service (pre-commit.ci) queues for hours and never reports | A pending status holds the head unsettled: the wait runs out and the scan reads `checks still running` round after round | A listed context pending past `stale_status_minutes` is stale (§13.1): not waited for, not failing, named in the record, the comment and the report; the next round runs the hooks itself |
 | Head's checks fail, or never settle within the wait | Published pull request carries red or unfinished CI | Recorded as `checks`, never a gate: a `::warning` annotation, a sentence in the issue comment, and the report; a later round, continued or dispatched, picks the failures up (§8 step 11, §20.1). A read that fails or a head that moves records `unknown` |
@@ -3625,7 +3635,7 @@ round is below the sixty-round ceiling. The rule
 nominates a clean head at a segment's cap: the next hand-back opens
 a new segment. `scripts/antagonistic_request.py` holds the rule.
 
-Three jobs share the work. The publish job's offline
+Four jobs share the work. The publish job's offline
 `Record antagonistic review request` step writes the result's
 `antagonistic` record (§18.4) for the comment, with no token. The
 report job recomputes the rule from every result, ignoring the
@@ -3659,12 +3669,58 @@ the refused ones as kind `failed` and the uncertain ones as kind
 written both and the summary it fails when any nominee failed or
 stays uncertain, so the run goes red.
 
+A red run tells nobody reading the pull request, so the
+`antagonistic-notice` job, which runs when `failed_count` is
+neither empty nor `0`, comments on each pull request in `failed`,
+one matrix entry each. The failed list comes from a job that reads no
+artifact, but results are not authenticated (§18.4), so before any
+token exists an offline step checks the entry: `repository` must be
+`org/repo_name` with a plain name, `number` a positive integer,
+`kind` `failed` or `uncertain` and `head` a commit SHA. It then
+binds the entry to the select job's matrix. A revision entry
+in that repository with that `pull_number` binds it, and its branch;
+failing one, the branches of the repository's issue entries, whose
+`pull_number` is `0` because their pull request opens this run, bound
+the branch it may be on; with neither, or a branch not of the form
+`code-monkey/issue-<n>`, it stops. The job then
+checks out the pinned assets, mints an App token with pull requests:
+write and metadata: read on that one repository, passes the identity
+pre-flight (§10.1) and runs `scripts/request_notice.py` with those
+branches, the kind and the head. The script posts when the pull
+request is open, the App opened it, its head branch is one of them,
+its head is still the published head the request was for, and the
+App has posted no notice of that kind for that head, and not
+otherwise; a notice counts when the App wrote it and it ends with the
+marker `<!-- code-monkey-notice antagonistic-request kind=<kind>
+head=<sha> run=<run id> -->`. A head that moved belongs to a later
+round, which makes its own request: a notice naming it would claim a
+request nobody made for it failed, and its marker would hide that
+round's own notice, so the script posts nothing. Two named runs, or
+a scan and a named run, hold different
+workflow locks (§11) and can reach the job for one pull request
+together; the job's concurrency
+group per pull request, never cancelled and with `queue: max`, makes
+the later leg wait, find the earlier notice for that head and post
+nothing. The comment names
+the head and links the run. A `failed` notice says the request did
+not reach the review bot and how to ask again: dispatch
+`code-review-antagonistic.yaml` in `antagonistic_repository` naming
+the pull request. An `uncertain` notice says the request may not have
+reached it, since its dispatch ended in an error that does not say
+whether GitHub accepted it, and to dispatch the same workflow if no
+review arrives. The notice carries no round footer and no review
+bot marker, so it counts as neither a round nor a hand-back (§20.1).
+
 **Trust.** Nothing authenticates a result yet (§18.4), so a forged
 result can nominate another bot pull request in the organisation.
 The other side bounds the cost: the review bot's selection re-checks
 the bot authorship, the clean Copilot review of the current head,
 its own round cap and whether it already reviewed that head, so a
-forged nomination at most spends one skipped selection. The request
+forged nomination at most spends one skipped selection. The notice,
+the one write a nominee leads to, goes on the pull request the
+selection names or, for one opened this run, on the selected issue's
+branch, so a forged entry cannot direct it to another bot pull
+request in a selected repository. The request
 never counts as a hand-back; the review bot's marker does
 (§20.1).
 
