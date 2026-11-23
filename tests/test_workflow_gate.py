@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from importlib import import_module
 from pathlib import Path
@@ -50,6 +51,8 @@ GLOB = ".github/workflows/ci*.yaml"
 SIBLING = ".github/workflows/ci-other.yaml"
 LABEL = "workflow-edits-ok"
 GRANTED = {"allow_workflow_edits": True, "workflow_edits_label": LABEL}
+PLABEL = "precommit-edits-ok"
+PGRANTED = {"allow_precommit_config_edits": True, "precommit_edits_label": PLABEL}
 JOBS = (
     b"on: push\n"
     b"jobs:\n"
@@ -100,13 +103,15 @@ def run_check(
     switch: Any = None,
     precommit_switch: Any = None,
     label: str | None = None,
+    precommit_label: str | None = None,
 ) -> Any:
     """Run the check with the clone on the local upstream.
 
     ``switch`` and ``precommit_switch``, when given, are written as the
     selection's ``allow_workflow_edits`` and
     ``allow_precommit_config_edits`` values verbatim, whatever their type;
-    ``label`` likewise as its ``workflow_edits_label``.
+    ``label`` and ``precommit_label`` likewise as its
+    ``workflow_edits_label`` and ``precommit_edits_label``.
     """
     selection = fixture.selection(**(entry or {}))
     if switch is not None:
@@ -115,6 +120,8 @@ def run_check(
         selection["allow_precommit_config_edits"] = precommit_switch
     if label is not None:
         selection["workflow_edits_label"] = label
+    if precommit_label is not None:
+        selection["precommit_edits_label"] = precommit_label
     zizmor = stub.StubZizmor(root)
     with (
         patch.object(
@@ -373,6 +380,13 @@ class RevisionWorkflowTest(GitCase):
         """A round outside its pull request learns the label would widen it."""
         check, _fork = self.revise({OTHER: EDITED})
         self.assertEqual(check.verdict, "rejected")
+        self.assertIn(f"lacks the {LABEL} label", check.reasons[0])
+
+    def test_the_precommit_label_does_not_widen_a_round(self) -> None:
+        """A round of an issue with ``precommit-edits-ok`` alone keeps its workflows."""
+        check, _fork = self.revise({OTHER: EDITED}, grant=PGRANTED)
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn(OTHER, check.reasons[0])
         self.assertIn(f"lacks the {LABEL} label", check.reasons[0])
 
     def test_the_switch_off_does_not_narrow_a_round(self) -> None:
@@ -824,14 +838,15 @@ class RevisionPrecommitTest(GitCase):
         switch: bool,
         published: dict[str, str | None],
         files: dict[str, str | None],
+        grant: dict[str, Any] | None = None,
     ) -> Any:
         """Publish ``published``, add a round changing ``files`` and check it.
 
         Each call builds its own repositories, so one test can try both
         switch values; the fork is stubbed with the agent clone.
+        ``grant`` joins the round's entry.
         """
-        root = self.root / f"switch-{switch}"
-        root.mkdir()
+        root = Path(tempfile.mkdtemp(dir=self.root))
         fixture = Fixture(root)
         seed_precommit(fixture)
         fixture.allow_precommit_config_edits = switch
@@ -840,8 +855,9 @@ class RevisionPrecommitTest(GitCase):
         fixture.commit("Chore: Answer the review\n\nBody.\n", files)
         fixture.bundle()
         fixture.revision_manifest(pr_title="Chore: Drop the pytest hook")
+        entry = {**fixture.revision_entry(tip, head), **(grant or {})}
         with patch("workflow_gate.fork_url", return_value=str(fixture.agent)):
-            return run_check(fixture, root, entry=fixture.revision_entry(tip, head))
+            return run_check(fixture, root, entry=entry, precommit_label=PLABEL)
 
     def test_pull_request_changing_it_lets_the_round_change_it(self) -> None:
         """Whatever the switch says, the pull request's own file is in reach."""
@@ -866,6 +882,148 @@ class RevisionPrecommitTest(GitCase):
                 (reason,) = check.reasons
                 self.assertIn(PRECOMMIT, reason)
                 self.assertIn("revision round", reason)
+
+    @unittest.expectedFailure
+    def test_the_label_lets_a_round_change_it(self) -> None:
+        """A labelled round may change the file its pull request leaves alone."""
+        for switch in (False, True):
+            with self.subTest(switch=switch):
+                check = self.revise(
+                    switch,
+                    {"README.md": README.replace("typo", "fix")},
+                    {PRECOMMIT: NO_HOOKS},
+                    grant=PGRANTED,
+                )
+                self.assertEqual(check.verdict, "proposed", check.reasons)
+                self.assertEqual(check.to_json()["precommit_edits_label"], PLABEL)
+
+    @unittest.expectedFailure
+    def test_an_unlabelled_round_names_the_label(self) -> None:
+        """A round outside its pull request learns the label would widen it."""
+        check = self.revise(
+            True, {"README.md": README.replace("typo", "fix")}, {PRECOMMIT: NO_HOOKS}
+        )
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn(f"lacks the {PLABEL} label", check.reasons[0])
+        self.assertNotIn(LABEL, check.reasons[0])
+
+    @unittest.expectedFailure
+    def test_a_labelled_round_within_its_pull_request_credits_no_label(
+        self,
+    ) -> None:
+        """The pull request already changes the file, so the label granted nothing."""
+        check = self.revise(
+            False, {PRECOMMIT: NO_HOOKS}, {PRECOMMIT: "repos: [] # tidy\n"}, PGRANTED
+        )
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["precommit_edits_label"], "")
+
+    def test_the_workflow_label_does_not_widen_a_round_into_it(self) -> None:
+        """``workflow-edits-ok`` alone never reaches the lint gate."""
+        check = self.revise(
+            False,
+            {"README.md": README.replace("typo", "fix")},
+            {PRECOMMIT: NO_HOOKS},
+            grant=GRANTED,
+        )
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn(PRECOMMIT, check.reasons[0])
+
+
+class NewProposalPrecommitLabelTest(GitCase):
+    """``precommit-edits-ok`` grants one issue the pre-commit config (#231)."""
+
+    def setUp(self) -> None:
+        """A base holding a pre-commit configuration and workflow files."""
+        super().setUp()
+        seed_precommit(self.fixture)
+        seed_workflows(self.fixture)
+
+    def propose(
+        self,
+        files: dict[str, str | None],
+        entry: dict[str, Any] | None,
+        *,
+        fixture: Any = None,
+        root: Path | None = None,
+        precommit_switch: Any = None,
+    ) -> Any:
+        """One commit changing ``files``, bundled and checked under ``entry``."""
+        fixture = fixture or self.fixture
+        fixture.commit("Chore: Drop the pytest hook\n\nBody.\n", files)
+        fixture.bundle()
+        fixture.manifest(pr_title="Chore: Drop the pytest hook")
+        return run_check(
+            fixture,
+            root or self.root,
+            entry=entry,
+            label=LABEL,
+            precommit_label=PLABEL,
+            precommit_switch=precommit_switch,
+        )
+
+    @unittest.expectedFailure
+    def test_the_label_grants_an_issue_the_switch_does_not(self) -> None:
+        """The entry's grant passes with the switch off and is reported."""
+        self.fixture.allow_precommit_config_edits = False
+        check = self.propose({PRECOMMIT: NO_HOOKS}, PGRANTED)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertEqual(check.to_json()["precommit_edits_label"], PLABEL)
+        provenance = check.pr_body.split("</details>")[0]
+        self.assertIn("- Lint gate: this pull request changes", provenance)
+        self.assertIn(f"the `{PLABEL}` label on the issue granted", provenance)
+        summary = import_module("proposal_model").check_summary(check)
+        self.assertIn(f"granted by the `{PLABEL}` label", summary)
+
+    @unittest.expectedFailure
+    def test_an_unlabelled_entry_is_rejected_naming_the_label(self) -> None:
+        """Another issue in the same selection keeps the file protected."""
+        self.fixture.allow_precommit_config_edits = False
+        check = self.propose(
+            {PRECOMMIT: NO_HOOKS}, {"allow_precommit_config_edits": False}
+        )
+        self.assertEqual(check.verdict, "rejected")
+        (reason,) = check.reasons
+        self.assertIn("allow_precommit_config_edits", reason)
+        self.assertIn(f"lacks the {PLABEL} label", reason)
+
+    @unittest.expectedFailure
+    def test_a_present_non_true_grant_is_off_whatever_the_switch(self) -> None:
+        """Only an absent field falls back to the run's switch."""
+        for index, value in enumerate(("true", "false", 1, None)):
+            with self.subTest(value=value):
+                root = self.root / f"case-{index}"
+                root.mkdir()
+                fixture = Fixture(root)
+                seed_precommit(fixture)
+                check = self.propose(
+                    {PRECOMMIT: NO_HOOKS},
+                    {"allow_precommit_config_edits": value},
+                    fixture=fixture,
+                    root=root,
+                    precommit_switch=True,
+                )
+                self.assertEqual(check.verdict, "rejected")
+
+    def test_the_workflow_label_alone_does_not_unlock_it(self) -> None:
+        """``workflow-edits-ok`` grants workflow files, never the lint gate."""
+        check = self.propose({PRECOMMIT: NO_HOOKS}, GRANTED)
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn("allow_precommit_config_edits", check.reasons[0])
+
+    def test_the_label_alone_does_not_unlock_workflow_files(self) -> None:
+        """``precommit-edits-ok`` never reaches ``.github/workflows/``."""
+        check = self.propose({ADDED: WORKFLOW}, PGRANTED)
+        self.assertEqual(check.verdict, "rejected")
+        (reason,) = check.reasons
+        self.assertIn(ADDED, reason)
+        self.assertIn(f"lacks the {LABEL} label", reason)
+
+    def test_the_label_unlocks_no_other_protected_file(self) -> None:
+        """Instruction files and other gate configuration stay protected."""
+        check = self.propose({PRECOMMIT: NO_HOOKS, ".gitlint": "changed\n"}, PGRANTED)
+        self.assertEqual(check.verdict, "rejected")
+        self.assertIn(".gitlint is protected", check.reasons[0])
 
 
 if __name__ == "__main__":

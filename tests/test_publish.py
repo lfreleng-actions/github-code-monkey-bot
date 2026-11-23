@@ -255,6 +255,21 @@ class CommentBodyTest(unittest.TestCase):
         junk = comments.comment_body(result_json(workflow_edits_label="a`b"), "")
         self.assertNotIn("granted", junk or "")
 
+    @unittest.expectedFailure
+    def test_proposed_names_the_label_that_granted_precommit_edits(self) -> None:
+        """The pre-commit label is named when it granted the change (#231)."""
+        body = comments.comment_body(
+            result_json(precommit_edits_label="precommit-edits-ok"), ""
+        )
+        self.assertIn(
+            "The `precommit-edits-ok` label on this issue granted its "
+            "pre-commit config edits",
+            body or "",
+        )
+        self.assertNotIn("workflow edits", body or "")
+        plain = comments.comment_body(result_json(), "")
+        self.assertNotIn("granted", plain or "")
+
     def test_proposed_branch_only(self) -> None:
         """Without a pull request the branch URL is named."""
         body = comments.comment_body(result_json(pull_request_url=None), "")

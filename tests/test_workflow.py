@@ -4553,6 +4553,21 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
         self.assertIn("pre-commit config edits: allowed", script)
         self.assertIn("pre-commit config edits: not allowed", script)
 
+    @unittest.expectedFailure
+    def test_runtime_context_states_the_entry_grant(self) -> None:
+        """The session reads its entry's grant, which a label may widen (#231)."""
+        step = self.step("author", "Assemble prompt")
+        env = cast(dict[str, Any], step["env"])
+        self.assert_expression(
+            env["ALLOW_PRECOMMIT_CONFIG_EDITS"],
+            "matrix.allow_precommit_config_edits",
+        )
+        self.assertIn(
+            'if [ "$TASK" != issue ] && [ "$ALLOW_PRECOMMIT_CONFIG_EDITS" = true ];'
+            " then printf -- '- pre-commit config edits: allowed\\n' fi",
+            flatten(step["run"]),
+        )
+
     def test_prompts_state_the_precommit_config_rules(self) -> None:
         """Authoring follows the switch; a round stays within its pull request."""
         author = squash(PROMPT.read_text(encoding="utf-8"))
