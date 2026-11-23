@@ -265,6 +265,15 @@ Publishing then works as follows, with the §5 signing unchanged:
    that target alone. GitHub answers a fork request for a parent the
    organisation already forks with the existing fork, and the
    reply's name, not the target's, is the one renamed or polled.
+   The job polls every fork it requested or renamed against one
+   shared one-minute deadline. It records one still answering 404
+   then, after a request GitHub accepted, as `requested; not yet
+   visible` with a warning rather than a failure: GitHub can take
+   longer to fork a large repository, and the publish job, which
+   starts after the author session, reads the fork again. A fork
+   renamed with no request behind it, still 404 then, fails the
+   target, as does any other read failure while polling, 410 Gone
+   included.
    Creating or renaming a fork needs Administration: write on the
    fork organisation, and a GitHub App holds its permissions on
    every installation at once: an App able to create forks could

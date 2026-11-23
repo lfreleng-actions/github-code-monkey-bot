@@ -18,7 +18,9 @@ and readies one fork per target repository in it. Every target is
 attempted; a failure on one is reported and the rest go ahead, so the
 publisher can still publish to the forks that are ready. The exit
 status is 1 when any target failed, and 0 with a warning when no
-token was provided at all.
+token was provided at all. A fork GitHub accepted but has not shown
+by the deadline warns rather than fails: GitHub can take longer than
+that to fork a large repository, and the publish job reads it again.
 """
 
 from __future__ import annotations
@@ -128,18 +130,35 @@ def check_rename_rights(found: str, fork_org: str, account: str) -> None:
         )
 
 
+class NotYetVisible(PublishError):
+    """A fork GitHub accepted the request for but has not shown yet.
+
+    Forking a large repository can take longer than the forks job
+    waits, and the publish job reads the fork again much later, so
+    this is a warning, not a failure.
+    """
+
+
 def await_fork(fork: str, deadline: float) -> dict[str, Any]:
     """Poll for a fork GitHub is still creating until ``deadline``.
 
     Forking is asynchronous. Every fork a run requested shares one
-    deadline, so the waits overlap rather than add up.
+    deadline, so the waits overlap rather than add up. Only a 404 is a
+    fork still being made: a fork still 404 at the deadline raises
+    :class:`NotYetVisible`, and any other read failure, 410 Gone
+    included, is a :class:`PublishError`.
     """
     while True:
         try:
             return github.api_object(f"repos/{fork}")
         except github.GitHubError as exc:
-            if not github.is_absent(exc) or time.monotonic() >= deadline:
+            if exc.status != 404:
                 raise PublishError(f"fork {fork} did not appear: {exc}") from exc
+            if time.monotonic() >= deadline:
+                raise NotYetVisible(
+                    f"fork {fork} requested; not yet visible after "
+                    f"{FORK_WAIT_SECONDS} seconds"
+                ) from exc
         time.sleep(FORK_POLL_SECONDS)
 
 
@@ -166,10 +185,16 @@ def create_fork(target: str, fork_org: str) -> str:
 
 
 class Pending(NamedTuple):
-    """A fork requested or renamed, which GitHub may still be making."""
+    """A fork requested or renamed, which GitHub may still be making.
+
+    ``requested`` is true when GitHub accepted a fork request for it;
+    only such a fork may still be absent at the deadline without
+    failing.
+    """
 
     target: Target
     outcome: str
+    requested: bool
 
 
 def start(target: Target, account: str) -> str | Pending:
@@ -210,16 +235,29 @@ def start(target: Target, account: str) -> str | Pending:
                 f"could not rename fork {found} to {target.repo_name}: {exc}"
             ) from exc
     if listed is not None:
-        return Pending(target, f"renamed from {listed}")
+        return Pending(target, f"renamed from {listed}", requested=False)
     if found.lower() != fork.lower():
-        return Pending(target, f"created as {found}, then renamed")
-    return Pending(target, "created")
+        return Pending(target, f"created as {found}, then renamed", requested=True)
+    return Pending(target, "created", requested=True)
 
 
 def finish(pending: Pending, deadline: float) -> str:
-    """Wait for a pending fork and prove it is the target's."""
+    """Wait for a pending fork and prove it is the target's.
+
+    A fork renamed with no fork request behind it fails when still
+    absent at the deadline: nothing is creating it.
+    """
     target = pending.target
-    if not refs.is_fork_of(await_fork(target.fork, deadline), target.repository):
+    try:
+        data = await_fork(target.fork, deadline)
+    except NotYetVisible as exc:
+        if pending.requested:
+            raise
+        raise PublishError(
+            f"fork {target.fork} did not appear within {FORK_WAIT_SECONDS} "
+            f"seconds of its {pending.outcome}"
+        ) from exc
+    if not refs.is_fork_of(data, target.repository):
         raise PublishError(
             f"{target.fork} exists but is not a fork of {target.repository}"
         )
@@ -247,6 +285,15 @@ class Summary:
         self.failed += 1
         outcome = f"failed: {github.safe_message(exc)}"
         print(f"::error title=Fork not ready::{fork}: {outcome}")
+        self.write(fork, outcome)
+
+    def pending(self, fork: str) -> None:
+        """Log and append a requested fork GitHub has not shown yet."""
+        outcome = "requested; not yet visible"
+        print(
+            f"::warning title=Fork not yet visible::{fork}: {outcome}; GitHub "
+            "may still be creating it, and the publish job reads it again"
+        )
         self.write(fork, outcome)
 
     def write(self, fork: str, outcome: str) -> None:
@@ -295,6 +342,8 @@ def run_prepare(args: argparse.Namespace) -> int:
         for pending in waiting:
             try:
                 summary.record(pending.target.fork, finish(pending, deadline))
+            except NotYetVisible:
+                summary.pending(pending.target.fork)
             except (PublishError, github.GitHubError) as exc:
                 summary.fail(pending.target.fork, exc)
     return 1 if summary.failed else 0

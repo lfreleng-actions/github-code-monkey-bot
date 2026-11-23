@@ -72,7 +72,6 @@ class RequireForkTest(NoNetworkCase):
         listing.assert_not_called()
         write.assert_not_called()
 
-    @unittest.expectedFailure
     def test_missing_fork_names_the_forks_job(self) -> None:
         """A 404 is neither created nor looked up by parent; it is reported.
 
