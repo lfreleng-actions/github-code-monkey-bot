@@ -4543,17 +4543,10 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
 
     def test_runtime_context_states_the_switch(self) -> None:
         """An issue session learns whether it may change the lint gate."""
-        step = self.step("author", "Assemble prompt")
-        env = cast(dict[str, Any], step["env"])
-        self.assert_expression(
-            env["ALLOW_PRECOMMIT_CONFIG_EDITS"],
-            "inputs.allow_precommit_config_edits",
-        )
-        script = flatten(step["run"])
+        script = flatten(self.step("author", "Assemble prompt")["run"])
         self.assertIn("pre-commit config edits: allowed", script)
         self.assertIn("pre-commit config edits: not allowed", script)
 
-    @unittest.expectedFailure
     def test_runtime_context_states_the_entry_grant(self) -> None:
         """The session reads its entry's grant, which a label may widen (#231)."""
         step = self.step("author", "Assemble prompt")

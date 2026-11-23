@@ -355,7 +355,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         ]
         self.assertEqual(grants, [(True, None), (True, None)])
 
-    @unittest.expectedFailure
     def test_the_label_grants_precommit_edits_to_its_issue_alone(self) -> None:
         """``precommit-edits-ok``, in any case, grants its issue alone (#231)."""
         self.details[("org/alpha", 3)] = self.detail(labels=["PreCommit-Edits-OK"])
@@ -797,7 +796,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         }
         self.assertEqual(grants, {7: (True, "workflow-edits-ok"), 8: (False, None)})
 
-    @unittest.expectedFailure
     def test_a_round_takes_the_precommit_label_alone(self) -> None:
         """The run's pre-commit switch never widens a round; the label does."""
         labelled = self.revision("alpha", 41, 7)
@@ -2095,6 +2093,7 @@ class WriteOutputsTest(unittest.TestCase):
                             "pull_number": 0,
                             "sudo_and_containers": False,
                             "allow_workflow_edits": False,
+                            "allow_precommit_config_edits": False,
                         }
                     ]
                 },
@@ -2140,7 +2139,6 @@ class WriteOutputsTest(unittest.TestCase):
                 (entry,) = matrix["include"]
                 self.assertIs(entry["allow_workflow_edits"], expected)
 
-    @unittest.expectedFailure
     def test_matrix_carries_the_precommit_config_grant(self) -> None:
         """Only a JSON ``true`` grants an entry pre-commit config edits (#231)."""
         cases = ((True, True), (False, False), ("true", False), (None, False))

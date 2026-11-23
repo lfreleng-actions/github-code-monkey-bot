@@ -83,7 +83,9 @@ on:
         description: >-
           Let a new proposal change the root .pre-commit-config.yaml; a
           revision round may change it only if its pull request already
-          does. No other protected file is unlocked
+          does. An issue labelled precommit-edits-ok may change it, in
+          its revision rounds too, whatever this says. No other
+          protected file is unlocked
         type: boolean
         default: false
       request_review:
@@ -1283,10 +1285,10 @@ jobs:
           TASK: "${{ matrix.task }}"
           GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
-          # The entry's grant: the run's switch or the issue's label.
+          # The entry's grants: the run's switch or the issue's label.
           ALLOW_WORKFLOW_EDITS: "${{ matrix.allow_workflow_edits }}"
           # yamllint disable-line rule:line-length
-          ALLOW_PRECOMMIT_CONFIG_EDITS: "${{ inputs.allow_precommit_config_edits }}"
+          ALLOW_PRECOMMIT_CONFIG_EDITS: "${{ matrix.allow_precommit_config_edits }}"
           SUDO_AND_CONTAINERS: "${{ matrix.sudo_and_containers }}"
         run: |
           artefacts="$(pwd)/artefacts"
@@ -1315,8 +1317,8 @@ jobs:
             printf -- '- git identity: `%s` (placeholder, set in git)\n' \
               "$GIT_IDENTITY"
             printf -- '- mode: `%s`\n' "$MODE"
-            # A round's rule is in its prompt, which the issue's label
-            # alone widens; the run's switch is for issues.
+            # A round's rule is in its prompt, which the issue's labels
+            # alone widen; the run's switches are for issues.
             if [ "$TASK" = issue ]; then
               if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
                 printf -- '- workflow edits: allowed\n'
@@ -1330,6 +1332,10 @@ jobs:
               fi
             elif [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
               printf -- '- workflow edits: allowed\n'
+            fi
+            if [ "$TASK" != issue ] \
+              && [ "$ALLOW_PRECOMMIT_CONFIG_EDITS" = true ]; then
+              printf -- '- pre-commit config edits: allowed\n'
             fi
             if [ "$SUDO_AND_CONTAINERS" = true ]; then
               printf -- '- sudo and containers: available\n'

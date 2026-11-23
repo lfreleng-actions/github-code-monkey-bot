@@ -15,13 +15,34 @@ here changes a verdict (docs/DESIGN.md sections 8 and 13).
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 # Whole words: ``uvx pre-commit run`` and ``SKIP=a prek run`` count;
 # ``prek install`` and ``(pre-commit and commit-msg hooks)`` do not.
 HOOK_RUN = re.compile(r"(?<![\w-])(?:prek|pre-commit)\s+run(?![\w-])")
 # How the check's warning starts, so the run report can find it.
 WARNING = "last hook run did not exit 0"
+
+
+def read_commands(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """The manifest's ``commands``, bounded; a non-integer exit code is None."""
+    commands = manifest.get("commands")
+    if not isinstance(commands, list):
+        return []
+    recorded: list[dict[str, Any]] = []
+    for item in cast("list[Any]", commands)[:50]:
+        if isinstance(item, dict):
+            data = cast("dict[str, Any]", item)
+            command = data.get("command")
+            code = data.get("exit_code")
+            if isinstance(command, str):
+                recorded.append(
+                    {
+                        "command": command[:200],
+                        "exit_code": code if type(code) is int else None,
+                    }
+                )
+    return recorded
 
 
 def is_hook_run(command: str) -> bool:

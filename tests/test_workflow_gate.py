@@ -883,7 +883,6 @@ class RevisionPrecommitTest(GitCase):
                 self.assertIn(PRECOMMIT, reason)
                 self.assertIn("revision round", reason)
 
-    @unittest.expectedFailure
     def test_the_label_lets_a_round_change_it(self) -> None:
         """A labelled round may change the file its pull request leaves alone."""
         for switch in (False, True):
@@ -897,7 +896,6 @@ class RevisionPrecommitTest(GitCase):
                 self.assertEqual(check.verdict, "proposed", check.reasons)
                 self.assertEqual(check.to_json()["precommit_edits_label"], PLABEL)
 
-    @unittest.expectedFailure
     def test_an_unlabelled_round_names_the_label(self) -> None:
         """A round outside its pull request learns the label would widen it."""
         check = self.revise(
@@ -907,7 +905,6 @@ class RevisionPrecommitTest(GitCase):
         self.assertIn(f"lacks the {PLABEL} label", check.reasons[0])
         self.assertNotIn(LABEL, check.reasons[0])
 
-    @unittest.expectedFailure
     def test_a_labelled_round_within_its_pull_request_credits_no_label(
         self,
     ) -> None:
@@ -962,7 +959,6 @@ class NewProposalPrecommitLabelTest(GitCase):
             precommit_switch=precommit_switch,
         )
 
-    @unittest.expectedFailure
     def test_the_label_grants_an_issue_the_switch_does_not(self) -> None:
         """The entry's grant passes with the switch off and is reported."""
         self.fixture.allow_precommit_config_edits = False
@@ -975,7 +971,6 @@ class NewProposalPrecommitLabelTest(GitCase):
         summary = import_module("proposal_model").check_summary(check)
         self.assertIn(f"granted by the `{PLABEL}` label", summary)
 
-    @unittest.expectedFailure
     def test_an_unlabelled_entry_is_rejected_naming_the_label(self) -> None:
         """Another issue in the same selection keeps the file protected."""
         self.fixture.allow_precommit_config_edits = False
@@ -987,7 +982,6 @@ class NewProposalPrecommitLabelTest(GitCase):
         self.assertIn("allow_precommit_config_edits", reason)
         self.assertIn(f"lacks the {PLABEL} label", reason)
 
-    @unittest.expectedFailure
     def test_a_present_non_true_grant_is_off_whatever_the_switch(self) -> None:
         """Only an absent field falls back to the run's switch."""
         for index, value in enumerate(("true", "false", 1, None)):

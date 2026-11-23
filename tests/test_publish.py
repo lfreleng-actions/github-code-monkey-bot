@@ -255,7 +255,6 @@ class CommentBodyTest(unittest.TestCase):
         junk = comments.comment_body(result_json(workflow_edits_label="a`b"), "")
         self.assertNotIn("granted", junk or "")
 
-    @unittest.expectedFailure
     def test_proposed_names_the_label_that_granted_precommit_edits(self) -> None:
         """The pre-commit label is named when it granted the change (#231)."""
         body = comments.comment_body(

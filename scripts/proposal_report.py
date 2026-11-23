@@ -407,7 +407,7 @@ def run_report(args: argparse.Namespace) -> None:
         + f"; with a stale status {stale_heads}.",
         "",
         *conflict_lines(results),
-        *workflow_grant.report_lines(results, cell),
+        *workflow_grant.all_report_lines(results, cell),
         *failing_check_lines(results),
         *infrastructure_check_lines(results),
         *unreviewed_heads.report_lines(unreviewed, invalid),

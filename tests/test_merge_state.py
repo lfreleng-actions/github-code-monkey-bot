@@ -491,7 +491,6 @@ class ReportTest(unittest.TestCase):
         )
         self.assertEqual(grant.report_lines([result()], reporting.cell), [])
 
-    @unittest.expectedFailure
     def test_report_lists_proposals_a_label_granted_precommit_edits(self) -> None:
         """The pre-commit grant has its own section, silent when unused (#231)."""
         grant = import_module("workflow_grant")
