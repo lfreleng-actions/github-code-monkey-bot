@@ -15,6 +15,7 @@ import hook_runs
 import proposal_policy as policy
 import review_outcome as outcome
 from proposal_policy import Identity, PublishError
+from workflow_grant import Grant
 
 SCHEMA = 1
 
@@ -53,6 +54,8 @@ class Check:
     # Whether the chain changes the root .pre-commit-config.yaml, the
     # one protected path an operator switch unlocks (DESIGN.md 8).
     changes_precommit_config: bool = False
+    # The label that let the proposal change workflow files, or blank.
+    workflow_edits_label: str = ""
     commits: list[dict[str, Any]] = field(
         default_factory=lambda: cast("list[dict[str, Any]]", [])
     )
@@ -213,6 +216,7 @@ class Check:
             "reasons": self.reasons,
             "needs_workflows": self.needs_workflows,
             "changes_precommit_config": self.changes_precommit_config,
+            "workflow_edits_label": self.workflow_edits_label,
             "commits": self.commits,
             "pr_title": self.pr_title,
             "pr_body": self.pr_body,
@@ -296,8 +300,8 @@ class Context:
     run_url: str
     issue_url: str
     zizmor_token: str = ""
-    # The run's switch for new proposals that change workflow files.
-    allow_workflow_edits: bool = False
+    # The entry's grant to change workflow files.
+    workflow_grant: Grant = field(default_factory=Grant)
     # The run's allow_precommit_config_edits switch, for new proposals
     # that change the root .pre-commit-config.yaml.
     allow_precommit_edits: bool = False
@@ -322,6 +326,12 @@ def check_summary(check: Check) -> str:
             f"Changes `{policy.PRECOMMIT_CONFIG}`: {check.changes_precommit_config}",
             "",
         ]
+        if check.workflow_edits_label:
+            lines += [
+                f"Workflow edits granted by the `{check.workflow_edits_label}`"
+                " label on the issue.",
+                "",
+            ]
     if check.online_audit:
         lines += [policy.log_safe(check.online_audit), ""]
     return "\n".join(lines) + "\n"

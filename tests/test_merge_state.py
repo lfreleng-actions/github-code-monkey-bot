@@ -473,7 +473,6 @@ class ReportTest(unittest.TestCase):
         lines = github_output.read_text(encoding="utf-8").splitlines()
         self.assertIn(f'unmergeable_pull_requests=["{conflicting}"]', lines)
 
-    @unittest.expectedFailure
     def test_report_lists_proposals_a_label_granted_workflow_edits(self) -> None:
         """Each proposal a label let change workflow files is listed once."""
         grant = import_module("workflow_grant")

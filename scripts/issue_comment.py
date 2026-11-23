@@ -16,6 +16,7 @@ import issue_recheck as recheck
 import proposal_model as model
 import proposal_policy as policy
 import round_recount
+import workflow_grant
 import write_recovery as recovery
 from proposal_policy import PublishError
 from review_outcome import (
@@ -88,9 +89,24 @@ def _proposed_comment(
         answered = handback_text(result)
         if answered:
             opening = opening.rstrip(".") + f". {answered}"
-        return outcome_text(opening, result) + antagonistic_sentence(result)
+        return outcome_text(granted(opening, result), result) + antagonistic_sentence(
+            result
+        )
     opening = f"🐒 An AI agent has proposed a change for this issue: {where}"
-    return outcome_text(opening, result) + antagonistic_sentence(result)
+    return outcome_text(granted(opening, result), result) + antagonistic_sentence(
+        result
+    )
+
+
+def granted(opening: str, result: dict[str, Any]) -> str:
+    """Name the label that let the change touch workflow files, when one did."""
+    label = workflow_grant.label_of(result.get("workflow_edits_label"))
+    if not label:
+        return opening
+    return (
+        opening.rstrip(".")
+        + f". The `{label}` label on this issue granted its workflow edits"
+    )
 
 
 def antagonistic_sentence(result: dict[str, Any]) -> str:

@@ -74,7 +74,9 @@ on:
         description: >-
           Let a new proposal add, change or delete files under
           .github/workflows/; a revision round may change only the
-          workflow files its pull request already changes
+          workflow files its pull request already changes. An issue
+          labelled workflow-edits-ok may change any workflow file,
+          in its revision rounds too, whatever this says
         type: boolean
         default: false
       allow_precommit_config_edits:
@@ -1281,7 +1283,8 @@ jobs:
           TASK: "${{ matrix.task }}"
           GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
-          ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
+          # The entry's grant: the run's switch or the issue's label.
+          ALLOW_WORKFLOW_EDITS: "${{ matrix.allow_workflow_edits }}"
           # yamllint disable-line rule:line-length
           ALLOW_PRECOMMIT_CONFIG_EDITS: "${{ inputs.allow_precommit_config_edits }}"
           SUDO_AND_CONTAINERS: "${{ matrix.sudo_and_containers }}"
@@ -1312,7 +1315,8 @@ jobs:
             printf -- '- git identity: `%s` (placeholder, set in git)\n' \
               "$GIT_IDENTITY"
             printf -- '- mode: `%s`\n' "$MODE"
-            # A round's rule is in its prompt; the switch is for issues.
+            # A round's rule is in its prompt, which the issue's label
+            # alone widens; the run's switch is for issues.
             if [ "$TASK" = issue ]; then
               if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
                 printf -- '- workflow edits: allowed\n'
@@ -1324,6 +1328,8 @@ jobs:
               else
                 printf -- '- pre-commit config edits: not allowed\n'
               fi
+            elif [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
+              printf -- '- workflow edits: allowed\n'
             fi
             if [ "$SUDO_AND_CONTAINERS" = true ]; then
               printf -- '- sudo and containers: available\n'

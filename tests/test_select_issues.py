@@ -331,7 +331,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertEqual(entry["checkout_sha"], SHA_A)
         self.assertIs(entry["sudo_and_containers"], True)
 
-    @unittest.expectedFailure
     def test_the_label_grants_workflow_edits_to_its_issue_alone(self) -> None:
         """A labelled issue gets the grant; another in the same run does not."""
         self.details[("org/alpha", 3)] = self.detail(labels=["Workflow-Edits-OK"])
@@ -344,7 +343,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertIs(selection["allow_workflow_edits"], False)
         self.assertEqual(selection["workflow_edits_label"], "workflow-edits-ok")
 
-    @unittest.expectedFailure
     def test_the_switch_grants_every_issue_without_naming_the_label(self) -> None:
         """With the run's switch on, the label adds nothing to report."""
         self.details[("org/alpha", 3)] = self.detail(labels=["workflow-edits-ok"])
@@ -763,7 +761,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         )
         self.assertIs(selection["allow_precommit_config_edits"], True)
 
-    @unittest.expectedFailure
     def test_a_round_takes_the_label_alone(self) -> None:
         """The run's switch never widens a round; the issue's label does."""
         labelled = self.revision("alpha", 41, 7)
@@ -2058,6 +2055,7 @@ class WriteOutputsTest(unittest.TestCase):
                             "head_sha": "",
                             "pull_number": 0,
                             "sudo_and_containers": False,
+                            "allow_workflow_edits": False,
                         }
                     ]
                 },
@@ -2090,7 +2088,6 @@ class WriteOutputsTest(unittest.TestCase):
                 (entry,) = matrix["include"]
                 self.assertIs(entry["sudo_and_containers"], expected)
 
-    @unittest.expectedFailure
     def test_matrix_carries_the_workflow_edit_grant(self) -> None:
         """Only a JSON ``true`` grants an entry workflow edits (#223)."""
         cases = ((True, True), (False, False), ("true", False), (None, False))

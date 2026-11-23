@@ -243,7 +243,6 @@ class CommentBodyTest(unittest.TestCase):
             f"https://github.com/{REPOSITORY}/pull/8 (head {'e' * 12})",
         )
 
-    @unittest.expectedFailure
     def test_proposed_names_the_label_that_granted_workflow_edits(self) -> None:
         """A label that let the change touch workflows is named; junk is not."""
         body = comments.comment_body(

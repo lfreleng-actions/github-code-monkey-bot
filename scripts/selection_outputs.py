@@ -136,6 +136,9 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
             # Only a JSON true opts in; an entry without the field
             # runs with sudo and containers disabled.
             "sudo_and_containers": issue.get("sudo_and_containers") is True,
+            # Likewise only a JSON true lets the session change
+            # workflow files; the publisher's check decides again.
+            "allow_workflow_edits": issue.get("allow_workflow_edits") is True,
         }
         for issue in cast("list[dict[str, Any]]", selection["issues"])
     ]

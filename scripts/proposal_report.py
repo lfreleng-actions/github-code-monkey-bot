@@ -21,6 +21,7 @@ import revision_reads as revisions
 import round_caps as caps
 import stale_statuses as stale
 import unreviewed_heads
+import workflow_grant
 from proposal_policy import PublishError
 
 SCHEMA = 1
@@ -406,6 +407,7 @@ def run_report(args: argparse.Namespace) -> None:
         + f"; with a stale status {stale_heads}.",
         "",
         *conflict_lines(results),
+        *workflow_grant.report_lines(results, cell),
         *failing_check_lines(results),
         *infrastructure_check_lines(results),
         *unreviewed_heads.report_lines(unreviewed, invalid),

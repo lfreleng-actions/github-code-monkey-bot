@@ -23,6 +23,7 @@ import online_audit
 import proposal_policy as policy
 import revision_check as revision
 import workflow_gate
+import workflow_grant
 from fork_orgs import ALLOWED_RE
 from git_bounded import git
 from proposal_model import Check, Context, load_json, provenance_block, read_usage
@@ -415,8 +416,7 @@ def run_check(
         run_url=run_url,
         issue_url=str(entry["url"]),
         zizmor_token=zizmor_token,
-        # Only a JSON true turns a switch on; a selection without it is off.
-        allow_workflow_edits=selection.get("allow_workflow_edits") is True,
+        workflow_grant=workflow_grant.read(selection, entry),
         allow_precommit_edits=selection.get("allow_precommit_config_edits") is True,
     )
     check = Check.from_entry(key, entry)

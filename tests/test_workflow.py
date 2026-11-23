@@ -4472,15 +4472,10 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
     def test_runtime_context_states_the_switch(self) -> None:
         """An issue session learns whether it may change workflow files."""
         step = self.step("author", "Assemble prompt")
-        env = cast(dict[str, Any], step["env"])
-        self.assert_expression(
-            env["ALLOW_WORKFLOW_EDITS"], "inputs.allow_workflow_edits"
-        )
         script = flatten(step["run"])
         self.assertIn("workflow edits: allowed", script)
         self.assertIn("workflow edits: not allowed", script)
 
-    @unittest.expectedFailure
     def test_runtime_context_states_the_entry_grant(self) -> None:
         """The session reads its entry's grant, which a label may widen (#223)."""
         step = self.step("author", "Assemble prompt")
