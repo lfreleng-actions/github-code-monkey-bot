@@ -1716,6 +1716,89 @@ class PublishJobContracts(ReusableWorkflowCase):
                 expected,
             )
 
+    def test_fork_mint_scope_is_one_fork_with_fixed_grants(self) -> None:
+        """Naming the installation on failure leaves the mint's request alone."""
+        mint = self.step("publish", "fork-token")
+        self.assertEqual(
+            mint["with"],
+            {
+                "client-id": "${{ inputs.github_app_client_id }}",
+                "private-key": "${{ secrets.github_app_private_key }}",
+                "owner": "${{ matrix.fork_org }}",
+                "repositories": "${{ matrix.repo_name }}",
+                "permission-contents": "write",
+                "permission-metadata": "read",
+                "permission-workflows": "write",
+            },
+        )
+        self.assertNotIn("continue-on-error", mint)
+        identity = self.step("publish", "Pre-flight: fork token identity")
+        self.assertEqual(identity["if"], "steps.fork-token.outcome == 'success'")
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_failed_fork_mint_names_the_installation(self) -> None:
+        """A mint refused for an existing fork points at the installation."""
+        ensure = self.step("publish", "Ensure a result exists")
+        env_ = cast(dict[str, str], ensure["env"])
+        self.assert_expression(env_["FORK_ORG"], "matrix.fork_org")
+        self.assert_expression(env_["FORK_EXISTS"], "steps.fork-state.outputs.exists")
+        self.assert_expression(env_["MINT_OUTCOME"], "steps.fork-token.outcome")
+        named = (
+            "could not mint a token for lfreleng-bot-forks/repo; the App's"
+            " installation on lfreleng-bot-forks must cover all repositories"
+        )
+        base_env = {
+            "PATH": os.environ["PATH"],
+            "KEY": "repo-7",
+            "REPOSITORY": "o/repo",
+            "FORK_REPOSITORY": "lfreleng-bot-forks/repo",
+            "FORK_ORG": "lfreleng-bot-forks",
+            "ISSUE": "7",
+            "DRY_RUN": "false",
+            "MODE": "pull-requests",
+            "RUN_ATTEMPT": "1",
+            "CHECK_OUTCOME": "success",
+            "OPEN_OUTCOME": "skipped",
+            "AUTHOR_SESSION": "",
+        }
+        cases = [
+            ("true", "failure", "skipped", True),
+            ("true", "success", "failure", False),
+            ("true", "skipped", "skipped", False),
+            ("false", "skipped", "failure", False),
+        ]
+        for exists, mint, push, expected in cases:
+            with self.subTest(exists=exists, mint=mint, push=push):
+                with tempfile.TemporaryDirectory() as holder:
+                    work = Path(holder)
+                    summary = work / "summary.md"
+                    summary.touch()
+                    subprocess.run(
+                        ["bash", "-e", "-c", str(ensure["run"])],
+                        cwd=work,
+                        env={
+                            **base_env,
+                            "FORK_EXISTS": exists,
+                            "MINT_OUTCOME": mint,
+                            "PUSH_OUTCOME": push,
+                            "GITHUB_STEP_SUMMARY": str(summary),
+                        },
+                        check=True,
+                        capture_output=True,
+                    )
+                    result = json.loads(
+                        (work / "artefacts" / "result.json").read_text(encoding="utf-8")
+                    )
+                    written = summary.read_text(encoding="utf-8")
+                self.assertEqual(result["verdict"], "publish-failed")
+                if expected:
+                    self.assertEqual(result["reasons"], [named])
+                    self.assertIn(named, written)
+                else:
+                    self.assertIn("publish did not complete", result["reasons"][0])
+                    self.assertNotIn("could not mint", result["reasons"][0])
+                    self.assertEqual(written, "")
+
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_pushed_branch_without_a_pull_request_is_a_failure(self) -> None:
         """push's proposed result is not publication until open succeeded."""

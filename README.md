@@ -171,6 +171,15 @@ before the expiry, when the owner rotates the secret. Without the
 token, existing forks keep working and a target with no fork fails
 its publish.
 
+Install the App on every bot fork organisation with **All
+repositories** selected, not a list of chosen repositories. The
+machine account creates the forks, and GitHub adds a repository a
+user creates to no selective installation, so the publisher could
+not mint a write token for a new fork. A publish that meets this
+fails with the reason `could not mint a token for <fork>; the App's
+installation on <fork_org> must cover all repositories` (design
+document sections 10.1 and 10.6).
+
 New pull requests leave `.github/workflows/` alone unless the caller
 sets `allow_workflow_edits: true`; the publisher rejects a proposal
 that changes a workflow file without it. A revision round may change
