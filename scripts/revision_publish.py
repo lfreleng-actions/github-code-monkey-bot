@@ -102,11 +102,10 @@ def run_push(
     publisher's own: it records the failure and raises.
     """
     warnings = cast("list[str]", result["warnings"])
-    # The check's own warnings, an unanswered thread above all, reach
-    # the result whatever this run does with the branch; the move
-    # may add a cleanup warning of its own after them.
+    # base_result already carries the check's own warnings, an
+    # unanswered thread above all; the move may add a cleanup warning
+    # of its own to the check, and only those beyond these reach it.
     carried = list(cast("list[str]", check.get("warnings") or []))
-    warnings.extend(carried)
     result["checks_unsettled"] = check.get("checks_unsettled") or 0
     # The cap the outcome comment states reads the round's segment.
     result["segment_round"] = check.get("segment_round") or 0
