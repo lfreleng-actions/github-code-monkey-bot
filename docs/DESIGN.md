@@ -1047,6 +1047,21 @@ The workflow facts the prompt adds, four in all:
    `.enable-sudo-and-containers` as what a maintainer adds to the
    repository. `prompt/revise.md` carries the same rule for a round.
 
+Both prompts also say, in *Recording checks*, how a session takes
+the record `commands` holds on this runner; which checks a change
+needs stays the guidance's. The `exit_code` is the check's own
+status, never a pipeline's last stage. The session reads the whole
+output of a non-zero exit, and a failure it expected accounts for
+that exit once the session has excluded it and run the check again.
+The session makes a hook the runner cannot run runnable where no
+tracked file changes, and otherwise excludes it by id
+(`SKIP=<id>`), runs the hooks again, runs its tool directly where it
+can and names the exclusion in the pull request body; it never
+excludes a hook that reported a finding. The last hook run listed is
+the session's run over the files its commits change, after its last
+commit, as it ran. The publisher marks a proposal whose last hook
+run did not exit 0 and publishes it all the same (§18.2).
+
 The publisher's mechanical checks (§8) do overlap the guidance on
 purpose: they are the gate that decides whether a proposal can merge,
 not a second statement of the policy, and they cover the subset a
