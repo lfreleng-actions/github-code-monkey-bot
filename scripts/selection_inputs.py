@@ -139,6 +139,7 @@ def selection_parser(description: str | None) -> argparse.ArgumentParser:
     parser.add_argument("--include-dotgithub", action="store_true")
     parser.add_argument("--include-assigned", action="store_true")
     parser.add_argument("--allow-workflow-edits", action="store_true")
+    parser.add_argument("--allow-precommit-config-edits", action="store_true")
     parser.add_argument("--max-pull-requests", default="10")
     parser.add_argument("--max-rounds", default="10")
     parser.add_argument("--categories", default="all")

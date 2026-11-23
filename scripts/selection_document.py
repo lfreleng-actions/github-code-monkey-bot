@@ -62,6 +62,7 @@ def selection_document(
         "revise": bool(args.revise),
         "revise_only": bool(args.revise_only),
         "allow_workflow_edits": bool(args.allow_workflow_edits),
+        "allow_precommit_config_edits": bool(args.allow_precommit_config_edits),
         "guidance": {
             "repository": args.guidance_repository,
             "path": args.guidance_path,

@@ -713,7 +713,6 @@ class ProvenanceBlockTest(unittest.TestCase):
 class ProvenanceLintGateTest(unittest.TestCase):
     """A change to ``.pre-commit-config.yaml`` shows in the provenance block."""
 
-    @unittest.expectedFailure
     def test_provenance_names_the_lint_gate(self) -> None:
         """A block for a change to the file says so, even when collapsed."""
         block = model.provenance_block(

@@ -77,6 +77,13 @@ on:
           workflow files its pull request already changes
         type: boolean
         default: false
+      allow_precommit_config_edits:
+        description: >-
+          Let a new proposal change the root .pre-commit-config.yaml; a
+          revision round may change it only if its pull request already
+          does. No other protected file is unlocked
+        type: boolean
+        default: false
       request_review:
         description: >-
           Request a Copilot review of each pull request opened, wait for
@@ -852,6 +859,8 @@ jobs:
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
+          # yamllint disable-line rule:line-length
+          ALLOW_PRECOMMIT_CONFIG_EDITS: "${{ inputs.allow_precommit_config_edits }}"
           MAX_PRS: "${{ inputs.max_pull_requests }}"
           MAX_ROUNDS: "${{ inputs.max_rounds }}"
           STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
@@ -873,6 +882,9 @@ jobs:
           fi
           if [ "$ALLOW_WORKFLOW_EDITS" = true ]; then
             extra+=(--allow-workflow-edits)
+          fi
+          if [ "$ALLOW_PRECOMMIT_CONFIG_EDITS" = true ]; then
+            extra+=(--allow-precommit-config-edits)
           fi
           if [ "$REVISE" != true ]; then
             extra+=(--no-revise)
@@ -1270,6 +1282,8 @@ jobs:
           GIT_IDENTITY: "${{ steps.packet.outputs.git_identity }}"
           MODE: "${{ inputs.mode }}"
           ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
+          # yamllint disable-line rule:line-length
+          ALLOW_PRECOMMIT_CONFIG_EDITS: "${{ inputs.allow_precommit_config_edits }}"
           SUDO_AND_CONTAINERS: "${{ matrix.sudo_and_containers }}"
         run: |
           artefacts="$(pwd)/artefacts"
@@ -1304,6 +1318,11 @@ jobs:
                 printf -- '- workflow edits: allowed\n'
               else
                 printf -- '- workflow edits: not allowed\n'
+              fi
+              if [ "$ALLOW_PRECOMMIT_CONFIG_EDITS" = true ]; then
+                printf -- '- pre-commit config edits: allowed\n'
+              else
+                printf -- '- pre-commit config edits: not allowed\n'
               fi
             fi
             if [ "$SUDO_AND_CONTAINERS" = true ]; then

@@ -267,8 +267,8 @@ class RevisionWorkflowTest(GitCase):
     def test_the_pull_request_is_read_once_per_round(self) -> None:
         """Several workflow paths share one fetch and diff of the pull request."""
         with patch(
-            "workflow_gate.pull_request_workflows",
-            wraps=import_module("workflow_gate").pull_request_workflows,
+            "workflow_gate.pull_request_gated",
+            wraps=import_module("workflow_gate").pull_request_gated,
         ) as spy:
             check, _fork = self.revise({OTHER: EDITED, ADDED: WORKFLOW})
         self.assertEqual(check.verdict, "rejected")
@@ -597,7 +597,6 @@ class InheritedWorkflowTest(GitCase):
 class GatedPathTest(unittest.TestCase):
     """``precommit_config`` names the one protected path a switch unlocks."""
 
-    @unittest.expectedFailure
     def test_root_file_in_any_case(self) -> None:
         """The root file, compared as ``PROTECTED_PATHS`` compares it."""
         for path in (PRECOMMIT, PRECOMMIT.upper(), ".Pre-Commit-Config.yaml"):
@@ -605,7 +604,6 @@ class GatedPathTest(unittest.TestCase):
                 self.assertTrue(gate.precommit_config(path))
                 self.assertTrue(gate.gated(path))
 
-    @unittest.expectedFailure
     def test_other_paths(self) -> None:
         """A copy elsewhere, or another protected file, is not the gated one."""
         for path in (
@@ -636,7 +634,6 @@ class NewProposalPrecommitSwitchTest(GitCase):
         self.fixture.manifest(pr_title="Chore: Drop the pytest hook")
         return run_check(self.fixture, self.root)
 
-    @unittest.expectedFailure
     def test_switch_absent_rejects_naming_the_switch(self) -> None:
         """A selection without the switch keeps the file protected."""
         check = self.propose({PRECOMMIT: NO_HOOKS})
@@ -647,7 +644,6 @@ class NewProposalPrecommitSwitchTest(GitCase):
         self.assertIn("allow_precommit_config_edits", reason)
         self.assertTrue(check.changes_precommit_config)
 
-    @unittest.expectedFailure
     def test_switch_off_rejects_a_deletion(self) -> None:
         """Deleting the file is gated as much as editing it."""
         self.fixture.allow_precommit_config_edits = False
@@ -669,7 +665,6 @@ class NewProposalPrecommitSwitchTest(GitCase):
                 check = run_check(fixture, root, precommit_switch=value)
                 self.assertEqual(check.verdict, "rejected")
 
-    @unittest.expectedFailure
     def test_switch_on_accepts_and_records_the_change(self) -> None:
         """The check records the change and the provenance names the lint gate."""
         self.fixture.allow_precommit_config_edits = True
@@ -681,7 +676,6 @@ class NewProposalPrecommitSwitchTest(GitCase):
         self.assertIn(f"changes the lint gate, {PRECOMMIT}", provenance)
         self.assertIn("- Lint gate: this pull request changes", provenance)
 
-    @unittest.expectedFailure
     def test_switch_on_unlocks_no_other_protected_file(self) -> None:
         """Instruction files and other gate configuration stay protected."""
         for index, path in enumerate(
@@ -703,7 +697,6 @@ class NewProposalPrecommitSwitchTest(GitCase):
                 self.assertEqual(check.verdict, "rejected")
                 self.assertIn(f"{path} is protected", check.reasons[0])
 
-    @unittest.expectedFailure
     def test_switch_off_leaves_other_changes_alone(self) -> None:
         """A proposal not touching the file is unaffected by the switch."""
         self.fixture.allow_precommit_config_edits = False
@@ -712,7 +705,6 @@ class NewProposalPrecommitSwitchTest(GitCase):
         self.assertFalse(check.changes_precommit_config)
         self.assertNotIn(PRECOMMIT, check.pr_body)
 
-    @unittest.expectedFailure
     def test_the_workflow_switch_does_not_unlock_it(self) -> None:
         """Each switch unlocks its own paths alone."""
         self.fixture.allow_workflow_edits = True
@@ -748,7 +740,6 @@ class RevisionPrecommitTest(GitCase):
         with patch("workflow_gate.fork_url", return_value=str(fixture.agent)):
             return run_check(fixture, root, entry=fixture.revision_entry(tip, head))
 
-    @unittest.expectedFailure
     def test_pull_request_changing_it_lets_the_round_change_it(self) -> None:
         """Whatever the switch says, the pull request's own file is in reach."""
         for switch in (False, True):
@@ -759,7 +750,6 @@ class RevisionPrecommitTest(GitCase):
                 self.assertEqual(check.verdict, "proposed", check.reasons)
                 self.assertTrue(check.changes_precommit_config)
 
-    @unittest.expectedFailure
     def test_pull_request_leaving_it_alone_rejects_the_round(self) -> None:
         """Whatever the switch says, a round cannot widen into the lint gate."""
         for switch in (False, True):

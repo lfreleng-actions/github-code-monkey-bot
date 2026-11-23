@@ -3002,7 +3002,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 20)
+        self.assertEqual(len(inputs), 21)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """Two live revise-only runs queue one behind the other."""
@@ -3764,6 +3764,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "include_dotgithub",
                 "load_repo_skills",
                 "allow_workflow_edits",
+                "allow_precommit_config_edits",
                 "request_review",
                 "request_antagonistic_review",
                 "antagonistic_repository",
@@ -3815,6 +3816,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             "include_dotgithub": False,
             "load_repo_skills": False,
             "allow_workflow_edits": False,
+            "allow_precommit_config_edits": False,
             "request_review": True,
             "request_antagonistic_review": True,
             "antagonistic_repository": "lfreleng-actions/github-code-review-bot",
@@ -3887,8 +3889,7 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
             text = squash(path.read_text(encoding="utf-8"))
             with self.subTest(prompt=path.name):
                 self.assertIn(
-                    "`SECURITY.md`, `.pre-commit-config.yaml`, `.zizmor.yml`,"
-                    f" `.zizmor.yaml` and `{self.MARKER}`",
+                    f"`SECURITY.md`, `.zizmor.yml`, `.zizmor.yaml` and `{self.MARKER}`",
                     text,
                 )
                 self.assertIn("sudo and containers: not available", text)
@@ -3971,7 +3972,6 @@ class WorkflowEditSwitchContracts(ReusableWorkflowCase):
 class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
     """``allow_precommit_config_edits`` reaches selection and prompt (#227)."""
 
-    @unittest.expectedFailure
     def test_input_is_an_off_by_default_boolean(self) -> None:
         """A caller that says nothing gets no pre-commit config edits."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -3979,7 +3979,6 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
         self.assertEqual(switch["type"], "boolean")
         self.assertIs(switch["default"], False)
 
-    @unittest.expectedFailure
     def test_selection_records_the_switch(self) -> None:
         """The trusted selection carries it, for the publisher to read."""
         step = self.step("select", "Select issues")
@@ -3994,7 +3993,6 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
             flatten(step["run"]),
         )
 
-    @unittest.expectedFailure
     def test_runtime_context_states_the_switch(self) -> None:
         """An issue session learns whether it may change the lint gate."""
         step = self.step("author", "Assemble prompt")
@@ -4007,7 +4005,6 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
         self.assertIn("pre-commit config edits: allowed", script)
         self.assertIn("pre-commit config edits: not allowed", script)
 
-    @unittest.expectedFailure
     def test_prompts_state_the_precommit_config_rules(self) -> None:
         """Authoring follows the switch; a round stays within its pull request."""
         author = squash(PROMPT.read_text(encoding="utf-8"))
@@ -4016,7 +4013,6 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
         self.assertIn(".pre-commit-config.yaml", revise)
         self.assertIn("pull request already changes it", revise)
 
-    @unittest.expectedFailure
     def test_callers_forward_the_switch(self) -> None:
         """Both dispatch forms offer it, off; every call passes it on."""
         for path, job, expected in (
@@ -4038,6 +4034,14 @@ class PrecommitConfigSwitchContracts(ReusableWorkflowCase):
         )
         plumbing = loaded["jobs"]["plumbing"]["with"]
         self.assertIs(plumbing["allow_precommit_config_edits"], False)
+
+    def test_continue_job_forwards_neither_switch(self) -> None:
+        """An unattended continuation cannot widen a pull request's gated paths."""
+        loaded = cast(dict[Any, Any], yaml.safe_load(CRON.read_text(encoding="utf-8")))
+        job = dumped(loaded["jobs"]["continue"])
+        for switch in ("allow_precommit_config_edits", "allow_workflow_edits"):
+            with self.subTest(switch=switch):
+                self.assertNotIn(switch, job)
 
 
 class CronCallerContracts(WorkflowCase):
@@ -4143,6 +4147,7 @@ class CronCallerContracts(WorkflowCase):
             "include_dotgithub": False,
             "load_repo_skills": False,
             "allow_workflow_edits": False,
+            "allow_precommit_config_edits": False,
             "issues": "",
             "revise_only": False,
             "outstanding_only": False,

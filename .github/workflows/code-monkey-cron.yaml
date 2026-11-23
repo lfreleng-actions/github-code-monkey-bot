@@ -89,6 +89,11 @@ on:
         description: 'Let new pull requests change .github/workflows/ files'
         type: boolean
         default: false
+      # The 21st input: GitHub caps a workflow_dispatch form at 25.
+      allow_precommit_config_edits:
+        description: 'Let new pull requests change .pre-commit-config.yaml'
+        type: boolean
+        default: false
       request_review:
         description: 'Request and await a Copilot review of each pull request'
         type: boolean
@@ -227,6 +232,7 @@ jobs:
       include_dotgithub: ${{ inputs.include_dotgithub }}
       load_repo_skills: ${{ inputs.load_repo_skills }}
       allow_workflow_edits: ${{ inputs.allow_workflow_edits }}
+      allow_precommit_config_edits: ${{ inputs.allow_precommit_config_edits }}
       request_review: ${{ inputs.request_review }}
       request_antagonistic_review: ${{ inputs.request_antagonistic_review }}
       issues: "${{ inputs.issues }}"

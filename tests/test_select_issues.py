@@ -726,7 +726,6 @@ class RevisionIntegrationTest(NoSubprocessCase):
         )
         self.assertIs(selection["allow_workflow_edits"], True)
 
-    @unittest.expectedFailure
     def test_selection_records_the_precommit_config_switch(self) -> None:
         """``allow_precommit_config_edits`` is off unless the run turns it on."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)

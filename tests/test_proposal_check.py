@@ -1157,6 +1157,7 @@ class CheckSummaryTest(unittest.TestCase):
         self.assertIn("- usage.json unreadable: x", summary)
         self.assertIn("| Fix: A \\| B | 2 | 10 |", summary)
         self.assertIn("Needs `workflows: write`: True", summary)
+        self.assertIn("Changes `.pre-commit-config.yaml`: False", summary)
 
     def test_rejected_without_commits(self) -> None:
         """A rejection lists reasons and no table."""

@@ -77,8 +77,10 @@ PROTECTED_NAMES = frozenset(
     }
 )
 ZIZMOR_CONFIGS = {f"{d}zizmor.{x}" for d in ("", ".github/") for x in ("yml", "yaml")}
+# The one protected path a switch may unlock (``workflow_gate``).
+PRECOMMIT_CONFIG = ".pre-commit-config.yaml"
 PROTECTED_PATHS = frozenset(
-    {"security.md", ".pre-commit-config.yaml", ".zizmor.yml", ".zizmor.yaml"}
+    {"security.md", PRECOMMIT_CONFIG, ".zizmor.yml", ".zizmor.yaml"}
 ) | {".enable-sudo-and-containers", *ZIZMOR_CONFIGS}
 PROTECTED_DIRS = frozenset(
     {
