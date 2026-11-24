@@ -33,6 +33,12 @@ on:
         description: 'Copilot CLI model identifier'
         type: string
         default: 'claude-opus-5.5'
+      fusion_tier:
+        description: >-
+          Copilot Fusion tier (standard, high or max) when model is
+          fusion; empty otherwise
+        type: string
+        default: ''
       max_pull_requests:
         description: 'Pull requests to raise at most; 0 lifts the cap'
         type: string
@@ -486,6 +492,7 @@ jobs:
           STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
           MAX_AGENTS: "${{ inputs.max_concurrent_agents }}"
           MODEL: "${{ inputs.model }}"
+          FUSION_TIER: "${{ inputs.fusion_tier }}"
           # Already split, checked and comma-joined, as the App token
           # action takes it. Named issues and pull requests scope the
           # read token to their own repositories; empty, in a
@@ -525,6 +532,18 @@ jobs:
             echo '::error::max_concurrent_agents must be 1-30'; exit 1; }
           [[ "$MODEL" =~ ^[a-z0-9.-]+$ ]] || {
             echo '::error::model must be a lower-case identifier'; exit 1; }
+          # A tier goes with Copilot Fusion, and Fusion with a tier.
+          if [ "$MODEL" = fusion ]; then
+            case "$FUSION_TIER" in
+              standard|high|max) ;;
+              *) echo '::error::model fusion needs fusion_tier standard,' \
+                   'high or max'
+                 exit 1 ;;
+            esac
+          elif [ -n "$FUSION_TIER" ]; then
+            echo '::error::fusion_tier needs model fusion'
+            exit 1
+          fi
           # Expressions cannot add, so the job budget (session plus
           # toolchain setup and upload) is computed here.
           #
@@ -847,6 +866,7 @@ jobs:
           ORG: "${{ inputs.org }}"
           MODE: "${{ inputs.mode }}"
           MODEL: "${{ inputs.model }}"
+          FUSION_TIER: "${{ inputs.fusion_tier }}"
           DRY_RUN: "${{ inputs.dry_run }}"
           ISSUES: "${{ steps.issues.outputs.csv }}"
           # The session: the run and this select job's attempt. New on
@@ -906,7 +926,7 @@ jobs:
           fi
           python3 monkey-assets/scripts/select_issues.py \
             --org "$ORG" --output-dir artefacts \
-            --mode "$MODE" --model "$MODEL" \
+            --mode "$MODE" --model "$MODEL" --fusion-tier="$FUSION_TIER" \
             --issues "$ISSUES" \
             --pull-requests "$PULL_REQUESTS" \
             --session "$RUN_ID-$RUN_ATTEMPT" \
@@ -1357,6 +1377,7 @@ jobs:
           COPILOT_GITHUB_TOKEN: "${{ secrets.copilot_token }}"
           COPILOT_HOME: "${{ runner.temp }}/copilot"
           MODEL: "${{ inputs.model }}"
+          FUSION_TIER: "${{ inputs.fusion_tier }}"
           ALLOW_SUBAGENTS: "${{ inputs.allow_subagents }}"
           LOAD_REPO_SKILLS: "${{ inputs.load_repo_skills }}"
         run: |
@@ -1384,10 +1405,17 @@ jobs:
           if [ "$LOAD_REPO_SKILLS" != true ]; then
             deny="$deny,skill"
           fi
+          # Copilot Fusion routes each prompt at the tier the select
+          # job checked (docs/DESIGN.md 10.3); any other model takes
+          # no tier, and the CLI refuses one.
+          fusion=()
+          if [ "$MODEL" = fusion ]; then
+            fusion=(--fusion-tier="$FUSION_TIER")
+          fi
           cd workspace
           copilot \
             --prompt="$prompt" \
-            --model="$MODEL" \
+            --model="$MODEL" "${fusion[@]}" \
             --mode autopilot \
             --allow-all-tools \
             --deny-tool="$deny" \
@@ -2239,7 +2267,7 @@ jobs:
           mkdir -p artefacts
           usage='{}'
           if [ -s artefacts/check.json ]; then
-            usage="$(jq -c '{premium_requests, agent_seconds}' \
+            usage="$(jq -c '{premium_requests, agent_seconds, models_used}' \
               artefacts/check.json)" || usage='{}'
           fi
           if [ "$FORK_EXISTS" = true ] && [ "$MINT_OUTCOME" = failure ]; then
@@ -2259,6 +2287,7 @@ jobs:
             --argjson attempt "$RUN_ATTEMPT" \
             --arg session "$AUTHOR_SESSION" --argjson usage "$usage" '
             def number: if type == "number" then . else null end;
+            def ids: if type == "array" then map(strings) else [] end;
             {
               schema: 1, key: $key, repository: $repo,
               fork_repository: $fork, issue: $issue,
@@ -2268,7 +2297,8 @@ jobs:
               branch_url: null, commits: [], pull_request_url: null,
               comment_url: null, pr_title: null,
               premium_requests: ($usage.premium_requests | number),
-              agent_seconds: ($usage.agent_seconds | number)
+              agent_seconds: ($usage.agent_seconds | number),
+              models_used: ($usage.models_used | ids)
             }' > artefacts/result.json
 
       - name: 'Attach publish result'

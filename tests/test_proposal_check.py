@@ -672,7 +672,6 @@ class RunCheckProposedTest(GitCase):
         self.assertEqual(check.premium_requests, 12.0)
         self.assertEqual(check.agent_seconds, 65)
 
-    @unittest.expectedFailure
     def test_fusion_run_names_its_tier_and_models(self) -> None:
         """A Fusion run's body names the tier and the models usage.json lists."""
         self.fixture.commit(
@@ -1567,7 +1566,6 @@ class ReadUsageModelsTest(unittest.TestCase):
             model.read_usage(path, check)
         return check
 
-    @unittest.expectedFailure
     def test_fusion_shape_takes_the_top_level_keys(self) -> None:
         """Agent metrics and the current model add nothing to the list."""
         check = self.read(json.dumps(FUSION_USAGE))
@@ -1575,7 +1573,6 @@ class ReadUsageModelsTest(unittest.TestCase):
         self.assertEqual(check.models_dropped, 0)
         self.assertEqual(check.premium_requests, 3.0)
 
-    @unittest.expectedFailure
     def test_absent_or_unreadable_metrics_leave_the_list_empty(self) -> None:
         """No modelMetrics, a non-object one or a corrupt file: nothing listed."""
         for text in (
@@ -1589,7 +1586,6 @@ class ReadUsageModelsTest(unittest.TestCase):
                 self.assertEqual(check.models_used, [])
                 self.assertEqual(check.models_dropped, 0)
 
-    @unittest.expectedFailure
     def test_non_object_values_and_bad_ids_are_dropped(self) -> None:
         """Only an id of the pattern's shape with an object value stays."""
         metrics: dict[str, Any] = {
@@ -1607,7 +1603,6 @@ class ReadUsageModelsTest(unittest.TestCase):
         self.assertEqual(check.models_used, ["gpt-6-luna"])
         self.assertEqual(check.models_dropped, len(metrics) - 1)
 
-    @unittest.expectedFailure
     def test_at_most_ten_sorted(self) -> None:
         """Past the bound the sorted list stops; the rest are counted."""
         metrics: dict[str, Any] = {f"m-{n:02d}": {} for n in range(12, 0, -1)}
@@ -1615,7 +1610,6 @@ class ReadUsageModelsTest(unittest.TestCase):
         self.assertEqual(check.models_used, [f"m-{n:02d}" for n in range(1, 11)])
         self.assertEqual(check.models_dropped, 2)
 
-    @unittest.expectedFailure
     def test_coauthors_name_copilot_for_fusion(self) -> None:
         """The committed map gives a Fusion run the Copilot trailer."""
         coauthors = json.loads(REAL_COAUTHORS.read_text(encoding="utf-8"))

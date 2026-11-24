@@ -931,9 +931,10 @@ which bounds `max_runtime_minutes` at 330.
 
 ### 7.2 Copilot CLI invocation
 
-Pinned `@github/copilot@1.0.83` on Node 22. Triage verified 1.0.80;
-this workflow needs `--usage-output-file`, which 1.0.80 lacks and
-1.0.83 provides with an otherwise identical tool set.
+Pinned `@github/copilot@1.0.112` on Node 22, in
+`tools/copilot-cli/package.json`. Triage verified 1.0.80; this
+workflow needs `--usage-output-file`, which 1.0.80 lacks and 1.0.83
+first provided.
 
 The CLI and `aislop` install with `npm ci` from the lockfile committed
 under `tools/copilot-cli/`, read from the verified assets checkout,
@@ -945,6 +946,7 @@ and Dependabot bumps the pin after a seven-day cooldown.
 
 ```text
 cd workspace && copilot --prompt="$prompt" --model="$MODEL" \
+  [--fusion-tier="$FUSION_TIER"] \
   --mode autopilot --no-ask-user \
   --no-custom-instructions --disable-builtin-mcps --no-auto-update \
   --allow-all-tools \
@@ -955,6 +957,14 @@ cd workspace && copilot --prompt="$prompt" --model="$MODEL" \
   --usage-output-file "$artefacts/usage.json" \
   --share="$artefacts/session-summary.md"
 ```
+
+The workflow adds `--fusion-tier` when `MODEL` is `fusion` and at no
+other time (§10.3). `--help` leaves the flag out in 1.0.112, as in
+1.0.114 and 1.0.115-8, but the CLI parses and validates it: a value
+other than `standard`, `high` or `max` fails, and so does the flag
+beside a model other than `fusion` or `auto`. A later CLI pin
+re-checks that it still parses, as for the sub-agent tool names
+below.
 
 The working directory is the target checkout; `--add-dir` grants
 the artefacts directory, where the agent writes its manifest and
@@ -1746,7 +1756,8 @@ For each selected issue:
 | `org` | string | required | Target owner |
 | `mode` | string | `pull-requests` | `select`, `branches`, `pull-requests` |
 | `dry_run` | boolean | `true` | Author runs; publisher writes nothing |
-| `model` | string | `claude-opus-5.5` | Copilot model identifier (§10.3) |
+| `model` | string | `claude-opus-5.5` | Copilot model identifier (§10.3); `fusion` routes through Copilot Fusion |
+| `fusion_tier` | string | `''` | §10.3: `standard`, `high` or `max`, required with `model: fusion` and refused with any other model |
 | `max_pull_requests` | string | `'10'` | `0` = up to the matrix limit |
 | `max_runtime_minutes` | string | `'180'` | Per agent |
 | `stale_status_minutes` | string | `'8'` | §13.1: a listed pending status older than this is stale; `0` turns it off |
@@ -1824,13 +1835,16 @@ not a continuation (§20.6). A `run-name` keeps the `Code Monkey ⏰`
 prefix and adds what the run works, so the Actions list tells runs
 apart: a dispatch names its `pull_requests`, else its `issues`, as
 the form's raw text, else a `revise_only` scan, else that it named
-nothing (a run the input check refuses), and marks a dry run. GitHub
+nothing (a run the input check refuses), and marks a Copilot Fusion
+run with its tier, `(Fusion high)`, and a dry run. GitHub
 truncates a long name, and nothing reads it back.
 
 | Input | Type | Default |
 | ----- | ---- | ------- |
 | `dry_run` | boolean | `false` |
 | `model` | choice | Claude Opus 5.5 |
+| `fusion_auto_model_select` | boolean | `false` |
+| `fusion_tier` | choice | `standard` |
 | `mode` | choice | `pull-requests` |
 | `max_pull_requests` | string | `'10'` |
 | `max_runtime_minutes` | string | `'180'` |
@@ -1860,11 +1874,19 @@ default above.
 `max_pull_requests` semantics: `1` raises at most one pull request,
 `20` at most twenty, and `0` lifts the cap as far as the matrix
 limit; anything non-numeric or negative fails the select job. The
-form holds 21 inputs, within GitHub's limit of 25. The
+form holds 23 inputs, within GitHub's limit of 25. The
 `repositories`, `categories` and `include_assigned` inputs went with
 the new-issue scan they shaped (§6, §17).
 
 `revise_only` is the form's choice and the caller passes it through.
+`fusion_auto_model_select` lets Copilot Fusion pick the model per
+task (§10.3) and overrides `model`: on, the `options` job passes
+`fusion` as the model and `fusion_tier` (`standard`, `high` or `max`)
+as the tier; off, the caller drops the tier, the reusable workflow
+gets an empty `fusion_tier`, and every argument it receives is the one it
+received before the switch existed. The `continue` job forwards both
+inputs, so a Fusion run's rounds stay on Fusion at its tier.
+
 A `revise_only` dispatch must leave `issues` empty, keep
 `pull-requests` mode and `revise` on; the input check refuses it
 otherwise (§6).
@@ -2042,6 +2064,48 @@ repository, where a pull request reviews any change to it. An
 organisation-level variable would suit a mapping that more than one
 workflow shares; triage does not commit, so nothing else reads it
 today. Move it when a second consumer appears.
+
+#### Copilot Fusion
+
+Copilot Fusion is a selectable mode, off by default:
+`fusion_auto_model_select` on the dispatch form (§9.2), or
+`model: fusion` with a `fusion_tier` from a caller of the reusable
+workflow (§9.1). The CLI then picks the model for each prompt within
+the tier: `standard`, `high` or `max`, where `high` and `max` may
+call more than one model for one prompt. The input check refuses `fusion`
+without a known tier, and a tier with any other model, before the
+select job reads anything; §7.2 gives the invocation and the CLI's
+own checks of the flag.
+
+Billing is per underlying model, at that model's standard rate;
+Fusion itself costs nothing, and paid plans get 30% off Fusion model
+costs through 2026-11-30. The session's premium request total in
+`usage.json` already counts what each model cost, so the report's
+spend needs no change.
+
+Fusion works apart from sub-agents and does not start them: a
+sub-agent's model is not one Fusion chose. When Fusion discards a
+draft, changes the draft already made in the workspace are not
+undone; the offline check and the reviewers judge the commits the
+session leaves, as for any other run.
+
+Every run, Fusion or not, records the models the session ran on.
+The check reads the top-level keys of `modelMetrics` in `usage.json`
+alone, keeping at most ten ids of the shape `[a-z0-9][a-z0-9.-]{0,63}`
+whose values are objects, sorted, and counting the rest as dropped
+(`models_used` and `models_dropped`, §18.3). A missing or unreadable
+file leaves the list empty and changes nothing else. The check
+summary lists them, the provenance block's `Model` line reads
+``Copilot Fusion (`high` tier), routed to `a`, `b` `` on a Fusion
+run, and adds `routed to` to a fixed model's line when the models
+differ from the one requested and not otherwise, and the run report gives each
+entry a `Models` column beside its spend. `config/coauthors.json`
+maps `fusion` to the same Copilot trailer as every other prefix.
+
+This document calls the antagonistic reviewer (§20.5) "a different
+model" from the author. A Fusion run no longer guarantees that,
+since Fusion may route the author's prompts to the reviewer's model;
+the antagonistic flow treats a Fusion run as any other.
 
 ### 10.4 The review request credential
 
@@ -2368,6 +2432,7 @@ scripts/proposal_policy.py               the rules a proposal must pass
 scripts/proposal_check.py                offline bundle verification
 scripts/protected_links.py               protected symlinks in the base tree
 scripts/proposal_model.py                verdict record and its rendering
+scripts/session_usage.py                 session and run spend, models (§10.3)
 scripts/workflow_gate.py                 which gated files a proposal may change
 scripts/publish.py                       replay, open PR, reconcile
 scripts/publish_cli.py                   its eight commands' command line
@@ -2568,6 +2633,7 @@ cross-checked against the trusted `selection.json`.
   "allow_precommit_config_edits": false,
   "precommit_edits_label": "precommit-edits-ok",
   "model": "claude-opus-5.5",
+  "fusion_tier": null,
   "bot": {
     "login": "lf-code-monkey[bot]",
     "email": "123456+lf-code-monkey[bot]@users.noreply.github.com"
@@ -2629,6 +2695,10 @@ cross-checked against the trusted `selection.json`.
   ]
 }
 ```
+
+`model` is the `--model` identifier, and `fusion_tier` the Copilot
+Fusion tier when `model` is `fusion`, else `null` (§10.3); the
+provenance block names both.
 
 `key` is `<repo_name>-<number>` and doubles as the matrix key and
 the artifact-name suffix. `skipped` carries every counter, zero or
@@ -2833,6 +2903,10 @@ the native token it hands zizmor for the online audit (§8 step 3).
   "pr_title": "Feat(sbom): Add CycloneDX 1.6 output",
   "pr_body": "...",
   "stats": {"files_changed": 2, "added_bytes": 1234},
+  "premium_requests": 37.5,
+  "agent_seconds": 1543,
+  "models_used": ["claude-opus-5.5", "gpt-6-luna"],
+  "models_dropped": 0,
   "warnings": [],
   "online_audit": "online audit: no new zizmor findings"
 }
@@ -2861,6 +2935,11 @@ report.
 composed message the publisher will send: the agent's body plus the
 trailers §5 describes. `pr_body` is the composed body: the closing
 line and provenance block first, then the agent's text.
+`premium_requests` and `agent_seconds` come from the session's
+`usage.json`, and `models_used` from the top-level keys of its
+`modelMetrics`: at most ten well-formed model ids, sorted, with
+`models_dropped` counting the entries left out (§10.3). A missing or
+unreadable file leaves the list empty.
 `online_audit` is the online zizmor audit's pass note, blank
 when the check rejected the proposal before reaching it; its
 rejections land in `reasons`. `warnings` holds notes that change no
@@ -2890,6 +2969,8 @@ which a long rejection reason cannot take.
   "comment_url": "https://github.com/.../issues/40#issuecomment-1",
   "premium_requests": 37.5,
   "agent_seconds": 1543,
+  "models_used": ["claude-opus-5.5", "gpt-6-luna"],
+  "models_dropped": 0,
   "run_attempt": 1,
   "author_session": "<proposal artifact ID>",
   "review": {
@@ -2908,7 +2989,11 @@ which a long rejection reason cannot take.
 ```
 
 URLs are `null` where the mode or a rejection stopped short, and
-`author_session` where no proposal arrived. `reasons` starts as the
+`author_session` where no proposal arrived. `models_used` and
+`models_dropped` copy the check's (§18.3), and a result the publish
+job writes after a failure keeps the list. The report shows the ids
+of a model id's shape and drops the rest, since a result is not yet
+authenticated. `reasons` starts as the
 check's, at most 20, each cut to 2,000 characters: a rejection quotes
 the proposal it refused, and the next selection carries them to the
 agent (§6). `issue_closed` is `true` on a rejection because
@@ -4015,7 +4100,8 @@ gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY" \
   -f dry_run=false -f mode=pull-requests -f max_pull_requests=0 \
   -f pull_requests="$pull" -f outstanding_only=true \
   -f continues_run="$PARENT_RUN" \
-  -f model="$MODEL" -f max_runtime_minutes="$RUNTIME" \
+  -f model="$MODEL" -f fusion_auto_model_select="$FUSION" \
+  -f fusion_tier="$FUSION_TIER" -f max_runtime_minutes="$RUNTIME" \
   -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS" \
   -f request_review="$REVIEW" \
   -f request_antagonistic_review="$ANTAGONISTIC" \
@@ -4023,7 +4109,8 @@ gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY" \
 ```
 
 naming its own run as `continues_run` and
-forwarding the run's own model, runtime, round cap, sub-agent choice,
+forwarding the run's own model, Copilot Fusion switch and tier,
+runtime, round cap, sub-agent choice,
 review switches, `load_repo_skills` and `include_dotgithub`, so a
 dispatch that turned Copilot's or the antagonistic review off keeps it
 off for every round it continues,

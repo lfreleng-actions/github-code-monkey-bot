@@ -646,7 +646,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertIn("org/gamma#4", text)
         self.assertIn("not found", text)
 
-    @unittest.expectedFailure
     def test_selection_records_the_fusion_tier(self) -> None:
         """A Fusion run records its tier; a fixed model records none (#240)."""
         args = self.args("org/alpha#3")
@@ -662,7 +661,6 @@ class ExplicitIssuesTest(NoSubprocessCase):
             "model `fusion` (`high` tier)", outputs.summary_markdown(selection)
         )
 
-    @unittest.expectedFailure
     def test_parser_refuses_an_unknown_tier(self) -> None:
         """Only Copilot Fusion's tiers, or none, parse."""
         argv = [

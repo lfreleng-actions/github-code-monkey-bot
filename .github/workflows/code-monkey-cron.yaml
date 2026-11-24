@@ -18,14 +18,17 @@ name: 'Code Monkey ⏰'
 # Name each run by what it works, keeping the workflow name as prefix:
 # its pull requests, else its issues, else a revise-only scan. A
 # dispatch naming none of them fails the input check. The lists are
-# the operator's raw input; GitHub truncates a long name.
+# the operator's raw input; GitHub truncates a long name. A Copilot
+# Fusion run says so and names its tier.
 run-name: >-
-  ${{ format('Code Monkey ⏰: {0}{1}',
+  ${{ format('Code Monkey ⏰: {0}{1}{2}',
   inputs.pull_requests != ''
   && format('revise {0}', inputs.pull_requests)
   || inputs.issues != '' && format('work {0}', inputs.issues)
   || inputs.revise_only && 'revise-only scan'
   || 'nothing named',
+  inputs.fusion_auto_model_select
+  && format(' (Fusion {0})', inputs.fusion_tier) || '',
   inputs.dry_run && ' (dry run)' || '') }}
 
 # yamllint disable-line rule:truthy
@@ -45,6 +48,19 @@ on:
           - 'Claude Sonnet 5.5'
           - 'GPT-6 Astra'
         default: 'Claude Opus 5.5'
+      fusion_auto_model_select:
+        description: >-
+          Let Copilot Fusion pick the model per task; overrides Model
+        type: boolean
+        default: false
+      fusion_tier:
+        description: 'Copilot Fusion tier; used only when Fusion is on'
+        type: choice
+        options:
+          - 'standard'
+          - 'high'
+          - 'max'
+        default: 'standard'
       mode:
         description: 'How far to take each issue'
         type: choice
@@ -89,7 +105,6 @@ on:
         description: 'Let new pull requests change .github/workflows/ files'
         type: boolean
         default: false
-      # The 21st input: GitHub caps a workflow_dispatch form at 25.
       allow_precommit_config_edits:
         description: 'Let new pull requests change .pre-commit-config.yaml'
         type: boolean
@@ -132,6 +147,7 @@ on:
           outstanding; needs pull_requests alone
         type: boolean
         default: false
+      # The 23rd input: GitHub caps a workflow_dispatch form at 25.
       continues_run:
         description: >-
           Set by the continue job: the run that dispatched this one,
@@ -174,6 +190,7 @@ jobs:
     permissions: {}
     outputs:
       model: "${{ steps.map.outputs.id }}"
+      fusion_tier: "${{ steps.map.outputs.fusion_tier }}"
     steps:
       # Block mode needs the allow-list in this job too: the
       # environment variable does not cross job boundaries.
@@ -193,11 +210,16 @@ jobs:
           allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
 
       # Display names in the dispatch form map to the identifiers
-      # docs/DESIGN.md section 10.3 checked against the CLI.
+      # docs/DESIGN.md section 10.3 checked against the CLI. The
+      # Fusion switch replaces the model with the router and passes
+      # its tier; off, the tier output is empty, the reusable
+      # workflow's default.
       - name: 'Map display name to identifier'
         id: map
         env:
           MODEL: "${{ inputs.model }}"
+          FUSION: "${{ inputs.fusion_auto_model_select }}"
+          FUSION_TIER: "${{ inputs.fusion_tier }}"
         run: |
           case "$MODEL" in
             'Claude Opus 5.5') id='claude-opus-5.5' ;;
@@ -206,7 +228,17 @@ jobs:
             'GPT-6 Astra') id='gpt-6-astra' ;;
             *) echo "::error::Unknown model $MODEL"; exit 1 ;;
           esac
+          tier=''
+          if [ "$FUSION" = true ]; then
+            case "$FUSION_TIER" in
+              standard|high|max) ;;
+              *) echo "::error::Unknown Fusion tier $FUSION_TIER"; exit 1 ;;
+            esac
+            id='fusion'
+            tier="$FUSION_TIER"
+          fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "fusion_tier=$tier" >> "$GITHUB_OUTPUT"
 
   code-monkey:
     name: 'Code Monkey'
@@ -222,6 +254,8 @@ jobs:
       mode: "${{ inputs.mode }}"
       dry_run: ${{ inputs.dry_run }}
       model: "${{ needs.options.outputs.model }}"
+      # Empty unless the Fusion switch is on: the input's default.
+      fusion_tier: "${{ needs.options.outputs.fusion_tier }}"
       # A form field left blank takes its default.
       max_pull_requests: "${{ inputs.max_pull_requests || '10' }}"
       max_runtime_minutes: "${{ inputs.max_runtime_minutes || '180' }}"
@@ -315,8 +349,9 @@ jobs:
       # pace. A failed dispatch is a warning: an operator's revise_only
       # dispatch still finds the pull request. The run's own switches
       # go with it, so a
-      # dispatch that turned a review off keeps it off for the loop, and
-      # one that trusted checkout skills or .github keeps them on.
+      # dispatch that turned a review off keeps it off for the loop, one
+      # that trusted checkout skills or .github keeps them on, and a
+      # Copilot Fusion run stays on Fusion at its tier.
       - name: 'Dispatch next rounds'
         id: dispatch
         env:
@@ -325,7 +360,9 @@ jobs:
           PULLS: "${{ needs.code-monkey.outputs.continue_pull_requests }}"
           PARENT_RUN: "${{ github.run_id }}"
           MODEL: "${{ inputs.model }}"
+          FUSION: "${{ inputs.fusion_auto_model_select }}"
           # A form field left blank forwards its default.
+          FUSION_TIER: "${{ inputs.fusion_tier || 'standard' }}"
           RUNTIME: "${{ inputs.max_runtime_minutes || '180' }}"
           ROUNDS: "${{ inputs.max_rounds || '10' }}"
           STALE: "${{ inputs.stale_status_minutes || '8' }}"
@@ -342,6 +379,10 @@ jobs:
             'GPT-6 Astra') ;;
             *) echo "::error::Unknown model $MODEL"; exit 1 ;;
           esac
+          case "$FUSION_TIER" in
+            standard|high|max) ;;
+            *) echo "::error::Unknown Fusion tier $FUSION_TIER"; exit 1 ;;
+          esac
           if ! [[ "$RUNTIME" =~ ^[1-9][0-9]*$ && "$ROUNDS" =~ ^[1-9][0-9]*$ &&
             "$STALE" =~ ^[0-9]+$ && "$PARENT_RUN" =~ ^[1-9][0-9]*$ ]]
           then
@@ -350,7 +391,7 @@ jobs:
             exit 1
           fi
           for switch in "$SUBAGENTS" "$REVIEW" "$ANTAGONISTIC" "$SKILLS" \
-            "$DOTGITHUB"; do
+            "$DOTGITHUB" "$FUSION"; do
             case "$switch" in
               true|false) ;;
               *) echo '::error::The forwarded switches must be true or false'
@@ -381,7 +422,8 @@ jobs:
               -f dry_run=false -f mode=pull-requests -f max_pull_requests=0 \
               -f pull_requests="$pull" -f outstanding_only=true \
               -f continues_run="$PARENT_RUN" \
-              -f model="$MODEL" -f max_runtime_minutes="$RUNTIME" \
+              -f model="$MODEL" -f fusion_auto_model_select="$FUSION" \
+              -f fusion_tier="$FUSION_TIER" -f max_runtime_minutes="$RUNTIME" \
               -f max_rounds="$ROUNDS" -f stale_status_minutes="$STALE" \
               -f allow_subagents="$SUBAGENTS" \
               -f request_review="$REVIEW" \

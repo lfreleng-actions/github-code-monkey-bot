@@ -3124,7 +3124,6 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
         self.assert_expression(with_["revise_only"], "inputs.revise_only")
 
-    @unittest.expectedFailure
     def test_dispatch_form_offers_revise_only(self) -> None:
         """A boolean, off by default; the form stays inside GitHub's 25."""
         inputs = cast(
@@ -4083,7 +4082,6 @@ class ContinueJobContracts(WorkflowCase):
         }
         self.assertFalse(evaluate(condition, dry))
 
-    @unittest.expectedFailure
     def test_dispatch_runs_after_harden_runner_in_block_mode(self) -> None:
         """The allow-list loads, then the runner is hardened, then the dispatch."""
         steps = self.steps("continue")
@@ -4096,7 +4094,6 @@ class ContinueJobContracts(WorkflowCase):
         self.assertEqual(len(steps), 3)
         self.assertIn(CONTINUE_DISPATCH, flatten(str(steps[2]["run"])))
 
-    @unittest.expectedFailure
     def test_options_are_forwarded_with_the_form_defaults(self) -> None:
         """The loop keeps the operator's model, runtime, rounds and switches."""
         env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
@@ -4171,7 +4168,6 @@ class ContinueJobContracts(WorkflowCase):
             )
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_one_dispatch_per_pull_request(self) -> None:
         """Each pull request is its own live, outstanding-only named run."""
         pulls = ["lfreleng-actions/a#1", "LFReleng-Actions/b#2"]
@@ -4261,7 +4257,6 @@ class ContinueJobContracts(WorkflowCase):
                 self.assertEqual(calls, [])
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_forwarded_options_are_validated(self) -> None:
         """An unknown model or a malformed number refuses before any dispatch."""
         for overrides in (
@@ -4308,7 +4303,6 @@ class ContinueJobContracts(WorkflowCase):
                 self.assertIn(f" -f stale_status_minutes={value} ", calls[0])
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_fusion_stays_on_at_its_tier(self) -> None:
         """A Copilot Fusion run dispatches its next round on Fusion (#240)."""
         status, calls, _, _ = self.dispatch(
@@ -4385,7 +4379,6 @@ class StaleStatusContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
-    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -4760,7 +4753,6 @@ class CronCallerContracts(WorkflowCase):
                 self.assertNotIn(fragment, text)
         self.assertEqual(set(self.jobs), {"options", "code-monkey", "continue"})
 
-    @unittest.expectedFailure
     def test_run_name_says_what_the_run_works(self) -> None:
         """The Actions list tells each dispatch apart.
 
@@ -4785,7 +4777,6 @@ class CronCallerContracts(WorkflowCase):
             " inputs.dry_run && ' (dry run)' || '')",
         )
 
-    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
@@ -5537,7 +5528,6 @@ class FusionContracts(ReusableWorkflowCase):
     """Copilot Fusion: the tier input, its check and the CLI flag (#240)."""
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_check_inputs_pairs_fusion_with_a_tier(self) -> None:
         """Fusion needs a known tier; a tier needs Fusion; no tier is a fixed model."""
         budget = self.step("select", "budget")
@@ -5579,7 +5569,6 @@ class FusionContracts(ReusableWorkflowCase):
                     self.assertIn(f"::error::{error}", proc.stdout)
                     self.assertFalse(output.exists())
 
-    @unittest.expectedFailure
     def test_input_is_declared_empty_and_reaches_the_selector(self) -> None:
         """A string, empty by default, recorded in the selection."""
         inputs = cast(
@@ -5624,7 +5613,6 @@ class FusionContracts(ReusableWorkflowCase):
             return argv.read_text(encoding="utf-8").splitlines()
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_a_fixed_model_takes_no_tier(self) -> None:
         """With the switch off the invocation names the model alone."""
         env = cast(dict[str, Any], self.step("author", "agent")["env"])
@@ -5635,7 +5623,6 @@ class FusionContracts(ReusableWorkflowCase):
         self.assertFalse([a for a in args if a.startswith("--fusion-tier")])
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_fusion_passes_its_tier(self) -> None:
         """Each tier reaches the CLI beside ``--model=fusion``."""
         for tier in FUSION_TIERS:
@@ -5644,7 +5631,6 @@ class FusionContracts(ReusableWorkflowCase):
                 self.assertEqual(args[1:3], ["--model=fusion", f"--fusion-tier={tier}"])
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
-    @unittest.expectedFailure
     def test_fallback_result_keeps_the_models_used(self) -> None:
         """A failure after the check still reports the models the session ran."""
         ensure = self.step("publish", "Ensure a result exists")
@@ -5693,7 +5679,6 @@ class FusionCallerContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_form_offers_the_switch_off(self) -> None:
         """A boolean off by default, and a tier choice that starts at standard."""
         inputs = cast(
@@ -5735,7 +5720,6 @@ class FusionCallerContracts(WorkflowCase):
             return proc.returncode, output.read_text(encoding="utf-8")
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_switch_off_keeps_the_chosen_model(self) -> None:
         """Off, the tier is ignored and the reusable workflow gets no tier."""
         env = cast(dict[str, Any], self.step("options", "map")["env"])
@@ -5746,7 +5730,6 @@ class FusionCallerContracts(WorkflowCase):
         self.assertEqual(output, "id=claude-opus-5.5\nfusion_tier=\n")
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
-    @unittest.expectedFailure
     def test_switch_on_overrides_the_model(self) -> None:
         """On, every tier routes through ``fusion``; an unknown tier fails."""
         for tier in FUSION_TIERS:
@@ -5758,7 +5741,6 @@ class FusionCallerContracts(WorkflowCase):
         self.assertEqual(status, 1)
         self.assertEqual(output, "")
 
-    @unittest.expectedFailure
     def test_run_name_marks_a_fusion_run(self) -> None:
         """A Fusion dispatch says so, with its tier, in the Actions list."""
         run_name = unwrap(str(self.workflow["run-name"]))

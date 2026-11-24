@@ -57,6 +57,8 @@ def selection_document(
         "mode": args.mode,
         "dry_run": bool(args.dry_run),
         "model": args.model,
+        # Copilot Fusion's tier when the model is ``fusion``, else None.
+        "fusion_tier": getattr(args, "fusion_tier", "") or None,
         "categories": sorted(enabled),
         "max_pull_requests": max_pull_requests,
         "bot": bot,

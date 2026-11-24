@@ -19,6 +19,8 @@ from issue_reads import SelectionError
 REPO_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 # An App's slug, the login GraphQL gives it without REST's [bot].
 APP_LOGIN_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+# Copilot Fusion's tiers; blank when the run names a fixed model.
+FUSION_TIERS = ("", "standard", "high", "max")
 
 
 def parse_repositories(text: str) -> list[str]:
@@ -121,6 +123,7 @@ def selection_parser(description: str | None) -> argparse.ArgumentParser:
         "--mode", required=True, choices=("select", "branches", "pull-requests")
     )
     parser.add_argument("--model", required=True)
+    parser.add_argument("--fusion-tier", default="", choices=FUSION_TIERS)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--repositories", default="")
     parser.add_argument("--issues", default="")

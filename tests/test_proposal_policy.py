@@ -695,7 +695,6 @@ class ProvenanceBlockTest(unittest.TestCase):
         (line,) = [x for x in block.splitlines() if x.startswith("- Model:")]
         return line
 
-    @unittest.expectedFailure
     def test_fusion_names_its_tier_and_routed_models(self) -> None:
         """A Fusion run says which tier it ran and, when known, where it went."""
         self.assertEqual(
@@ -708,7 +707,6 @@ class ProvenanceBlockTest(unittest.TestCase):
             "- Model: Copilot Fusion (`max` tier) via GitHub Copilot CLI",
         )
 
-    @unittest.expectedFailure
     def test_fixed_model_names_routing_only_when_it_differs(self) -> None:
         """The requested model alone keeps the line it always had."""
         plain = "- Model: `claude-opus-5.5` via GitHub Copilot CLI"

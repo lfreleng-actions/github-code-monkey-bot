@@ -24,13 +24,19 @@ def listed_rule(selection: dict[str, Any]) -> str:
     )
 
 
+def tier_note(selection: dict[str, Any]) -> str:
+    """The Copilot Fusion tier beside the model, when the run routes."""
+    tier = selection.get("fusion_tier")
+    return f" (`{tier}` tier)" if tier else ""
+
+
 def summary_markdown(selection: dict[str, Any]) -> str:
     """Render the selection for the step summary."""
     lines = [
         "## Issue selection",
         "",
         f"Mode `{selection['mode']}`, dry run `{selection['dry_run']}`, "
-        f"model `{selection['model']}`, at most "
+        f"model `{selection['model']}`{tier_note(selection)}, at most "
         f"{selection['max_pull_requests'] or 'unlimited'} pull request(s).",
         f"Categories: {', '.join(selection['categories'])}.",
         listed_rule(selection),
