@@ -169,6 +169,18 @@ on:
           unread; any other value fails the run
         type: string
         default: ''
+      fork_pool_token_max_days:
+        description: >-
+          Longest fork_pool_token lifetime the forks job accepts, a whole
+          number of days from 1 to 366; empty means 90, else fails
+        type: string
+        default: ''
+      fork_pool_token_expires:
+        description: >-
+          The expiry date recorded for fork_pool_token, YYYY-MM-DD; the
+          forks job warns when the token's own expiry differs
+        type: string
+        default: ''
       guidance_repository:
         description: 'Repository holding the organisation AGENTS.md'
         type: string
@@ -1618,13 +1630,19 @@ jobs:
 
       # The matrix is the select job's trusted output; fork_pool.py
       # still proves each entry against the committed mapping, and
-      # refuses a token that is not classic and scoped to public_repo.
+      # refuses a token that is not classic and scoped to public_repo,
+      # or that outlives the lifetime FORK_POOL_TOKEN_MAX_DAYS sets.
+      # The token's expiry header decides; the recorded expiry date
+      # only draws a warning when it disagrees.
       - name: 'Find, create or rename forks'
         id: prepare
         env:
           GH_TOKEN: "${{ secrets.fork_pool_token }}"
           ORG: "${{ inputs.org }}"
           MATRIX: "${{ needs.select.outputs.matrix }}"
+          # yamllint disable-line rule:line-length
+          FORK_POOL_TOKEN_MAX_DAYS: "${{ inputs.fork_pool_token_max_days }}"
+          FORK_POOL_TOKEN_EXPIRES: "${{ inputs.fork_pool_token_expires }}"
         run: |
           python3 monkey-assets/scripts/fork_pool.py prepare \
             --config monkey-assets/config/fork-orgs.json --org "$ORG" \

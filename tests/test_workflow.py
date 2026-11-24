@@ -2369,7 +2369,6 @@ class ForkPreparationContracts(ReusableWorkflowCase):
             Counter({POOL_TOKEN: 1}),
         )
 
-    @unittest.expectedFailure
     def test_prepare_step_reads_the_token_variables_through_env(self) -> None:
         """The lifetime and recorded expiry arrive as env, never in the script."""
         prepare = self.step("forks", "prepare")
@@ -4394,7 +4393,6 @@ class StaleStatusContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
-    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -4458,7 +4456,6 @@ class InterfaceContracts(ReusableWorkflowCase):
             with self.subTest(secret=name):
                 self.assertIs(secret["required"], False)
 
-    @unittest.expectedFailure
     def test_input_defaults(self) -> None:
         """Defaults keep an unconfigured call dry, bounded and sub-agent aware."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -4753,7 +4750,6 @@ class CronCallerContracts(WorkflowCase):
         inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
         self.assertNotIn("issue_authors", inputs)
 
-    @unittest.expectedFailure
     def test_fork_pool_token_variables_come_from_the_variables_alone(self) -> None:
         """No dispatch field, and no continuation, can widen the token's limit."""
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
@@ -5044,7 +5040,6 @@ HARDEN_PIN = f"{HARDEN_RUNNER}@1d88384fd173af6ecb012dfd0264a306b711241a"
 ALLOW_LIST_PIN = "@6e6cab073a93c0d58e4e8846d44e1cbddbac975b"
 
 
-@unittest.expectedFailure
 class ExpiryAlertWorkflowContracts(unittest.TestCase):
     """The scheduled fork pool token expiry check and its Slack alert (#244).
 
@@ -5155,6 +5150,7 @@ class ExpiryAlertWorkflowContracts(unittest.TestCase):
                         self.assertEqual(step["uses"], SLACK_PIN)
                         with_ = cast(dict[str, Any], step["with"])
                         self.assertEqual(with_["method"], "chat.postMessage")
+                        self.assertEqual(with_["errors"], "true")
                         self.assertEqual(unwrap(with_["token"]), SLACK_TOKEN)
                         self.assertEqual(body["environment"], "production")
                     elif found:

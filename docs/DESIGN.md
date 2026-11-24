@@ -1779,6 +1779,8 @@ For each selected issue:
 | `exclude_repos` | string | `''` | Commas and/or spaces; overrides bundled list |
 | `issue_authors` | string | `''` | §6: logins trusted to open and edit issues; empty fails the run |
 | `only_known_authors` | string | `''` | §6: `false` turns `issue_authors` off; empty or `true` keeps it; else fails |
+| `fork_pool_token_max_days` | string | `''` | §10.6: longest token lifetime, 1 to 366 days; empty means 90; else fails |
+| `fork_pool_token_expires` | string | `''` | §10.6: recorded token expiry, `YYYY-MM-DD`; a mismatch warns |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
 | `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
@@ -2222,13 +2224,65 @@ stand between such a commit and a merge, but a leaked token stays
 useful until it expires, and a classic token may never expire. So
 `pool_token.py` also reads the `GitHub-Authentication-Token-Expiration`
 header of the same reply, which GitHub omits for a token that never
-expires. No header, one it cannot parse, or an expiry more than 90
-days ahead fails the job before any write, naming the date it read:
-the owner rotates the token at least every 90 days. An expiry 14
-days away or less passes with a `::warning` naming the date on every
-run, and the rotation falls due before the job stops. The token's
-owner creates its successor with an expiry within 90 days and
-replaces `FORK_POOL_TOKEN` when the warning appears.
+expires. No header, one it cannot parse, or an expiry further ahead
+than the lifetime limit fails the job before any write, naming the
+date it read and the limit applied.
+
+The limit is the `fork_pool_token_max_days` input, which the
+dispatch caller takes from the repository variable
+`FORK_POOL_TOKEN_MAX_DAYS` alone, as it takes `issue_authors`: no
+dispatch form field can widen it. Empty or unset means 90 days.
+Anything but a whole number of days from 1 to 366 in ASCII digits,
+such as `0`, `367`, `30.5` or a value padded with spaces, fails the
+job before it reads the token, naming the variable and the value. The
+ceiling stops a large number from switching the rotation rule off in
+effect. An expiry 21 days away or less passes with a `::warning`
+naming the date on every run, and the rotation falls due before the
+job stops. The token's owner creates its successor with an expiry
+within the limit and replaces `FORK_POOL_TOKEN` when the warning
+appears.
+
+The header remains the sole source for those checks. The
+`fork_pool_token_expires` input, from the repository variable
+`FORK_POOL_TOKEN_EXPIRES`, records the same expiry as `YYYY-MM-DD`
+for the scheduled check below, which holds no token and cannot read
+the header. In the forks job it never relaxes, replaces or adds a
+refusal: when it differs from the header's date by more than one day,
+the slack the header's time zone needs, the job warns naming both
+dates, and an unreadable value is a warning too. Both inputs reach
+the prepare step through `env:`, never as an expression in its
+script.
+
+Live runs are irregular, so the expiry has its own schedule:
+`fork-pool-token-expiry.yaml` runs daily at 06:15 UTC, and on
+dispatch. This is no bot run and restores no schedule of one (§11):
+it dispatches nothing, holds no App key and no `FORK_POOL_TOKEN`,
+and reads `FORK_POOL_TOKEN_EXPIRES` alone. Its `check` job checks out
+this repository with `contents: read` and runs
+`pool_token.py expiry-check`, which writes `days_left` and
+`notify` to the step outputs and a short report to the step summary.
+An unset variable warns that the check cannot run and posts nothing;
+an unreadable one fails the job. From 21 days before the date the job
+warns; from 7 days before, and every day after it, `notify` is true
+and the `notify` job posts to Slack once per run, until the variable
+names the next token's expiry. A dispatch with `test_notification`
+posts a message labelled as a test whatever the date, to prove the
+wiring. A `notify-failure` job posts when the check fails, since an
+unreadable variable would otherwise silence every later alert.
+
+The posting jobs run in the `production` environment, as zizmor's
+`secrets-outside-env` audit requires, and follow the organisation's
+sample: the organisation secret `SLACK_BOT_TOKEN` and variable
+`SLACK_CHANNEL_ID`, a `Check Slack configuration` step that warns and
+skips the post when either is missing, and
+`slackapi/slack-github-action` with `chat.postMessage` and
+`errors: 'true'`, so a post Slack rejects fails the job rather than
+passing undelivered. The post step alone holds the token; the
+configuration step learns whether the secret exists, never its value,
+and the Python runs in a job with no secret at all. Every job blocks
+egress against the organisation allow-list the dispatch caller pins,
+and the workflow's concurrency group never cancels, so a manual test
+and the schedule cannot race to post twice.
 
 ## 11. Dispatch and Concurrency
 
@@ -2238,7 +2292,9 @@ replaces `FORK_POOL_TOKEN` when the warning appears.
   UTC full scan, the `revise_only` slot it ran every hour, and the
   Slack digest that reported them (§17). Nothing here reads
   the previous day's triage on a timer; an operator who wants a
-  triaged issue worked names it.
+  triaged issue worked names it. The daily fork pool token expiry
+  check (§10.6) runs on a schedule of its own, but starts no run and
+  holds no bot credential.
 - Continuation (§20.6): once a run's report lists pull requests whose
   round left work outstanding, its `continue` job dispatches this
   caller once for each of them, so the next round starts within
@@ -2358,7 +2414,7 @@ conflicts while producer artifacts survive.
 | Task needs `sudo` or containers (an image build, a loop mount) in a target without the marker | Runner refuses both; the step cannot run | Prompt tells the agent not to work around it: it abstains, or leaves the step out and says so, naming `.enable-sudo-and-containers`; a maintainer adds the marker to the default branch where the repository needs it (§4.1, §7.3) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The forks job finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that job runs |
-| Fork pool token absent, expired or too broad | The forks job makes and renames no fork; a target without its fork fails its publish, naming the forks job | The job warns when the secret is absent or expires within 14 days, and fails naming the scopes or the expiry otherwise; existing forks keep working; restore the token (§10.6) |
+| Fork pool token absent, expired or too broad | The forks job makes and renames no fork; a target without its fork fails its publish, naming the forks job | The job warns when the secret is absent or expires within 21 days, and fails naming the scopes, the expiry or the lifetime limit otherwise; the scheduled expiry check posts to Slack from 7 days out; existing forks keep working; restore the token (§10.6) |
 | Diff adds or edits an executable file, symlink or submodule, or changes a mode | Publish refused | Agent leaves such files untouched, checks every commit with `git log --raw` before the manifest, and abstains naming the file when it cannot avoid one (§5, §7.3) |
 | A revision's branch moves or vanishes after selection | Round's input is stale | Author job stands down with a `::warning::` and an `abstain` manifest; no session, run stays green (§20.2) |
 | Two runs overlap | A wasted session on one target; never a second pull request | Caller concurrency group for scans; named-issue dispatches lock per run; the selector skips targets another active run selected and waits for an older run still selecting (§6 "Overlapping runs"), failing open; the publisher re-reads the issue and the branch's pull requests before any write (§8 step 8), so a run that loses the race publishes nothing |
@@ -2407,6 +2463,7 @@ the rule with it.
 ```text
 .github/workflows/code-monkey.yaml       reusable workflow
 .github/workflows/code-monkey-cron.yaml  dispatch caller
+.github/workflows/fork-pool-token-expiry.yaml  expiry alert (§10.6)
 .github/workflows/testing.yaml           PR plumbing, offline tests, actionlint
 prompt/author.md                         agent task (§7.3)
 AGENTS.md                                organisation stub (§12 there)
@@ -2438,7 +2495,7 @@ scripts/publish.py                       replay, open PR, reconcile
 scripts/publish_cli.py                   its eight commands' command line
 scripts/branch_refs.py                   bot branch and its PR on GitHub
 scripts/fork_pool.py                     the forks job: find, create, rename (§4.3)
-scripts/pool_token.py                    its token's scopes and expiry (§10.6)
+scripts/pool_token.py                    token scopes, expiry, alert (§10.6)
 scripts/stale_branch.py                  a closed attempt's branch (§5)
 scripts/issue_recheck.py                 the issue re-read before a push (§8)
 scripts/branch_chain.py                  a branch read back as replayed work

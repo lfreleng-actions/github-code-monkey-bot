@@ -261,7 +261,6 @@ class TokenCheckTest(NoNetworkCase):
             self.assertEqual(self.check(reply, *args), ACCOUNT)
         return output.getvalue()
 
-    @unittest.expectedFailure
     def test_expiry_within_twenty_one_days_warns_and_passes(self) -> None:
         """A rotation falling due is announced on every run, without failing."""
         header = expiring(21)
@@ -270,7 +269,6 @@ class TokenCheckTest(NoNetworkCase):
         self.assertIn(header.partition(": ")[2], shown)
         self.assertEqual(self.warnings(reply(expiry=expiring(22))), "")
 
-    @unittest.expectedFailure
     def test_lifetime_defaults_to_ninety_days(self) -> None:
         """An unset or empty FORK_POOL_TOKEN_MAX_DAYS keeps the 90-day rule."""
         for text in (None, ""):
@@ -282,7 +280,6 @@ class TokenCheckTest(NoNetworkCase):
                 with self.assertRaisesRegex(pool.PoolError, "more than 90 days"):
                     self.check(reply(expiry=expiring(91)), lifetime)
 
-    @unittest.expectedFailure
     def test_lifetime_override_sets_the_limit(self) -> None:
         """365 admits a token 364 days out and refuses one 366 days out."""
         lifetime = token.token_lifetime("365")
@@ -292,7 +289,6 @@ class TokenCheckTest(NoNetworkCase):
         ):
             self.check(reply(expiry=expiring(366)), lifetime)
 
-    @unittest.expectedFailure
     def test_unreadable_lifetime_is_refused(self) -> None:
         """Only ASCII digits naming 1 to 366 days pass; the refusal shows the value."""
         for text in ("0", "-5", "abc", "30.5", " 90 ", "367", "\u0669\u0660"):
@@ -305,7 +301,6 @@ class TokenCheckTest(NoNetworkCase):
             ):
                 token.token_lifetime(text)
 
-    @unittest.expectedFailure
     def test_recorded_expiry_close_to_the_header_is_silent(self) -> None:
         """The same date, or one a day off for the time zone, draws nothing."""
         lifetime = token.token_lifetime("")
@@ -316,7 +311,6 @@ class TokenCheckTest(NoNetworkCase):
                     self.warnings(reply(expiry=expiring(60)), lifetime, recorded), ""
                 )
 
-    @unittest.expectedFailure
     def test_recorded_expiry_two_days_off_warns(self) -> None:
         """A drifted variable warns, naming both dates, and the header decides."""
         actual = expiry_day(60)
@@ -328,14 +322,12 @@ class TokenCheckTest(NoNetworkCase):
         self.assertIn(actual.isoformat(), shown)
         self.assertIn(recorded, shown)
 
-    @unittest.expectedFailure
     def test_recorded_expiry_never_excuses_the_header(self) -> None:
         """A recorded date inside the limit does not pass a distant header."""
         recorded = expiry_day(30).isoformat()
         with self.assertRaisesRegex(pool.PoolError, "more than 90 days"):
             self.check(reply(expiry=expiring(91)), token.token_lifetime(""), recorded)
 
-    @unittest.expectedFailure
     def test_unreadable_recorded_expiry_warns_and_passes(self) -> None:
         """In the forks job a bad FORK_POOL_TOKEN_EXPIRES is a warning alone."""
         shown = self.warnings(
@@ -788,7 +780,6 @@ class MainTest(NoNetworkCase):
                 self.assertEqual(self.run_main(env), 1)
             read.assert_not_called()
 
-    @unittest.expectedFailure
     def test_lifetime_variable_reaches_the_token_check(self) -> None:
         """FORK_POOL_TOKEN_MAX_DAYS widens the limit the job applies."""
         env = {
@@ -802,7 +793,6 @@ class MainTest(NoNetworkCase):
         ):
             self.assertEqual(self.run_main(env), 0)
 
-    @unittest.expectedFailure
     def test_unreadable_lifetime_stops_before_any_read(self) -> None:
         """A bad FORK_POOL_TOKEN_MAX_DAYS fails the job naming the value read."""
         env = {
@@ -819,7 +809,6 @@ class MainTest(NoNetworkCase):
             output.getvalue(),
         )
 
-    @unittest.expectedFailure
     def test_recorded_expiry_reaches_the_token_check(self) -> None:
         """FORK_POOL_TOKEN_EXPIRES is compared with the header the job reads."""
         env = {
@@ -942,7 +931,6 @@ TODAY = date(2027, 11, 1)
 SOON = "::warning title=Fork pool token expires soon::"
 
 
-@unittest.expectedFailure
 class ExpiryAlertTest(unittest.TestCase):
     """The scheduled check judges FORK_POOL_TOKEN_EXPIRES against today."""
 
@@ -1004,7 +992,6 @@ class ExpiryAlertTest(unittest.TestCase):
                 token.expiry_alert(recorded, TODAY)
 
 
-@unittest.expectedFailure
 class ExpiryCheckCommandTest(unittest.TestCase):
     """``pool_token.py expiry-check``: outputs, summary and exit status."""
 

@@ -10,7 +10,8 @@ much as on the fork pools. A machine account that belongs to the bot
 fork organisations alone does it instead, through a classic token
 with the ``public_repo`` scope and nothing more. The token check in
 ``pool_token.py`` refuses any other kind, and a token that never
-expires or expires more than 90 days ahead, before any write.
+expires or outlives the lifetime ``FORK_POOL_TOKEN_MAX_DAYS`` sets,
+90 days by default, before any write.
 
 ``fork_pool.py prepare --config FILE --org ORG --matrix-env NAME``
 reads the select job's matrix from the environment variable ``NAME``
@@ -36,7 +37,13 @@ from typing import Any, NamedTuple, cast
 import bot_github as github
 import branch_refs as refs
 import fork_orgs as forks
-from pool_token import PoolError, check_token
+from pool_token import (
+    EXPIRES_VARIABLE,
+    MAX_DAYS_VARIABLE,
+    PoolError,
+    check_token,
+    token_lifetime,
+)
 from proposal_policy import PublishError
 
 FORK_WAIT_SECONDS = 60
@@ -316,6 +323,7 @@ def run_prepare(args: argparse.Namespace) -> int:
             "nor renamed; a target without its fork fails to publish"
         )
         return 0
+    lifetime = token_lifetime(os.environ.get(MAX_DAYS_VARIABLE))
     try:
         config = forks.load(args.config)
     except forks.ForkOrgError as exc:
@@ -324,7 +332,7 @@ def run_prepare(args: argparse.Namespace) -> int:
     if not chosen:
         print("No targets: no fork to prepare")
         return 0
-    account = check_token()
+    account = check_token(lifetime, os.environ.get(EXPIRES_VARIABLE))
     summary = Summary(args.summary)
     waiting: list[Pending] = []
     for target in chosen:

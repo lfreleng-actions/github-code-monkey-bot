@@ -131,6 +131,10 @@ jobs:
       issue_authors: ${{ vars.CODE_MONKEY_ISSUE_AUTHORS }}
       # Optional: 'false' turns the author list off; unset keeps it.
       only_known_authors: ${{ vars.ONLY_KNOWN_AUTHORS }}
+      # Optional: the fork pool token's lifetime limit in days (empty
+      # means 90, at most 366) and its recorded expiry, YYYY-MM-DD.
+      fork_pool_token_max_days: ${{ vars.FORK_POOL_TOKEN_MAX_DAYS }}
+      fork_pool_token_expires: ${{ vars.FORK_POOL_TOKEN_EXPIRES }}
       # Trusted jobs default to block mode; name the allow-list.
       harden_runner_allowlist: '@<allow-list commit sha>'
       # Optional: a further allow-list merged with the baseline, and
@@ -165,9 +169,18 @@ needs admin on every repository in those organisations, as an owner
 or through a base permission of admin: renaming a fork to follow a
 renamed target needs admin on the fork, and the forks already in
 the pools are not the account's own. Create the token with an
-expiry no more than 90 days ahead: the forks job refuses one that
-never expires or expires later, and warns on every run from 14 days
-before the expiry, when the owner rotates the secret. Without the
+expiry within the lifetime limit: 90 days, unless the
+`FORK_POOL_TOKEN_MAX_DAYS` repository variable sets a whole number of
+days from 1 to 366, passed as `fork_pool_token_max_days`. The forks
+job refuses a token that never expires or expires later, fails on any
+other value of the variable, and warns on every run from 21 days
+before the expiry, when the owner rotates the secret. Record the
+expiry date, `YYYY-MM-DD`, in the `FORK_POOL_TOKEN_EXPIRES` variable,
+passed as `fork_pool_token_expires`: the forks job warns when it
+differs from the token's own expiry by more than a day, and the daily
+`fork-pool-token-expiry.yaml` workflow, which holds no token, reads
+it to warn from 21 days out and post to Slack from 7 days out, every
+day until the variable names the next token's expiry. Without the
 token, existing forks keep working and a target with no fork fails
 its publish.
 
