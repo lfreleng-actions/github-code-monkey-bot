@@ -367,6 +367,8 @@ def verify_proposal(check: Check, manifest: dict[str, Any], context: Context) ->
         commands=check.commands,
         changes_precommit_config=check.changes_precommit_config,
         precommit_edits_label=check.precommit_edits_label,
+        fusion_tier=context.fusion_tier,
+        models_used=check.models_used,
     )
     # The body is agent output: defuse mentions before a human has
     # read it, as the issue comments already do. The publisher's text
@@ -410,6 +412,7 @@ def run_check(
         workdir=workdir,
         identity=selection_identity(selection, load_json(coauthors_path, "coauthors")),
         model=field_str(selection, "model", "selection"),
+        fusion_tier=str(selection.get("fusion_tier") or ""),
         run_url=run_url,
         issue_url=str(entry["url"]),
         zizmor_token=zizmor_token,

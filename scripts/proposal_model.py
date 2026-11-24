@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +15,7 @@ import hook_runs
 import proposal_policy as policy
 import review_outcome as outcome
 from proposal_policy import Identity, PublishError
+from session_usage import model_line, usage_models, usage_number
 from workflow_grant import KINDS, Grant
 
 SCHEMA = 1
@@ -71,6 +72,10 @@ class Check:
     premium_requests: float | None = None
     bot_login: str = ""
     agent_seconds: int | None = None
+    # The models the session ran on, from usage.json (read_usage), and
+    # how many entries that file named past the shape and the bound.
+    models_used: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    models_dropped: int = 0
     warnings: list[str] = field(default_factory=lambda: cast("list[str]", []))
     # A revision round (DESIGN.md section 20): the pull request being
     # revised, the other base a rebase may land on, and the trusted
@@ -230,6 +235,8 @@ class Check:
             "commands": self.commands,
             "premium_requests": self.premium_requests,
             "agent_seconds": self.agent_seconds,
+            "models_used": self.models_used,
+            "models_dropped": self.models_dropped,
             "warnings": self.warnings,
             "task": self.task,
             "rebase_sha": self.rebase_sha,
@@ -271,25 +278,7 @@ def read_usage(path: Path, check: Check) -> None:
     duration = usage_number(usage.get("totalApiDurationMs"))
     if duration is not None:
         check.agent_seconds = int(duration // 1000)
-
-
-def usage_number(value: Any) -> float | None:
-    """A finite, non-negative number from untrusted JSON, or None.
-
-    Booleans are ints in Python and 1e309 parses to infinity; neither
-    is a spend figure, and either would corrupt a total or make
-    ``round`` raise inside the publisher.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        # A JSON integer with hundreds of digits does not fit a float.
-        return None
-    if not math.isfinite(number) or number < 0 or number > 1e12:
-        return None
-    return number
+    check.models_used, check.models_dropped = usage_models(usage.get("modelMetrics"))
 
 
 @dataclass(frozen=True)
@@ -303,6 +292,8 @@ class Context:
     run_url: str
     issue_url: str
     zizmor_token: str = ""
+    # The selection's Copilot Fusion tier; blank for a fixed model.
+    fusion_tier: str = ""
     # The entry's grants to change workflow files and the root
     # .pre-commit-config.yaml: the run's switch or the issue's label.
     workflow_grant: Grant = field(default_factory=Grant)
@@ -333,6 +324,9 @@ def check_summary(check: Check) -> str:
             if label:
                 edits = kind.edits.capitalize()
                 lines += [f"{edits} granted by the `{label}` label on the issue.", ""]
+    if check.models_used:
+        names = ", ".join(f"`{name}`" for name in check.models_used)
+        lines += [f"Models used: {names}", ""]
     if check.online_audit:
         lines += [policy.log_safe(check.online_audit), ""]
     return "\n".join(lines) + "\n"
@@ -347,6 +341,8 @@ def provenance_block(
     commands: list[dict[str, Any]],
     changes_precommit_config: bool = False,
     precommit_edits_label: str = "",
+    fusion_tier: str = "",
+    models_used: Sequence[str] = (),
 ) -> str:
     """The block that heads every pull request body, before agent text.
 
@@ -362,7 +358,7 @@ def provenance_block(
         f"<summary>{summary}</summary>",
         "",
         f"- Issue: {issue_url}",
-        f"- Model: `{model}` via GitHub Copilot CLI",
+        model_line(model, fusion_tier, models_used),
         f"- Run: {run_url or 'n/a'}",
         f"- Base: `{base_sha}`",
     ]

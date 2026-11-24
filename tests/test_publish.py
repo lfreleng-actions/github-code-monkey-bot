@@ -645,6 +645,24 @@ class RunPushTest(NoNetworkCase):
         self.assertEqual(result["agent_seconds"], 90)
         self.assertEqual(result["pr_title"], "Fix: Both")
 
+    def test_result_carries_the_models_used(self) -> None:
+        """The check's models reach the result the report reads (#240)."""
+        path = self.write_check(
+            check_json(
+                verdict="rejected",
+                reasons=["nope"],
+                models_used=["claude-opus-5.5", "gpt-6-luna"],
+                models_dropped=2,
+            )
+        )
+        result = publish.run_push(self.push_args(path))
+        self.assertEqual(result["models_used"], ["claude-opus-5.5", "gpt-6-luna"])
+        self.assertEqual(result["models_dropped"], 2)
+        older = self.write_check(check_json(verdict="rejected", reasons=["nope"]))
+        result = publish.run_push(self.push_args(older))
+        self.assertEqual(result["models_used"], [])
+        self.assertEqual(result["models_dropped"], 0)
+
     def test_rejection_reasons_are_bounded(self) -> None:
         """Each reason is cut, and their count capped, before the result records them."""
         many = ["x" * (policy.MAX_REASON + 50)] + [
@@ -3859,7 +3877,24 @@ class ReportRowTest(unittest.TestCase):
         self.assertEqual(row.count("\n"), 0)
         self.assertIn("A \\| B", row)
         self.assertNotIn("::error::", row)
-        self.assertEqual(row.count("|") - row.count("\\|"), 7)
+        self.assertEqual(row.count("|") - row.count("\\|"), 8)
+
+    def test_models_cell_shows_only_model_ids(self) -> None:
+        """The models column lists well-formed ids from the untrusted result."""
+        base = {"repository": "o/r", "issue": 1, "verdict": "proposed"}
+        for used, shown in (
+            (["fusion-x", "gpt-6-luna"], "| fusion-x, gpt-6-luna |"),
+            (["claude-opus-5.5"], "| claude-opus-5.5 |"),
+            (["a|b", "x\n## y", 3, "Bad"], "| — |"),
+            ([f"m-{n:02d}" for n in range(12)], "| m-00, m-01, "),
+            ("gpt-6-luna", "| — |"),
+            (None, "| — |"),
+        ):
+            with self.subTest(used=used):
+                row = reporting.report_row({**base, "models_used": used})
+                self.assertIn(shown, row)
+                self.assertNotIn("m-10", row)
+                self.assertEqual(row.count("|") - row.count("\\|"), 8)
 
     def test_hook_warning_survives_a_long_rejection(self) -> None:
         """A failing hook run stays in the cell behind a reason past its bound."""
@@ -3876,7 +3911,7 @@ class ReportRowTest(unittest.TestCase):
         self.assertIn(warning, row)
         self.assertIn("online audit: zzz", row)
         self.assertLessEqual(len(row.rsplit(" | ", 1)[1]), 302)
-        self.assertEqual(row.count("|") - row.count("\\|"), 7)
+        self.assertEqual(row.count("|") - row.count("\\|"), 8)
 
 
 class RunReportTest(NoNetworkCase):
@@ -4005,7 +4040,7 @@ class RunReportTest(NoNetworkCase):
         self.assertFalse(
             [line for line in lines if line.startswith(("#", "- "))][1:], lines
         )
-        self.assertEqual(rows[2].count(" | "), 5, rows[2])
+        self.assertEqual(rows[2].count(" | "), 6, rows[2])
 
     def test_malformed_note_fields_do_not_abort_the_report(self) -> None:
         """Non-list reasons or warnings still yield one row per result."""
@@ -4039,7 +4074,10 @@ class RunReportTest(NoNetworkCase):
         broken = results / "c"
         for directory in (first, second, broken):
             directory.mkdir(parents=True)
-        (first / "result.json").write_text(json.dumps(result_json()), encoding="utf-8")
+        (first / "result.json").write_text(
+            json.dumps(result_json(models_used=["claude-opus-5.5", "gpt-6-luna"])),
+            encoding="utf-8",
+        )
         (second / "result.json").write_text(
             json.dumps(
                 result_json(
@@ -4067,11 +4105,11 @@ class RunReportTest(NoNetworkCase):
         markdown = output_md.read_text(encoding="utf-8")
         self.assertIn(
             f"| {REPOSITORY}#7 | proposed | https://github.com/{REPOSITORY}/pull/8 "
-            "| — | 4 | Fix: Both |",
+            "| — | 4 | claude-opus-5.5, gpt-6-luna | Fix: Both |",
             markdown,
         )
         self.assertIn(
-            f"| {REPOSITORY}#2 | rejected | — | — | 3 | a \\| b; w |", markdown
+            f"| {REPOSITORY}#2 | rejected | — | — | 3 | — | a \\| b; w |", markdown
         )
         self.assertEqual(markdown.count("| unreadable |"), 1)
         self.assertIn(
@@ -4121,7 +4159,7 @@ class RunReportTest(NoNetworkCase):
         )
         markdown = output_md.read_text(encoding="utf-8")
         self.assertIn(
-            f"| {REPOSITORY}#7 (round 2) | abstain | — | — | 0 | {MOVED_REASON} |",
+            f"| {REPOSITORY}#7 (round 2) | abstain | — | — | 0 | — | {MOVED_REASON} |",
             markdown,
         )
         self.assertIn(

@@ -97,6 +97,10 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "pr_title": check.get("pr_title") or None,
         "premium_requests": check.get("premium_requests"),
         "agent_seconds": check.get("agent_seconds"),
+        "models_used": [
+            str(name) for name in cast("list[Any]", check.get("models_used") or [])
+        ],
+        "models_dropped": check.get("models_dropped") or 0,
         "task": check.get("task") or "issue",
         "pull_number": check.get("pull_number") or None,
         "round_summary": check.get("round_summary") or None,

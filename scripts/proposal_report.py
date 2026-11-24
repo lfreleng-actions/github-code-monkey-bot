@@ -19,6 +19,7 @@ import report_outputs as outputs
 import review_outcome
 import revision_reads as revisions
 import round_caps as caps
+import session_usage as usage
 import stale_statuses as stale
 import unreviewed_heads
 import workflow_grant
@@ -74,9 +75,11 @@ def report_row(item: dict[str, Any]) -> str:
         label += f" (round {round_number})"
     issue = cell(label)
     copilot = review_cell(item)
+    models = ", ".join(usage.shown_models(item.get("models_used"))) or "—"
     return (
         f"| {issue} | {cell(verdict)} | {cell(output)} | {copilot} "
-        f"| {'—' if requests is None else f'{requests:g}'} | {text} |"
+        f"| {'—' if requests is None else f'{requests:g}'} "
+        f"| {cell(models)} | {text} |"
     )
 
 
@@ -238,27 +241,6 @@ def attempt_of(item: dict[str, Any]) -> int:
     return value if type(value) is int else 0
 
 
-def total_spend(every: list[dict[str, Any]], shown: list[dict[str, Any]]) -> float:
-    """Premium requests the run paid for, each author session once.
-
-    A rerun author job is a new session with its own cost, even when a
-    later attempt supersedes its row; a publish retry reuses the same
-    session. Results without a session count only where shown.
-    """
-    sessions: dict[str, float] = {}
-    for item in every:
-        session = item.get("author_session")
-        if isinstance(session, str) and session:
-            cost = model.usage_number(item.get("premium_requests")) or 0.0
-            sessions[session] = max(sessions.get(session, 0.0), cost)
-    unattributed = sum(
-        model.usage_number(item.get("premium_requests")) or 0.0
-        for item in shown
-        if not item.get("author_session")
-    )
-    return sum(sessions.values()) + unattributed
-
-
 def load_results(
     root: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
@@ -356,8 +338,9 @@ def run_report(args: argparse.Namespace) -> None:
     lines = [
         "## Code monkey results",
         "",
-        "| Issue | Verdict | Output | Copilot review | Premium requests | Detail |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Issue | Verdict | Output | Copilot review | Premium requests "
+        "| Models | Detail |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     totals: dict[str, int] = dict.fromkeys(policy.VERDICTS, 0)
     review_totals: dict[str, int] = dict.fromkeys(REVIEW_COLUMNS, 0)
@@ -374,16 +357,16 @@ def run_report(args: argparse.Namespace) -> None:
         infrastructure_failures += review_outcome.infrastructure_count(item)
         stale_heads += bool(stale.contexts(item, review_outcome.checks_state(item)))
         lines.append(report_row(item))
-    spend = total_spend(every, results)
+    spend = usage.total_spend(every, results)
     # The select job's file, which the report step verified and passes on.
     unreviewed, invalid = unreviewed_heads.accepted(
         unreviewed_heads.read(getattr(args, "unreviewed_heads", None)),
         getattr(args, "org", None),
     )
     for problem in unreadable:
-        lines.append(f"| — | unreadable | — | — | — | {cell(problem)} |")
+        lines.append(f"| — | unreadable | — | — | — | — | {cell(problem)} |")
     if not results and not unreadable:
-        lines.append("| — | — | — | — | — | no proposals |")
+        lines.append("| — | — | — | — | — | — | no proposals |")
     lines += [
         "",
         f"Proposed {totals['proposed']}, abstained {totals['abstain']}, "
