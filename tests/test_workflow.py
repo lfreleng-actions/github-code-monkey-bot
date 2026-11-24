@@ -1419,7 +1419,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         step = self.step("publish", "review-request")
         condition = unwrap(str(step["if"]))
         self.assertIn("steps.open.outcome == 'success'", condition)
-        self.assertIn("inputs.request_review", condition)
+        self.assertIn("needs.select.outputs.request_review == 'true'", condition)
         self.assertIn("steps.pr-token.outputs.token", unwrap(step["env"]["GH_TOKEN"]))
         self.assertIn("publish.py review-request", flatten(step["run"]))
         self.assertLess(
@@ -1431,7 +1431,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         step = self.step("publish", "review")
         condition = unwrap(str(step["if"]))
         self.assertIn("steps.open.outcome == 'success'", condition)
-        self.assertIn("inputs.request_review", condition)
+        self.assertIn("needs.select.outputs.request_review == 'true'", condition)
         self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
         script = flatten(step["run"])
         self.assertIn("publish.py review-await", script)
@@ -2421,6 +2421,15 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "agent_timeout",
                 "max_parallel",
                 "run_created_at",
+                "model",
+                "fusion_tier",
+                "stale_status_minutes",
+                "allow_subagents",
+                "load_repo_skills",
+                "request_review",
+                "request_antagonistic_review",
+                "params",
+                "run_parameters",
             },
         )
 
@@ -2608,6 +2617,11 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assert_expression(str(selected["value"]), "jobs.select.outputs.count")
         # What the request job dispatched, not what the report nominated.
         requested = declared.pop("antagonistic_pull_requests")
+        # The run parameters the continue job forwards (#241).
+        parameters = declared.pop("run_parameters")
+        self.assert_expression(
+            str(parameters["value"]), "jobs.select.outputs.run_parameters"
+        )
         self.assert_expression(
             str(requested["value"]), "jobs.antagonistic.outputs.requested"
         )
@@ -3131,7 +3145,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 23)
+        self.assertEqual(len(inputs), 24)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """Two live revise-only runs queue one behind the other."""
@@ -3195,7 +3209,7 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             job["if"],
             "!cancelled() && needs.report.result == 'success' &&"
             " !inputs.dry_run && inputs.mode == 'pull-requests' &&"
-            " inputs.request_antagonistic_review &&"
+            " needs.select.outputs.request_antagonistic_review == 'true' &&"
             " inputs.antagonistic_repository != '' &&"
             " needs.report.outputs.antagonistic_pull_requests != '' &&"
             " needs.report.outputs.antagonistic_pull_requests != '[]'",
@@ -3218,7 +3232,7 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             self.position("publish", "comment-token"),
         )
         self.assert_expression(
-            step["env"]["SWITCH"], "inputs.request_antagonistic_review"
+            step["env"]["SWITCH"], "needs.select.outputs.request_antagonistic_review"
         )
         self.assertIn("scripts/antagonistic_request.py", flatten(str(step["run"])))
 
@@ -3992,6 +4006,7 @@ CONTINUE_DISPATCH = (
     ' -f request_review="$REVIEW"'
     ' -f request_antagonistic_review="$ANTAGONISTIC"'
     ' -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"'
+    ' "${inherit[@]}"'
 )
 
 
@@ -4150,6 +4165,8 @@ class ContinueJobContracts(WorkflowCase):
                 "DOTGITHUB": "false",
                 "FUSION": "false",
                 "FUSION_TIER": "standard",
+                "INHERIT": "false",
+                "EFFECTIVE": "",
                 "GITHUB_STEP_SUMMARY": str(summary),
                 **overrides,
             }
@@ -4362,13 +4379,15 @@ class StaleStatusContracts(ReusableWorkflowCase):
 
     def test_the_scan_and_the_review_wait_read_the_list(self) -> None:
         """Both steps pass the context list and the minutes."""
-        for job, step in (("select", "Select issues"), ("publish", "review")):
+        for job, step, source in (
+            ("select", "Select issues", "inputs.stale_status_minutes"),
+            # The effective value, which a hand-back may inherit (#241).
+            ("publish", "review", "needs.select.outputs.stale_status_minutes"),
+        ):
             with self.subTest(step=step):
                 found = self.step(job, step)
                 env = cast(dict[str, Any], found["env"])
-                self.assert_expression(
-                    env["STALE_MINUTES"], "inputs.stale_status_minutes"
-                )
+                self.assert_expression(env["STALE_MINUTES"], source)
                 run = flatten(found["run"])
                 self.assertIn(
                     "--stale-statuses monkey-assets/config/stale-statuses.txt", run
@@ -4398,6 +4417,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "revise_only",
                 "outstanding_only",
                 "continues_run",
+                "inherit_run_parameters",
                 "max_runtime_minutes",
                 "max_rounds",
                 "stale_status_minutes",
@@ -5616,7 +5636,7 @@ class FusionContracts(ReusableWorkflowCase):
     def test_a_fixed_model_takes_no_tier(self) -> None:
         """With the switch off the invocation names the model alone."""
         env = cast(dict[str, Any], self.step("author", "agent")["env"])
-        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier")
+        self.assert_expression(env["FUSION_TIER"], "needs.select.outputs.fusion_tier")
         args = self.invoke("claude-opus-5.5", "")
         self.assertEqual(args[:2], ["--prompt=p", "--model=claude-opus-5.5"])
         self.assertEqual(args[2], "--mode")
@@ -5749,6 +5769,276 @@ class FusionCallerContracts(WorkflowCase):
             " && format(' (Fusion {0})', inputs.fusion_tier) || ''",
             " ".join(run_name.split()),
         )
+
+
+def run_parameters_module() -> Any:
+    """The inherited set's one definition, imported on use (#241)."""
+    scripts = str(WORKFLOWS.parents[1] / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    return import_module("run_parameters")
+
+
+# The continue job's per-run inputs: never inherited (#241).
+PER_RUN_DISPATCH = {
+    "dry_run",
+    "mode",
+    "max_pull_requests",
+    "pull_requests",
+    "outstanding_only",
+    "continues_run",
+    "inherit_run_parameters",
+}
+
+
+class InheritedRunParameterContracts(ReusableWorkflowCase):
+    """A hand-back inherits its pull request's run parameters (#241)."""
+
+    def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
+        """A boolean, off by default, passed to select_issues.py as a flag."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["inherit_run_parameters"]["type"], "boolean")
+        self.assertIs(inputs["inherit_run_parameters"]["default"], False)
+        select = self.step("select", "Select issues")
+        self.assert_expression(
+            select["env"]["INHERIT"], "inputs.inherit_run_parameters"
+        )
+        self.assertIn("extra+=(--inherit-run-parameters)", flatten(select["run"]))
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_check_inputs_needs_one_pull_request_alone(self) -> None:
+        """Zero or several pull requests, issues, or another mode are refused."""
+        budget = self.step("select", "budget")
+        self.assert_expression(
+            budget["env"]["INHERIT"], "inputs.inherit_run_parameters"
+        )
+        one = {
+            "INHERIT": "true",
+            "REVISE_ONLY": "false",
+            "PULL_REQUESTS_RAW": "o/a#2",
+            "PULL_COUNT": "1",
+        }
+        cases: tuple[tuple[dict[str, str], bool], ...] = (
+            ({}, True),
+            ({"PULL_REQUESTS_RAW": "o/a#2 o/a#3", "PULL_COUNT": "2"}, False),
+            (
+                {"PULL_REQUESTS_RAW": "", "PULL_COUNT": "0", "REVISE_ONLY": "true"},
+                False,
+            ),
+            ({"ISSUES_RAW": "o/a#1", "ISSUE_COUNT": "1"}, False),
+            ({"MODE": "branches"}, False),
+        )
+        for overrides, passes in cases:
+            with self.subTest(**overrides), tempfile.TemporaryDirectory() as holder:
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        "PATH": os.environ["PATH"],
+                        **ReviseOnlyContracts.BUDGET_ENV,
+                        **one,
+                        **overrides,
+                        "GITHUB_OUTPUT": str(Path(holder) / "output"),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode == 0, passes, proc.stdout)
+                if not passes:
+                    self.assertIn("::error::inherit_run_parameters needs", proc.stdout)
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_inherited_runtime_sets_the_author_budget(self) -> None:
+        """The settle step runs after selection and reads what it inherited."""
+        self.assertLess(
+            self.position("select", "Select issues"), self.position("select", "params")
+        )
+        outputs = cast(dict[str, Any], self.jobs["select"]["outputs"])
+        for name in ("author_timeout", "agent_timeout", "model", "params"):
+            with self.subTest(output=name):
+                self.assert_expression(outputs[name], f"steps.params.outputs.{name}")
+        step = self.step("select", "params")
+        env = {
+            "PATH": os.environ["PATH"],
+            "MODEL": "claude-opus-5.5",
+            "FUSION_TIER": "",
+            "MAX_RUNTIME": "180",
+            "MAX_ROUNDS": "10",
+            "STALE_MINUTES": "8",
+            "ALLOW_SUBAGENTS": "true",
+            "REQUEST_REVIEW": "true",
+            "REQUEST_ANTAGONISTIC_REVIEW": "true",
+            "LOAD_REPO_SKILLS": "false",
+            "INCLUDE_DOTGITHUB": "false",
+        }
+        inherited = {
+            "model": "gpt-6-astra",
+            "fusion_auto_model_select": "false",
+            "fusion_tier": "",
+            "max_runtime_minutes": "45",
+            "max_rounds": "3",
+            "stale_status_minutes": "8",
+            "allow_subagents": "false",
+            "request_review": "false",
+            "request_antagonistic_review": "false",
+            "load_repo_skills": "false",
+            "include_dotgithub": "false",
+        }
+        with tempfile.TemporaryDirectory() as holder:
+            work = Path(holder)
+            (work / "monkey-assets").symlink_to(WORKFLOWS.parents[1])
+            (work / "artefacts").mkdir()
+            (work / "artefacts" / "selection.json").write_text(
+                json.dumps({"inherited_parameters": inherited}), encoding="utf-8"
+            )
+            output = work / "output"
+            subprocess.run(
+                ["bash", "-e", "-c", str(step["run"])],
+                cwd=work,
+                env={**env, "GITHUB_OUTPUT": str(output)},
+                check=True,
+            )
+            lines = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+        self.assertEqual(
+            (lines["agent_timeout"], lines["author_timeout"]), ("45", "65")
+        )
+        self.assertEqual(lines["model"], "gpt-6-astra")
+        self.assertEqual(lines["request_review"], "false")
+
+    def test_later_jobs_read_the_effective_values(self) -> None:
+        """--model, the deny-list switches, the reviews and the footer token."""
+        agent = cast(dict[str, Any], self.step("author", "agent")["env"])
+        for variable, output in (
+            ("MODEL", "model"),
+            ("FUSION_TIER", "fusion_tier"),
+            ("ALLOW_SUBAGENTS", "allow_subagents"),
+            ("LOAD_REPO_SKILLS", "load_repo_skills"),
+        ):
+            with self.subTest(variable=variable):
+                self.assert_expression(
+                    agent[variable], f"needs.select.outputs.{output}"
+                )
+        comment = self.step("publish", "Comment on the issue")
+        self.assert_expression(comment["env"]["PARAMS"], "needs.select.outputs.params")
+        self.assertIn('--run-parameters "$PARAMS"', flatten(comment["run"]))
+        self.assertNotIn("inputs.request_review", dumped(self.jobs["publish"]))
+        self.assertNotIn(
+            "inputs.request_antagonistic_review", dumped(self.jobs["antagonistic"])
+        )
+        declared = self.triggers["workflow_call"]["outputs"]
+        self.assert_expression(
+            declared["run_parameters"]["value"], "jobs.select.outputs.run_parameters"
+        )
+
+
+class InheritedContinueContracts(WorkflowCase):
+    """The continue job forwards the inherited set, as the run used it (#241)."""
+
+    WORKFLOW = CRON
+
+    def test_form_offers_the_input_and_forwards_it(self) -> None:
+        """A boolean, off by default, the form's 24th input."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        self.assertEqual(inputs["inherit_run_parameters"]["type"], "boolean")
+        self.assertIs(inputs["inherit_run_parameters"]["default"], False)
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["inherit_run_parameters"]), "inputs.inherit_run_parameters"
+        )
+
+    def test_dispatch_forwards_exactly_the_inherited_set(self) -> None:
+        """The forwarded inputs, less the per-run ones, are run_parameters.INHERITED."""
+        script = flatten(str(self.step("continue", "dispatch")["run"]))
+        forwarded = set(re.findall(r"-f ([a-z_]+)=", script))
+        self.assertEqual(
+            forwarded - PER_RUN_DISPATCH, set(run_parameters_module().INHERITED)
+        )
+        env = self.step("continue", "dispatch")["env"]
+        self.assert_expression(
+            env["EFFECTIVE"], "needs.code-monkey.outputs.run_parameters"
+        )
+
+    def dispatch(self, **overrides: str) -> tuple[int, list[str]]:
+        """Run the dispatch step for one pull request with a fake gh."""
+        cases = ContinueJobContracts()
+        cases.setUp()
+        status, calls, _, _ = cases.dispatch(["lfreleng-actions/a#1"], **overrides)
+        return status, calls
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_effective_values_replace_the_form(self) -> None:
+        """An inherited Fusion run continues on Fusion, inheriting again."""
+        effective = {
+            "model": "fusion",
+            "fusion_tier": "high",
+            "max_runtime_minutes": "45",
+            "max_rounds": "3",
+            "stale_status_minutes": "0",
+            "allow_subagents": "false",
+            "request_review": "false",
+            "request_antagonistic_review": "false",
+            "load_repo_skills": "true",
+            "include_dotgithub": "true",
+        }
+        status, calls = self.dispatch(EFFECTIVE=json.dumps(effective), INHERIT="true")
+        self.assertEqual(status, 0)
+        self.assertTrue(
+            calls[0].endswith(
+                " -f model=Claude Opus 5.5 -f fusion_auto_model_select=true"
+                " -f fusion_tier=high -f max_runtime_minutes=45"
+                " -f max_rounds=3 -f stale_status_minutes=0"
+                " -f allow_subagents=false"
+                " -f request_review=false -f request_antagonistic_review=false"
+                " -f load_repo_skills=true -f include_dotgithub=true"
+                " -f inherit_run_parameters=true"
+            ),
+            calls[0],
+        )
+        status, calls = self.dispatch(
+            EFFECTIVE=json.dumps({**effective, "model": "gpt-6-astra"})
+        )
+        self.assertEqual(status, 0)
+        self.assertIn(
+            " -f model=GPT-6 Astra -f fusion_auto_model_select=false ", calls[0]
+        )
+        self.assertNotIn("inherit_run_parameters", calls[0])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    def test_bad_effective_values_are_refused(self) -> None:
+        """A model the form cannot name, or a malformed value, dispatches nothing."""
+        good = {
+            "model": "claude-opus-5.5",
+            "fusion_tier": "",
+            "max_runtime_minutes": "45",
+            "max_rounds": "3",
+            "stale_status_minutes": "0",
+            "allow_subagents": "false",
+            "request_review": "false",
+            "request_antagonistic_review": "false",
+            "load_repo_skills": "true",
+            "include_dotgithub": "true",
+        }
+        self.assertEqual(self.dispatch(EFFECTIVE=json.dumps(good))[0], 0)
+        for bad in (
+            {**good, "model": "other-model"},
+            {**good, "max_runtime_minutes": "45 -f x=y"},
+            {**good, "request_review": "yes"},
+            {**good, "model": "fusion", "fusion_tier": ""},
+        ):
+            with self.subTest(**bad):
+                status, calls = self.dispatch(EFFECTIVE=json.dumps(bad))
+                self.assertNotEqual(status, 0)
+                self.assertEqual(calls, [])
+        status, calls = self.dispatch(EFFECTIVE="[]")
+        self.assertNotEqual(status, 0)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

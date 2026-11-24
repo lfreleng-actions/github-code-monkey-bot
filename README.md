@@ -107,6 +107,12 @@ an operator's `revise_only` dispatch. Each run's name in the Actions
 list says what it works, the pull requests or issues named or a
 `revise_only` scan, and marks a dry run.
 
+`inherit_run_parameters` runs one named pull request's next round with
+the model, Fusion tier, budgets and switches its last round recorded in
+its outcome footer, in place of the form's. The review bot's hand-back
+sets it, so the round that answers an antagonistic review keeps the
+parameters of the round it reviewed.
+
 ## Reusable workflow
 
 ```yaml

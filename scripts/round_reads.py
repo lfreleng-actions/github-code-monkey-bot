@@ -30,7 +30,11 @@ FOOTER = re.compile(
     r"(?:/[0-9a-f]{12})?)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
     r"(?: handback=(?P<handback>\d+))?(?: antagonistic=(?P<antagonistic>\d+))?"
-    r"(?: stale=(?P<stale>1))? -->\s*\Z"
+    r"(?: stale=(?P<stale>1))?"
+    # The run's parameters (run_parameters.py); taken loosely here, so
+    # a malformed token costs the round nothing else, and checked when
+    # a hand-back inherits it.
+    r"(?: params=(?P<params>[^\n]*?))? -->\s*\Z"
 )
 # Pages of issue comments the round history may span before the
 # read fails closed rather than trust a partial count.
@@ -72,6 +76,11 @@ class RoundHistory:
     # The review token of the footer ``last_verdict`` comes from, or
     # None: ``pending/not-requested`` says GitHub refused the request.
     last_review: str | None = None
+    # The ``params=`` token of the latest footer not stale, and that
+    # footer's run URL: what a hand-back round inherits, or None when
+    # that footer carries none.
+    last_params: str | None = None
+    last_run: str | None = None
 
 
 def round_history(
@@ -120,6 +129,13 @@ def round_history(
     ``last_review`` is the review token of the latest footer, the one
     ``last_verdict`` names.
 
+    ``last_params`` and ``last_run`` come from the latest footer not
+    marked stale, whatever its verdict, ordered as the watermark is:
+    the parameters the pull request's last counted round ran with. A
+    superseded run may have used others, and a late retry of an older
+    round rewinds nothing. When that footer carries no token, both are
+    None: an older round's token never stands in for it.
+
     ``exclude``, a run URL and the ``since`` its footer records, leaves
     out that one attempt's footers, so the publisher can count the
     other rounds and add its own exactly once, posted yet or not.
@@ -134,6 +150,8 @@ def round_history(
     # time they record, so a retry of an older round posted after a newer
     # handoff rewinds nothing; creation orders two posts of one read.
     latest: tuple[str, str, str | None, str | None] | None = None
+    # since, created, params, run: the latest footer not stale.
+    carried: tuple[str, str, str | None, str] | None = None
     for page in range(1, MAX_HISTORY_PAGES + 1):
         entries = reads.api_page(
             f"repos/{repository}/issues/{issue}/comments"
@@ -160,6 +178,10 @@ def round_history(
                 found.group("since"),
             ):
                 continue
+            if found.group("stale") is None and isinstance(created, str):
+                key = (found.group("since") or created, created)
+                if carried is None or key > (carried[0], carried[1]):
+                    carried = (*key, found.group("params"), found.group("run"))
             verdict = found.group("verdict")
             # An attempt that published nothing handled no request: it
             # counts toward the cap below, but moves no watermark.
@@ -190,6 +212,7 @@ def round_history(
             )
         if len(entries) < reads.COMMENTS_PER_PAGE:
             segment_start = max(answered.values(), default=0)
+            params = carried[2] if carried else None
             return RoundHistory(
                 highest,
                 summaries[-MAX_ROUNDS:],
@@ -200,6 +223,8 @@ def round_history(
                 stale,
                 frozenset(published),
                 latest[3] if latest else None,
+                params,
+                carried[3] if params is not None and carried else None,
             )
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"

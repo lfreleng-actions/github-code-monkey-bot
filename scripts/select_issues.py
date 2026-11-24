@@ -37,6 +37,7 @@ import issue_authors as authors
 import issue_categories as categories
 import issue_reads as reads
 import overlap_wait
+import parameter_inheritance
 import previous_rejection
 import repository_reads as repositories
 import revision_rounds
@@ -54,7 +55,7 @@ from selection_inputs import (
     load_reviewers,
     parse_max_pull_requests,
     parse_max_rounds,
-    parse_repositories,
+    parse_targets,
     selection_parser,
 )
 
@@ -239,46 +240,6 @@ def scan_candidates(
     return len(issues), sorted(enriched, key=rank_key)
 
 
-def parse_targets(
-    args: argparse.Namespace,
-) -> tuple[list[tuple[str, int]], list[str], list[tuple[str, int]]]:
-    """Parse the named issues, repositories and pull requests, and check they fit."""
-    targets = explicit_targets.parse_issues(args.issues, args.org)
-    explicit = parse_repositories(args.repositories)
-    pulls = explicit_targets.parse_issues(args.pull_requests, args.org)
-    if not (targets or pulls or args.revise_only):
-        # The workflow's input check refuses this first; the selector
-        # refuses it too, so no caller can start an issue scan.
-        raise SelectionError(
-            "scanning for new issues is off; name issues or pull_requests,"
-            " or set revise_only"
-        )
-    if (targets or pulls) and explicit:
-        raise SelectionError(
-            "issues or pull requests and repositories cannot both be given"
-        )
-    if pulls and args.mode != "pull-requests":
-        # A round moves a live pull request's head and answers its
-        # review; no other mode publishes that.
-        raise SelectionError("pull_requests needs pull-requests mode")
-    if args.outstanding_only and (targets or not pulls):
-        raise SelectionError("outstanding_only needs pull_requests alone")
-    if args.continues_run and not args.outstanding_only:
-        raise SelectionError("continues_run needs outstanding_only")
-    if args.revise_only:
-        # Revisions alone: a scan of the owner's bot pull requests and
-        # no issue, so nothing may name issues or narrow the scan.
-        if targets or explicit:
-            raise SelectionError(
-                "revise_only cannot be given with issues or repositories"
-            )
-        if args.mode != "pull-requests":
-            raise SelectionError("revise_only needs pull-requests mode")
-        if not args.revise:
-            raise SelectionError("revise_only needs revise")
-    return targets, explicit, pulls
-
-
 def stamp(chosen: list[dict[str, Any]], session: str, collected_at: str) -> None:
     """Mark every chosen entry with the read time and the session."""
     # The session names this selection: the run and its attempt, so
@@ -331,15 +292,16 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
     exclusions = set(load_exclusions(args.exclude_file, args.exclude_repos))
     reviewers = load_reviewers(args.antagonistic_reviewers)
     max_pull_requests = parse_max_pull_requests(args.max_pull_requests)
+    enabled, fork_orgs, listed = load_policy(args)
+    bot = reads.bot_identity(args.bot_slug)
+    inherited = parameter_inheritance.inherit(args, bot, fork_orgs, pulls)
     max_rounds = parse_max_rounds(args.max_rounds)
     stale_rule = stale.load_rule(args.stale_statuses, args.stale_status_minutes)
-    enabled, fork_orgs, listed = load_policy(args)
     skipped: dict[str, int] = dict.fromkeys(SKIP_COUNTERS, 0)
     skipped_issues: list[dict[str, str]] = []
     holds = run_overlap.Holds(
         run_overlap.load_held(args.held_file), skipped, skipped_issues
     )
-    bot = reads.bot_identity(args.bot_slug)
     explicit_run = bool(targets or pulls)
     lowered = {name.lower() for name in exclusions}
 
@@ -411,6 +373,7 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
         outcome=(seen, skipped, skipped_issues, chosen),
     )
     selection["overlap_waits"] = overlap_wait.load_waits(args.held_file, holds.held)
+    selection.update(inherited)
     return selection, guidance
 
 

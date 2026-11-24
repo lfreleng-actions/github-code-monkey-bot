@@ -147,13 +147,19 @@ on:
           outstanding; needs pull_requests alone
         type: boolean
         default: false
-      # The 23rd input: GitHub caps a workflow_dispatch form at 25.
       continues_run:
         description: >-
           Set by the continue job: the run that dispatched this one,
           which must have published a round on each pull request
         type: string
         default: ''
+      # The 24th input: GitHub caps a workflow_dispatch form at 25.
+      inherit_run_parameters:
+        description: >-
+          Set by a hand-back: take the model, budgets and switches from
+          the named pull request's last round; one pull request only
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -275,6 +281,7 @@ jobs:
       revise_only: ${{ inputs.revise_only }}
       outstanding_only: ${{ inputs.outstanding_only }}
       continues_run: "${{ inputs.continues_run }}"
+      inherit_run_parameters: ${{ inputs.inherit_run_parameters }}
       # The repository variable alone sets the list: no dispatch form
       # field can widen it. Unset, the run fails at pre-flight.
       issue_authors: "${{ vars.CODE_MONKEY_ISSUE_AUTHORS || '' }}"
@@ -347,11 +354,14 @@ jobs:
       # whole list before any dispatch. One pull request per dispatch
       # keeps a failure to that pull request, and each loop at its own
       # pace. A failed dispatch is a warning: an operator's revise_only
-      # dispatch still finds the pull request. The run's own switches
-      # go with it, so a
-      # dispatch that turned a review off keeps it off for the loop, one
-      # that trusted checkout skills or .github keeps them on, and a
-      # Copilot Fusion run stays on Fusion at its tier.
+      # dispatch still finds the pull request. The run parameters it
+      # used go with it (docs/DESIGN.md section 20.1): those the
+      # reusable workflow reports, which a hand-back may have inherited,
+      # else the form's. So a dispatch that turned a review off keeps
+      # it off for the loop, one that trusted checkout skills or
+      # .github keeps them on, and a Copilot Fusion run stays on Fusion
+      # at its tier. A run that inherited asks its next round to
+      # inherit too, so a model the form no longer lists carries on.
       - name: 'Dispatch next rounds'
         id: dispatch
         env:
@@ -371,9 +381,41 @@ jobs:
           ANTAGONISTIC: "${{ inputs.request_antagonistic_review }}"
           SKILLS: "${{ inputs.load_repo_skills }}"
           DOTGITHUB: "${{ inputs.include_dotgithub }}"
+          INHERIT: "${{ inputs.inherit_run_parameters }}"
+          EFFECTIVE: "${{ needs.code-monkey.outputs.run_parameters }}"
         run: |
           set -euo pipefail
           export LC_ALL=C
+          # The effective values, by form input name, in place of the
+          # form's; every one is checked below as a form value is.
+          if [ -n "$EFFECTIVE" ]; then
+            if ! fields=$(jq -r 'if type == "object" then
+                [.model, .fusion_tier, .max_runtime_minutes, .max_rounds,
+                 .stale_status_minutes, .allow_subagents, .request_review,
+                 .request_antagonistic_review, .load_repo_skills,
+                 .include_dotgithub] | map(tostring) | join("|")
+                else error("not an object") end' <<< "$EFFECTIVE"); then
+              echo '::error::The run parameters are not a JSON object'
+              exit 1
+            fi
+            IFS='|' read -r id tier RUNTIME ROUNDS STALE SUBAGENTS REVIEW \
+              ANTAGONISTIC SKILLS DOTGITHUB <<< "$fields"
+            FUSION=false
+            case "$id" in
+              claude-opus-5.5) MODEL='Claude Opus 5.5' ;;
+              claude-fable-5.2) MODEL='Claude Fable 5.2' ;;
+              claude-sonnet-5.5) MODEL='Claude Sonnet 5.5' ;;
+              gpt-6-astra) MODEL='GPT-6 Astra' ;;
+              fusion) FUSION=true; FUSION_TIER="$tier" ;;
+              *)
+                # Not on the form: only a round that inherits can carry
+                # it, and the form's model holds its place.
+                if [ "$INHERIT" != true ]; then
+                  echo "::error::Unknown model identifier $id"
+                  exit 1
+                fi ;;
+            esac
+          fi
           case "$MODEL" in
             'Claude Opus 5.5'|'Claude Fable 5.2'|'Claude Sonnet 5.5') ;;
             'GPT-6 Astra') ;;
@@ -391,7 +433,7 @@ jobs:
             exit 1
           fi
           for switch in "$SUBAGENTS" "$REVIEW" "$ANTAGONISTIC" "$SKILLS" \
-            "$DOTGITHUB" "$FUSION"; do
+            "$DOTGITHUB" "$FUSION" "$INHERIT"; do
             case "$switch" in
               true|false) ;;
               *) echo '::error::The forwarded switches must be true or false'
@@ -414,6 +456,10 @@ jobs:
             fi
             pulls+=("${item:1:${#item}-2}")
           done <<< "$items"
+          inherit=()
+          if [ "$INHERIT" = true ]; then
+            inherit=(-f inherit_run_parameters=true)
+          fi
           dispatched=()
           failed=()
           for pull in "${pulls[@]}"; do
@@ -428,7 +474,8 @@ jobs:
               -f allow_subagents="$SUBAGENTS" \
               -f request_review="$REVIEW" \
               -f request_antagonistic_review="$ANTAGONISTIC" \
-              -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"
+              -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB" \
+              "${inherit[@]}"
             then
               dispatched+=("$pull")
             else

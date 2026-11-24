@@ -16,6 +16,7 @@ import issue_recheck as recheck
 import proposal_model as model
 import proposal_policy as policy
 import round_recount
+import run_parameters
 import workflow_grant
 import write_recovery as recovery
 from proposal_policy import PublishError
@@ -346,6 +347,7 @@ def run_comment(args: argparse.Namespace) -> None:
     if superseded(result):
         # The round history counts this round apart from every cap.
         suffix += " stale=1"
+    suffix += run_parameters.footer_field(getattr(args, "run_parameters", ""))
     marker = f"<!-- code-monkey {args.run_url} {result.get('verdict')}{suffix} -->"
     bot_login = str(result.get("bot_login") or "")
 

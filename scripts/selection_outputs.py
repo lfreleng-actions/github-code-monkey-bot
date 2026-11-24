@@ -30,6 +30,25 @@ def tier_note(selection: dict[str, Any]) -> str:
     return f" (`{tier}` tier)" if tier else ""
 
 
+def inheritance_lines(selection: dict[str, Any]) -> list[str]:
+    """The summary's account of the run parameters a hand-back inherited."""
+    if not selection.get("inherit_run_parameters"):
+        return []
+    values = cast("dict[str, str]", selection.get("inherited_parameters") or {})
+    if not values:
+        return ["", f"Run parameters: {selection.get('inheritance_note')}."]
+    lines = [
+        "",
+        f"Run parameters inherited from {selection.get('inherited_from')}:",
+        "",
+        "| Parameter | Value |",
+        "| --- | --- |",
+    ]
+    # Checked values: identifiers, numbers and true/false only.
+    lines += [f"| {name} | `{value}` |" for name, value in values.items()]
+    return lines
+
+
 def summary_markdown(selection: dict[str, Any]) -> str:
     """Render the selection for the step summary."""
     lines = [
@@ -48,6 +67,7 @@ def summary_markdown(selection: dict[str, Any]) -> str:
     ]
     for reason, count in sorted(cast("dict[str, int]", selection["skipped"]).items()):
         lines.append(f"| {reason} | {count} |")
+    lines += inheritance_lines(selection)
     if selection.get("revise_only"):
         lines += [
             "",
