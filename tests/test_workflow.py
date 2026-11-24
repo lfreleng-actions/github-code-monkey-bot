@@ -23,6 +23,7 @@ import tempfile
 import unittest
 from collections import Counter
 from collections.abc import Mapping
+from functools import cached_property
 from importlib import import_module
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple, cast
@@ -35,6 +36,7 @@ clean_git_env = import_module("git_env").clean_git_env
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 REUSABLE = WORKFLOWS / "code-monkey.yaml"
 CRON = WORKFLOWS / "code-monkey-cron.yaml"
+EXPIRY = WORKFLOWS / "fork-pool-token-expiry.yaml"
 FUSION_TIERS = ("standard", "high", "max")
 TESTING = WORKFLOWS / "testing.yaml"
 LINTING = WORKFLOWS / "linting.yaml"
@@ -2367,6 +2369,19 @@ class ForkPreparationContracts(ReusableWorkflowCase):
             Counter({POOL_TOKEN: 1}),
         )
 
+    @unittest.expectedFailure
+    def test_prepare_step_reads_the_token_variables_through_env(self) -> None:
+        """The lifetime and recorded expiry arrive as env, never in the script."""
+        prepare = self.step("forks", "prepare")
+        env = cast(dict[str, Any], prepare["env"])
+        self.assert_expression(
+            env["FORK_POOL_TOKEN_MAX_DAYS"], "inputs.fork_pool_token_max_days"
+        )
+        self.assert_expression(
+            env["FORK_POOL_TOKEN_EXPIRES"], "inputs.fork_pool_token_expires"
+        )
+        self.assertNotIn("${{", str(prepare["run"]))
+
     def test_no_mint_requests_administration(self) -> None:
         """The App never administers: no mint asks for it at any level."""
         mints = [
@@ -4379,6 +4394,7 @@ class StaleStatusContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
+    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -4413,6 +4429,8 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "exclude_repos",
                 "only_known_authors",
                 "issue_authors",
+                "fork_pool_token_max_days",
+                "fork_pool_token_expires",
                 "guidance_repository",
                 "guidance_ref",
                 "harden_runner_egress",
@@ -4440,6 +4458,7 @@ class InterfaceContracts(ReusableWorkflowCase):
             with self.subTest(secret=name):
                 self.assertIs(secret["required"], False)
 
+    @unittest.expectedFailure
     def test_input_defaults(self) -> None:
         """Defaults keep an unconfigured call dry, bounded and sub-agent aware."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -4467,6 +4486,8 @@ class InterfaceContracts(ReusableWorkflowCase):
             "outstanding_only": False,
             "continues_run": "",
             "pull_requests": "",
+            "fork_pool_token_max_days": "",
+            "fork_pool_token_expires": "",
             # A caller omitting assets_repository checks out these
             # assets; the stale pre-rename name broke such callers.
             "assets_repository": "lfreleng-actions/github-code-monkey-bot",
@@ -4731,6 +4752,21 @@ class CronCallerContracts(WorkflowCase):
         )
         inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
         self.assertNotIn("issue_authors", inputs)
+
+    @unittest.expectedFailure
+    def test_fork_pool_token_variables_come_from_the_variables_alone(self) -> None:
+        """No dispatch field, and no continuation, can widen the token's limit."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
+        dispatch = dumped(self.jobs["continue"]).lower()
+        for name, variable in (
+            ("fork_pool_token_max_days", "FORK_POOL_TOKEN_MAX_DAYS"),
+            ("fork_pool_token_expires", "FORK_POOL_TOKEN_EXPIRES"),
+        ):
+            with self.subTest(name=name):
+                self.assert_expression(str(with_[name]), f"vars.{variable} || ''")
+                self.assertNotIn(name, inputs)
+                self.assertNotIn(name, dispatch)
 
     def test_only_known_authors_comes_from_the_variable_alone(self) -> None:
         """No dispatch field, and no continuation, can switch the list off."""
@@ -4998,6 +5034,182 @@ class UnattendedRunContracts(unittest.TestCase):
                 self.assertLessEqual(
                     set(triggers), {"workflow_dispatch", "pull_request"}
                 )
+
+
+SLACK_ACTION = "slackapi/slack-github-action"
+SLACK_PIN = f"{SLACK_ACTION}@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d"
+SLACK_TOKEN = "secrets.SLACK_BOT_TOKEN"
+BLOCK_PIN = f"{BLOCK_ACTION}@65ff87957e1cac2de3203a85dbb07c31810321cb"
+HARDEN_PIN = f"{HARDEN_RUNNER}@1d88384fd173af6ecb012dfd0264a306b711241a"
+ALLOW_LIST_PIN = "@6e6cab073a93c0d58e4e8846d44e1cbddbac975b"
+
+
+@unittest.expectedFailure
+class ExpiryAlertWorkflowContracts(unittest.TestCase):
+    """The scheduled fork pool token expiry check and its Slack alert (#244).
+
+    It is no bot run: it holds no App key and no copy of the token,
+    reads one variable, and only its posting steps see the Slack token.
+    """
+
+    # Load on first use so a missing file fails the test, not setUp.
+    @cached_property
+    def text(self) -> str:
+        """The workflow source."""
+        return EXPIRY.read_text(encoding="utf-8")
+
+    @cached_property
+    def workflow(self) -> dict[str | bool, Any]:
+        """The parsed workflow."""
+        return cast(dict[str | bool, Any], yaml.safe_load(self.text))
+
+    @cached_property
+    def triggers(self) -> dict[str, Any]:
+        """The workflow's triggers."""
+        return cast(dict[str, Any], self.workflow[TRIGGERS])
+
+    @cached_property
+    def jobs(self) -> dict[str, dict[str, Any]]:
+        """The workflow's jobs."""
+        return cast(dict[str, dict[str, Any]], self.workflow["jobs"])
+
+    def steps(self, job: str) -> list[dict[str, Any]]:
+        """The steps of one job."""
+        return cast(list[dict[str, Any]], self.jobs[job]["steps"])
+
+    def test_daily_schedule_and_test_dispatch(self) -> None:
+        """A fixed daily time, and a manual test that posts whatever the date."""
+        self.assertEqual(set(self.triggers), {"schedule", "workflow_dispatch"})
+        schedule = cast(list[dict[str, str]], self.triggers["schedule"])
+        self.assertEqual(len(schedule), 1)
+        self.assertRegex(schedule[0]["cron"], r"^[0-9]+ [0-9]+ \* \* \*$")
+        inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
+        self.assertEqual(set(inputs), {"test_notification"})
+        self.assertEqual(inputs["test_notification"]["type"], "boolean")
+        self.assertIs(inputs["test_notification"]["default"], False)
+
+    def test_permissions_concurrency_and_timeouts(self) -> None:
+        """No default grant, contents read to check out alone, bounded jobs."""
+        self.assertEqual(self.workflow["permissions"], {})
+        concurrency = cast(dict[str, Any], self.workflow["concurrency"])
+        self.assertIs(concurrency["cancel-in-progress"], False)
+        for job, body in self.jobs.items():
+            with self.subTest(job=job):
+                self.assertIsInstance(body["timeout-minutes"], int)
+                checkouts = [s for s in self.steps(job) if is_action(s, CHECKOUT)]
+                if checkouts:
+                    self.assertEqual(body["permissions"], {"contents": "read"})
+                    self.assertIs(checkouts[0]["with"]["persist-credentials"], False)
+                else:
+                    self.assertEqual(body["permissions"], {})
+        self.assertEqual(
+            [job for job in self.jobs if "contents" in self.jobs[job]["permissions"]],
+            ["check"],
+        )
+
+    def test_every_job_blocks_egress_with_the_pinned_list(self) -> None:
+        """Each job loads the organisation allow-list, then blocks against it."""
+        for job in self.jobs:
+            steps = self.steps(job)
+            with self.subTest(job=job):
+                self.assertEqual(steps[0]["uses"], BLOCK_PIN)
+                self.assertEqual(steps[0]["with"]["config"], ALLOW_LIST_PIN)
+                self.assertEqual(steps[1]["uses"], HARDEN_PIN)
+                self.assertEqual(steps[1]["with"]["egress-policy"], "block")
+                self.assertEqual(
+                    unwrap(steps[1]["with"]["allowed-endpoints"]),
+                    "env.CONNECTION_ALLOW_LIST",
+                )
+                for step in steps:
+                    if "uses" in step:
+                        self.assertRegex(uses_of(step), COMMIT_PIN)
+
+    def test_evaluation_runs_in_python_without_a_secret(self) -> None:
+        """The check job reads the variable through env and holds no secret."""
+        check = self.jobs["check"]
+        self.assertNotIn("environment", check)
+        self.assertEqual(SECRET_REFERENCE.findall(dumped(check)), [])
+        evaluate = next(s for s in self.steps("check") if s.get("id") == "evaluate")
+        env = cast(dict[str, Any], evaluate["env"])
+        self.assertEqual(
+            unwrap(env["FORK_POOL_TOKEN_EXPIRES"]), "vars.FORK_POOL_TOKEN_EXPIRES || ''"
+        )
+        run = str(evaluate["run"])
+        self.assertIn("python3 scripts/pool_token.py expiry-check", flatten(run))
+        self.assertNotIn("${{", run)
+
+    def test_slack_token_reaches_the_posting_steps_alone(self) -> None:
+        """Posting jobs run in production; only the post holds the token's value.
+
+        The configuration check sees whether the secret is set, never
+        what it is.
+        """
+        posters = 0
+        for job, body in self.jobs.items():
+            for step in self.steps(job):
+                found = SECRET_REFERENCE.findall(dumped(step))
+                with self.subTest(job=job, step=step.get("name")):
+                    self.assertLessEqual(set(found), {SLACK_TOKEN})
+                    if is_action(step, SLACK_ACTION):
+                        posters += 1
+                        self.assertEqual(step["uses"], SLACK_PIN)
+                        with_ = cast(dict[str, Any], step["with"])
+                        self.assertEqual(with_["method"], "chat.postMessage")
+                        self.assertEqual(unwrap(with_["token"]), SLACK_TOKEN)
+                        self.assertEqual(body["environment"], "production")
+                    elif found:
+                        self.assertEqual(step["name"], "Check Slack configuration")
+                        self.assertEqual(
+                            unwrap(step["env"]["HAS_TOKEN"]), f"{SLACK_TOKEN} != ''"
+                        )
+            outside = {k: v for k, v in body.items() if k != "steps"}
+            with self.subTest(job=job):
+                self.assertEqual(SECRET_REFERENCE.findall(dumped(outside)), [])
+        self.assertGreater(posters, 0)
+        self.assert_slack_check_precedes_each_post()
+
+    def assert_slack_check_precedes_each_post(self) -> None:
+        """A missing Slack setting skips the post with a warning."""
+        for job in self.jobs:
+            steps = self.steps(job)
+            posts = [i for i, s in enumerate(steps) if is_action(s, SLACK_ACTION)]
+            for index in posts:
+                check = steps[index - 1]
+                with self.subTest(job=job):
+                    self.assertEqual(check["name"], "Check Slack configuration")
+                    self.assertIn("::warning", str(check["run"]))
+                    self.assertEqual(
+                        unwrap(steps[index]["if"]),
+                        f"steps.{check['id']}.outputs.configured == 'true'",
+                    )
+
+    def test_alert_posts_only_when_the_check_says_so(self) -> None:
+        """The alert job follows the evaluation's notify output."""
+        self.assertEqual(
+            unwrap(self.jobs["notify"]["if"]), "needs.check.outputs.notify == 'true'"
+        )
+        self.assertEqual(self.jobs["notify"]["needs"], "check")
+
+    def test_no_pool_token_app_key_or_dispatch(self) -> None:
+        """It reads its two variables and touches nothing of the pipeline."""
+        for fragment in (
+            "FORK_POOL_TOKEN }}",
+            "secrets.FORK_POOL_TOKEN",
+            "fork_pool_token",
+            "PRIVATE_KEY",
+            "APP_CLIENT_ID",
+            APP_TOKEN,
+            "gh workflow run",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment, self.text)
+        self.assertEqual(
+            set(re.findall(r"vars\.([A-Za-z0-9_]+)", self.text)),
+            {"FORK_POOL_TOKEN_EXPIRES", "SLACK_CHANNEL_ID"},
+        )
+        for job, body in self.jobs.items():
+            with self.subTest(job=job):
+                self.assertNotIn("uses", body)
 
 
 class TestingCallerContracts(WorkflowCase):
