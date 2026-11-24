@@ -1194,7 +1194,53 @@ For each selected issue:
      directory.
 
    Names and directories other than the licence ones compare
-   without regard to case. Changes
+   without regard to case. A symlink in the base tree at a
+   protected path protects what it points at, since editing the
+   target changes what the protected name means. Before it
+   classifies the diff, the check lists the base tree once
+   (`git ls-tree -r`) and resolves each symlink whose own path the
+   rules cover, or that stands for a directory holding covered paths
+   (`.claude`, `LICENSES`, `.github`), the way git stores it:
+   relative to the link's directory, following every link on the
+   way, up to eight. The check then refuses a change to the target,
+   to a link on the chain, to the link itself, or to a path under a
+   linked directory that the rules would cover under the link's
+   name, and creating a missing target counts as a change. A link
+   inside such a directory's target counts under that name too, and
+   under every other name that leads to it, unless one name already
+   protects everything beneath it. A link that is absolute, climbs
+   above the root, loops or passes the bound makes the check refuse
+   any change to the link, to each link it reached before failing
+   (the one past the bound included), or to the first path each of
+   them names, naming both. A link the walk reaches again is a loop
+   when the walk has consumed nothing it held pending at that link's
+   last expansion; `a -> .` followed in `a/a/settings` is a finite
+   hop. A chain past the bound is still followed until
+   it ends or loops, and the path it ends at stays protected under
+   the link's name; a chain of more than 4,096 links refuses every
+   proposal. A link the check
+   reaches through more than eight directory links protects its
+   whole target, and so does every link inside that, so neither
+   bound leaves a protected path editable. Links that alias each other
+   under more than 4,096 names, counted as the check queues them,
+   refuse every proposal. The check
+   tests a changed path against the links before the names, so a
+   rejection of a link names its target or why resolution failed.
+   A checkout resolves `dir/..` through `dir`, which has to exist
+   as a directory, so the check refuses any change at or under one
+   a resolved link climbs out of with `..`, unless a link on its
+   chain lies in that directory and holds it in place. A diff names
+   a submodule it deletes, not the paths inside it, so the check
+   also refuses a change at a path that holds a target, a pinned
+   link or such a directory, and, under a linked directory, at a
+   path whose name under the link would hold covered paths. A
+   checkout also cuts a link target at its first NUL byte, so a
+   target read while resolving that holds one refuses every
+   proposal.
+   Base-tree names and targets keep their bytes, so
+   two links whose names differ in invalid UTF-8 stay apart. The
+   rejection names the link as the cause, and a proposal cannot
+   add a link of its own (above). `protected_links.py` holds these rules. Changes
    under `.github/workflows/` set `needs_workflows` in the check
    summary; no token mint depends on it (step 6). Whether they pass
    is the entry's `allow_workflow_edits` grant (§9.1), which the
@@ -2320,6 +2366,7 @@ scripts/proposal_fetch.py                proposal cap table over artifact_fetch
 scripts/proposal_policy.py               the rules a proposal must pass
 
 scripts/proposal_check.py                offline bundle verification
+scripts/protected_links.py               protected symlinks in the base tree
 scripts/proposal_model.py                verdict record and its rendering
 scripts/workflow_gate.py                 which gated files a proposal may change
 scripts/publish.py                       replay, open PR, reconcile

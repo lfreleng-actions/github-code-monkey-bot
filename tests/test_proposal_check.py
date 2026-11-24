@@ -170,6 +170,26 @@ class Fixture:
         )
         return target
 
+    def link_base(
+        self, symlinks: dict[str, str], files: dict[str, str] | None = None
+    ) -> None:
+        """Give the base tree ``symlinks`` and ``files``; the agent starts there."""
+        for path in symlinks:
+            if (self.upstream / path).exists():
+                run_git(self.upstream, "rm", "-q", path)
+        for path, content in (files or {}).items():
+            target = self.upstream / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        for path, destination in symlinks.items():
+            (self.upstream / path).parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(destination, self.upstream / path)
+        run_git(self.upstream, "add", "-A")
+        run_git(self.upstream, "commit", "-q", "-m", "Chore: Link files")
+        self.base_sha = run_git(self.upstream, "rev-parse", "HEAD").strip()
+        run_git(self.agent, "fetch", "-q", "origin")
+        run_git(self.agent, "reset", "-q", "--hard", "origin/main")
+
     def advance_upstream(self) -> str:
         """Add a commit to the upstream default branch; return its SHA."""
         (self.upstream / "CHANGES.md").write_text("new\n", encoding="utf-8")
@@ -1180,6 +1200,267 @@ class RunCheckRejectionTest(GitCase):
         run_git(agent, "bundle", "create", "-q", str(target), f"{moved}..{BRANCH}")
         self.fixture.manifest()
         self.assertIn("bundle failed verification", self.rejected())
+
+
+class SymlinkTargetTest(GitCase):
+    """A protected link in the base tree protects what it points at (#216)."""
+
+    EXAMPLES: tuple[tuple[str, str, str], ...] = (
+        (".github/zizmor.yml", "../docs/zizmor.yml", "docs/zizmor.yml"),
+        ("AGENTS.md", "docs/guide.md", "docs/guide.md"),
+        (".pre-commit-config.yaml", "config/pre-commit.yaml", "config/pre-commit.yaml"),
+        (".claude", "tooling/claude", "tooling/claude/settings.json"),
+    )
+
+    def propose(
+        self,
+        fixture: Fixture,
+        files: dict[str, str | None],
+        symlinks: dict[str, str] | None = None,
+        base_files: dict[str, str] | None = None,
+    ) -> Any:
+        """Commit ``files`` on a base holding ``symlinks``; run the check."""
+        if symlinks or base_files:
+            fixture.link_base(symlinks or {}, base_files)
+        fixture.commit("Chore: Edit files\n\nBody.\n", files)
+        fixture.bundle()
+        fixture.manifest(pr_title="Chore: Edit files")
+        return fixture.run()
+
+    def fixture_for(self, name: str) -> Fixture:
+        """A separate fixture, for a test that needs more than one base."""
+        root = self.root / name
+        root.mkdir()
+        return Fixture(root)
+
+    def assert_rejected(self, check: Any, path: str, cause: str) -> None:
+        """The check refused ``path`` and named the link that protects it."""
+        self.assertEqual(check.verdict, "rejected", check.reasons)
+        self.assertIn(
+            f"{path} is protected and cannot change ({cause}", "; ".join(check.reasons)
+        )
+
+    def test_examples_are_rejected(self) -> None:
+        """Each example in the issue is refused, naming its link."""
+        for index, (link, target, edited) in enumerate(self.EXAMPLES):
+            with self.subTest(link=link):
+                fixture = self.fixture_for(f"example-{index}")
+                check = self.propose(
+                    fixture,
+                    {edited: "changed\n"},
+                    {link: target},
+                    {edited: "original\n"},
+                )
+                self.assert_rejected(check, edited, f"target of {link})")
+
+    def test_examples_without_links_are_accepted(self) -> None:
+        """The same edits on a base with no links pass as before."""
+        for index, (_link, _target, edited) in enumerate(self.EXAMPLES):
+            with self.subTest(path=edited):
+                fixture = self.fixture_for(f"plain-{index}")
+                check = self.propose(
+                    fixture, {edited: "changed\n"}, base_files={edited: "original\n"}
+                )
+                self.assertEqual(check.verdict, "proposed", check.reasons)
+
+    def test_chain_of_two_links_is_followed(self) -> None:
+        """The file at the end of a chain is the protected one."""
+        check = self.propose(
+            self.fixture,
+            {"text/b.md": "changed\n"},
+            {"AGENTS.md": "docs/a.md", "docs/a.md": "../text/b.md"},
+            {"text/b.md": "original\n"},
+        )
+        self.assert_rejected(check, "text/b.md", "target of AGENTS.md)")
+
+    def test_dangling_target_cannot_be_created(self) -> None:
+        """A target missing from the base cannot be added."""
+        check = self.propose(
+            self.fixture, {"docs/guide.md": "new\n"}, {"AGENTS.md": "docs/guide.md"}
+        )
+        self.assert_rejected(check, "docs/guide.md", "target of AGENTS.md)")
+
+    def test_link_out_of_the_repository_is_refused(self) -> None:
+        """Touching a protected link that leaves the repository is refused."""
+        check = self.propose(self.fixture, {".claude": None}, {".claude": "../claude"})
+        self.assert_rejected(check, ".claude", ".claude -> ../claude")
+
+    def test_loop_is_refused(self) -> None:
+        """Touching the first path of a looping link is refused, naming both."""
+        check = self.propose(
+            self.fixture, {"a.md": None}, {"AGENTS.md": "a.md", "a.md": "AGENTS.md"}
+        )
+        self.assert_rejected(check, "a.md", "AGENTS.md -> a.md")
+
+    def test_loop_hops_cannot_be_replaced(self) -> None:
+        """No link on a loop can become a file or directory the name means."""
+        cases: tuple[
+            tuple[dict[str, str], dict[str, str | None], dict[str, str | None], str],
+            ...,
+        ] = (
+            (
+                {"AGENTS.md": "a.md", "a.md": "b.md", "b.md": "a.md"},
+                {"b.md": None},
+                {"b.md": "new instructions\n"},
+                "b.md",
+            ),
+            (
+                {".claude": "x", "x": "y", "y": "x"},
+                {"y": None},
+                {"y/settings.json": "{}\n"},
+                "y",
+            ),
+        )
+        for index, (symlinks, removed, added, path) in enumerate(cases):
+            link = next(iter(symlinks))
+            with self.subTest(link=link):
+                fixture = self.fixture_for(f"loop-{index}")
+                fixture.link_base(symlinks)
+                fixture.commit("Chore: Remove link\n\nBody.\n", removed)
+                check = self.propose(fixture, added)
+                self.assert_rejected(check, path, f"{link} -> ")
+
+    def test_byte_distinct_links_stay_distinct(self) -> None:
+        """Links whose names differ only in invalid UTF-8 each protect."""
+        symlinks = {
+            os.fsdecode(b"docs/\xfe/AGENTS.md"): "../../a.md",
+            os.fsdecode(b"docs/\xff/AGENTS.md"): "../../b.md",
+        }
+        base = {"a.md": "a\n", "b.md": "b\n"}
+        for edited in base:
+            with self.subTest(path=edited):
+                fixture = self.fixture_for(f"bytes-{edited}")
+                check = self.propose(fixture, {edited: "changed\n"}, symlinks, base)
+                self.assert_rejected(check, edited, "target of docs/")
+
+    def test_unprotected_link_adds_no_protection(self) -> None:
+        """A link whose own path is not protected leaves its target editable."""
+        check = self.propose(
+            self.fixture,
+            {"README.md": "changed\n"},
+            {"docs/link.md": "../README.md"},
+        )
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+
+    def test_link_past_the_bound_cannot_be_replaced(self) -> None:
+        """The link that passes the chain bound cannot become a file."""
+        bound = 8  # protected_links.MAX_LINK_CHAIN
+        last = f"a{bound}"
+        symlinks = {"AGENTS.md": "a1"}
+        symlinks |= {f"a{i}": f"a{i + 1}" for i in range(1, bound)}
+        symlinks[last] = "target.md"
+        self.fixture.link_base(symlinks, {"target.md": "original\n"})
+        self.fixture.commit("Chore: Remove link\n\nBody.\n", {last: None})
+        check = self.propose(self.fixture, {last: "new instructions\n"})
+        self.assert_rejected(check, last, "AGENTS.md -> a1")
+
+    def test_child_of_a_target_past_the_chain_bound(self) -> None:
+        """A file under the target of an over-long .claude chain is refused."""
+        bound = 8  # protected_links.MAX_LINK_CHAIN
+        symlinks = {".claude": "a1"}
+        symlinks |= {f"a{i}": f"a{i + 1}" for i in range(1, bound)}
+        symlinks[f"a{bound}"] = "settings"
+        check = self.propose(
+            self.fixture,
+            {"settings/options.json": "changed\n"},
+            symlinks,
+            {"settings/options.json": "original\n"},
+        )
+        self.assert_rejected(check, "settings/options.json", "target of .claude)")
+
+    def test_child_of_a_target_past_the_alias_depth(self) -> None:
+        """A file under a link reached through nine directory links is refused."""
+        depth = 9  # protected_links.MAX_LINK_CHAIN + 1
+        symlinks = {".claude": "d1"}
+        symlinks |= {f"d{i}/l": f"../d{i + 1}" for i in range(1, depth)}
+        edited = f"d{depth}/settings.json"
+        check = self.propose(
+            self.fixture, {edited: "changed\n"}, symlinks, {edited: "original\n"}
+        )
+        self.assert_rejected(check, edited, "target of .claude)")
+
+    def test_child_of_a_target_through_a_repeated_link(self) -> None:
+        """A link followed nine times on a finite chain still protects its end."""
+        check = self.propose(
+            self.fixture,
+            {"settings/options.json": "changed\n"},
+            {".claude": "a/a/a/a/a/a/a/a/a/settings", "a": "."},
+            {"settings/options.json": "original\n"},
+        )
+        self.assert_rejected(check, "settings/options.json", "target of .claude)")
+
+    def test_link_reached_under_two_names(self) -> None:
+        """A link inside a linked .claude counts under the .claude name."""
+        check = self.propose(
+            self.fixture,
+            {"settings/options.json": "changed\n"},
+            {".claude": "config", "config/AGENTS.md": "../settings"},
+            {"settings/options.json": "original\n"},
+        )
+        self.assert_rejected(check, "settings/options.json", "target of .claude)")
+
+    def test_unresolvable_file_link_names_its_target(self) -> None:
+        """Deleting an unresolvable protected file link names its target."""
+        check = self.propose(
+            self.fixture, {"AGENTS.md": None}, {"AGENTS.md": "../agents.md"}
+        )
+        self.assert_rejected(check, "AGENTS.md", "AGENTS.md -> ../agents.md")
+
+    def test_directory_a_link_climbs_out_of_must_stay(self) -> None:
+        """Emptying a directory a link climbs out of with .. is refused."""
+        check = self.propose(
+            self.fixture,
+            {"scratch/keep.txt": None},
+            {"AGENTS.md": "scratch/../instructions.txt"},
+            {"scratch/keep.txt": "keep\n", "instructions.txt": "original\n"},
+        )
+        self.assert_rejected(
+            check, "scratch/keep.txt", "AGENTS.md passes through scratch)"
+        )
+
+    def test_nul_bearing_link_target_is_refused(self) -> None:
+        """A checkout cuts a link target at NUL, so such a base is refused."""
+        fixture = self.fixture
+        fixture.link_base({}, {"docs/guide.md": "original\n"})
+        stored = self.root / "target.bin"
+        stored.write_bytes(b"docs/guide.md\0ignored")
+        blob = run_git(fixture.upstream, "hash-object", "-w", str(stored)).strip()
+        run_git(
+            fixture.upstream,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"120000,{blob},AGENTS.md",
+        )
+        run_git(fixture.upstream, "commit", "-q", "-m", "Chore: Link with NUL")
+        fixture.base_sha = run_git(fixture.upstream, "rev-parse", "HEAD").strip()
+        run_git(fixture.agent, "fetch", "-q", "origin")
+        run_git(fixture.agent, "reset", "-q", "--hard", "origin/main")
+        check = self.propose(fixture, {"docs/guide.md": "changed\n"})
+        self.assertEqual(check.verdict, "rejected", check.reasons)
+        self.assertIn("NUL", "; ".join(check.reasons))
+
+    def test_submodule_holding_a_target_cannot_be_deleted(self) -> None:
+        """Deleting a gitlink that holds a protected link's target is refused."""
+        fixture = self.fixture
+        fixture.link_base({"AGENTS.md": "vendor/rules/instructions.md"})
+        run_git(
+            fixture.upstream,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{fixture.base_sha},vendor/rules",
+        )
+        run_git(fixture.upstream, "commit", "-q", "-m", "Chore: Add submodule")
+        fixture.base_sha = run_git(fixture.upstream, "rev-parse", "HEAD").strip()
+        run_git(fixture.agent, "fetch", "-q", "origin")
+        run_git(fixture.agent, "reset", "-q", "--hard", "origin/main")
+        check = self.propose(fixture, {"vendor/rules": None})
+        self.assert_rejected(
+            check,
+            "vendor/rules",
+            "holds vendor/rules/instructions.md, target of AGENTS.md)",
+        )
 
 
 class UsageNumberTest(unittest.TestCase):
