@@ -1857,7 +1857,6 @@ class RevisionCheckTest(GitCase):
         self.assertNotIn("failing checks", check.pr_body)
         self.assertIn("Round 2", check.pr_body)
 
-    @unittest.expectedFailure
     def test_each_reply_ends_with_the_round_marker(self) -> None:
         """The marker is what a rerun looks for before it posts a reply again."""
         self.fixture.commit(

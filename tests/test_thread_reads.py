@@ -483,7 +483,6 @@ class ResolvedThreadsTest(unittest.TestCase):
                 REPO, 41, since or self.since, frozenset({"review-app"}), BOT
             )
 
-    @unittest.expectedFailure
     def test_a_maintainer_reply_after_the_watermark_is_carried(self) -> None:
         """Carried, marked resolved and heard; an older reply is neither."""
         reply = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
@@ -506,7 +505,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         self.assertFalse(packet.maintainer_since)
         self.assertEqual((packet.threads, packet.dropped), ([], 0))
 
-    @unittest.expectedFailure
     def test_reviewer_replies_on_a_resolved_thread_stay_out(self) -> None:
         """Copilot's and a review App's replies are not a maintainer's word."""
         replies = [
@@ -526,7 +524,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         self.assertIs(packet.threads[0]["resolved"], False)
         self.assertEqual((packet.dropped, packet.resolved), (0, 0))
 
-    @unittest.expectedFailure
     def test_resolved_threads_share_the_bounds_and_go_first(self) -> None:
         """A heard resolved thread leads; a quiet one costs the bounds nothing."""
         reply = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
@@ -543,7 +540,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         self.assertNotIn("PRRT_quiet", [t["thread_id"] for t in packet.threads])
         self.assertEqual((packet.dropped, packet.resolved), (1, 1))
 
-    @unittest.expectedFailure
     def test_the_368_sequence_is_carried(self) -> None:
         """Bot reply, resolve, then a maintainer's reply forty seconds later."""
         since = "2026-11-22T23:20:00Z"
@@ -567,7 +563,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         )
         self.assertEqual([r["author"] for r in carried["replies"]], ["maintainer"])
 
-    @unittest.expectedFailure
     def test_a_reply_the_bounds_left_out_returns_after_publication(self) -> None:
         """Overflow, a published round, a later scan: the left-out reply is heard."""
         answer = comment(
@@ -617,7 +612,6 @@ class ResolvedThreadsTest(unittest.TestCase):
             (packet.dropped, packet.resolved, packet.unanswered), (0, 2, 2)
         )
 
-    @unittest.expectedFailure
     def test_unanswered_threads_past_the_bounds_fail_closed(self) -> None:
         """Watermark-only threads the bounds cannot hold raise, not vanish."""
         word = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
@@ -630,7 +624,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         with self.assertRaises(threads_of.reads.SelectionError):
             self.read(*nodes)
 
-    @unittest.expectedFailure
     def test_a_user_with_the_apps_login_is_not_the_bot(self) -> None:
         """Only the App, typed Bot, answers a maintainer's word."""
         nodes = [
@@ -645,7 +638,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_r"])
         self.assertEqual(packet.unanswered, 1)
 
-    @unittest.expectedFailure
     def test_an_unanswered_word_returns_after_publication(self) -> None:
         """Omitted or failed reply, a published round, a later scan: heard again."""
         pending_of = import_module("thread_pending")
@@ -679,7 +671,6 @@ class ResolvedThreadsTest(unittest.TestCase):
                 )
             self.assertEqual((packet.threads, packet.unanswered), ([], 0))
 
-    @unittest.expectedFailure
     def test_answered_threads_are_not_replayed_or_counted(self) -> None:
         """Only the pending thread and the new word come back; nothing overflows.
 
@@ -715,7 +706,6 @@ class ResolvedThreadsTest(unittest.TestCase):
             (packet.dropped, packet.resolved, packet.unanswered), (0, 2, 1)
         )
 
-    @unittest.expectedFailure
     def test_a_thread_the_bot_answers_is_not_held(self) -> None:
         """A word after the bot's reply is owed on its own; it needs no pending."""
         pending_of = import_module("thread_pending")
@@ -729,7 +719,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         )
         self.assertIsNone(pending_of.held_word(packet.threads[0]))
 
-    @unittest.expectedFailure
     def test_a_word_in_the_bots_second_is_ordered_by_the_thread(self) -> None:
         """Same-second comments: thread order says which answered which."""
         bot = comment(101, "2026-10-02T00:00:00Z", "lf-code-monkey", __typename="Bot")
@@ -749,7 +738,6 @@ class ResolvedThreadsTest(unittest.TestCase):
         self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_after"])
         self.assertEqual((packet.resolved, packet.unanswered), (1, 1))
 
-    @unittest.expectedFailure
     def test_a_word_posted_while_the_round_ran_is_unanswered(self) -> None:
         """The bot's reply answers what its round read, not what came after.
 

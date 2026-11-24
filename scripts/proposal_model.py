@@ -16,6 +16,7 @@ import proposal_policy as policy
 import review_outcome as outcome
 from proposal_policy import Identity, PublishError
 from session_usage import model_line, usage_models, usage_number
+from thread_pending import held_word
 from workflow_grant import KINDS, Grant
 
 SCHEMA = 1
@@ -182,8 +183,13 @@ class Check:
             check.stale_rounds = stale if type(stale) is int else 0
             check.pull_opened_at = str(pull.get("created_at") or "")
             check.conflicted = pull.get("mergeable") is False
+            # ``held``: the word a footer's ``pending`` keeps until answered.
             check.threads = [
-                {"thread_id": str(t["thread_id"]), "comment_id": int(t["comment_id"])}
+                {
+                    "thread_id": str(t["thread_id"]),
+                    "comment_id": int(t["comment_id"]),
+                    "held": held_word(t),
+                }
                 for t in cast("list[dict[str, Any]]", entry.get("threads") or [])
             ]
             # A run the egress agent failed is not one the round fixes.
@@ -249,6 +255,8 @@ class Check:
             "segment_round": self.segment_round,
             "stale_rounds": self.stale_rounds,
             "pull_opened_at": self.pull_opened_at,
+            # The push and respond steps read each thread's ``held`` word.
+            "threads": self.threads,
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,

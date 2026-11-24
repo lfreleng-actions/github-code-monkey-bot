@@ -343,7 +343,6 @@ class ReviewAndRoundsTest(unittest.TestCase):
             history = round_reads.round_history(REPO, 7, BOT)
         self.assertEqual(history.since, "2026-10-02T12:00:00Z")
 
-    @unittest.expectedFailure
     def test_the_handled_footer_carries_the_pending_word(self) -> None:
         """``pending`` comes from the round the watermark does; a failed one moves neither."""
         entries = [

@@ -2052,7 +2052,6 @@ class RunRespondTest(NoNetworkCase):
             {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
 
-    @unittest.expectedFailure
     def test_check_json_carries_the_held_words(self) -> None:
         """The held words cross check.json, so the push records them pending."""
         model = import_module("proposal_model")
@@ -2086,7 +2085,6 @@ class RunRespondTest(NoNetworkCase):
             publish.base_result(args, data)["pending"], "2026-10-02T00:00:00Z"
         )
 
-    @unittest.expectedFailure
     def test_an_unanswered_resolved_thread_stays_pending(self) -> None:
         """A word whose reply was left out or refused is the footer's ``pending``.
 
@@ -2151,14 +2149,16 @@ class RunRespondTest(NoNetworkCase):
         self.assertEqual(stored["responded"]["failed"], 1)
         self.assertEqual(stored["pending"], "2026-10-03T00:00:00Z")
 
-    @unittest.expectedFailure
     def test_a_user_copying_the_marker_clears_no_pending_word(self) -> None:
         """A user with the App's login and this round's marker is not its reply.
 
         The publisher posts the real reply; when GitHub refuses it, the
         word stays pending, so the next selection hears the thread.
         """
-        marker = "<!-- code-monkey reply round=2 session=39115306869 -->"
+        marker = (
+            "<!-- code-monkey reply round=2 session=39115306869"
+            " seen=2026-10-03T00:00:00Z -->"
+        )
         held = "2026-10-02T00:00:00Z"
         threads = [{"thread_id": "PRRT_1", "comment_id": 100, "held": held}]
         data = revision_check(
@@ -2302,7 +2302,10 @@ class RunRespondTest(NoNetworkCase):
             ),
             encoding="utf-8",
         )
-        marker = "<!-- code-monkey reply round=2 session=39115306869 -->"
+        marker = (
+            "<!-- code-monkey reply round=2 session=39115306869"
+            " seen=2026-10-03T00:00:00Z -->"
+        )
         threads = {
             "PRRT_1": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
@@ -2323,7 +2326,7 @@ class RunRespondTest(NoNetworkCase):
                 {
                     "author": {"login": "code-monkey", "__typename": "Bot"},
                     "body": "Disputed.\n\n<!-- code-monkey reply round=2 "
-                    "session=39115306868 -->",
+                    "session=39115306868 seen=2026-10-03T00:00:00Z -->",
                 },
                 {"author": {"login": "maintainer"}, "body": f"{marker} is the marker"},
             ],
@@ -3826,7 +3829,6 @@ class RunCommentTest(NoNetworkCase):
             )
         )
 
-    @unittest.expectedFailure
     def test_marker_carries_the_pending_word(self) -> None:
         """An unanswered resolved thread's word follows the watermark."""
         path = self.write_result(

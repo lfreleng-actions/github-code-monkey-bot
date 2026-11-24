@@ -29,6 +29,7 @@ FOOTER = re.compile(
     r"(?: checks=(?:passing|infrastructure|failing|running|none|unknown)"
     r"(?:/[0-9a-f]{12})?)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
+    r"(?: pending=(?P<pending>\S+))?"
     r"(?: handback=(?P<handback>\d+))?(?: antagonistic=(?P<antagonistic>\d+))?"
     r"(?: stale=(?P<stale>1))?"
     # The run's parameters (run_parameters.py); taken loosely here, so
@@ -81,6 +82,10 @@ class RoundHistory:
     # that footer carries none.
     last_params: str | None = None
     last_run: str | None = None
+    # The ``pending=`` token of the footer ``last_verdict`` comes from:
+    # the oldest maintainer word on a resolved thread that round
+    # carried and did not answer, heard again whatever ``since`` says.
+    pending: str | None = None
 
 
 def round_history(
@@ -146,10 +151,10 @@ def round_history(
     summaries: list[dict[str, Any]] = []
     stale = 0
     published: set[str] = set()
-    # since, created, verdict, review: handled rounds order by the read
-    # time they record, so a retry of an older round posted after a newer
-    # handoff rewinds nothing; creation orders two posts of one read.
-    latest: tuple[str, str, str | None, str | None] | None = None
+    # since, created, footer: handled rounds order by the read time they
+    # record, so a retry of an older round posted after a newer handoff
+    # rewinds nothing; creation orders two posts of one read.
+    latest: tuple[str, str, re.Match[str]] | None = None
     # since, created, params, run: the latest footer not stale.
     carried: tuple[str, str, str | None, str] | None = None
     for page in range(1, MAX_HISTORY_PAGES + 1):
@@ -188,7 +193,7 @@ def round_history(
             if verdict in HANDLED_VERDICTS and isinstance(created, str):
                 key = (found.group("since") or created, created)
                 if latest is None or key > (latest[0], latest[1]):
-                    latest = (key[0], created, verdict, found.group("review"))
+                    latest = (key[0], created, found)
             if found.group("stale") is not None:
                 stale += 1
                 continue
@@ -213,22 +218,29 @@ def round_history(
         if len(entries) < reads.COMMENTS_PER_PAGE:
             segment_start = max(answered.values(), default=0)
             params = carried[2] if carried else None
+            last = latest[2] if latest else None
             return RoundHistory(
                 highest,
                 summaries[-MAX_ROUNDS:],
                 latest[0] if latest else None,
-                latest[2] if latest else None,
+                group_of(last, "verdict"),
                 highest - segment_start + 1 if segment_start else highest,
                 frozenset(answered),
                 stale,
                 frozenset(published),
-                latest[3] if latest else None,
+                group_of(last, "review"),
                 params,
                 carried[3] if params is not None and carried else None,
+                group_of(last, "pending"),
             )
     raise reads.SelectionError(
         f"{repository}#{issue} holds more comments than the round history reads"
     )
+
+
+def group_of(found: re.Match[str] | None, name: str) -> str | None:
+    """One named group of a footer match, or None when there is no footer."""
+    return found.group(name) if found is not None else None
 
 
 def in_scope(

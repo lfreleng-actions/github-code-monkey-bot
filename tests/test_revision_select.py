@@ -203,6 +203,7 @@ class RevisionCase(unittest.TestCase):
             segment,
             self.anchored,
             published=self.published,
+            pending=self.pending,
         )
 
     def newer_of(self, *_args: Any) -> bool:
@@ -399,7 +400,6 @@ class BuildEntryTest(RevisionCase):
         # The reads were asked with the watermark, so they could tell.
         self.assertEqual(self.threads_since[-1], "2026-10-03T00:00:00Z")
 
-    @unittest.expectedFailure
     def test_maintainer_reply_on_a_resolved_thread_resumes_after_a_handoff(
         self,
     ) -> None:
@@ -419,7 +419,6 @@ class BuildEntryTest(RevisionCase):
         )
         self.assertIs(entry["threads"][0]["resolved"], True)
 
-    @unittest.expectedFailure
     def test_an_unanswered_resolved_thread_resumes_after_a_handoff(self) -> None:
         """A word older than the watermark, left out by the bounds, still wakes it."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
@@ -439,7 +438,6 @@ class BuildEntryTest(RevisionCase):
             ],
         )
 
-    @unittest.expectedFailure
     def test_the_last_rounds_pending_word_reaches_the_reads(self) -> None:
         """A word the last round carried and left unanswered is read for again."""
         self.rounds = (2, [], "2026-10-03T00:00:00Z", "proposed")
@@ -454,7 +452,6 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual(read.call_args.args[5], "2026-10-02T00:00:00Z")
         self.assertEqual(entry["round"], 3)
 
-    @unittest.expectedFailure
     def test_the_368_sequence_is_selected_and_carried(self) -> None:
         """Bot reply, resolve, a maintainer's reply 40 seconds later: a round."""
         self.rounds = (9, [], "2026-11-22T23:20:00Z", "proposed")

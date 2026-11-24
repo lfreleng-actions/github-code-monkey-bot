@@ -2538,6 +2538,8 @@ scripts/transient_reads.py               a wait's transient read failures
 scripts/review_request.py                the request and its refusal notice
 scripts/revision_reads.py                a bot pull request's state (§20)
 scripts/thread_reads.py                  its review threads and their replies
+scripts/thread_comments.py               one thread's comments, read whole
+scripts/thread_pending.py                resolved threads a round left unanswered
 scripts/check_reads.py                   its head's failing checks
 scripts/stale_statuses.py                statuses pending too long (§13.1)
 scripts/round_reads.py                   the issue's rounds and new comments
@@ -2851,12 +2853,18 @@ carries it), `session` (the run id and the select job's attempt:
 new on a full rerun, which authors anew, kept across a retry of the
 publish job alone; every entry carries it, and the scratch branch
 and the reply marker are its), `round_reasons`, `rounds`, `threads` (`thread_id`,
-`comment_id`, `path`, `line`, `outdated`, `author`, `maintainer`,
-`created_at`, `body`, `replies` as `{author, maintainer, created_at,
-body}` for the newest later comments from Copilot or a maintainer,
+`comment_id`, `path`, `line`, `outdated`, `resolved`, `author`,
+`maintainer`, `created_at`, `body`, `replies` as `{author,
+maintainer, created_at, body}` for the newest later comments from
+Copilot or a maintainer,
 a maintainer's kept before a reviewer's, `replies_dropped`,
 `maintainer_latest` and `maintainer_undated`, read over the whole
-thread before the bound trims the replies), `threads_dropped`,
+thread before the bound trims the replies, and
+`maintainer_unanswered`, whether no reply of the bot's there answers
+that newest word, and `maintainer_answered`, whether one does: a
+reply answers the words its round read, dated up to the `seen=` its
+marker carries, or, on a reply without one, the words before it in
+thread order), `threads_dropped`,
 `review` (the §8 step 11 record of the head, with the body),
 `antagonistic_review` (the hand-back of §20.1 as `{review_id, round,
 run, head_sha, url, author, submitted_at, body, body_truncated}`, or
@@ -3058,6 +3066,10 @@ a last hook run that did not exit 0 and its exit code (§18.2).
 first attempt and a revision alike, so the run report shows them.
 The report row's notes cell keeps the hook line a share of its own,
 which a long rejection reason cannot take.
+A revision's check also carries `threads`, the threads its entry
+carried as `{thread_id, comment_id, held}`: `held` is the word on a
+resolved thread the bot never replied on, or null, which the push
+and respond steps read for the footer's `pending` (§20.2).
 
 ### 18.4 `result.json` (publish, per issue; trusted)
 
@@ -3427,11 +3439,15 @@ Three ways in, all through the select job and its read token:
   default branch`, since GitHub runs no CI on it and it would
   otherwise wait unseen; or an `OWNER`/`MEMBER` comment
   on the issue, the
-  pull request or an unresolved review thread, an opener or a reply,
-  after the bot's latest footer; on the issue, the comment must come
-  from a listed issue author (§6), whose comments alone reach the
-  packet, unless `ONLY_KNOWN_AUTHORS` turned the list off. The
-  predicate leaves out, by name, a
+  pull request or a review thread that counts, resolved or not, an
+  opener or a reply, after the bot's latest footer, or one on a
+  resolved thread, older or not, that no reply of the bot's there
+  answers, or that the last handled round
+  carried and posted no reply for (its footer's `pending=`); on the
+  issue, the
+  comment must come from a listed issue author (§6), whose comments
+  alone reach the packet, unless `ONLY_KNOWN_AUTHORS` turned the list
+  off. The predicate leaves out, by name, a
   check the head's own round cannot influence (`check_reads.EXCLUDED`,
   empty today); the round cap bounds a check that fails for reasons outside
   the pull request. GitHub computes `mergeable` in the background,
@@ -3561,7 +3577,10 @@ request so starts its own round count, cap, watermark and pause
 afresh. A footer
 whose round published nothing, an abstention, a rejection or a failure,
 counts toward the cap and moves no watermark, since it handled no
-request.
+request. A handled round's footer may also name a maintainer's word
+it carried on a resolved thread and posted no reply for
+(`pending=`, §20.2); the latest handled footer's is the one the
+next selection reads.
 
 **Superseded rounds.** A round that loses a race with another run's
 push did no work the cap exists to bound: the author job stood it
@@ -3655,15 +3674,51 @@ once.
 The entry (§18.1) carries both bases: `base_sha`, the commit the
 pull request's chain descends from (the compare merge base), and
 `rebase_sha`, the default branch's head. It carries the pull request,
-the unresolved threads with the ids a reply and a resolve need and
-the newest replies from Copilot or a maintainer on each, read from
-the whole thread page by page so a crowd of passers-by hides no
+the unresolved threads and any resolved thread holding a maintainer's
+word after the watermark, marked `resolved`, with the ids a reply and
+a resolve need and the newest replies from Copilot or a maintainer on
+each, read from the whole thread page by page so a crowd of
+passers-by hides no
 maintainer's answer, since that answer is an instruction as much as
 a comment on the pull request is. The reads take in every thread
 that counts before the packet's bounds apply, and the whole of each
 thread before the bound trims its replies, so they hear a
 maintainer's word after the watermark whichever thread or reply
-holds it; the threads holding one go first into the bounded packet,
+holds it. A resolved thread counts here because the publisher
+resolves a thread in the round that answers it, so a maintainer who
+answers that reply writes on a resolved thread; one with no such word
+stays out of the packet and its bounds, and Copilot's and a review
+App's comments on it are not heard. A resolved thread carried for a
+maintainer's word is no unresolved finding: it brings a round through
+that word alone, and wakes a pull request handed back to a
+maintainer as any maintainer comment does. The footer's watermark moves past a word
+the bounds left out of the packet, and a resolved thread, unlike an
+open one, would never come back for it: so a resolved thread is also
+carried while no reply of the bot's there answers a maintainer's word
+on it, whatever the watermark, until a round answers it; a reply
+counts as the bot's when its author is the App, typed `Bot`, not a
+user who took the App's slug. A reply answers what its round read:
+its marker carries `seen=`, the selection's `collected_at`, and it
+answers the words dated up to then and none posted while the round
+ran, which the agent never saw, so such a word stays unanswered
+through a later round that leaves it out of the bounds or posts no
+reply. A reply without `seen=` answers the words before it, ordered
+by date, then by place in the thread where both share a second. A resolved
+thread the bot never replied on has the watermark alone, so those go
+first among the threads holding a word, and when the bounds cannot
+hold them all the reads fail closed, as for a thread too long to
+read, rather than let the watermark pass one. A round can carry such
+a thread and still post no reply on it: the agent left the response
+out, GitHub refused the reply, or the publisher answered no thread
+at all. The push then records the oldest word the round carried on
+one as the result's `pending`, the respond step clears each word
+whose reply is on its thread, and the footer names what remains
+(`pending=`). The next selection hears again any resolved thread the
+bot never replied on whose word is no older than that, whatever the
+watermark, until a round's reply lands. A thread the bot answered
+after that word owes nothing: the selection neither hears it again
+nor counts it toward that fail-closed bound. The threads holding a
+word go first into the bounded packet,
 and within a thread a maintainer's replies outrank a reviewer's for
 the places the bound allows. The entry carries the
 head's review verdict; the head's failing checks, read from the
@@ -4025,13 +4080,17 @@ someone may have edited the issue after the push: a refusal marks the result
 write below undone and the publication standing. It
 then posts each reply on its thread
 prefixed with the AI disclosure and ending in a marker that names
-the round and the session,
+the round, the session and, as `seen=`, when the selection read the
+thread (its `collected_at`),
 resolves the threads the agent
 marked fixed, and replaces the title and body with the composed
-ones, keeping the publisher's header. One refused write is a warning
+ones, keeping the publisher's header. A reply changes no thread's
+state: a resolved thread the agent answers stays resolved, and the
+publisher never unresolves one. One refused write is a warning
 and the rest proceed, as is a thread grown too long for the bounded
 read. A rerun reads each thread first and posts no
-reply whose marker a bot comment there already ends with, so a
+reply whose marker a comment by the App, typed `Bot`, there already
+ends with, so a user who copies the marker skips no reply, and a
 failure after the replies notifies no reviewer twice, while a later
 session at the same round number, one whose predecessor left no
 footer, posts its own; the resolve

@@ -333,6 +333,10 @@ def run_comment(args: argparse.Namespace) -> None:
         # The watermark for the next round: when this run read the
         # comments, not when it wrote this one.
         suffix += f" since={collected}"
+    pending = result.get("pending")
+    if isinstance(pending, str) and pending and " " not in pending:
+        # A resolved thread's word this round carried and did not answer.
+        suffix += f" pending={pending}"
     carried = carried_id(result)
     if carried is not None:
         # Every round sent with a hand-back records it, a failed one
