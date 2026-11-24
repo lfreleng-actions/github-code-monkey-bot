@@ -287,6 +287,11 @@ jobs:
       issue_authors: "${{ vars.CODE_MONKEY_ISSUE_AUTHORS || '' }}"
       # Likewise the variable alone can turn the rule off.
       only_known_authors: "${{ vars.ONLY_KNOWN_AUTHORS || '' }}"
+      # The fork pool token's lifetime limit and recorded expiry come
+      # from the repository variables alone, like the author list: no
+      # dispatch form field can widen the limit.
+      fork_pool_token_max_days: "${{ vars.FORK_POOL_TOKEN_MAX_DAYS || '' }}"
+      fork_pool_token_expires: "${{ vars.FORK_POOL_TOKEN_EXPIRES || '' }}"
       # Trusted jobs hold App tokens and run in block mode with the
       # organisation allow-list; the author job is always audit.
       harden_runner_egress: 'block'

@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
 policy = import_module("proposal_policy")
 pool = import_module("fork_pool")
+token = import_module("pool_token")
 
 ORG = "owner"
 TARGET = f"{ORG}/repo"
@@ -34,6 +36,11 @@ def expiring(days: float) -> str:
     """The expiry header of a token that lapses ``days`` from now."""
     when = datetime.now(UTC) + timedelta(days=days)
     return f"GitHub-Authentication-Token-Expiration: {when:%Y-%m-%d %H:%M:%S} UTC"
+
+
+def expiry_day(days: float) -> date:
+    """The UTC date of a token lapsing ``days`` from now."""
+    return (datetime.now(UTC) + timedelta(days=days)).date()
 
 
 def reply(
@@ -179,10 +186,10 @@ class TargetsTest(unittest.TestCase):
 class TokenCheckTest(NoNetworkCase):
     """The pool token must be classic and scoped to public_repo alone."""
 
-    def check(self, reply: str) -> str:
+    def check(self, reply: str, *args: Any) -> str:
         """Run the check against one ``gh api --include user`` reply."""
         with patch.object(github, "run_gh", return_value=reply) as run:
-            login = pool.check_token()
+            login = pool.check_token(*args)
         run.assert_called_once_with(["api", "--include", "user"])
         return login
 
@@ -247,14 +254,88 @@ class TokenCheckTest(NoNetworkCase):
         with self.assertRaisesRegex(pool.PoolError, f"expires {date}.*90 days"):
             self.check(reply(expiry=header))
 
-    def test_expiry_within_fourteen_days_warns_and_passes(self) -> None:
-        """A rotation falling due is announced on every run, without failing."""
-        header = expiring(13)
+    def warnings(self, reply: str, *args: Any) -> str:
+        """The annotations a passing check printed."""
         output = io.StringIO()
         with redirect_stdout(output):
-            self.assertEqual(self.check(reply(expiry=header)), ACCOUNT)
-        self.assertIn("::warning", output.getvalue())
-        self.assertIn(header.partition(": ")[2], output.getvalue())
+            self.assertEqual(self.check(reply, *args), ACCOUNT)
+        return output.getvalue()
+
+    def test_expiry_within_twenty_one_days_warns_and_passes(self) -> None:
+        """A rotation falling due is announced on every run, without failing."""
+        header = expiring(21)
+        shown = self.warnings(reply(expiry=header))
+        self.assertIn("::warning title=Fork pool token expires soon::", shown)
+        self.assertIn(header.partition(": ")[2], shown)
+        self.assertEqual(self.warnings(reply(expiry=expiring(22))), "")
+
+    def test_lifetime_defaults_to_ninety_days(self) -> None:
+        """An unset or empty FORK_POOL_TOKEN_MAX_DAYS keeps the 90-day rule."""
+        for text in (None, ""):
+            lifetime = token.token_lifetime(text)
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.check(reply(expiry=expiring(89)), lifetime), ACCOUNT
+                )
+                with self.assertRaisesRegex(pool.PoolError, "more than 90 days"):
+                    self.check(reply(expiry=expiring(91)), lifetime)
+
+    def test_lifetime_override_sets_the_limit(self) -> None:
+        """365 admits a token 364 days out and refuses one 366 days out."""
+        lifetime = token.token_lifetime("365")
+        self.assertEqual(self.check(reply(expiry=expiring(364)), lifetime), ACCOUNT)
+        with self.assertRaisesRegex(
+            pool.PoolError, "more than 365 days ahead.*within 365 days"
+        ):
+            self.check(reply(expiry=expiring(366)), lifetime)
+
+    def test_unreadable_lifetime_is_refused(self) -> None:
+        """Only ASCII digits naming 1 to 366 days pass; the refusal shows the value."""
+        for text in ("0", "-5", "abc", "30.5", " 90 ", "367", "\u0669\u0660"):
+            with (
+                self.subTest(text=text),
+                self.assertRaisesRegex(
+                    pool.PoolError,
+                    f"FORK_POOL_TOKEN_MAX_DAYS is {re.escape(repr(text))}",
+                ),
+            ):
+                token.token_lifetime(text)
+
+    def test_recorded_expiry_close_to_the_header_is_silent(self) -> None:
+        """The same date, or one a day off for the time zone, draws nothing."""
+        lifetime = token.token_lifetime("")
+        for offset in (0, 1, -1):
+            recorded = (expiry_day(60) + timedelta(days=offset)).isoformat()
+            with self.subTest(offset=offset):
+                self.assertEqual(
+                    self.warnings(reply(expiry=expiring(60)), lifetime, recorded), ""
+                )
+
+    def test_recorded_expiry_two_days_off_warns(self) -> None:
+        """A drifted variable warns, naming both dates, and the header decides."""
+        actual = expiry_day(60)
+        recorded = (actual + timedelta(days=2)).isoformat()
+        shown = self.warnings(
+            reply(expiry=expiring(60)), token.token_lifetime(""), recorded
+        )
+        self.assertIn("::warning title=Fork pool token expiry mismatch::", shown)
+        self.assertIn(actual.isoformat(), shown)
+        self.assertIn(recorded, shown)
+
+    def test_recorded_expiry_never_excuses_the_header(self) -> None:
+        """A recorded date inside the limit does not pass a distant header."""
+        recorded = expiry_day(30).isoformat()
+        with self.assertRaisesRegex(pool.PoolError, "more than 90 days"):
+            self.check(reply(expiry=expiring(91)), token.token_lifetime(""), recorded)
+
+    def test_unreadable_recorded_expiry_warns_and_passes(self) -> None:
+        """In the forks job a bad FORK_POOL_TOKEN_EXPIRES is a warning alone."""
+        shown = self.warnings(
+            reply(expiry=expiring(60)), token.token_lifetime(""), "next year"
+        )
+        self.assertIn("::warning title=Fork pool token expiry unreadable::", shown)
+        self.assertIn("FORK_POOL_TOKEN_EXPIRES is 'next year'", shown)
+        self.assertNotIn("::error", shown)
 
     def test_expiry_in_between_passes_silently(self) -> None:
         """A token with weeks to run neither warns nor fails."""
@@ -699,6 +780,51 @@ class MainTest(NoNetworkCase):
                 self.assertEqual(self.run_main(env), 1)
             read.assert_not_called()
 
+    def test_lifetime_variable_reaches_the_token_check(self) -> None:
+        """FORK_POOL_TOKEN_MAX_DAYS widens the limit the job applies."""
+        env = {
+            "GH_TOKEN": "t",
+            "MATRIX": matrix(entry()),
+            "FORK_POOL_TOKEN_MAX_DAYS": "365",
+        }
+        with (
+            patch.object(github, "run_gh", return_value=reply(expiry=expiring(300))),
+            patch.object(github, "api_object", return_value=repo_object()),
+        ):
+            self.assertEqual(self.run_main(env), 0)
+
+    def test_unreadable_lifetime_stops_before_any_read(self) -> None:
+        """A bad FORK_POOL_TOKEN_MAX_DAYS fails the job naming the value read."""
+        env = {
+            "GH_TOKEN": "t",
+            "MATRIX": matrix(entry()),
+            "FORK_POOL_TOKEN_MAX_DAYS": "30.5",
+        }
+        output = io.StringIO()
+        with patch.object(github, "run_gh") as run, redirect_stdout(output):
+            self.assertEqual(self.run_main(env), 1)
+        run.assert_not_called()
+        self.assertIn(
+            "::error title=Forks not prepared::FORK_POOL_TOKEN_MAX_DAYS is '30.5'",
+            output.getvalue(),
+        )
+
+    def test_recorded_expiry_reaches_the_token_check(self) -> None:
+        """FORK_POOL_TOKEN_EXPIRES is compared with the header the job reads."""
+        env = {
+            "GH_TOKEN": "t",
+            "MATRIX": matrix(entry()),
+            "FORK_POOL_TOKEN_EXPIRES": expiry_day(10).isoformat(),
+        }
+        output = io.StringIO()
+        with (
+            patch.object(github, "run_gh", return_value=SCOPED),
+            patch.object(github, "api_object", return_value=repo_object()),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(self.run_main(env), 0)
+        self.assertIn("Fork pool token expiry mismatch", output.getvalue())
+
     def test_an_empty_selection_needs_no_token_check(self) -> None:
         """Nothing selected means no API call at all."""
         with patch.object(github, "run_gh") as run:
@@ -799,6 +925,169 @@ class MainTest(NoNetworkCase):
                 ]
             )
         self.assertIn(f"| `{FORK}` | present |", self.summary.read_text())
+
+
+TODAY = date(2027, 11, 1)
+SOON = "::warning title=Fork pool token expires soon::"
+
+
+class ExpiryAlertTest(unittest.TestCase):
+    """The scheduled check judges FORK_POOL_TOKEN_EXPIRES against today."""
+
+    def alert(self, left: int) -> Any:
+        """The verdict on a recorded expiry ``left`` days after TODAY."""
+        recorded = (TODAY + timedelta(days=left)).isoformat()
+        return token.expiry_alert(recorded, TODAY)
+
+    def test_warning_and_slack_boundaries(self) -> None:
+        """21 days or fewer warns; 7 or fewer, or past, also notifies."""
+        for left, warns, notify in (
+            (22, False, False),
+            (21, True, False),
+            (8, True, False),
+            (7, True, True),
+            (0, True, True),
+            (-1, True, True),
+        ):
+            alert = self.alert(left)
+            with self.subTest(left=left):
+                self.assertEqual(alert.days_left, left)
+                self.assertIs(alert.notify, notify)
+                if warns:
+                    self.assertEqual(len(alert.annotations), 1)
+                    self.assertTrue(alert.annotations[0].startswith(SOON))
+                    self.assertIn(alert.expires.isoformat(), alert.annotations[0])
+                else:
+                    self.assertEqual(alert.annotations, ())
+
+    def test_a_past_date_says_the_token_expired(self) -> None:
+        """The annotation and the message say it lapsed, not that it lapses."""
+        alert = self.alert(-1)
+        self.assertIn("expired on 2027-10-31, 1 day ago", alert.annotations[0])
+        message = token.alert_message(alert, "o/r", "https://x/run", False)
+        self.assertIn("expired on 2027-10-31", message)
+
+    def test_unset_variable_warns_and_notifies_nothing(self) -> None:
+        """Nothing to check is a warning naming the variable, never a post."""
+        for recorded in (None, ""):
+            alert = token.expiry_alert(recorded, TODAY)
+            with self.subTest(recorded=recorded):
+                self.assertIs(alert.notify, False)
+                self.assertIsNone(alert.days_left)
+                self.assertEqual(len(alert.annotations), 1)
+                self.assertIn(
+                    "FORK_POOL_TOKEN_EXPIRES is not set", alert.annotations[0]
+                )
+
+    def test_unreadable_variable_is_refused(self) -> None:
+        """Anything but a real YYYY-MM-DD date fails, naming the value read."""
+        for recorded in ("2027-02-30", "27-11-23", " 2027-11-23", "2027-11-23 UTC"):
+            with (
+                self.subTest(recorded=recorded),
+                self.assertRaisesRegex(
+                    pool.PoolError,
+                    f"FORK_POOL_TOKEN_EXPIRES is {re.escape(repr(recorded))}",
+                ),
+            ):
+                token.expiry_alert(recorded, TODAY)
+
+
+class ExpiryCheckCommandTest(unittest.TestCase):
+    """``pool_token.py expiry-check``: outputs, summary and exit status."""
+
+    def setUp(self) -> None:
+        """Output and summary files to append to."""
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        root = Path(holder.name)
+        self.output = root / "output"
+        self.summary = root / "summary.md"
+
+    def run_check(self, env: dict[str, str]) -> tuple[int, str]:
+        """Run the command under ``env``; return its status and stdout."""
+        base = {
+            "GITHUB_REPOSITORY": "owner/bot",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "42",
+        }
+        printed = io.StringIO()
+        argv = [
+            "expiry-check",
+            "--output",
+            str(self.output),
+            "--summary",
+            str(self.summary),
+        ]
+        with (
+            patch.dict(token.os.environ, base | env, clear=True),
+            redirect_stdout(printed),
+            self.assertRaises(SystemExit) as exited,
+        ):
+            token.main(argv)
+        return int(exited.exception.code or 0), printed.getvalue()
+
+    def outputs(self) -> dict[str, str]:
+        """The ``$GITHUB_OUTPUT`` lines, as a mapping."""
+        lines = self.output.read_text(encoding="utf-8").splitlines()
+        return dict(line.split("=", 1) for line in lines)
+
+    def test_an_alert_names_repository_secret_date_days_and_run(self) -> None:
+        """Seven days or fewer: notify, with the whole message on one line."""
+        expires = expiry_day(5).isoformat()
+        status, printed = self.run_check({"FORK_POOL_TOKEN_EXPIRES": expires})
+        self.assertEqual(status, 0)
+        self.assertIn(SOON, printed)
+        outputs = self.outputs()
+        self.assertEqual(outputs["notify"], "true")
+        self.assertEqual(outputs["days_left"], "5")
+        message = outputs["message"]
+        for part in (
+            "owner/bot",
+            "FORK_POOL_TOKEN",
+            expires,
+            "in 5 days",
+            "https://github.com/owner/bot/actions/runs/42",
+        ):
+            self.assertIn(part, message)
+        self.assertIn(expires, self.summary.read_text(encoding="utf-8"))
+
+    def test_weeks_left_notifies_nothing(self) -> None:
+        """A distant expiry writes notify=false and prints no annotation."""
+        status, printed = self.run_check(
+            {"FORK_POOL_TOKEN_EXPIRES": expiry_day(60).isoformat()}
+        )
+        self.assertEqual((status, printed), (0, ""))
+        self.assertEqual(self.outputs()["notify"], "false")
+
+    def test_unset_variable_passes_with_a_warning(self) -> None:
+        """No date to check warns and posts nothing."""
+        status, printed = self.run_check({})
+        self.assertEqual(status, 0)
+        self.assertIn("FORK_POOL_TOKEN_EXPIRES is not set", printed)
+        self.assertEqual(self.outputs()["notify"], "false")
+        self.assertEqual(self.outputs()["days_left"], "")
+
+    def test_unreadable_variable_fails_naming_the_value(self) -> None:
+        """A bad date exits 1 and writes no output for the posting job."""
+        status, printed = self.run_check({"FORK_POOL_TOKEN_EXPIRES": "2027-11-31"})
+        self.assertEqual(status, 1)
+        self.assertIn("::error", printed)
+        self.assertIn("'2027-11-31'", printed)
+        self.assertFalse(self.output.exists())
+
+    def test_test_notification_posts_a_labelled_message(self) -> None:
+        """A manual test notifies whatever the date, and says it is a test."""
+        for env in (
+            {"FORK_POOL_TOKEN_EXPIRES": expiry_day(60).isoformat()},
+            {},
+        ):
+            self.output.unlink(missing_ok=True)
+            with self.subTest(env=env):
+                status, _ = self.run_check(env | {"TEST_NOTIFICATION": "true"})
+                self.assertEqual(status, 0)
+                outputs = self.outputs()
+                self.assertEqual(outputs["notify"], "true")
+                self.assertTrue(outputs["message"].startswith("[TEST] owner/bot"))
 
 
 if __name__ == "__main__":

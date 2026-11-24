@@ -1,0 +1,184 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Daily check of the fork pool token's recorded expiry date, with a
+# Slack alert from seven days before it (docs/DESIGN.md section 10.6).
+#
+# This is not a bot run and restores no bot schedule: it dispatches
+# nothing, holds no App key and no copy of the token, and reads one
+# repository variable, FORK_POOL_TOKEN_EXPIRES. The token's own expiry
+# header stays the authority for the forks job; this check exists
+# because live runs are irregular and could miss an approaching expiry.
+name: 'Fork pool token expiry'
+
+# yamllint disable-line rule:truthy
+on:
+  schedule:
+    - cron: '15 6 * * *'
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: 'Post a labelled test message to Slack, whatever the date'
+        type: boolean
+        default: false
+
+permissions: {}
+
+# A manual test and the schedule queue rather than race to double-post.
+concurrency:
+  group: 'fork-pool-token-expiry'
+  cancel-in-progress: false
+
+jobs:
+  # The evaluation holds no secret and no environment, so the Python
+  # never sees the Slack token.
+  check:
+    name: 'Check token expiry'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    permissions:
+      contents: read  # Checkout the expiry check script
+    outputs:
+      notify: "${{ steps.evaluate.outputs.notify }}"
+      days_left: "${{ steps.evaluate.outputs.days_left }}"
+      message: "${{ steps.evaluate.outputs.message }}"
+    steps:
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Evaluate recorded expiry'
+        id: evaluate
+        env:
+          FORK_POOL_TOKEN_EXPIRES: "${{ vars.FORK_POOL_TOKEN_EXPIRES || '' }}"
+          # yamllint disable-line rule:line-length
+          TEST_NOTIFICATION: "${{ inputs.test_notification && 'true' || 'false' }}"
+        run: |
+          python3 scripts/pool_token.py expiry-check \
+            --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: 'Post expiry alert'
+    needs: 'check'
+    if: needs.check.outputs.notify == 'true'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    environment: 'production'
+    permissions: {}
+    steps:
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      # Only a presence flag reaches this step, never the token itself.
+      - name: 'Check Slack configuration'
+        id: slack
+        env:
+          HAS_TOKEN: "${{ secrets.SLACK_BOT_TOKEN != '' }}"
+          CHANNEL: "${{ vars.SLACK_CHANNEL_ID }}"
+        run: |
+          if [ "$HAS_TOKEN" != true ] || [ -z "$CHANNEL" ]; then
+            echo "::warning title=Slack not configured::SLACK_BOT_TOKEN" \
+              "or SLACK_CHANNEL_ID is missing; no alert posted"
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 'Post to Slack'
+        if: steps.slack.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          method: 'chat.postMessage'
+          token: "${{ secrets.SLACK_BOT_TOKEN }}"
+          # Fail when Slack rejects the post; the action passes by default.
+          errors: 'true'
+          payload: |
+            channel: ${{ toJSON(vars.SLACK_CHANNEL_ID) }}
+            text: ${{ toJSON(needs.check.outputs.message) }}
+
+  # An unreadable variable fails the check, and then no alert could
+  # ever post; say so in Slack rather than leave it to the run list.
+  notify-failure:
+    name: 'Post check failure'
+    needs: 'check'
+    if: failure()
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 5
+    environment: 'production'
+    permissions: {}
+    steps:
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          # yamllint disable-line rule:line-length
+          config: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
+
+      # Only a presence flag reaches this step, never the token itself.
+      - name: 'Check Slack configuration'
+        id: slack
+        env:
+          HAS_TOKEN: "${{ secrets.SLACK_BOT_TOKEN != '' }}"
+          CHANNEL: "${{ vars.SLACK_CHANNEL_ID }}"
+        run: |
+          if [ "$HAS_TOKEN" != true ] || [ -z "$CHANNEL" ]; then
+            echo "::warning title=Slack not configured::SLACK_BOT_TOKEN" \
+              "or SLACK_CHANNEL_ID is missing; no alert posted"
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 'Post to Slack'
+        if: steps.slack.outputs.configured == 'true'
+        # yamllint disable-line rule:line-length
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        with:
+          method: 'chat.postMessage'
+          token: "${{ secrets.SLACK_BOT_TOKEN }}"
+          # Fail when Slack rejects the post; the action passes by default.
+          errors: 'true'
+          # yamllint disable rule:line-length
+          payload: |
+            channel: ${{ toJSON(vars.SLACK_CHANNEL_ID) }}
+            text: ${{ toJSON(format('{0}: the FORK_POOL_TOKEN expiry check failed, so its expiry alert cannot post; check that FORK_POOL_TOKEN_EXPIRES is a YYYY-MM-DD date. <{1}/{0}/actions/runs/{2}|Workflow run>', github.repository, github.server_url, github.run_id)) }}
+          # yamllint enable rule:line-length
