@@ -82,7 +82,6 @@ def history(bodies: list[tuple[str, str]], pull: int | None = 41) -> Any:
 class CodecTest(unittest.TestCase):
     """The ``params=`` token: compact, versioned, checked field by field."""
 
-    @unittest.expectedFailure
     def test_round_trip(self) -> None:
         """The form's values encode to the token and decode back."""
         module = parameters()
@@ -96,7 +95,6 @@ class CodecTest(unittest.TestCase):
         self.assertEqual(module.encode(fusion), FUSION_TOKEN)
         self.assertEqual(list(decoded), list(module.INHERITED))
 
-    @unittest.expectedFailure
     def test_each_invalid_field_is_named(self) -> None:
         """A value the input check would refuse fails, naming its field."""
         module = parameters()
@@ -128,7 +126,6 @@ class CodecTest(unittest.TestCase):
                     module.decode(token)
                 self.assertEqual(raised.exception.field, field)
 
-    @unittest.expectedFailure
     def test_malformed_or_over_long_tokens_fail(self) -> None:
         """Another version, an unknown field, non-ASCII or a long token fails."""
         module = parameters()
@@ -144,7 +141,6 @@ class CodecTest(unittest.TestCase):
                 with self.assertRaises(module.ParameterError):
                     module.decode(token)
 
-    @unittest.expectedFailure
     def test_the_token_spells_no_footer_field(self) -> None:
         """A reader scanning the footer for ``name=`` finds only the footer's own.
 
@@ -164,7 +160,6 @@ class CodecTest(unittest.TestCase):
         with self.assertRaises(module.ParameterError):
             module.decode(TOKEN.replace(":", "=").replace("v1=", "v1:"))
 
-    @unittest.expectedFailure
     def test_stale_minutes_keep_the_input_checks_syntax(self) -> None:
         """Any digits pass as given, as the workflow's input check takes them."""
         module = parameters()
@@ -180,7 +175,6 @@ class CodecTest(unittest.TestCase):
                 with self.assertRaises(module.ParameterError):
                     module.validate({**FORM, "stale_status_minutes": value})
 
-    @unittest.expectedFailure
     def test_a_long_model_id_passes_and_records_no_token(self) -> None:
         """The model has no length bound, as the input check sets none."""
         module = parameters()
@@ -195,7 +189,6 @@ class CodecTest(unittest.TestCase):
 class FooterTest(unittest.TestCase):
     """The footer carries the token; the round history reads it loosely."""
 
-    @unittest.expectedFailure
     def test_latest_footer_of_the_pull_request_carries_the_token(self) -> None:
         """Later footers win; another pull request's and a stranger's do not count."""
         found = history(
@@ -212,7 +205,6 @@ class FooterTest(unittest.TestCase):
         self.assertEqual(found.last_params, FUSION_TOKEN)
         self.assertEqual(found.last_run, "https://r/2")
 
-    @unittest.expectedFailure
     def test_a_superseded_or_late_footer_sets_no_parameters(self) -> None:
         """A stale footer, or a retry read before the latest round, is not the source."""
         found = history(
@@ -237,7 +229,6 @@ class FooterTest(unittest.TestCase):
         self.assertEqual(found.last_params, FUSION_TOKEN)
         self.assertEqual(found.last_run, "https://r/1")
 
-    @unittest.expectedFailure
     def test_a_latest_footer_without_a_token_inherits_nothing(self) -> None:
         """An older round's token does not stand in for the latest footer's."""
         found = history(
@@ -251,7 +242,6 @@ class FooterTest(unittest.TestCase):
         self.assertIsNone(found.last_params)
         self.assertIsNone(found.last_run)
 
-    @unittest.expectedFailure
     def test_older_footers_still_parse_and_carry_none(self) -> None:
         """A footer written before the token counts as before and records nothing."""
         found = history([(BOT, footer("https://r/1"))])
@@ -259,7 +249,6 @@ class FooterTest(unittest.TestCase):
         self.assertIsNone(found.last_params)
         self.assertIsNone(found.last_run)
 
-    @unittest.expectedFailure
     def test_a_malformed_token_breaks_no_other_field(self) -> None:
         """round=, handback= and antagonistic= read as they would without it."""
         for token in ("v9:<junk> with spaces", "x" * 2000):
@@ -279,7 +268,6 @@ class FooterTest(unittest.TestCase):
                 with self.assertRaises(parameters().ParameterError):
                     parameters().decode(token)
 
-    @unittest.expectedFailure
     def test_every_footer_records_the_run_parameters(self) -> None:
         """The comment's marker ends with the token the run was given."""
         comments = import_module("issue_comment")
@@ -348,7 +336,6 @@ class InheritTest(unittest.TestCase):
             read.assert_called_once_with("org", ("alpha", 41), BOT, FORK_ORGS)
         return args, record, out.getvalue()
 
-    @unittest.expectedFailure
     def test_inherited_values_replace_the_form(self) -> None:
         """Every value the token holds reaches the selector and the record."""
         args, record, out = self.run_inherit((FUSION_TOKEN, "https://r/2", ""))
@@ -362,7 +349,6 @@ class InheritTest(unittest.TestCase):
         self.assertEqual(record["inherited_from"], "https://r/2")
         self.assertEqual(out, "")
 
-    @unittest.expectedFailure
     def test_an_invalid_field_keeps_the_form_and_warns(self) -> None:
         """Fails closed: nothing inherited, a warning naming the field."""
         bad = TOKEN.replace("rounds:10", "rounds:99")
@@ -374,7 +360,6 @@ class InheritTest(unittest.TestCase):
         self.assertIn("max_rounds", out)
         self.assertIn("max_rounds", record["inheritance_note"])
 
-    @unittest.expectedFailure
     def test_no_token_or_no_app_keeps_the_form(self) -> None:
         """A history before this change, or a run without the App, says so."""
         args, record, out = self.run_inherit((None, None, ""))
@@ -387,7 +372,6 @@ class InheritTest(unittest.TestCase):
         )
         self.assertIn("no App", record["inheritance_note"])
 
-    @unittest.expectedFailure
     def test_summary_lists_the_inherited_values(self) -> None:
         """Each value appears beside its name, with the footer's run."""
         outputs = import_module("selection_outputs")
@@ -397,7 +381,6 @@ class InheritTest(unittest.TestCase):
         self.assertIn("| max_runtime_minutes | `180` |", lines)
         self.assertEqual(outputs.inheritance_lines({}), [])
 
-    @unittest.expectedFailure
     def test_needs_one_pull_request_alone_in_pull_requests_mode(self) -> None:
         """Zero or several pull requests, issues, or another mode are refused."""
         select = import_module("select_issues")
@@ -445,7 +428,6 @@ class InheritTest(unittest.TestCase):
 class SettleTest(unittest.TestCase):
     """The select job's effective values and the budgets that follow from them."""
 
-    @unittest.expectedFailure
     def test_budgets_follow_the_inherited_runtime(self) -> None:
         """An inherited runtime sets both timeouts; off, the form's stand."""
         module = parameters()

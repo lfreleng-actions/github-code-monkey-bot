@@ -322,6 +322,20 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertEqual(selection["issues"][0]["previous_rejection"], record)
         self.assertEqual(lookup.call_args.args[1:], ("org/caller", "b[bot]"))
 
+    def test_selection_is_unchanged_without_inheritance(self) -> None:
+        """Off, the default, nothing is inherited and the document gains no field (#241)."""
+        args = self.args("org/alpha#3")
+        selection, _ = select.build_selection(args)
+        self.assertEqual(selection["model"], "m")
+        for field in (
+            "inherit_run_parameters",
+            "inherited_parameters",
+            "inherited_from",
+            "inheritance_note",
+        ):
+            self.assertNotIn(field, selection)
+        self.assertNotIn("Run parameters", outputs.summary_markdown(selection))
+
     def test_issue_reads_the_marker_at_its_base(self) -> None:
         """An issue entry records the marker read at its default-branch base (#189)."""
         with patch.object(sudo_marker, "opted_in", return_value=True) as read:

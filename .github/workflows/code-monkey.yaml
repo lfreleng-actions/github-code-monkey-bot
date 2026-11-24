@@ -151,6 +151,14 @@ on:
           run published a counted round on it. Needs outstanding_only
         type: string
         default: ''
+      inherit_run_parameters:
+        description: >-
+          Take the run parameters (docs/DESIGN.md section 20.1) from the
+          latest round footer on the one named pull request in place of
+          these inputs; needs one pull request in pull_requests, no
+          issues, and pull-requests mode
+        type: boolean
+        default: false
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -283,6 +291,12 @@ on:
           a caller may dispatch their next round (docs/DESIGN.md
           section 20.6). Always [] outside a live pull-requests run
         value: "${{ jobs.report.outputs.continue_pull_requests }}"
+      run_parameters:
+        description: >-
+          Compact JSON object of the run parameters this run used, the
+          form's or those it inherited, by cron form input name; the
+          continue job forwards them to the next round
+        value: "${{ jobs.select.outputs.run_parameters }}"
       selected_count:
         description: >-
           Entries the select job chose, issues and revisions together,
@@ -339,9 +353,21 @@ jobs:
       run_agent: "${{ steps.chosen.outputs.run_agent }}"
       # Heads the scan skipped with no Copilot review, for the report.
       unreviewed_sha256: "${{ steps.digests.outputs.unreviewed }}"
-      author_timeout: "${{ steps.budget.outputs.author_timeout }}"
-      agent_timeout: "${{ steps.budget.outputs.agent_timeout }}"
+      # The run parameters in effect, the form's or those a hand-back
+      # inherited, and the budgets that follow from them.
+      author_timeout: "${{ steps.params.outputs.author_timeout }}"
+      agent_timeout: "${{ steps.params.outputs.agent_timeout }}"
       max_parallel: "${{ steps.budget.outputs.max_parallel }}"
+      model: "${{ steps.params.outputs.model }}"
+      fusion_tier: "${{ steps.params.outputs.fusion_tier }}"
+      stale_status_minutes: "${{ steps.params.outputs.stale_status_minutes }}"
+      allow_subagents: "${{ steps.params.outputs.allow_subagents }}"
+      load_repo_skills: "${{ steps.params.outputs.load_repo_skills }}"
+      request_review: "${{ steps.params.outputs.request_review }}"
+      # yamllint disable-line rule:line-length
+      request_antagonistic_review: "${{ steps.params.outputs.request_antagonistic_review }}"
+      params: "${{ steps.params.outputs.params }}"
+      run_parameters: "${{ steps.params.outputs.run_parameters }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'
@@ -509,6 +535,7 @@ jobs:
           REVISE_ONLY: "${{ inputs.revise_only }}"
           OUTSTANDING_ONLY: "${{ inputs.outstanding_only }}"
           CONTINUES_RUN: "${{ inputs.continues_run }}"
+          INHERIT: "${{ inputs.inherit_run_parameters }}"
           ORG: "${{ inputs.org }}"
           # yamllint disable-line rule:line-length
           GUIDANCE_REPOSITORY: "${{ inputs.guidance_repository || format('{0}/.github', inputs.org) }}"
@@ -544,9 +571,6 @@ jobs:
             echo '::error::fusion_tier needs model fusion'
             exit 1
           fi
-          # Expressions cannot add, so the job budget (session plus
-          # toolchain setup and upload) is computed here.
-          #
           # The concurrency group tests the raw issues input, while
           # selection sees the split one, so a list of separators alone
           # would take a per-run lock and then name nothing; it fails
@@ -598,6 +622,15 @@ jobs:
             [ "$OUTSTANDING_ONLY" = true ] || {
               echo '::error::continues_run needs outstanding_only'; exit 1; }
           fi
+          # A hand-back names one pull request: one footer to inherit
+          # from, and one source for the run's budgets.
+          if [ "$INHERIT" = true ] &&
+            { [ "${PULL_COUNT:-0}" != 1 ] || [ -n "$ISSUES_RAW" ] ||
+              [ "$MODE" != pull-requests ]; }; then
+            echo '::error::inherit_run_parameters needs one pull request' \
+              'in pull_requests alone, in pull-requests mode'
+            exit 1
+          fi
           repositories="$ISSUE_REPOSITORIES"
           # A scoped token must still reach the guidance repository
           # when it lives in the same organisation.
@@ -609,9 +642,9 @@ jobs:
               *) repositories="$repositories,$guidance_name" ;;
             esac
           fi
+          # The session budgets follow the run parameters, which a
+          # hand-back may inherit: the params step sets them.
           {
-            echo "agent_timeout=$MAX_RUNTIME"
-            echo "author_timeout=$((MAX_RUNTIME + 20))"
             echo "max_parallel=$MAX_AGENTS"
             echo "repositories=$repositories"
           } >> "$GITHUB_OUTPUT"
@@ -880,6 +913,7 @@ jobs:
           REVISE_ONLY: "${{ inputs.revise_only }}"
           OUTSTANDING_ONLY: "${{ inputs.outstanding_only }}"
           CONTINUES_RUN: "${{ inputs.continues_run }}"
+          INHERIT: "${{ inputs.inherit_run_parameters }}"
           EXCLUDE_REPOS: "${{ steps.exclusions.outputs.csv }}"
           INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
           ALLOW_WORKFLOW_EDITS: "${{ inputs.allow_workflow_edits }}"
@@ -919,6 +953,9 @@ jobs:
           if [ "$OUTSTANDING_ONLY" = true ]; then
             extra+=(--outstanding-only)
           fi
+          if [ "$INHERIT" = true ]; then
+            extra+=(--inherit-run-parameters)
+          fi
           # The publisher's footers name their run by this URL.
           if [ -n "$CONTINUES_RUN" ]; then
             run_url="$GITHUB_SERVER_URL/$RESULTS_REPOSITORY/actions/runs"
@@ -946,6 +983,30 @@ jobs:
             --only-known-authors="$ONLY_KNOWN_AUTHORS" \
             --results-repository "$RESULTS_REPOSITORY" "${extra[@]}"
           cat artefacts/selection-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # The run parameters in effect: the form's, or those the
+      # selection inherited for a hand-back (docs/DESIGN.md section
+      # 20.1). The session budgets come from them here, after
+      # inheritance, so an inherited max_runtime_minutes bounds the
+      # session. Expressions cannot add, so the job budget (session
+      # plus toolchain setup and upload) is computed here too.
+      - name: 'Settle run parameters'
+        id: params
+        env:
+          MODEL: "${{ inputs.model }}"
+          FUSION_TIER: "${{ inputs.fusion_tier }}"
+          MAX_RUNTIME: "${{ inputs.max_runtime_minutes }}"
+          MAX_ROUNDS: "${{ inputs.max_rounds }}"
+          STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
+          ALLOW_SUBAGENTS: "${{ inputs.allow_subagents }}"
+          REQUEST_REVIEW: "${{ inputs.request_review }}"
+          # yamllint disable-line rule:line-length
+          REQUEST_ANTAGONISTIC_REVIEW: "${{ inputs.request_antagonistic_review }}"
+          LOAD_REPO_SKILLS: "${{ inputs.load_repo_skills }}"
+          INCLUDE_DOTGITHUB: "${{ inputs.include_dotgithub }}"
+        run: |
+          python3 monkey-assets/scripts/run_parameters.py settle \
+            --selection artefacts/selection.json
 
       - name: 'Publish selection outputs'
         id: chosen
@@ -1376,10 +1437,10 @@ jobs:
         env:
           COPILOT_GITHUB_TOKEN: "${{ secrets.copilot_token }}"
           COPILOT_HOME: "${{ runner.temp }}/copilot"
-          MODEL: "${{ inputs.model }}"
-          FUSION_TIER: "${{ inputs.fusion_tier }}"
-          ALLOW_SUBAGENTS: "${{ inputs.allow_subagents }}"
-          LOAD_REPO_SKILLS: "${{ inputs.load_repo_skills }}"
+          MODEL: "${{ needs.select.outputs.model }}"
+          FUSION_TIER: "${{ needs.select.outputs.fusion_tier }}"
+          ALLOW_SUBAGENTS: "${{ needs.select.outputs.allow_subagents }}"
+          LOAD_REPO_SKILLS: "${{ needs.select.outputs.load_repo_skills }}"
         run: |
           # The prefix rejects native/classic tokens, not extra PAT
           # grants. The caller must provision Copilot Requests only.
@@ -2115,7 +2176,7 @@ jobs:
         id: review-request
         if: >-
           !cancelled() && steps.open.outcome == 'success' &&
-          inputs.request_review
+          needs.select.outputs.request_review == 'true'
         env:
           # yamllint disable-line rule:line-length
           GH_TOKEN: "${{ secrets.copilot_review_token != '' && secrets.copilot_review_token || steps.pr-token.outputs.token }}"
@@ -2140,10 +2201,10 @@ jobs:
         id: review
         if: >-
           !cancelled() && steps.open.outcome == 'success' &&
-          inputs.request_review
+          needs.select.outputs.request_review == 'true'
         env:
           GH_TOKEN: "${{ github.token }}"
-          STALE_MINUTES: "${{ inputs.stale_status_minutes }}"
+          STALE_MINUTES: "${{ needs.select.outputs.stale_status_minutes }}"
         run: |
           python3 monkey-assets/scripts/publish.py review-await \
             --result artefacts/result.json --output artefacts/result.json \
@@ -2178,7 +2239,8 @@ jobs:
         if: >-
           !cancelled() && steps.push.outcome == 'success'
         env:
-          SWITCH: "${{ inputs.request_antagonistic_review }}"
+          # yamllint disable-line rule:line-length
+          SWITCH: "${{ needs.select.outputs.request_antagonistic_review }}"
           REPOSITORY: "${{ inputs.antagonistic_repository }}"
         run: |
           python3 monkey-assets/scripts/antagonistic_request.py \
@@ -2213,10 +2275,12 @@ jobs:
           # Stable across attempts: a retry, or a full rerun, searches
           # every comment this run can have posted.
           SINCE: "${{ needs.select.outputs.run_created_at }}"
+          # The footer records them for a hand-back to inherit.
+          PARAMS: "${{ needs.select.outputs.params }}"
         run: |
           python3 monkey-assets/scripts/publish.py comment \
             --result artefacts/result.json --run-url "$RUN_URL" \
-            --since "$SINCE"
+            --since "$SINCE" --run-parameters "$PARAMS"
 
       # Every selected issue gets a row in the report. When an earlier
       # step failed before push wrote a result (the offline check, a
@@ -2445,7 +2509,7 @@ jobs:
     if: >-
       !cancelled() && needs.report.result == 'success' &&
       !inputs.dry_run && inputs.mode == 'pull-requests' &&
-      inputs.request_antagonistic_review &&
+      needs.select.outputs.request_antagonistic_review == 'true' &&
       inputs.antagonistic_repository != '' &&
       needs.report.outputs.antagonistic_pull_requests != '' &&
       needs.report.outputs.antagonistic_pull_requests != '[]'

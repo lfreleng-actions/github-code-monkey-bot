@@ -1776,6 +1776,7 @@ For each selected issue:
 | `revise_only` | boolean | `false` | §6: revise the bot's pull requests with work outstanding |
 | `outstanding_only` | boolean | `false` | §20.6: named pull requests take the scan's tests |
 | `continues_run` | string | `''` | §20.6: the dispatching run, which must have published |
+| `inherit_run_parameters` | boolean | `false` | §20.1: take the run parameters from the named pull request's latest round footer; one pull request alone |
 | `exclude_repos` | string | `''` | Commas and/or spaces; overrides bundled list |
 | `issue_authors` | string | `''` | §6: logins trusted to open and edit issues; empty fails the run |
 | `only_known_authors` | string | `''` | §6: `false` turns `issue_authors` off; empty or `true` keeps it; else fails |
@@ -1827,6 +1828,19 @@ outside the stated ranges. A run must name `issues` or
 `pull_requests`, or set `revise_only`; the input check refuses one
 that names none of them (§6 "No new-issue scans").
 
+`inherit_run_parameters` needs one pull request alone in
+`pull_requests`, no `issues`, and `pull-requests` mode; the input
+check refuses it otherwise, and the selector refuses it again. One
+pull request gives one footer to inherit from and one source for the
+run's budgets. With it on, the run parameters (§20.1) come from that
+pull request's latest round footer when it records them, and the
+inputs above hold their place otherwise. Off, the default, nothing
+changes. The select job publishes the values in effect as job
+outputs, and the author, publish and antagonistic request jobs read
+those, never the inputs, for the model, the tier, the sub-agent and
+skill switches, the session budgets, the review switches and the
+stale status minutes.
+
 ### 9.2 Dispatch caller (`code-monkey-cron.yaml`)
 
 `workflow_dispatch` alone, with the inputs below: the caller has no
@@ -1863,6 +1877,7 @@ truncates a long name, and nothing reads it back.
 | `revise_only` | boolean | `false` |
 | `outstanding_only` | boolean | `false` |
 | `continues_run` | string | `''` |
+| `inherit_run_parameters` | boolean | `false` |
 
 The `model` choice shows display names and the caller maps them to
 the identifiers in §10.3. The caller passes `inputs.dry_run`, so a
@@ -1874,7 +1889,7 @@ default above.
 `max_pull_requests` semantics: `1` raises at most one pull request,
 `20` at most twenty, and `0` lifts the cap as far as the matrix
 limit; anything non-numeric or negative fails the select job. The
-form holds 23 inputs, within GitHub's limit of 25. The
+form holds 24 inputs, within GitHub's limit of 25. The
 `repositories`, `categories` and `include_assigned` inputs went with
 the new-issue scan they shaped (§6, §17).
 
@@ -1904,6 +1919,13 @@ named `pull_requests` and no `issues`, and the input check refuses
 it otherwise. `continues_run`, which the `continue` job sets to its
 own run's ID, needs `outstanding_only` and must be a run ID; an
 operator leaves it empty.
+
+`inherit_run_parameters` is the hand-back's input (§20.5): the review
+bot sets it, and the caller passes it through. The reusable
+workflow's input check refuses it unless the dispatch names one pull
+request alone in `pull-requests` mode (§9.1). An operator may set it
+too, to run a pull request's next round with the parameters its last
+round used.
 
 ### 9.3 Mode and dry-run matrix
 
@@ -2414,7 +2436,7 @@ config/excluded-repos.txt                repositories to skip
 config/coauthors.json                    model prefix to trailer (§10.3)
 config/stale-statuses.txt                status contexts a timer covers (§13.1)
 scripts/select_issues.py                 selection policy
-scripts/selection_inputs.py              its command line, list and cap parsing
+scripts/selection_inputs.py              its command line, targets and caps
 scripts/explicit_issues.py               named issues (§6)
 scripts/issue_categories.py              category switches and matching
 scripts/selection_outputs.py             selection files and summary
@@ -2698,7 +2720,36 @@ cross-checked against the trusted `selection.json`.
 
 `model` is the `--model` identifier, and `fusion_tier` the Copilot
 Fusion tier when `model` is `fusion`, else `null` (§10.3); the
-provenance block names both.
+provenance block names both. Both are the run's effective values, so
+a run that inherited its parameters (§20.1) records the inherited
+model and tier here.
+
+A run dispatched with `inherit_run_parameters` (§9.1) adds four
+fields, and a run without it adds none:
+
+```json
+{
+  "inherit_run_parameters": true,
+  "inherited_parameters": {
+    "model": "fusion", "fusion_auto_model_select": "true",
+    "fusion_tier": "high", "max_runtime_minutes": "120",
+    "max_rounds": "10", "stale_status_minutes": "8",
+    "allow_subagents": "true", "request_review": "true",
+    "request_antagonistic_review": "true", "load_repo_skills": "false",
+    "include_dotgithub": "false"
+  },
+  "inherited_from": "https://github.com/<caller>/actions/runs/<id>",
+  "inheritance_note": ""
+}
+```
+
+`inherited_parameters` holds the checked values by cron form input
+name, `inherited_from` the run URL of the footer that carried them.
+When the run inherits nothing, `inherited_parameters` is `{}`,
+`inherited_from` is `null` and `inheritance_note` says why, and the
+step summary repeats the note; otherwise the summary lists each
+inherited value. The select job's `Settle run parameters` step reads
+`inherited_parameters` back to publish the run's effective values.
 
 `key` is `<repo_name>-<number>` and doubles as the matrix key and
 the artifact-name suffix. `skipped` carries every counter, zero or
@@ -3147,6 +3198,7 @@ antagonistic job's `requested`, the nominees it dispatched (§20.5):
 | `selected_count` | Entries selected, issues and revisions, as a string |
 | `antagonistic_pull_requests` | `owner/repo#N` of each request (§20.5) |
 | `continue_pull_requests` | `owner/repo#N` of each to continue (§20.6) |
+| `run_parameters` | The run's parameters as JSON (§20.1, §20.6) |
 
 Outside a live `pull-requests` run, `continue_pull_requests` is
 always `[]`.
@@ -3633,6 +3685,51 @@ without the findings that brought it. This workflow also asks for
 that review itself once Copilot's is clean (§20.5); the marker
 above, never the request, makes a hand-back.
 
+**Inherited run parameters.** A run that named one pull request with
+`inherit_run_parameters` (§9.1) runs its round with the parameters
+the pull request's last round used, not the form's. Every round's
+outcome footer records them as its last token, after `stale=1`:
+`params=v1:` and then `model`, `tier`, `runtime`, `rounds`, `stale`,
+`subagents`, `skills`, `dotgithub`, `review` and `antagonistic`,
+each `name:value`, joined by `,`, the switches as `1` or `0` and
+`tier` left out without Fusion (`scripts/run_parameters.py`). The
+token never holds `=`: the footer's own fields are `name=value`, and
+a reader looser than `round_reads.FOOTER`, such as the review bot's
+hand-back check for `antagonistic=`, would read a field spelt
+`antagonistic=1` inside the token as answered review 1. The
+select job reads the latest footer of that pull request not marked
+`stale=1`, ordered by the read time it records as the watermark is,
+so neither a superseded run, which may have used other parameters,
+nor a late retry of an older round sets them. It checks each value
+of that footer's token as the form's input check would: the model
+id against its pattern and the Fusion tier pairing, the integers
+against their ranges, the switches as `1` or `0`. A token that fails
+any check inherits nothing, with a warning. So does a read that
+fails, a pull request that is not the bot's, or one whose latest
+footer carries no token, as every round's footers did before this,
+and as one does whose token outgrew its bound; an older footer's
+token never stands in. In each case the form's values stand. The
+inherited set is the eleven cron inputs `model`,
+`fusion_auto_model_select` (derived from the model),
+`fusion_tier`, `max_runtime_minutes`, `max_rounds`,
+`stale_status_minutes`, `allow_subagents`, `request_review`,
+`request_antagonistic_review`, `load_repo_skills` and
+`include_dotgithub`. The run's own target and safety inputs
+(`dry_run`, `mode`, `pull_requests`, `issues`, `revise`,
+`revise_only`, `outstanding_only`, `continues_run`, the edit grants,
+the concurrency and pull request caps, the egress settings and the
+guidance and assets coordinates) never inherit, so no footer can
+widen what a run may touch.
+
+A reader older than the token, a run or a caller pinned to a commit
+before it, finds no footer in a comment that carries one: its
+pattern ends at `stale=1`. It then counts no round, moves no
+watermark and anchors no hand-back from that comment. The reader
+and the writer land in one commit, so move every caller whose runs
+work the same issues to it together, and let runs started on an
+older commit finish first. The review bot needs no change to
+read the footer, since the token holds no `name=` field of its own.
+
 ### 20.2 The author job
 
 The author job checks out the default branch head (`checkout_sha`),
@@ -4049,6 +4146,14 @@ request in a selected repository. The request
 never counts as a hand-back; the review bot's marker does
 (§20.1).
 
+The review bot's hand-back dispatches the caller with
+`inherit_run_parameters=true` beside the one pull request it hands
+back, so the round that answers the antagonistic review runs on the
+model, tier, budgets and switches of the round it reviewed, not the
+form's defaults (§20.1). That change lives in
+`lfreleng-actions/github-code-review-bot` and needs this input to
+exist first.
+
 ### 20.6 Continuation
 
 A run performs one round per pull request and ends (§2). The
@@ -4105,17 +4210,24 @@ gh workflow run code-monkey-cron.yaml --repo "$GITHUB_REPOSITORY" \
   -f max_rounds="$ROUNDS" -f allow_subagents="$SUBAGENTS" \
   -f request_review="$REVIEW" \
   -f request_antagonistic_review="$ANTAGONISTIC" \
-  -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"
+  -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB" \
+  "${inherit[@]}"
 ```
 
 naming its own run as `continues_run` and
-forwarding the run's own model, Copilot Fusion switch and tier,
+forwarding the values the run used, the `code-monkey` call's
+`run_parameters` output, which are the inherited ones when the run
+inherited (§20.1): the run's own model, Copilot Fusion switch and tier,
 runtime, round cap, sub-agent choice,
 review switches, `load_repo_skills` and `include_dotgithub`, so a
 dispatch that turned Copilot's or the antagonistic review off keeps it
 off for every round it continues,
 and one that trusted checkout skills or the `.github` repository
-keeps that trust. One pull request per
+keeps that trust. A run that inherited also forwards
+`inherit_run_parameters=true`: an inherited model id outside the
+form's choices then holds its place through the footer the round
+writes, and the form's model is a placeholder the next select job
+replaces. One pull request per
 dispatch keeps a failure to that pull request, and each loop at its
 own pace: a continuation continues as soon as its own round ends,
 not when the slowest round of a shared run does. The cost is that

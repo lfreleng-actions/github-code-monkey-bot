@@ -1419,7 +1419,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         step = self.step("publish", "review-request")
         condition = unwrap(str(step["if"]))
         self.assertIn("steps.open.outcome == 'success'", condition)
-        self.assertIn("inputs.request_review", condition)
+        self.assertIn("needs.select.outputs.request_review == 'true'", condition)
         self.assertIn("steps.pr-token.outputs.token", unwrap(step["env"]["GH_TOKEN"]))
         self.assertIn("publish.py review-request", flatten(step["run"]))
         self.assertLess(
@@ -1431,7 +1431,7 @@ class ReviewGateContracts(ReusableWorkflowCase):
         step = self.step("publish", "review")
         condition = unwrap(str(step["if"]))
         self.assertIn("steps.open.outcome == 'success'", condition)
-        self.assertIn("inputs.request_review", condition)
+        self.assertIn("needs.select.outputs.request_review == 'true'", condition)
         self.assert_expression(step["env"]["GH_TOKEN"], "github.token")
         script = flatten(step["run"])
         self.assertIn("publish.py review-await", script)
@@ -2421,6 +2421,15 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "agent_timeout",
                 "max_parallel",
                 "run_created_at",
+                "model",
+                "fusion_tier",
+                "stale_status_minutes",
+                "allow_subagents",
+                "load_repo_skills",
+                "request_review",
+                "request_antagonistic_review",
+                "params",
+                "run_parameters",
             },
         )
 
@@ -2608,6 +2617,11 @@ class SelectAndReportContracts(ReusableWorkflowCase):
         self.assert_expression(str(selected["value"]), "jobs.select.outputs.count")
         # What the request job dispatched, not what the report nominated.
         requested = declared.pop("antagonistic_pull_requests")
+        # The run parameters the continue job forwards (#241).
+        parameters = declared.pop("run_parameters")
+        self.assert_expression(
+            str(parameters["value"]), "jobs.select.outputs.run_parameters"
+        )
         self.assert_expression(
             str(requested["value"]), "jobs.antagonistic.outputs.requested"
         )
@@ -3131,7 +3145,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 23)
+        self.assertEqual(len(inputs), 24)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """Two live revise-only runs queue one behind the other."""
@@ -3195,7 +3209,7 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             job["if"],
             "!cancelled() && needs.report.result == 'success' &&"
             " !inputs.dry_run && inputs.mode == 'pull-requests' &&"
-            " inputs.request_antagonistic_review &&"
+            " needs.select.outputs.request_antagonistic_review == 'true' &&"
             " inputs.antagonistic_repository != '' &&"
             " needs.report.outputs.antagonistic_pull_requests != '' &&"
             " needs.report.outputs.antagonistic_pull_requests != '[]'",
@@ -3218,7 +3232,7 @@ class AntagonisticRequestContracts(ReusableWorkflowCase):
             self.position("publish", "comment-token"),
         )
         self.assert_expression(
-            step["env"]["SWITCH"], "inputs.request_antagonistic_review"
+            step["env"]["SWITCH"], "needs.select.outputs.request_antagonistic_review"
         )
         self.assertIn("scripts/antagonistic_request.py", flatten(str(step["run"])))
 
@@ -3992,6 +4006,7 @@ CONTINUE_DISPATCH = (
     ' -f request_review="$REVIEW"'
     ' -f request_antagonistic_review="$ANTAGONISTIC"'
     ' -f load_repo_skills="$SKILLS" -f include_dotgithub="$DOTGITHUB"'
+    ' "${inherit[@]}"'
 )
 
 
@@ -4150,6 +4165,8 @@ class ContinueJobContracts(WorkflowCase):
                 "DOTGITHUB": "false",
                 "FUSION": "false",
                 "FUSION_TIER": "standard",
+                "INHERIT": "false",
+                "EFFECTIVE": "",
                 "GITHUB_STEP_SUMMARY": str(summary),
                 **overrides,
             }
@@ -4362,13 +4379,15 @@ class StaleStatusContracts(ReusableWorkflowCase):
 
     def test_the_scan_and_the_review_wait_read_the_list(self) -> None:
         """Both steps pass the context list and the minutes."""
-        for job, step in (("select", "Select issues"), ("publish", "review")):
+        for job, step, source in (
+            ("select", "Select issues", "inputs.stale_status_minutes"),
+            # The effective value, which a hand-back may inherit (#241).
+            ("publish", "review", "needs.select.outputs.stale_status_minutes"),
+        ):
             with self.subTest(step=step):
                 found = self.step(job, step)
                 env = cast(dict[str, Any], found["env"])
-                self.assert_expression(
-                    env["STALE_MINUTES"], "inputs.stale_status_minutes"
-                )
+                self.assert_expression(env["STALE_MINUTES"], source)
                 run = flatten(found["run"])
                 self.assertIn(
                     "--stale-statuses monkey-assets/config/stale-statuses.txt", run
@@ -4398,6 +4417,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "revise_only",
                 "outstanding_only",
                 "continues_run",
+                "inherit_run_parameters",
                 "max_runtime_minutes",
                 "max_rounds",
                 "stale_status_minutes",
@@ -5616,7 +5636,7 @@ class FusionContracts(ReusableWorkflowCase):
     def test_a_fixed_model_takes_no_tier(self) -> None:
         """With the switch off the invocation names the model alone."""
         env = cast(dict[str, Any], self.step("author", "agent")["env"])
-        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier")
+        self.assert_expression(env["FUSION_TIER"], "needs.select.outputs.fusion_tier")
         args = self.invoke("claude-opus-5.5", "")
         self.assertEqual(args[:2], ["--prompt=p", "--model=claude-opus-5.5"])
         self.assertEqual(args[2], "--mode")
@@ -5774,7 +5794,6 @@ PER_RUN_DISPATCH = {
 class InheritedRunParameterContracts(ReusableWorkflowCase):
     """A hand-back inherits its pull request's run parameters (#241)."""
 
-    @unittest.expectedFailure
     def test_input_is_declared_off_and_reaches_the_selector(self) -> None:
         """A boolean, off by default, passed to select_issues.py as a flag."""
         inputs = cast(
@@ -5788,7 +5807,6 @@ class InheritedRunParameterContracts(ReusableWorkflowCase):
         )
         self.assertIn("extra+=(--inherit-run-parameters)", flatten(select["run"]))
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_check_inputs_needs_one_pull_request_alone(self) -> None:
         """Zero or several pull requests, issues, or another mode are refused."""
@@ -5831,7 +5849,6 @@ class InheritedRunParameterContracts(ReusableWorkflowCase):
                 if not passes:
                     self.assertIn("::error::inherit_run_parameters needs", proc.stdout)
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_inherited_runtime_sets_the_author_budget(self) -> None:
         """The settle step runs after selection and reads what it inherited."""
@@ -5893,7 +5910,6 @@ class InheritedRunParameterContracts(ReusableWorkflowCase):
         self.assertEqual(lines["model"], "gpt-6-astra")
         self.assertEqual(lines["request_review"], "false")
 
-    @unittest.expectedFailure
     def test_later_jobs_read_the_effective_values(self) -> None:
         """--model, the deny-list switches, the reviews and the footer token."""
         agent = cast(dict[str, Any], self.step("author", "agent")["env"])
@@ -5925,7 +5941,6 @@ class InheritedContinueContracts(WorkflowCase):
 
     WORKFLOW = CRON
 
-    @unittest.expectedFailure
     def test_form_offers_the_input_and_forwards_it(self) -> None:
         """A boolean, off by default, the form's 24th input."""
         inputs = cast(
@@ -5938,7 +5953,6 @@ class InheritedContinueContracts(WorkflowCase):
             str(with_["inherit_run_parameters"]), "inputs.inherit_run_parameters"
         )
 
-    @unittest.expectedFailure
     def test_dispatch_forwards_exactly_the_inherited_set(self) -> None:
         """The forwarded inputs, less the per-run ones, are run_parameters.INHERITED."""
         script = flatten(str(self.step("continue", "dispatch")["run"]))
@@ -5958,7 +5972,6 @@ class InheritedContinueContracts(WorkflowCase):
         status, calls, _, _ = cases.dispatch(["lfreleng-actions/a#1"], **overrides)
         return status, calls
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_effective_values_replace_the_form(self) -> None:
         """An inherited Fusion run continues on Fusion, inheriting again."""
@@ -5997,7 +6010,6 @@ class InheritedContinueContracts(WorkflowCase):
         )
         self.assertNotIn("inherit_run_parameters", calls[0])
 
-    @unittest.expectedFailure
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
     def test_bad_effective_values_are_refused(self) -> None:
         """A model the form cannot name, or a malformed value, dispatches nothing."""

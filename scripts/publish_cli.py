@@ -94,6 +94,7 @@ def build_parser(
     comment.add_argument("--result", type=Path, required=True)
     comment.add_argument("--run-url", default="")
     comment.add_argument("--since", default="")
+    comment.add_argument("--run-parameters", default="")
     comment.set_defaults(handler=comments.run_comment)
 
     request = commands.add_parser(

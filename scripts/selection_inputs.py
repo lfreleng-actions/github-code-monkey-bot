@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import explicit_issues as explicit_targets
 import fork_orgs as forks
 import issue_authors as authors
 import issue_categories as categories
@@ -35,6 +36,54 @@ def parse_repositories(text: str) -> list[str]:
         if lowered not in names:
             names.append(lowered)
     return names
+
+
+def parse_targets(
+    args: argparse.Namespace,
+) -> tuple[list[tuple[str, int]], list[str], list[tuple[str, int]]]:
+    """Parse the named issues, repositories and pull requests, and check they fit."""
+    targets = explicit_targets.parse_issues(args.issues, args.org)
+    explicit = parse_repositories(args.repositories)
+    pulls = explicit_targets.parse_issues(args.pull_requests, args.org)
+    if not (targets or pulls or args.revise_only):
+        # The workflow's input check refuses this first; the selector
+        # refuses it too, so no caller can start an issue scan.
+        raise SelectionError(
+            "scanning for new issues is off; name issues or pull_requests,"
+            " or set revise_only"
+        )
+    if (targets or pulls) and explicit:
+        raise SelectionError(
+            "issues or pull requests and repositories cannot both be given"
+        )
+    if pulls and args.mode != "pull-requests":
+        # A round moves a live pull request's head and answers its
+        # review; no other mode publishes that.
+        raise SelectionError("pull_requests needs pull-requests mode")
+    if args.outstanding_only and (targets or not pulls):
+        raise SelectionError("outstanding_only needs pull_requests alone")
+    if args.continues_run and not args.outstanding_only:
+        raise SelectionError("continues_run needs outstanding_only")
+    if getattr(args, "inherit_run_parameters", False) and (
+        targets or len(pulls) != 1 or args.mode != "pull-requests"
+    ):
+        # One pull request gives one footer to inherit from, so the
+        # run's budgets have a single source.
+        raise SelectionError(
+            "inherit_run_parameters needs one pull request alone, in pull-requests mode"
+        )
+    if args.revise_only:
+        # Revisions alone: a scan of the owner's bot pull requests and
+        # no issue, so nothing may name issues or narrow the scan.
+        if targets or explicit:
+            raise SelectionError(
+                "revise_only cannot be given with issues or repositories"
+            )
+        if args.mode != "pull-requests":
+            raise SelectionError("revise_only needs pull-requests mode")
+        if not args.revise:
+            raise SelectionError("revise_only needs revise")
+    return targets, explicit, pulls
 
 
 def load_exclusions(file: Path | None, override: str) -> list[str]:
@@ -133,6 +182,7 @@ def selection_parser(description: str | None) -> argparse.ArgumentParser:
     parser.add_argument("--revise-only", action="store_true")
     parser.add_argument("--outstanding-only", action="store_true")
     parser.add_argument("--continues-run", default="")
+    parser.add_argument("--inherit-run-parameters", action="store_true")
     parser.add_argument("--exclude-file", type=Path)
     parser.add_argument("--exclude-repos", default="")
     parser.add_argument("--fork-orgs", type=Path, required=True)
