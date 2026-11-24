@@ -452,3 +452,367 @@ class ThreadsTest(unittest.TestCase):
         with patch.object(github, "graphql", return_value=thread_page([node])):
             packet = threads_of.unresolved_threads(REPO, 41, "2026-10-04T01:00:00Z")
         self.assertFalse(packet.maintainer_since)
+
+
+def comment(
+    database_id: int, created: str, login: str, association: str = "NONE", **extra: Any
+) -> dict[str, Any]:
+    """One GraphQL review thread comment."""
+    return {
+        "databaseId": database_id,
+        "body": f"comment {database_id}",
+        "authorAssociation": association,
+        "createdAt": created,
+        "author": {"login": login, **extra},
+    }
+
+
+BOT = "lf-code-monkey[bot]"
+
+
+class ResolvedThreadsTest(unittest.TestCase):
+    """A maintainer's word on a resolved thread is heard (#234)."""
+
+    since = "2026-10-03T00:00:00Z"
+    opener = comment(100, "2026-10-01T00:00:00Z", threads_of.COPILOT_LOGIN)
+
+    def read(self, *nodes: dict[str, Any], since: str | None = None) -> Any:
+        """The packet the reads build from one page of threads."""
+        with patch.object(github, "graphql", return_value=thread_page(list(nodes))):
+            return threads_of.unresolved_threads(
+                REPO, 41, since or self.since, frozenset({"review-app"}), BOT
+            )
+
+    @unittest.expectedFailure
+    def test_a_maintainer_reply_after_the_watermark_is_carried(self) -> None:
+        """Carried, marked resolved and heard; an older reply is neither."""
+        reply = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
+        packet = self.read(
+            thread(
+                id="PRRT_r", isResolved=True, comments={"nodes": [self.opener, reply]}
+            )
+        )
+        self.assertTrue(packet.maintainer_since)
+        self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_r"])
+        self.assertIs(packet.threads[0]["resolved"], True)
+        self.assertEqual(packet.threads[0]["replies"][0]["author"], "maintainer")
+        self.assertEqual((packet.dropped, packet.resolved), (0, 1))
+        older = {**reply, "createdAt": "2026-10-02T00:00:00Z"}
+        packet = self.read(
+            thread(
+                id="PRRT_r", isResolved=True, comments={"nodes": [self.opener, older]}
+            )
+        )
+        self.assertFalse(packet.maintainer_since)
+        self.assertEqual((packet.threads, packet.dropped), ([], 0))
+
+    @unittest.expectedFailure
+    def test_reviewer_replies_on_a_resolved_thread_stay_out(self) -> None:
+        """Copilot's and a review App's replies are not a maintainer's word."""
+        replies = [
+            comment(101, "2026-10-04T00:00:00Z", threads_of.COPILOT_LOGIN),
+            comment(102, "2026-10-04T00:00:01Z", "review-app", __typename="Bot"),
+        ]
+        packet = self.read(
+            thread(),
+            thread(
+                id="PRRT_r",
+                isResolved=True,
+                comments={"nodes": [self.opener, *replies]},
+            ),
+        )
+        self.assertFalse(packet.maintainer_since)
+        self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_1"])
+        self.assertIs(packet.threads[0]["resolved"], False)
+        self.assertEqual((packet.dropped, packet.resolved), (0, 0))
+
+    @unittest.expectedFailure
+    def test_resolved_threads_share_the_bounds_and_go_first(self) -> None:
+        """A heard resolved thread leads; a quiet one costs the bounds nothing."""
+        reply = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
+        quiet = [thread(id=f"PRRT_{i}") for i in range(threads_of.MAX_THREADS)]
+        packet = self.read(
+            *quiet,
+            thread(id="PRRT_quiet", isResolved=True),
+            thread(
+                id="PRRT_r", isResolved=True, comments={"nodes": [self.opener, reply]}
+            ),
+        )
+        self.assertEqual(packet.threads[0]["thread_id"], "PRRT_r")
+        self.assertEqual(len(packet.threads), threads_of.MAX_THREADS)
+        self.assertNotIn("PRRT_quiet", [t["thread_id"] for t in packet.threads])
+        self.assertEqual((packet.dropped, packet.resolved), (1, 1))
+
+    @unittest.expectedFailure
+    def test_the_368_sequence_is_carried(self) -> None:
+        """Bot reply, resolve, then a maintainer's reply forty seconds later."""
+        since = "2026-11-22T23:20:00Z"
+        nodes = [
+            comment(100, "2026-11-22T22:00:00Z", threads_of.COPILOT_LOGIN),
+            comment(101, "2026-11-22T23:27:48Z", "lf-code-monkey", __typename="Bot"),
+            comment(102, "2026-11-22T23:28:28Z", "maintainer", "MEMBER"),
+        ]
+        with patch.object(
+            github,
+            "graphql",
+            return_value=thread_page(
+                [thread(id="PRRT_368", isResolved=True, comments={"nodes": nodes})]
+            ),
+        ):
+            packet = threads_of.unresolved_threads(REPO, 368, since)
+        self.assertTrue(packet.maintainer_since)
+        carried = packet.threads[0]
+        self.assertEqual(
+            (carried["thread_id"], carried["resolved"]), ("PRRT_368", True)
+        )
+        self.assertEqual([r["author"] for r in carried["replies"]], ["maintainer"])
+
+    @unittest.expectedFailure
+    def test_a_reply_the_bounds_left_out_returns_after_publication(self) -> None:
+        """Overflow, a published round, a later scan: the left-out reply is heard."""
+        answer = comment(
+            101, "2026-10-03T00:00:10Z", "lf-code-monkey", __typename="Bot"
+        )
+        word = comment(102, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
+        answered = [
+            thread(
+                id=f"PRRT_{i}",
+                isResolved=True,
+                comments={"nodes": [self.opener, answer, word]},
+            )
+            for i in range(threads_of.MAX_THREADS + 1)
+        ]
+        # The bot never replied here, so only the watermark brings it back.
+        unanswered = thread(
+            id="PRRT_human", isResolved=True, comments={"nodes": [self.opener, word]}
+        )
+        packet = self.read(*answered, unanswered)
+        carried = [t["thread_id"] for t in packet.threads]
+        self.assertEqual(carried[0], "PRRT_human")
+        self.assertEqual((len(carried), packet.dropped), (threads_of.MAX_THREADS, 2))
+        self.assertTrue(packet.maintainer_since)
+        self.assertEqual(packet.unanswered, 0)
+        # The round answers what it carried; the watermark moves past it all.
+        reply = comment(103, "2026-10-05T00:00:00Z", "lf-code-monkey", __typename="Bot")
+        later = [
+            thread(
+                id=t["id"],
+                isResolved=True,
+                comments={
+                    "nodes": [
+                        *t["comments"]["nodes"],
+                        *([reply] * (t["id"] in carried)),
+                    ]
+                },
+            )
+            for t in [*answered, unanswered]
+        ]
+        packet = self.read(*later, since="2026-10-05T01:00:00Z")
+        self.assertEqual(
+            [t["thread_id"] for t in packet.threads],
+            [t["id"] for t in answered if t["id"] not in carried],
+        )
+        self.assertFalse(packet.maintainer_since)
+        self.assertEqual(
+            (packet.dropped, packet.resolved, packet.unanswered), (0, 2, 2)
+        )
+
+    @unittest.expectedFailure
+    def test_unanswered_threads_past_the_bounds_fail_closed(self) -> None:
+        """Watermark-only threads the bounds cannot hold raise, not vanish."""
+        word = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
+        nodes = [
+            thread(
+                id=f"PRRT_{i}", isResolved=True, comments={"nodes": [self.opener, word]}
+            )
+            for i in range(threads_of.MAX_THREADS + 1)
+        ]
+        with self.assertRaises(threads_of.reads.SelectionError):
+            self.read(*nodes)
+
+    @unittest.expectedFailure
+    def test_a_user_with_the_apps_login_is_not_the_bot(self) -> None:
+        """Only the App, typed Bot, answers a maintainer's word."""
+        nodes = [
+            self.opener,
+            comment(101, "2026-10-01T01:00:00Z", "lf-code-monkey", __typename="Bot"),
+            comment(102, "2026-10-02T00:00:00Z", "maintainer", "MEMBER"),
+            comment(103, "2026-10-02T01:00:00Z", "lf-code-monkey", __typename="User"),
+        ]
+        packet = self.read(
+            thread(id="PRRT_r", isResolved=True, comments={"nodes": nodes})
+        )
+        self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_r"])
+        self.assertEqual(packet.unanswered, 1)
+
+    @unittest.expectedFailure
+    def test_an_unanswered_word_returns_after_publication(self) -> None:
+        """Omitted or failed reply, a published round, a later scan: heard again."""
+        pending_of = import_module("thread_pending")
+        word = comment(101, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
+        node = thread(
+            id="PRRT_human", isResolved=True, comments={"nodes": [self.opener, word]}
+        )
+        packet = self.read(node)
+        carried = [
+            {"thread_id": t["thread_id"], "held": pending_of.held_word(t)}
+            for t in packet.threads
+        ]
+        self.assertEqual(carried[0]["held"], "2026-10-04T00:00:00Z")
+        # A reply posted clears it; one left out or refused keeps it.
+        self.assertIsNone(pending_of.pending_since(carried, {"PRRT_human"}))
+        pending = pending_of.pending_since(carried, set())
+        self.assertEqual(pending, "2026-10-04T00:00:00Z")
+        later = "2026-10-05T00:00:00Z"
+        with patch.object(github, "graphql", return_value=thread_page([node])):
+            packet = threads_of.unresolved_threads(
+                REPO, 41, later, frozenset(), BOT, pending
+            )
+        self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_human"])
+        self.assertFalse(packet.maintainer_since)
+        self.assertEqual((packet.resolved, packet.unanswered), (1, 1))
+        # Without the footer's pending, or with a newer one, it stays out.
+        for held in (None, "2026-10-04T00:00:01Z"):
+            with patch.object(github, "graphql", return_value=thread_page([node])):
+                packet = threads_of.unresolved_threads(
+                    REPO, 41, later, frozenset(), BOT, held
+                )
+            self.assertEqual((packet.threads, packet.unanswered), ([], 0))
+
+    @unittest.expectedFailure
+    def test_answered_threads_are_not_replayed_or_counted(self) -> None:
+        """Only the pending thread and the new word come back; nothing overflows.
+
+        A round answered all but one of a full packet of watermark-only
+        threads, then a maintainer spoke on another the bot never replied on.
+        """
+        word = comment(101, "2026-10-02T00:00:00Z", "maintainer", "MEMBER")
+        reply = comment(102, "2026-10-02T01:00:00Z", "lf-code-monkey", __typename="Bot")
+        answered = [
+            thread(
+                id=f"PRRT_{i}",
+                isResolved=True,
+                comments={"nodes": [self.opener, word, reply]},
+            )
+            for i in range(threads_of.MAX_THREADS - 1)
+        ]
+        owed = thread(
+            id="PRRT_owed", isResolved=True, comments={"nodes": [self.opener, word]}
+        )
+        fresh = comment(103, "2026-10-04T00:00:00Z", "maintainer", "MEMBER")
+        new = thread(
+            id="PRRT_new", isResolved=True, comments={"nodes": [self.opener, fresh]}
+        )
+        page = thread_page([*answered, owed, new])
+        with patch.object(github, "graphql", return_value=page):
+            packet = threads_of.unresolved_threads(
+                REPO, 41, self.since, frozenset(), BOT, "2026-10-02T00:00:00Z"
+            )
+        self.assertEqual(
+            sorted(t["thread_id"] for t in packet.threads), ["PRRT_new", "PRRT_owed"]
+        )
+        self.assertEqual(
+            (packet.dropped, packet.resolved, packet.unanswered), (0, 2, 1)
+        )
+
+    @unittest.expectedFailure
+    def test_a_thread_the_bot_answers_is_not_held(self) -> None:
+        """A word after the bot's reply is owed on its own; it needs no pending."""
+        pending_of = import_module("thread_pending")
+        nodes = [
+            self.opener,
+            comment(101, "2026-10-01T01:00:00Z", "lf-code-monkey", __typename="Bot"),
+            comment(102, "2026-10-04T00:00:00Z", "maintainer", "MEMBER"),
+        ]
+        packet = self.read(
+            thread(id="PRRT_r", isResolved=True, comments={"nodes": nodes})
+        )
+        self.assertIsNone(pending_of.held_word(packet.threads[0]))
+
+    @unittest.expectedFailure
+    def test_a_word_in_the_bots_second_is_ordered_by_the_thread(self) -> None:
+        """Same-second comments: thread order says which answered which."""
+        bot = comment(101, "2026-10-02T00:00:00Z", "lf-code-monkey", __typename="Bot")
+        word = comment(102, "2026-10-02T00:00:00Z", "maintainer", "MEMBER")
+        packet = self.read(
+            thread(
+                id="PRRT_after",
+                isResolved=True,
+                comments={"nodes": [self.opener, bot, word]},
+            ),
+            thread(
+                id="PRRT_before",
+                isResolved=True,
+                comments={"nodes": [self.opener, word, bot]},
+            ),
+        )
+        self.assertEqual([t["thread_id"] for t in packet.threads], ["PRRT_after"])
+        self.assertEqual((packet.resolved, packet.unanswered), (1, 1))
+
+    @unittest.expectedFailure
+    def test_a_word_posted_while_the_round_ran_is_unanswered(self) -> None:
+        """The bot's reply answers what its round read, not what came after.
+
+        A maintainer spoke after the selection read the thread and before
+        the reply went up: the agent never saw that word, so it stays
+        unanswered through a later round that moves the watermark past
+        it, leaves the thread out of the bounds or posts no reply.
+        """
+        marker = (
+            "<!-- code-monkey reply round=2 session=1 seen=2026-10-03T00:00:00Z -->"
+        )
+        reply = comment(102, "2026-10-03T00:30:00Z", "lf-code-monkey", __typename="Bot")
+        reply["body"] = f"Fixed.\n\n{marker}"
+        unseen = comment(101, "2026-10-03T00:10:00Z", "maintainer", "MEMBER")
+        nodes = [
+            thread(
+                id=f"PRRT_{i}",
+                isResolved=True,
+                comments={"nodes": [self.opener, unseen, reply]},
+            )
+            for i in range(threads_of.MAX_THREADS + 1)
+        ]
+        packet = self.read(*nodes)
+        self.assertIs(packet.threads[0]["maintainer_unanswered"], True)
+        self.assertIs(packet.threads[0]["maintainer_answered"], False)
+        self.assertEqual(packet.dropped, 1)
+        # The round answers what it carried, then the watermark moves on;
+        # its reply read after every word, so those threads owe nothing.
+        carried = {t["thread_id"] for t in packet.threads}
+        later_reply = {
+            **reply,
+            "databaseId": 103,
+            "createdAt": "2026-10-04T00:30:00Z",
+            "body": "Done.\n\n<!-- code-monkey reply round=3 session=2"
+            " seen=2026-10-04T00:00:00Z -->",
+        }
+        later = [
+            thread(
+                id=t["id"],
+                isResolved=True,
+                comments={
+                    "nodes": [
+                        *t["comments"]["nodes"],
+                        *([later_reply] * (t["id"] in carried)),
+                    ]
+                },
+            )
+            for t in nodes
+        ]
+        packet = self.read(*later, since="2026-10-04T00:00:00Z")
+        self.assertEqual(
+            [t["thread_id"] for t in packet.threads],
+            [t["id"] for t in nodes if t["id"] not in carried],
+        )
+        self.assertEqual((packet.dropped, packet.unanswered), (0, 1))
+        # A word the round read before its reply is answered by it.
+        seen = {**unseen, "createdAt": "2026-10-02T23:59:59Z"}
+        packet = self.read(
+            thread(
+                id="PRRT_seen",
+                isResolved=True,
+                comments={"nodes": [self.opener, seen, reply]},
+            ),
+            since="2026-10-03T00:00:00Z",
+        )
+        self.assertEqual((packet.threads, packet.unanswered), ([], 0))

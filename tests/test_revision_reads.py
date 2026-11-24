@@ -343,6 +343,30 @@ class ReviewAndRoundsTest(unittest.TestCase):
             history = round_reads.round_history(REPO, 7, BOT)
         self.assertEqual(history.since, "2026-10-02T12:00:00Z")
 
+    @unittest.expectedFailure
+    def test_the_handled_footer_carries_the_pending_word(self) -> None:
+        """``pending`` comes from the round the watermark does; a failed one moves neither."""
+        entries = [
+            {
+                "user": {"login": BOT},
+                "body": "a\n\n<!-- code-monkey https://r/1 proposed round=1 since=2026-10-02T00:00:00Z pending=2026-10-01T09:00:00Z -->",
+                "created_at": "2026-10-02T00:10:00Z",
+            },
+            {
+                "user": {"login": BOT},
+                "body": "b\n\n<!-- code-monkey https://r/2 rejected round=2 since=2026-10-05T00:00:00Z -->",
+                "created_at": "2026-10-05T00:10:00Z",
+            },
+        ]
+        with patch.object(reads, "api_page", return_value=entries):
+            history = round_reads.round_history(REPO, 7, BOT)
+        self.assertEqual(
+            (history.since, history.pending),
+            ("2026-10-02T00:00:00Z", "2026-10-01T09:00:00Z"),
+        )
+        with patch.object(reads, "api_page", return_value=entries[1:]):
+            self.assertIsNone(round_reads.round_history(REPO, 7, BOT).pending)
+
     def test_failed_rounds_count_but_move_no_watermark(self) -> None:
         """An attempt that published nothing counts toward the cap; the request stays new."""
         entries = [
