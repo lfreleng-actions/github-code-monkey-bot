@@ -35,6 +35,7 @@ clean_git_env = import_module("git_env").clean_git_env
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 REUSABLE = WORKFLOWS / "code-monkey.yaml"
 CRON = WORKFLOWS / "code-monkey-cron.yaml"
+FUSION_TIERS = ("standard", "high", "max")
 TESTING = WORKFLOWS / "testing.yaml"
 LINTING = WORKFLOWS / "linting.yaml"
 PROMPT = WORKFLOWS.parents[1] / "prompt" / "author.md"
@@ -3123,6 +3124,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
         self.assert_expression(with_["revise_only"], "inputs.revise_only")
 
+    @unittest.expectedFailure
     def test_dispatch_form_offers_revise_only(self) -> None:
         """A boolean, off by default; the form stays inside GitHub's 25."""
         inputs = cast(
@@ -3130,7 +3132,7 @@ class ReviseOnlyCallerContracts(WorkflowCase):
         )
         self.assertEqual(inputs["revise_only"]["type"], "boolean")
         self.assertIs(inputs["revise_only"]["default"], False)
-        self.assertEqual(len(inputs), 21)
+        self.assertEqual(len(inputs), 23)
 
     def test_revise_only_runs_share_the_scan_group(self) -> None:
         """Two live revise-only runs queue one behind the other."""
@@ -3984,7 +3986,8 @@ CONTINUE_DISPATCH = (
     " -f dry_run=false -f mode=pull-requests -f max_pull_requests=0"
     ' -f pull_requests="$pull" -f outstanding_only=true'
     ' -f continues_run="$PARENT_RUN"'
-    ' -f model="$MODEL" -f max_runtime_minutes="$RUNTIME"'
+    ' -f model="$MODEL" -f fusion_auto_model_select="$FUSION"'
+    ' -f fusion_tier="$FUSION_TIER" -f max_runtime_minutes="$RUNTIME"'
     ' -f max_rounds="$ROUNDS" -f stale_status_minutes="$STALE"'
     ' -f allow_subagents="$SUBAGENTS"'
     ' -f request_review="$REVIEW"'
@@ -4080,6 +4083,7 @@ class ContinueJobContracts(WorkflowCase):
         }
         self.assertFalse(evaluate(condition, dry))
 
+    @unittest.expectedFailure
     def test_dispatch_runs_after_harden_runner_in_block_mode(self) -> None:
         """The allow-list loads, then the runner is hardened, then the dispatch."""
         steps = self.steps("continue")
@@ -4092,6 +4096,7 @@ class ContinueJobContracts(WorkflowCase):
         self.assertEqual(len(steps), 3)
         self.assertIn(CONTINUE_DISPATCH, flatten(str(steps[2]["run"])))
 
+    @unittest.expectedFailure
     def test_options_are_forwarded_with_the_form_defaults(self) -> None:
         """The loop keeps the operator's model, runtime, rounds and switches."""
         env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
@@ -4106,6 +4111,8 @@ class ContinueJobContracts(WorkflowCase):
         )
         self.assert_expression(env["SKILLS"], "inputs.load_repo_skills")
         self.assert_expression(env["DOTGITHUB"], "inputs.include_dotgithub")
+        self.assert_expression(env["FUSION"], "inputs.fusion_auto_model_select")
+        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier || 'standard'")
         self.assertNotIn("github.event", dumped(self.jobs["continue"]))
 
     def dispatch(
@@ -4144,6 +4151,8 @@ class ContinueJobContracts(WorkflowCase):
                 "ANTAGONISTIC": "true",
                 "SKILLS": "false",
                 "DOTGITHUB": "false",
+                "FUSION": "false",
+                "FUSION_TIER": "standard",
                 "GITHUB_STEP_SUMMARY": str(summary),
                 **overrides,
             }
@@ -4162,6 +4171,7 @@ class ContinueJobContracts(WorkflowCase):
             )
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
     def test_one_dispatch_per_pull_request(self) -> None:
         """Each pull request is its own live, outstanding-only named run."""
         pulls = ["lfreleng-actions/a#1", "LFReleng-Actions/b#2"]
@@ -4175,7 +4185,8 @@ class ContinueJobContracts(WorkflowCase):
                 " -f mode=pull-requests -f max_pull_requests=0"
                 f" -f pull_requests={pull} -f outstanding_only=true"
                 " -f continues_run=42"
-                " -f model=Claude Opus 5.5 -f max_runtime_minutes=180"
+                " -f model=Claude Opus 5.5 -f fusion_auto_model_select=false"
+                " -f fusion_tier=standard -f max_runtime_minutes=180"
                 " -f max_rounds=10 -f stale_status_minutes=8"
                 " -f allow_subagents=true"
                 " -f request_review=true -f request_antagonistic_review=true"
@@ -4250,6 +4261,7 @@ class ContinueJobContracts(WorkflowCase):
                 self.assertEqual(calls, [])
 
     @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
     def test_forwarded_options_are_validated(self) -> None:
         """An unknown model or a malformed number refuses before any dispatch."""
         for overrides in (
@@ -4266,6 +4278,9 @@ class ContinueJobContracts(WorkflowCase):
             {"ANTAGONISTIC": ""},
             {"SKILLS": "1"},
             {"DOTGITHUB": "true -f x=y"},
+            {"FUSION": "yes"},
+            {"FUSION_TIER": "ultra"},
+            {"FUSION_TIER": "high -f x=y"},
         ):
             with self.subTest(**overrides):
                 status, calls, _, _ = self.dispatch(
@@ -4291,6 +4306,16 @@ class ContinueJobContracts(WorkflowCase):
                 )
                 self.assertEqual(status, 0)
                 self.assertIn(f" -f stale_status_minutes={value} ", calls[0])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_fusion_stays_on_at_its_tier(self) -> None:
+        """A Copilot Fusion run dispatches its next round on Fusion (#240)."""
+        status, calls, _, _ = self.dispatch(
+            ["lfreleng-actions/a#1"], FUSION="true", FUSION_TIER="max"
+        )
+        self.assertEqual(status, 0)
+        self.assertIn(" -f fusion_auto_model_select=true -f fusion_tier=max ", calls[0])
 
 
 class StaleStatusContracts(ReusableWorkflowCase):
@@ -4360,6 +4385,7 @@ class StaleStatusContracts(ReusableWorkflowCase):
 class InterfaceContracts(ReusableWorkflowCase):
     """The `workflow_call` surface: inputs, secrets and their defaults."""
 
+    @unittest.expectedFailure
     def test_declared_inputs_and_secrets(self) -> None:
         """The input set matches DESIGN.md section 9.1; secrets are optional."""
         call = cast(dict[str, Any], self.triggers["workflow_call"])
@@ -4371,6 +4397,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "mode",
                 "dry_run",
                 "model",
+                "fusion_tier",
                 "max_pull_requests",
                 "issues",
                 "pull_requests",
@@ -4733,6 +4760,7 @@ class CronCallerContracts(WorkflowCase):
                 self.assertNotIn(fragment, text)
         self.assertEqual(set(self.jobs), {"options", "code-monkey", "continue"})
 
+    @unittest.expectedFailure
     def test_run_name_says_what_the_run_works(self) -> None:
         """The Actions list tells each dispatch apart.
 
@@ -4746,15 +4774,18 @@ class CronCallerContracts(WorkflowCase):
         self.assertTrue(run_name.startswith(f"format('{name}: "), run_name)
         self.assert_expression(
             run_name,
-            f"format('{name}: {{0}}{{1}}',"
+            f"format('{name}: {{0}}{{1}}{{2}}',"
             " inputs.pull_requests != ''"
             " && format('revise {0}', inputs.pull_requests)"
             " || inputs.issues != '' && format('work {0}', inputs.issues)"
             " || inputs.revise_only && 'revise-only scan'"
             " || 'nothing named',"
+            " inputs.fusion_auto_model_select"
+            " && format(' (Fusion {0})', inputs.fusion_tier) || '',"
             " inputs.dry_run && ' (dry run)' || '')",
         )
 
+    @unittest.expectedFailure
     def test_dispatch_form(self) -> None:
         """The manual form mirrors DESIGN.md section 9.2; a dispatch is live."""
         inputs = cast(
@@ -4791,6 +4822,8 @@ class CronCallerContracts(WorkflowCase):
             "revise_only": False,
             "outstanding_only": False,
             "continues_run": "",
+            "fusion_auto_model_select": False,
+            "fusion_tier": "standard",
         }
         for name, default in defaults.items():
             with self.subTest(input=name):
@@ -5498,6 +5531,242 @@ class ToolchainPinContracts(unittest.TestCase):
                 self.assertRegex(version, r"^[0-9]+\.[0-9]+\.[0-9]+$")
         lock = json.loads((TOOLCHAIN_PIN / "package-lock.json").read_text())
         self.assertEqual(lock["packages"][""]["dependencies"], dependencies)
+
+
+class FusionContracts(ReusableWorkflowCase):
+    """Copilot Fusion: the tier input, its check and the CLI flag (#240)."""
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.expectedFailure
+    def test_check_inputs_pairs_fusion_with_a_tier(self) -> None:
+        """Fusion needs a known tier; a tier needs Fusion; no tier is a fixed model."""
+        budget = self.step("select", "budget")
+        env = cast(dict[str, Any], budget["env"])
+        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier")
+        base = {**ReviseOnlyContracts.BUDGET_ENV, "MODEL": "claude-opus-5.5"}
+        tier_refused = "model fusion needs fusion_tier standard, high or max"
+        cases: tuple[tuple[dict[str, str], str | None], ...] = (
+            ({}, None),
+            ({"FUSION_TIER": ""}, None),
+            *(({"MODEL": "fusion", "FUSION_TIER": t}, None) for t in FUSION_TIERS),
+            ({"MODEL": "fusion"}, tier_refused),
+            ({"MODEL": "fusion", "FUSION_TIER": "ultra"}, tier_refused),
+            ({"MODEL": "fusion", "FUSION_TIER": "high -x"}, tier_refused),
+            ({"FUSION_TIER": "high"}, "fusion_tier needs model fusion"),
+        )
+        for overrides, error in cases:
+            with (
+                self.subTest(**overrides),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                output = Path(holder) / "output"
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(budget["run"])],
+                    env={
+                        "PATH": os.environ["PATH"],
+                        **base,
+                        **overrides,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if error is None:
+                    self.assertEqual(proc.returncode, 0, proc.stdout)
+                else:
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertIn(f"::error::{error}", proc.stdout)
+                    self.assertFalse(output.exists())
+
+    @unittest.expectedFailure
+    def test_input_is_declared_empty_and_reaches_the_selector(self) -> None:
+        """A string, empty by default, recorded in the selection."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["fusion_tier"]["type"], "string")
+        self.assertEqual(inputs["fusion_tier"]["default"], "")
+        select = self.step("select", "Select issues")
+        env = cast(dict[str, Any], select["env"])
+        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier")
+        self.assertIn('--fusion-tier="$FUSION_TIER"', flatten(select["run"]))
+
+    def invoke(self, model: str, tier: str) -> list[str]:
+        """Run the agent step with a fake copilot; return the argv it got."""
+        step = self.step("author", "agent")
+        with tempfile.TemporaryDirectory() as holder:
+            work = Path(holder)
+            fake = work / "bin"
+            fake.mkdir()
+            argv = work / "argv"
+            (fake / "copilot").write_text(
+                f'#!/bin/bash\nprintf "%s\\n" "$@" > "{argv}"\n',
+                encoding="utf-8",
+            )
+            (fake / "copilot").chmod(0o755)
+            (work / "artefacts").mkdir()
+            (work / "artefacts" / "prompt.md").write_text("p", encoding="utf-8")
+            (work / "workspace").mkdir()
+            subprocess.run(
+                ["bash", "-e", "-c", str(step["run"])],
+                cwd=work,
+                env={
+                    "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}",
+                    "COPILOT_GITHUB_TOKEN": "github_pat_x",
+                    "MODEL": model,
+                    "FUSION_TIER": tier,
+                    "ALLOW_SUBAGENTS": "true",
+                    "LOAD_REPO_SKILLS": "false",
+                },
+                check=True,
+            )
+            return argv.read_text(encoding="utf-8").splitlines()
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.expectedFailure
+    def test_a_fixed_model_takes_no_tier(self) -> None:
+        """With the switch off the invocation names the model alone."""
+        env = cast(dict[str, Any], self.step("author", "agent")["env"])
+        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier")
+        args = self.invoke("claude-opus-5.5", "")
+        self.assertEqual(args[:2], ["--prompt=p", "--model=claude-opus-5.5"])
+        self.assertEqual(args[2], "--mode")
+        self.assertFalse([a for a in args if a.startswith("--fusion-tier")])
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.expectedFailure
+    def test_fusion_passes_its_tier(self) -> None:
+        """Each tier reaches the CLI beside ``--model=fusion``."""
+        for tier in FUSION_TIERS:
+            with self.subTest(tier=tier):
+                args = self.invoke("fusion", tier)
+                self.assertEqual(args[1:3], ["--model=fusion", f"--fusion-tier={tier}"])
+
+    @unittest.skipUnless(shutil.which("jq") and shutil.which("bash"), "needs jq")
+    @unittest.expectedFailure
+    def test_fallback_result_keeps_the_models_used(self) -> None:
+        """A failure after the check still reports the models the session ran."""
+        ensure = self.step("publish", "Ensure a result exists")
+        env = {
+            "PATH": os.environ["PATH"],
+            "KEY": "repo-7",
+            "REPOSITORY": "o/repo",
+            "FORK_REPOSITORY": "lfreleng-bot-forks/repo",
+            "ISSUE": "7",
+            "DRY_RUN": "false",
+            "MODE": "pull-requests",
+            "RUN_ATTEMPT": "1",
+            "CHECK_OUTCOME": "success",
+            "PUSH_OUTCOME": "skipped",
+            "OPEN_OUTCOME": "skipped",
+            "AUTHOR_SESSION": "77",
+        }
+        for used, expected in (
+            (["claude-opus-5.5", "gpt-6-astra"], ["claude-opus-5.5", "gpt-6-astra"]),
+            ("claude-opus-5.5", []),
+            (None, []),
+        ):
+            with (
+                self.subTest(used=used),
+                tempfile.TemporaryDirectory() as holder,
+            ):
+                work = Path(holder)
+                (work / "artefacts").mkdir()
+                (work / "artefacts" / "check.json").write_text(
+                    json.dumps({"models_used": used}), encoding="utf-8"
+                )
+                subprocess.run(
+                    ["bash", "-e", "-c", str(ensure["run"])],
+                    cwd=work,
+                    env=env,
+                    check=True,
+                )
+                result = json.loads(
+                    (work / "artefacts" / "result.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(result["models_used"], expected)
+
+
+class FusionCallerContracts(WorkflowCase):
+    """The dispatch form's Fusion switch and tier, off by default (#240)."""
+
+    WORKFLOW = CRON
+
+    @unittest.expectedFailure
+    def test_form_offers_the_switch_off(self) -> None:
+        """A boolean off by default, and a tier choice that starts at standard."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_dispatch"]["inputs"]
+        )
+        switch = inputs["fusion_auto_model_select"]
+        self.assertEqual(switch["type"], "boolean")
+        self.assertIs(switch["default"], False)
+        tier = inputs["fusion_tier"]
+        self.assertEqual(tier["type"], "choice")
+        self.assertEqual(tier["options"], list(FUSION_TIERS))
+        self.assertEqual(tier["default"], "standard")
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            with_["fusion_tier"], "needs.options.outputs.fusion_tier"
+        )
+        outputs = cast(dict[str, Any], self.jobs["options"]["outputs"])
+        self.assert_expression(outputs["fusion_tier"], "steps.map.outputs.fusion_tier")
+
+    def map_outputs(self, model: str, fusion: str, tier: str) -> tuple[int, str]:
+        """Run the options map step; return its status and GITHUB_OUTPUT."""
+        step = self.step("options", "map")
+        with tempfile.TemporaryDirectory() as holder:
+            output = Path(holder) / "output"
+            output.touch()
+            proc = subprocess.run(
+                ["bash", "-e", "-c", str(step["run"])],
+                env={
+                    "PATH": os.environ["PATH"],
+                    "MODEL": model,
+                    "FUSION": fusion,
+                    "FUSION_TIER": tier,
+                    "GITHUB_OUTPUT": str(output),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return proc.returncode, output.read_text(encoding="utf-8")
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.expectedFailure
+    def test_switch_off_keeps_the_chosen_model(self) -> None:
+        """Off, the tier is ignored and the reusable workflow gets no tier."""
+        env = cast(dict[str, Any], self.step("options", "map")["env"])
+        self.assert_expression(env["FUSION"], "inputs.fusion_auto_model_select")
+        self.assert_expression(env["FUSION_TIER"], "inputs.fusion_tier")
+        status, output = self.map_outputs("Claude Opus 5.5", "false", "max")
+        self.assertEqual(status, 0)
+        self.assertEqual(output, "id=claude-opus-5.5\nfusion_tier=\n")
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.expectedFailure
+    def test_switch_on_overrides_the_model(self) -> None:
+        """On, every tier routes through ``fusion``; an unknown tier fails."""
+        for tier in FUSION_TIERS:
+            with self.subTest(tier=tier):
+                status, output = self.map_outputs("GPT-6 Astra", "true", tier)
+                self.assertEqual(status, 0)
+                self.assertEqual(output, f"id=fusion\nfusion_tier={tier}\n")
+        status, output = self.map_outputs("GPT-6 Astra", "true", "ultra")
+        self.assertEqual(status, 1)
+        self.assertEqual(output, "")
+
+    @unittest.expectedFailure
+    def test_run_name_marks_a_fusion_run(self) -> None:
+        """A Fusion dispatch says so, with its tier, in the Actions list."""
+        run_name = unwrap(str(self.workflow["run-name"]))
+        self.assertIn(
+            "inputs.fusion_auto_model_select"
+            " && format(' (Fusion {0})', inputs.fusion_tier) || ''",
+            " ".join(run_name.split()),
+        )
 
 
 if __name__ == "__main__":

@@ -646,6 +646,47 @@ class ExplicitIssuesTest(NoSubprocessCase):
         self.assertIn("org/gamma#4", text)
         self.assertIn("not found", text)
 
+    @unittest.expectedFailure
+    def test_selection_records_the_fusion_tier(self) -> None:
+        """A Fusion run records its tier; a fixed model records none (#240)."""
+        args = self.args("org/alpha#3")
+        self.assertEqual(args.fusion_tier, "")
+        selection, _ = select.build_selection(args)
+        self.assertIsNone(selection["fusion_tier"])
+        self.assertIn("model `m`, at most", outputs.summary_markdown(selection))
+        args = self.args("org/alpha#3")
+        args.model, args.fusion_tier = "fusion", "high"
+        selection, _ = select.build_selection(args)
+        self.assertEqual(selection["fusion_tier"], "high")
+        self.assertIn(
+            "model `fusion` (`high` tier)", outputs.summary_markdown(selection)
+        )
+
+    @unittest.expectedFailure
+    def test_parser_refuses_an_unknown_tier(self) -> None:
+        """Only Copilot Fusion's tiers, or none, parse."""
+        argv = [
+            "--org",
+            "o",
+            "--output-dir",
+            "x",
+            "--mode",
+            "pull-requests",
+            "--model",
+            "fusion",
+            "--guidance-repository",
+            "o/.github",
+            "--fork-orgs",
+            str(FORK_ORGS_PATH),
+            "--fusion-tier",
+        ]
+        parser = select.build_parser()
+        with patch("sys.stderr"):
+            # Otherwise valid, so only the tier can make the next parse fail.
+            self.assertEqual(parser.parse_args([*argv, "max"]).fusion_tier, "max")
+            with self.assertRaises(SystemExit):
+                parser.parse_args([*argv, "ultra"])
+
 
 class RevisionIntegrationTest(NoSubprocessCase):
     """Named pull requests, named issues with a bot PR, and the scan's revisions."""

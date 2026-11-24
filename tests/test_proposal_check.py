@@ -48,6 +48,15 @@ COAUTHORS: dict[str, str] = {
     "gpt-": "ChatGPT <chatgpt@openai.com>",
 }
 GITLINT = "[title-max-length]\nline-length=60\n"
+REAL_COAUTHORS = Path(__file__).resolve().parents[1] / "config" / "coauthors.json"
+COPILOT_TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+# The usage file's shape after a Copilot Fusion session (issue #240).
+FUSION_USAGE: dict[str, Any] = {
+    "totalPremiumRequestCost": 3,
+    "modelMetrics": {"gpt-6-luna": {"requests": 2}, "claude-opus-5.5": {}},
+    "agentMetrics": {"main": {"modelMetrics": {"gemini-4-neon": {}}}},
+    "currentModel": "gpt-6-luna",
+}
 README = "# Repo\n\nA readme with a typo.\n"
 
 
@@ -662,6 +671,36 @@ class RunCheckProposedTest(GitCase):
         check = self.fixture.run()
         self.assertEqual(check.premium_requests, 12.0)
         self.assertEqual(check.agent_seconds, 65)
+
+    @unittest.expectedFailure
+    def test_fusion_run_names_its_tier_and_models(self) -> None:
+        """A Fusion run's body names the tier and the models usage.json lists."""
+        self.fixture.commit(
+            "Fix(readme): Correct typo\n\nThe word was misspelt.\n",
+            {"README.md": README.replace("with a typo", "without a typo")},
+        )
+        self.fixture.bundle()
+        self.fixture.manifest()
+        (self.fixture.proposal / "usage.json").write_text(
+            json.dumps(FUSION_USAGE), encoding="utf-8"
+        )
+        selection = self.fixture.selection()
+        selection.update(model="fusion", fusion_tier="high")
+        with patch.object(self.fixture, "write_coauthors", return_value=REAL_COAUTHORS):
+            check = self.fixture.run(selection=selection)
+        self.assertEqual(check.verdict, "proposed", check.reasons)
+        self.assertIn(
+            "- Model: Copilot Fusion (`high` tier), routed to `claude-opus-5.5`,"
+            " `gpt-6-luna` via GitHub Copilot CLI",
+            check.pr_body,
+        )
+        self.assertIn(f"\n\n{COPILOT_TRAILER}\n", check.commits[0]["body"])
+        serialised = check.to_json()
+        self.assertEqual(serialised["models_used"], ["claude-opus-5.5", "gpt-6-luna"])
+        self.assertEqual(serialised["models_dropped"], 0)
+        self.assertIn(
+            "Models used: `claude-opus-5.5`, `gpt-6-luna`", model.check_summary(check)
+        )
 
     def test_unreadable_usage_is_a_note(self) -> None:
         """A corrupt usage.json is recorded, not fatal."""
@@ -1507,6 +1546,84 @@ class UsageNumberTest(unittest.TestCase):
             model.read_usage(path, check)
         self.assertIsNone(check.premium_requests)
         self.assertIsNone(check.agent_seconds)
+
+
+class ReadUsageModelsTest(unittest.TestCase):
+    """``read_usage`` records the models a session ran on (issue #240)."""
+
+    def read(self, text: str) -> Any:
+        """Read ``text`` as usage.json into a fresh check."""
+        check = model.Check(
+            key="k",
+            repository="o/r",
+            issue=1,
+            branch="b",
+            base_sha="a" * 40,
+            default_branch="main",
+        )
+        with tempfile.TemporaryDirectory() as holder:
+            path = Path(holder) / "usage.json"
+            path.write_text(text, encoding="utf-8")
+            model.read_usage(path, check)
+        return check
+
+    @unittest.expectedFailure
+    def test_fusion_shape_takes_the_top_level_keys(self) -> None:
+        """Agent metrics and the current model add nothing to the list."""
+        check = self.read(json.dumps(FUSION_USAGE))
+        self.assertEqual(check.models_used, ["claude-opus-5.5", "gpt-6-luna"])
+        self.assertEqual(check.models_dropped, 0)
+        self.assertEqual(check.premium_requests, 3.0)
+
+    @unittest.expectedFailure
+    def test_absent_or_unreadable_metrics_leave_the_list_empty(self) -> None:
+        """No modelMetrics, a non-object one or a corrupt file: nothing listed."""
+        for text in (
+            "{}",
+            '{"modelMetrics": ["gpt-6-luna"]}',
+            '{"modelMetrics": "gpt-6-luna"}',
+            "{nope",
+        ):
+            with self.subTest(text=text):
+                check = self.read(text)
+                self.assertEqual(check.models_used, [])
+                self.assertEqual(check.models_dropped, 0)
+
+    @unittest.expectedFailure
+    def test_non_object_values_and_bad_ids_are_dropped(self) -> None:
+        """Only an id of the pattern's shape with an object value stays."""
+        metrics: dict[str, Any] = {
+            "gpt-6-luna": {},
+            "claude-opus-5.5": 3,
+            "Claude-Opus": {},
+            "-lead": {},
+            "x" * 65: {},
+            "a`b": {},
+            "a|b": {},
+            "a\nb": {},
+            "x" * 64: None,
+        }
+        check = self.read(json.dumps({"modelMetrics": metrics}))
+        self.assertEqual(check.models_used, ["gpt-6-luna"])
+        self.assertEqual(check.models_dropped, len(metrics) - 1)
+
+    @unittest.expectedFailure
+    def test_at_most_ten_sorted(self) -> None:
+        """Past the bound the sorted list stops; the rest are counted."""
+        metrics: dict[str, Any] = {f"m-{n:02d}": {} for n in range(12, 0, -1)}
+        check = self.read(json.dumps({"modelMetrics": metrics}))
+        self.assertEqual(check.models_used, [f"m-{n:02d}" for n in range(1, 11)])
+        self.assertEqual(check.models_dropped, 2)
+
+    @unittest.expectedFailure
+    def test_coauthors_name_copilot_for_fusion(self) -> None:
+        """The committed map gives a Fusion run the Copilot trailer."""
+        coauthors = json.loads(REAL_COAUTHORS.read_text(encoding="utf-8"))
+        identity = checks.selection_identity(
+            {"model": "fusion", "bot": {"login": BOT_LOGIN, "email": BOT_EMAIL}},
+            coauthors,
+        )
+        self.assertEqual(identity.coauthor, COPILOT_TRAILER.split(": ", 1)[1])
 
 
 class CheckSummaryTest(unittest.TestCase):

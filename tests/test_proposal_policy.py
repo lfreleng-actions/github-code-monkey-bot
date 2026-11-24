@@ -10,6 +10,7 @@ import sys
 import unittest
 from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 policy = import_module("proposal_policy")
@@ -685,6 +686,45 @@ class ProvenanceBlockTest(unittest.TestCase):
         )
         self.assertTrue(block.startswith("<details>\n"))
         self.assertTrue(block.endswith("</details>\n"))
+
+    def model_line(self, **kwargs: Any) -> str:
+        """The block's model line for a run's model, tier and models used."""
+        block = model.provenance_block(
+            run_url="r", issue_url="u", base_sha="e" * 40, commands=[], **kwargs
+        )
+        (line,) = [x for x in block.splitlines() if x.startswith("- Model:")]
+        return line
+
+    @unittest.expectedFailure
+    def test_fusion_names_its_tier_and_routed_models(self) -> None:
+        """A Fusion run says which tier it ran and, when known, where it went."""
+        self.assertEqual(
+            self.model_line(model="fusion", fusion_tier="high", models_used=["a", "b"]),
+            "- Model: Copilot Fusion (`high` tier), routed to `a`, `b`"
+            " via GitHub Copilot CLI",
+        )
+        self.assertEqual(
+            self.model_line(model="fusion", fusion_tier="max"),
+            "- Model: Copilot Fusion (`max` tier) via GitHub Copilot CLI",
+        )
+
+    @unittest.expectedFailure
+    def test_fixed_model_names_routing_only_when_it_differs(self) -> None:
+        """The requested model alone keeps the line it always had."""
+        plain = "- Model: `claude-opus-5.5` via GitHub Copilot CLI"
+        for used in ((), ["claude-opus-5.5"]):
+            with self.subTest(used=used):
+                self.assertEqual(
+                    self.model_line(model="claude-opus-5.5", models_used=used), plain
+                )
+        self.assertEqual(
+            self.model_line(
+                model="claude-opus-5.5",
+                models_used=["claude-haiku-5.5", "claude-opus-5.5"],
+            ),
+            "- Model: `claude-opus-5.5`, routed to `claude-haiku-5.5`,"
+            " `claude-opus-5.5` via GitHub Copilot CLI",
+        )
 
     def test_without_commands_or_run(self) -> None:
         """No commands means no table; an empty run URL renders n/a."""
