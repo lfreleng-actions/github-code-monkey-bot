@@ -666,8 +666,17 @@ publish nothing. The selector skips a held
 target, named or scanned, ahead of the cap, the budget and the
 one-per-repository rule, counts it under `held` and records it in
 `skipped_issues` with a reason naming the run that works it, so the
-summary shows it like any other skip. The selector records a round
-under its pull request, whichever of its numbers another run holds,
+summary shows it like any other skip. A target the operator named
+(`issues` or `pull_requests`) is not routine: its reason names the
+holding run and ends `; not worked`, the select job prints a
+`::warning::` naming it and that run, and the selection summary and
+the run report list it under "Named targets not worked", so no one
+mistakes a dispatch whose every target another run held for work
+done. The run still ends green. The report reads those entries
+from `unreviewed-heads.json`, the select job's vouched file it already
+validates, which accepts that reason beside the unreviewed heads';
+`report.json` lists them as `named_not_worked`. The selector records
+a round under its pull request, whichever of its numbers another run holds,
 and passes over it before reading its packet: a named round by the
 pull request it names, a scanned round by the pull request and issue
 its ranking reads, and a named round whose issue alone another run
@@ -2819,7 +2828,8 @@ or an App, without `agent-approved`, §6), `author_not_listed` and
 author list, §6), `no_type`, `closed`,
 `category`, `assigned`, `attempted`, `linked_pr`, `one_per_repo`,
 `cap`, `revision`, `duplicate` and `held` (another in-progress run
-selected the target, §6 "Overlapping runs"). An issue entry's
+selected the target, §6 "Overlapping runs"; a named target's reason
+ends `; not worked`). An issue entry's
 `author_is_bot`
 records whether an App or bot opened the issue; `author`, `edited`,
 `editor` and `editor_is_bot` record the login that opened it and the
@@ -3550,7 +3560,8 @@ issue. The
 selector skips a round, named or scanned, whose pull request or issue
 another in-progress or queued run already selected, counts it under
 `held` and names that run in the reason, so two runs do not revise
-one pull request at once (§6 "Overlapping runs"). A scan honours the
+one pull request at once (§6 "Overlapping runs"); a named round also
+warns, and the report lists it as not worked. A scan honours the
 run's repository policy, the named repositories or everything but the
 exclusions, before it reads a hit. The round number continues from the
 bot's own footers on the issue: the last line of each of its comments,

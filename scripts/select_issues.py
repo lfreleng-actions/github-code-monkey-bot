@@ -348,17 +348,15 @@ def build_selection(args: argparse.Namespace) -> tuple[dict[str, Any], bytes]:
             listed=listed,
         )
     chosen = choose(
-        holds.issues(ranked),
+        holds.issues(ranked, named=explicit_run),
         fork_orgs=fork_orgs,
         max_pull_requests=max_pull_requests,
         skipped=skipped,
         one_per_repository=not explicit_run,
         named=explicit_run,
         skipped_issues=skipped_issues,
-        revisions=holds.rounds(
-            rounds.named(holds.pulls(rounds.org, pulls))
-            + (rounds.scan(holds.claims) if not explicit_run else [])
-        ),
+        revisions=holds.rounds(rounds.named(holds.pulls(rounds.org, pulls)), named=True)
+        + holds.rounds(rounds.scan(holds.claims) if not explicit_run else []),
         reviser=rounds.for_issue,
         listed=listed,
     )

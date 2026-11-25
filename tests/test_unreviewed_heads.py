@@ -200,7 +200,6 @@ class NamedHeldTest(unittest.TestCase):
         self.report.setUp()
         self.addCleanup(self.report.doCleanups)
 
-    @unittest.expectedFailure  # Held named targets: next commit.
     def test_select_job_hands_held_names_with_the_heads(self) -> None:
         """The summary lists the held name; the file carries it with the heads."""
         skipped = [*skips(), {"issue": f"{ORG}/delta#7", "reason": HELD}]
@@ -214,7 +213,6 @@ class NamedHeldTest(unittest.TestCase):
             )
         self.assertEqual(written, [*heads().entries(skips()), skipped[-1]])
 
-    @unittest.expectedFailure  # Held named targets: next commit.
     def test_report_lists_held_names_apart_from_the_heads(self) -> None:
         """The report validates the reason and lists the target as not worked."""
         raw = json.dumps(

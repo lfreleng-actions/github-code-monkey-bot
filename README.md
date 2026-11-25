@@ -103,7 +103,10 @@ cap. Setting the repository variable `CODE_MONKEY_CONTINUE` to `false`
 stops that loop. Nothing else revisits a pull request: a Copilot review
 still pending when publish stops waiting for it, or a maintainer's
 comment or a failing check that arrives after the loop ends, waits for
-an operator's `revise_only` dispatch. Each run's name in the Actions
+an operator's `revise_only` dispatch. A dispatch that names an issue
+or pull request another run is already working does not work it: the
+run warns, and its summary and report list the target under "Named
+targets not worked". Each run's name in the Actions
 list says what it works, the pull requests or issues named or a
 `revise_only` scan, and marks a dry run.
 

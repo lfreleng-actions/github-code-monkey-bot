@@ -960,7 +960,6 @@ class HoldsTest(unittest.TestCase):
             [{"issue": "org/alpha#3", "reason": "being worked by run 200"}],
         )
 
-    @unittest.expectedFailure  # Held named targets: next commit.
     def test_named_pulls_keep_order_and_record_the_run(self) -> None:
         """A held named pull request drops out, unread, under its own reference."""
         kept = self.holds.pulls("org", [("beta", 40), ("beta", 41), ("alpha", 4)])
@@ -986,7 +985,6 @@ class HoldsTest(unittest.TestCase):
         self.holds.issues([issue("alpha", 3)])
         self.assertEqual(self.warnings.getvalue(), "")
 
-    @unittest.expectedFailure  # Held named targets: next commit.
     def test_named_issue_and_round_are_marked_not_worked(self) -> None:
         """Named issues and named rounds take the not-worked reason too."""
         self.holds.issues([issue("alpha", 3)], named=True)
@@ -1005,7 +1003,6 @@ class HoldsTest(unittest.TestCase):
             ],
         )
 
-    @unittest.expectedFailure  # Held named targets: next commit.
     def test_named_warning_is_sanitised(self) -> None:
         """A reference cannot open a workflow command of its own."""
         with redirect_stdout(io.StringIO()) as out:

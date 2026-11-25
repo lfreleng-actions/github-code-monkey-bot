@@ -13,6 +13,7 @@ from typing import Any, cast
 import antagonistic_request as antagonistic
 import continuation
 import hook_runs
+import named_holds
 import proposal_model as model
 import proposal_policy as policy
 import report_outputs as outputs
@@ -412,7 +413,8 @@ def run_report(args: argparse.Namespace) -> None:
                 "stale_status_heads": stale_heads,
                 "premium_requests": spend,
                 "unreadable": unreadable,
-                "unreviewed_heads": unreviewed,
+                "unreviewed_heads": unreviewed_heads.entries(unreviewed),
+                "named_not_worked": named_holds.entries(unreviewed),
                 "results": results,
                 **extra,
             },

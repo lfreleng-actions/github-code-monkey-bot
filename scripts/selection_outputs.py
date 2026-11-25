@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+import named_holds
 import unreviewed_heads
 
 
@@ -111,6 +112,7 @@ def summary_markdown(selection: dict[str, Any]) -> str:
             # Every field is the selector's own text, not issue content.
             chosen = f": {entry['chosen']}" if entry.get("chosen") else ""
             lines.append(f"| {entry['issue']} | {entry['reason']}{chosen} |")
+    lines += named_holds.section(named_holds.entries(skipped_issues))
     lines += unreviewed_heads.section(unreviewed_heads.entries(skipped_issues))
     lines += [
         "",
@@ -181,7 +183,7 @@ def write_outputs(directory: Path, selection: dict[str, Any], guidance: bytes) -
     )
     skipped_issues = cast("list[dict[str, str]]", selection.get("skipped_issues") or [])
     (directory / "unreviewed-heads.json").write_text(
-        json.dumps(unreviewed_heads.entries(skipped_issues)) + "\n", encoding="utf-8"
+        json.dumps(unreviewed_heads.handed(skipped_issues)) + "\n", encoding="utf-8"
     )
     (directory / "selection-summary.md").write_text(
         summary_markdown(selection), encoding="utf-8"
