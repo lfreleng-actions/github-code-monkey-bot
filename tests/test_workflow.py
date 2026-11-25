@@ -5,10 +5,9 @@
 
 The reusable workflow separates a trusted ``select`` job, an untrusted
 ``author`` matrix and a trusted ``publish`` job (docs/DESIGN.md sections
-4, 7, 8 and 10). These tests read the parsed documents, never their
-comments, and pin the properties a reviewer would otherwise re-derive by
-hand on every change: which job holds which credential, that downloads
-go by producer artifact ID, that every action is pinned to a commit.
+4, 7, 8 and 10). These tests read parsed YAML and selected release
+comments to check which job holds each credential, that downloads go by
+producer artifact ID, and that actions are pinned to commits.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import sys
 import tempfile
 import unittest
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from functools import cached_property
 from importlib import import_module
 from pathlib import Path
@@ -56,6 +55,7 @@ TRIGGERS = True
 
 HARDEN_RUNNER = "step-security/harden-runner"
 BLOCK_ACTION = "lfreleng-actions/harden-runner-block-action"
+SLACK_ACTION = "slackapi/slack-github-action"
 CHECKOUT = "actions/checkout"
 APP_TOKEN = "actions/create-github-app-token"
 SPLITTER = "lfreleng-actions/list-splitter-action"
@@ -5052,12 +5052,226 @@ class UnattendedRunContracts(unittest.TestCase):
                 )
 
 
-SLACK_ACTION = "slackapi/slack-github-action"
-SLACK_PIN = f"{SLACK_ACTION}@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d"
+# Includes the DNS bypass fix.
+MIN_HARDEN_VERSION = (2, 22, 3)
+# Supports the allow-list loader wiring used by these jobs.
+MIN_BLOCK_VERSION = (0, 16, 4)
+# Baseline for the expiry alert's Slack API posting steps.
+MIN_SLACK_VERSION = (4, 0, 0)
+# Baseline for the endpoints these jobs need in block mode.
+MIN_ALLOW_LIST_VERSION = (0, 21, 0)
+
+ALLOW_LIST = "allow-list config"
+PIN_FLOORS = {
+    HARDEN_RUNNER: MIN_HARDEN_VERSION,
+    BLOCK_ACTION: MIN_BLOCK_VERSION,
+    SLACK_ACTION: MIN_SLACK_VERSION,
+    ALLOW_LIST: MIN_ALLOW_LIST_VERSION,
+}
+PIN_RELEASE = re.compile(r"[ \t]+# v([0-9]+)\.([0-9]+)\.([0-9]+)[ \t]*")
+
+
+def yaml_fields(node: yaml.Node | None) -> dict[str, yaml.Node]:
+    """Read the fields of a YAML mapping without losing source marks."""
+    if not isinstance(node, yaml.MappingNode):
+        return {}
+    return {
+        key.value: value
+        for key, value in node.value
+        if isinstance(key, yaml.ScalarNode)
+    }
+
+
+def pin_fields(workflow: str, text: str) -> Iterator[tuple[str, yaml.Node]]:
+    """Yield action pins and literal allow-list coordinates, not script text."""
+    root = yaml_fields(yaml.BaseLoader(text).get_single_node())
+    for job in yaml_fields(root.get("jobs")).values():
+        fields = yaml_fields(job)
+        caller_pin = yaml_fields(fields.get("with")).get("harden_runner_allowlist")
+        if caller_pin is not None:
+            yield ALLOW_LIST, caller_pin
+        steps = fields.get("steps")
+        if not isinstance(steps, yaml.SequenceNode):
+            continue
+        for step in steps.value:
+            fields = yaml_fields(step)
+            uses = fields.get("uses")
+            if not isinstance(uses, yaml.ScalarNode):
+                continue
+            action = uses.value.partition("@")[0]
+            if action not in PIN_FLOORS or action == ALLOW_LIST:
+                continue
+            yield action, uses
+            if action == BLOCK_ACTION:
+                config = yaml_fields(fields.get("with")).get("config")
+                # The reusable workflow forwards its caller's coordinate.
+                if config is not None and not (
+                    workflow == REUSABLE.name
+                    and isinstance(config, yaml.ScalarNode)
+                    and re.fullmatch(
+                        r"\$\{\{\s*inputs\.harden_runner_allowlist\s*\}\}", config.value
+                    )
+                ):
+                    yield ALLOW_LIST, config
+
+
+class PinSite(NamedTuple):
+    """The source line and value of one workflow pin."""
+
+    workflow: str
+    line: int
+    column: int
+    source: str
+    ref: str
+    release: tuple[int, ...]
+
+    @property
+    def location(self) -> str:
+        """Report a one-based line number for a maintainer."""
+        return f"{self.workflow}:{self.line + 1}"
+
+
+def workflow_pin_sites(sources: Mapping[str, str]) -> dict[str, list[PinSite]]:
+    """Collect every call site, including pins with malformed values."""
+    sites: dict[str, list[PinSite]] = {name: [] for name in PIN_FLOORS}
+    for workflow, text in sources.items():
+        lines = text.splitlines()
+        for name, node in pin_fields(workflow, text):
+            start, end = node.start_mark, node.end_mark
+            assert start is not None and end is not None
+            line = lines[start.line]
+            value = node.value if isinstance(node, yaml.ScalarNode) else ""
+            prefix, _, ref = value.partition("@")
+            if name == ALLOW_LIST and prefix:
+                ref = ""
+            comment = (
+                PIN_RELEASE.fullmatch(line[end.column :])
+                if start.line == end.line
+                else None
+            )
+            sites[name].append(
+                PinSite(
+                    workflow,
+                    start.line,
+                    start.column,
+                    line,
+                    ref,
+                    tuple(map(int, comment.groups())) if comment else (),
+                )
+            )
+    return sites
+
+
+def pin_errors(sites: Mapping[str, list[PinSite]]) -> dict[str, str]:
+    """Explain a rejected pin group with all of its call sites."""
+    errors: dict[str, str] = {}
+    for name, calls in sites.items():
+        floor = PIN_FLOORS[name]
+        if not calls:
+            problem = "no call sites found"
+        elif any(
+            not re.fullmatch(r"[0-9a-f]{40}", s.ref) or not s.release for s in calls
+        ):
+            problem = (
+                "each pin needs a 40-character lowercase SHA and a # vX.Y.Z comment"
+            )
+        elif any(s.release < floor for s in calls):
+            problem = f"release is below v{'.'.join(map(str, floor))}"
+        elif len({(s.ref, s.release) for s in calls}) != 1:
+            problem = "call sites disagree"
+        else:
+            continue
+        listing = "".join(f"\n  {s.location}: {s.source.strip()}" for s in calls)
+        errors[name] = f"{name}: {problem}{listing}"
+    return errors
+
+
+def rewrite_pin_fixture(
+    sources: Mapping[str, str], edits: Iterable[tuple[PinSite, str]]
+) -> dict[str, str]:
+    """Rewrite real workflow sources in memory, leaving the checkout alone."""
+    lines = {name: text.splitlines() for name, text in sources.items()}
+    for site, replacement in edits:
+        line = lines[site.workflow][site.line]
+        lines[site.workflow][site.line] = line[: site.column] + replacement
+    return {name: "\n".join(rows) for name, rows in lines.items()}
+
+
+def fixture_pin(name: str, ref: str, version: str) -> str:
+    """Make a quoted YAML pin, optionally with its release comment."""
+    prefix = "" if name == ALLOW_LIST else name
+    comment = f"  # v{version}" if version else ""
+    return f"'{prefix}@{ref}'{comment}"
+
+
+class ActionPinContracts(unittest.TestCase):
+    """A coordinated release bump needs no edits to the wiring contracts."""
+
+    @cached_property
+    def sources(self) -> dict[str, str]:
+        """Read the same set of workflows as the repository-wide contracts."""
+        return {
+            path.name: path.read_text(encoding="utf-8")
+            for path in sorted(WORKFLOWS.glob("*.y*ml"))
+        }
+
+    def test_pins_agree_and_meet_the_release_floors(self) -> None:
+        """Current workflows agree on each commit and its release comment."""
+        errors = pin_errors(workflow_pin_sites(self.sources))
+        if errors:
+            self.fail("\n".join(errors.values()))
+
+    def test_coordinated_pin_bump_passes(self) -> None:
+        """A Dependabot-style update of every call passes without test edits."""
+        sites = workflow_pin_sites(self.sources)
+        major = max(s.release[0] for calls in sites.values() for s in calls)
+        # Pick an unused synthetic SHA, not a copy of any real pin.
+        used = {s.ref for calls in sites.values() for s in calls}
+        ref = next(
+            candidate
+            for i in range(len(used) + 1)
+            if (candidate := f"{i:040x}") not in used
+        )
+        bumped = rewrite_pin_fixture(
+            self.sources,
+            (
+                (site, fixture_pin(name, ref, f"{major + 1}.0.0"))
+                for name, calls in sites.items()
+                for site in calls
+            ),
+        )
+        errors = pin_errors(workflow_pin_sites(bumped))
+        if errors:
+            self.fail("\n".join(errors.values()))
+
+    def test_bad_pins_name_the_call_sites(self) -> None:
+        """Drift and malformed or too-old pins fail against real workflows."""
+        sites = workflow_pin_sites(self.sources)
+        for name, calls in sites.items():
+            first = calls[0]
+            ref = first.ref
+            version = ".".join(map(str, first.release))
+            different = ("1" if ref[0] == "0" else "0") + ref[1:]
+            # Use synthetic refs and a synthetic release below every floor.
+            for case, new_ref, release, problem in (
+                ("different SHA", different, version, "disagree"),
+                ("tag", "v99.0.0", version, "lowercase SHA"),
+                ("branch", "main", version, "lowercase SHA"),
+                ("short SHA", ref[:12], version, "lowercase SHA"),
+                ("missing comment", ref, "", "# vX.Y.Z comment"),
+                ("old release", ref, "0.0.0", "release is below"),
+            ):
+                with self.subTest(pin=name, case=case):
+                    mutated = rewrite_pin_fixture(
+                        self.sources, [(first, fixture_pin(name, new_ref, release))]
+                    )
+                    error = pin_errors(workflow_pin_sites(mutated))[name]
+                    self.assertIn(problem, error)
+                    for site in calls:
+                        self.assertIn(f"{site.location}:", error)
+
+
 SLACK_TOKEN = "secrets.SLACK_BOT_TOKEN"
-BLOCK_PIN = f"{BLOCK_ACTION}@65ff87957e1cac2de3203a85dbb07c31810321cb"
-HARDEN_PIN = f"{HARDEN_RUNNER}@1d88384fd173af6ecb012dfd0264a306b711241a"
-ALLOW_LIST_PIN = "@6e6cab073a93c0d58e4e8846d44e1cbddbac975b"
 
 
 class ExpiryAlertWorkflowContracts(unittest.TestCase):
@@ -5127,9 +5341,9 @@ class ExpiryAlertWorkflowContracts(unittest.TestCase):
         for job in self.jobs:
             steps = self.steps(job)
             with self.subTest(job=job):
-                self.assertEqual(steps[0]["uses"], BLOCK_PIN)
-                self.assertEqual(steps[0]["with"]["config"], ALLOW_LIST_PIN)
-                self.assertEqual(steps[1]["uses"], HARDEN_PIN)
+                self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+                self.assertRegex(steps[0]["with"]["config"], r"^@[0-9a-f]{40}$")
+                self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
                 self.assertEqual(steps[1]["with"]["egress-policy"], "block")
                 self.assertEqual(
                     unwrap(steps[1]["with"]["allowed-endpoints"]),
@@ -5167,7 +5381,6 @@ class ExpiryAlertWorkflowContracts(unittest.TestCase):
                     self.assertLessEqual(set(found), {SLACK_TOKEN})
                     if is_action(step, SLACK_ACTION):
                         posters += 1
-                        self.assertEqual(step["uses"], SLACK_PIN)
                         with_ = cast(dict[str, Any], step["with"])
                         self.assertEqual(with_["method"], "chat.postMessage")
                         self.assertEqual(with_["errors"], "true")
