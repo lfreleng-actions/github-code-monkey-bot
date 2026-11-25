@@ -9,7 +9,8 @@ it. The selection summary lists those heads under their own heading,
 and the select job hands them to the report as a file in its
 evidence artifact, which the report validates before printing: a run
 of them, or of refused requests, is how a human notices a lapsed
-review token.
+review token. The same file carries the named targets another run
+held (``named_holds``), so the report lists those as not worked too.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ import json
 import re
 from pathlib import Path
 from typing import Any, cast
+
+import named_holds
 
 # The skip for a head with no Copilot review and nothing else outstanding.
 NO_REVIEW = "no Copilot review of the head"
@@ -36,6 +39,16 @@ def reason(last_review: str | None) -> str:
 def entries(skipped_issues: list[dict[str, str]]) -> list[dict[str, str]]:
     """The skipped issues that are unreviewed heads, in order."""
     return [entry for entry in skipped_issues if entry.get("reason") in REASONS]
+
+
+def handed(skipped_issues: list[dict[str, str]]) -> list[dict[str, str]]:
+    """The entries the select job hands the report: unreviewed heads and held names."""
+    return [
+        entry
+        for entry in skipped_issues
+        if entry.get("reason") in REASONS
+        or named_holds.is_named_held(entry.get("reason"))
+    ]
 
 
 def section(found: list[dict[str, str]]) -> list[str]:
@@ -74,7 +87,8 @@ def accepted(raw: str | None, org: str | None) -> tuple[list[dict[str, str]], in
 
     The output crosses jobs, so an entry counts only when its reference
     is a whole ``org/repo#N`` and its reason one of the two the selector
-    writes; anything else is counted, never copied.
+    writes for an unreviewed head, or its reason for a held named target
+    (``named_holds``); anything else is counted, never copied.
     """
     if not raw:
         return [], 0
@@ -100,15 +114,15 @@ def accepted(raw: str | None, org: str | None) -> tuple[list[dict[str, str]], in
             isinstance(issue, str)
             and pattern.fullmatch(issue)
             and isinstance(why, str)
-            and why in REASONS
+            and (why in REASONS or named_holds.is_named_held(why))
         ):
             kept.append({"issue": issue, "reason": why})
     return kept, len(items) - len(kept)
 
 
 def report_lines(found: list[dict[str, str]], invalid: int) -> list[str]:
-    """The report's section: the heads, then a count of entries left out."""
-    lines = section(found)
+    """The report's sections: the heads, the held names, then a count left out."""
+    lines = section(entries(found)) + named_holds.section(named_holds.entries(found))
     if invalid:
         many = invalid != 1
         lines += [

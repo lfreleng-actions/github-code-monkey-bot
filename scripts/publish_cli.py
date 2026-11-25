@@ -95,6 +95,9 @@ def build_parser(
     comment.add_argument("--run-url", default="")
     comment.add_argument("--since", default="")
     comment.add_argument("--run-parameters", default="")
+    comment.add_argument(
+        "--continue-rounds", choices=("true", "false"), default="false"
+    )
     comment.set_defaults(handler=comments.run_comment)
 
     request = commands.add_parser(

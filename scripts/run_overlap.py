@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import bot_github as github
+import named_holds
 from overlap_evidence import SELECT_JOB, evidence_of, pages_of, read_selection, warn
 from overlap_wait import FAILURES, MAX_RUNS, Wait, await_older, bounded, listed_runs
 
@@ -233,7 +234,10 @@ class Holds:
     Each skip counts under ``held`` and is recorded in
     ``skipped_issues`` with the holding run, for named and scanned
     targets alike, naming the issue, or the pull request a round
-    revises.
+    revises. A target the operator named (``issues`` or
+    ``pull_requests``) also prints a ``::warning::`` naming it and the
+    holding run, and its reason says it was not worked, so the summary
+    and the report list it apart: the run still ends green.
     """
 
     def __init__(
@@ -244,19 +248,32 @@ class Holds:
         self.skipped = skipped
         self.skipped_issues = skipped_issues
 
-    def claims(self, repository: str, numbers: tuple[int, ...], reference: str) -> bool:
-        """Whether another run holds any of the numbers; record the skip as ``reference``."""
+    def claims(
+        self,
+        repository: str,
+        numbers: tuple[int, ...],
+        reference: str,
+        *,
+        named: bool = False,
+    ) -> bool:
+        """Whether another run holds any of the numbers; record the skip as ``reference``.
+
+        ``named`` marks a target the operator named, which warns too.
+        """
         for number in numbers:
             run = self.held.get((repository.lower(), number))
             if run is not None:
                 self.skipped["held"] += 1
-                self.skipped_issues.append(
-                    {"issue": reference, "reason": f"being worked by run {run}"}
+                reason = (
+                    named_holds.reason(run) if named else f"being worked by run {run}"
                 )
+                if named:
+                    warn_named(reference, run)
+                self.skipped_issues.append({"issue": reference, "reason": reason})
                 return True
         return False
 
-    def holds(self, entry: dict[str, Any]) -> bool:
+    def holds(self, entry: dict[str, Any], *, named: bool = False) -> bool:
         """Whether another run holds the entry's issue or pull request; record it.
 
         A round is recorded under its pull request, the target an
@@ -267,39 +284,64 @@ class Holds:
         pull = entry.get("pull_request")
         if isinstance(pull, dict):
             numbers = (int(cast("dict[str, Any]", pull)["number"]), *numbers)
-        return self.claims(repository, numbers, f"{repository}#{numbers[0]}")
+        return self.claims(
+            repository, numbers, f"{repository}#{numbers[0]}", named=named
+        )
 
     def pulls(self, org: str, pulls: list[tuple[str, int]]) -> list[tuple[str, int]]:
         """The named pull requests no other run holds, passed over before any read."""
         return [
             (name, number)
             for name, number in pulls
-            if not self.claims(f"{org}/{name}", (number,), f"{org}/{name}#{number}")
+            if not self.claims(
+                f"{org}/{name}", (number,), f"{org}/{name}#{number}", named=True
+            )
         ]
 
-    def issues(self, ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The issue candidates no other run holds, in their order."""
-        return [candidate for candidate in ranked if not self.holds(candidate)]
+    def issues(
+        self, ranked: list[dict[str, Any]], *, named: bool = False
+    ) -> list[dict[str, Any]]:
+        """The issue candidates no other run holds, in their order.
 
-    def rounds(self, revisions: list[tuple[str, Builder]]) -> list[tuple[str, Builder]]:
+        ``named`` says the operator named them, not a scan.
+        """
+        return [
+            candidate for candidate in ranked if not self.holds(candidate, named=named)
+        ]
+
+    def rounds(
+        self, revisions: list[tuple[str, Builder]], *, named: bool = False
+    ) -> list[tuple[str, Builder]]:
         """The revision builders, each yielding nothing for a held round.
 
         ``pulls`` and the scan's ``claims`` have already passed over a
         round whose pull request, or a scanned round's issue, is held,
         before any read; this
         catches a named round whose issue alone is held, which is known
-        only once it is built.
+        only once it is built. ``named`` says the operator named them.
         """
-        return [(repository, self.guard(build)) for repository, build in revisions]
+        return [
+            (repository, self.guard(build, named=named))
+            for repository, build in revisions
+        ]
 
-    def guard(self, build: Builder) -> Builder:
+    def guard(self, build: Builder, *, named: bool = False) -> Builder:
         """Wrap one builder so a held entry is skipped rather than chosen."""
 
         def guarded() -> dict[str, Any] | None:
             entry = build()
-            return None if entry is None or self.holds(entry) else entry
+            return None if entry is None or self.holds(entry, named=named) else entry
 
         return guarded
+
+
+def warn_named(reference: str, run: int) -> None:
+    """Warn that a target the operator named is held, so the run does not work it."""
+    data = ascii(reference)[1:-1].replace("::", ": :").replace("##[", "# #[")
+    print(
+        f"::warning title=Named target held::{data} is being worked by run {run};"
+        " this run does not work it"
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

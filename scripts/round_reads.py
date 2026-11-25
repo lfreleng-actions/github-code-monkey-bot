@@ -28,6 +28,7 @@ FOOTER = re.compile(
     r"(?: mergeable=(?:true|false|unknown))?"
     r"(?: checks=(?:passing|infrastructure|failing|running|none|unknown)"
     r"(?:/[0-9a-f]{12})?)?"
+    r"(?: late=[a-z,-]+)?"
     r"(?: round=(?P<round>\d+))?(?: pr=(?P<pr>\d+))?(?: since=(?P<since>\S+))?"
     r"(?: pending=(?P<pending>\S+))?"
     r"(?: handback=(?P<handback>\d+))?(?: antagonistic=(?P<antagonistic>\d+))?"

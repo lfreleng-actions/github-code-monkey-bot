@@ -13,6 +13,7 @@ from typing import Any, cast
 import bot_github as github
 import issue_reads as reads
 import issue_recheck as recheck
+import late_notice
 import proposal_model as model
 import proposal_policy as policy
 import round_recount
@@ -226,7 +227,9 @@ COMMENTS: dict[str, Callable[[dict[str, Any], str, str], str | None]] = {
 }
 
 
-def comment_body(result: dict[str, Any], run_url: str) -> str | None:
+def comment_body(
+    result: dict[str, Any], run_url: str, *, continuing: bool = False
+) -> str | None:
     """One line for the issue, or None when there is nothing worth saying.
 
     The reasons descend from the untrusted manifest, so they are cut
@@ -241,7 +244,7 @@ def comment_body(result: dict[str, Any], run_url: str) -> str | None:
     )
     if len(reasons) > policy.MAX_COMMENT_REASON:
         reasons = reasons[: policy.MAX_COMMENT_REASON - 1] + "…"
-    text = template(result, reasons, run_url)
+    text = late_notice.after(template(result, reasons, run_url), result, continuing)
     if text is not None and superseded(result):
         text += (
             " This round does not count toward the round cap of its antagonistic"
@@ -299,7 +302,7 @@ def run_comment(args: argparse.Namespace) -> None:
         print("dry run: no comment")
         return
     round_recount.recount(result, args.run_url)
-    body = comment_body(result, args.run_url)
+    body = comment_body(result, args.run_url, continuing=late_notice.continues(args))
     if body is None:
         print("nothing to comment")
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -310,9 +313,9 @@ def run_comment(args: argparse.Namespace) -> None:
         return
     repository = github.require_str(result, "repository", "result")
     issue = github.require_int(result, "issue", "result")
-    # The marker names the run and the outcome, the review verdict
-    # included: a rerun that changed either posts again rather than
-    # leaving the issue at odds with result.json.
+    # The marker names the run and the outcome, the review verdict and
+    # any late maintainer comment included: a rerun that changed either
+    # posts again rather than leaving the issue at odds with result.json.
     verdict = review_verdict(result)
     suffix = f" review={review_token(result)}" if verdict else ""
     merge = merge_token(result)
@@ -321,6 +324,7 @@ def run_comment(args: argparse.Namespace) -> None:
     checked = checks_token(result)
     if checked is not None:
         suffix += f" checks={checked}"
+    suffix += late_notice.marker_field(result)
     if round_of(result):
         suffix += f" round={round_of(result)}"
     pull_number = result.get("pull_number")

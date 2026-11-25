@@ -23,7 +23,7 @@ from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 github = import_module("bot_github")
@@ -328,6 +328,108 @@ class ProbeTest(unittest.TestCase):
             written = json.loads((root / "result.json").read_text(encoding="utf-8"))
         self.assertIs(written["mergeable"], False)
         self.assertEqual(written["base_behind_by"], 2)
+        # No watermark in this result, so no comment read ran.
+        self.assertIsNone(written["late_comments"])
+
+
+class LateCommentReadTest(unittest.TestCase):
+    """After publication the step reads what a maintainer said mid-round."""
+
+    SINCE = "2026-11-11T00:00:00Z"
+
+    def record(
+        self, data: dict[str, Any], issue: bool, pull: bool, thread: bool
+    ) -> list[Any]:
+        """Record ``late_comments`` with the reads answering as given."""
+        late = import_module("late_comments")
+        thread_reads = import_module("thread_reads")
+        packet = MagicMock(maintainer_since=thread)
+        with (
+            patch.object(
+                round_reads, "newer_member_comment", side_effect=[issue, pull]
+            ) as comments_read,
+            patch.object(
+                thread_reads, "unresolved_threads", return_value=packet
+            ) as threads_read,
+        ):
+            late.record(data, frozenset({"review-bot"}))
+        return [comments_read.call_args_list, threads_read.call_args_list]
+
+    def test_each_place_a_maintainer_spoke_is_recorded(self) -> None:
+        """Issue (listed authors only), pull request, then review threads."""
+        data = result(
+            collected_at=self.SINCE, only_known_authors=True, issue_authors=["Ann"]
+        )
+        comments_calls, threads_calls = self.record(data, True, False, True)
+        self.assertEqual(data["late_comments"], ["issue", "review thread"])
+        self.assertEqual(
+            [call.args for call in comments_calls],
+            [
+                (REPOSITORY, 7, self.SINCE, frozenset({"ann"})),
+                (REPOSITORY, 8, self.SINCE),
+            ],
+        )
+        self.assertEqual(
+            threads_calls[0].args,
+            (REPOSITORY, 8, self.SINCE, frozenset({"review-bot"})),
+        )
+        quiet = result(collected_at=self.SINCE, only_known_authors=False)
+        self.record(quiet, False, False, False)
+        self.assertEqual(quiet["late_comments"], [])
+
+    def test_nothing_published_or_no_watermark_reads_nothing(self) -> None:
+        """A dry run, a refusal or a result without a watermark is not read."""
+        for data in (
+            result(),
+            result(collected_at=self.SINCE, dry_run=True),
+            result(collected_at=self.SINCE, verdict="refused"),
+            result(collected_at=self.SINCE, pull_request_url=None),
+        ):
+            with self.subTest(data=data):
+                comments_calls, _ = self.record(data, True, True, True)
+                self.assertEqual(comments_calls, [])
+                self.assertIsNone(data["late_comments"])
+
+    def test_a_failed_read_changes_nothing_but_a_warning(self) -> None:
+        """The read fails open: no continuation, no withheld nomination."""
+        late = import_module("late_comments")
+        thread_reads = import_module("thread_reads")
+        data = result(collected_at=self.SINCE, only_known_authors=False)
+        failure = github.GitHubError("rate limited::x")
+        with (
+            patch.object(round_reads, "newer_member_comment", side_effect=failure),
+            patch.object(thread_reads, "unresolved_threads", side_effect=failure),
+        ):
+            late.record(data, frozenset())
+        self.assertIsNone(data["late_comments"])
+        self.assertEqual(len(data["warnings"]), 1)
+        self.assertIn("rate limited: :x", data["warnings"][0])
+
+    def test_a_later_failed_read_keeps_a_comment_already_found(self) -> None:
+        """A failed pull-request or thread read never erases the issue's comment."""
+        late = import_module("late_comments")
+        thread_reads = import_module("thread_reads")
+        failure = github.GitHubError("rate limited::x")
+        for pull, threads in (
+            ([True, failure], {"return_value": MagicMock(maintainer_since=False)}),
+            ([True, False], {"side_effect": failure}),
+        ):
+            data = result(collected_at=self.SINCE, only_known_authors=False)
+            with (
+                self.subTest(pull=pull, threads=threads),
+                patch.object(round_reads, "newer_member_comment", side_effect=pull),
+                patch.object(thread_reads, "unresolved_threads", **threads),
+            ):
+                late.record(data, frozenset())
+                self.assertEqual(data["late_comments"], ["issue"])
+                self.assertEqual(len(data["warnings"]), 1)
+                self.assertIn("rate limited: :x", data["warnings"][0])
+
+    def test_reviewers_default_to_the_trusted_config(self) -> None:
+        """The step reads the same reviewer list the selector does."""
+        late = import_module("late_comments")
+        self.assertTrue(late.REVIEWERS.is_file())
+        self.assertIsInstance(late.configured_reviewers(), frozenset)
 
 
 class CommentTest(unittest.TestCase):

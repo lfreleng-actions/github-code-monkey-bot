@@ -3909,6 +3909,13 @@ class OutstandingOnlyContracts(ReusableWorkflowCase):
         budget = cast(dict[str, Any], self.step("select", "budget")["env"])
         self.assert_expression(budget["CONTINUES_RUN"], "inputs.continues_run")
 
+    def test_comment_learns_whether_the_caller_continues(self) -> None:
+        """The outcome comment says who answers a late comment (#252)."""
+        comment = self.step("publish", "Comment on the issue")
+        env = cast(dict[str, Any], comment["env"])
+        self.assert_expression(env["CONTINUE"], "inputs.continue_rounds")
+        self.assertIn('--continue-rounds "$CONTINUE"', flatten(comment["run"]))
+
     def test_only_a_live_pull_requests_run_names_a_continuation(self) -> None:
         """The report's list is [] in any other run, whatever the results say (#179)."""
         output = str(self.jobs["report"]["outputs"]["continue_pull_requests"])
@@ -4052,6 +4059,16 @@ class ContinueJobContracts(WorkflowCase):
         self.assert_expression(str(with_["continues_run"]), "inputs.continues_run")
         env = cast(dict[str, Any], self.step("continue", "dispatch")["env"])
         self.assert_expression(env["PARENT_RUN"], "github.run_id")
+
+    def test_continue_rounds_follows_the_variable(self) -> None:
+        """The variable that stops the continue job tells the comment too (#252)."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["continue_rounds"]), "vars.CODE_MONKEY_CONTINUE != 'false'"
+        )
+        self.assertIn(
+            "vars.CODE_MONKEY_CONTINUE != 'false'", str(self.jobs["continue"]["if"])
+        )
 
     def test_job_holds_actions_write_alone(self) -> None:
         """One grant, no checkout, no artifact and no stored secret."""
@@ -4432,6 +4449,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "outstanding_only",
                 "continues_run",
                 "inherit_run_parameters",
+                "continue_rounds",
                 "max_runtime_minutes",
                 "max_rounds",
                 "stale_status_minutes",
@@ -4502,6 +4520,8 @@ class InterfaceContracts(ReusableWorkflowCase):
             "revise_only": False,
             "outstanding_only": False,
             "continues_run": "",
+            # A caller that does not continue says an operator must.
+            "continue_rounds": False,
             "pull_requests": "",
             "fork_pool_token_max_days": "",
             "fork_pool_token_expires": "",
