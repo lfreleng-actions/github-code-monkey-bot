@@ -2052,6 +2052,174 @@ class RunRespondTest(NoNetworkCase):
             {"replied": 2, "already": 0, "resolved": 1, "failed": 0},
         )
 
+    def test_check_json_carries_the_held_words(self) -> None:
+        """The held words cross check.json, so the push records them pending."""
+        model = import_module("proposal_model")
+        entry = {
+            "repository": REPOSITORY,
+            "number": 7,
+            "branch": BRANCH,
+            "base_sha": BASE,
+            "default_branch": "main",
+            "fork_org": FORK_ORG,
+            "fork_repository": FORK,
+            "task": "revise",
+            "rebase_sha": BASE,
+            "pull_request": {"number": 41, "url": "u", "head_sha": HEAD},
+            "round": 2,
+            "threads": [
+                {
+                    "thread_id": "PRRT_h",
+                    "comment_id": 100,
+                    "resolved": True,
+                    "maintainer_latest": "2026-10-02T00:00:00Z",
+                },
+                {"thread_id": "PRRT_1", "comment_id": 101, "resolved": False},
+            ],
+        }
+        data = json.loads(json.dumps(model.Check.from_entry("repo-7", entry).to_json()))
+        args = argparse.Namespace(
+            run_attempt=1, author_session="", dry_run=False, mode="pull-requests"
+        )
+        self.assertEqual(
+            publish.base_result(args, data)["pending"], "2026-10-02T00:00:00Z"
+        )
+
+    def test_an_unanswered_resolved_thread_stays_pending(self) -> None:
+        """A word whose reply was left out or refused is the footer's ``pending``.
+
+        The push records every carried word as pending; the respond
+        step clears each word whose reply is on its thread.
+        """
+        threads = [
+            {"thread_id": "PRRT_1", "comment_id": 100, "held": "2026-10-02T00:00:00Z"},
+            {"thread_id": "PRRT_2", "comment_id": 101, "held": "2026-10-04T00:00:00Z"},
+            # The agent wrote no response for this one.
+            {"thread_id": "PRRT_3", "comment_id": 102, "held": "2026-10-03T00:00:00Z"},
+        ]
+        data = revision_check(threads=threads)
+        args = argparse.Namespace(
+            run_attempt=1, author_session="", dry_run=False, mode="pull-requests"
+        )
+        pushed = publish.base_result(args, data)
+        self.assertEqual(pushed["pending"], "2026-10-02T00:00:00Z")
+        check = self.write_check(data)
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                    pending=pushed["pending"],
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        def reply(_repo: str, _number: int, comment_id: int, _body: str) -> None:
+            if comment_id == 101:
+                raise github.GitHubError("refused")
+
+        with (
+            patch.object(review, "pull_head", return_value=NEW_HEAD),
+            patch.object(
+                publish.revision_publish.threads_of, "read_thread", return_value=[]
+            ),
+            patch.object(publish.revision_publish, "reply", reply),
+            patch.object(publish.revision_publish, "resolve", return_value=None),
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(stored["responded"]["failed"], 1)
+        self.assertEqual(stored["pending"], "2026-10-03T00:00:00Z")
+
+    def test_a_user_copying_the_marker_clears_no_pending_word(self) -> None:
+        """A user with the App's login and this round's marker is not its reply.
+
+        The publisher posts the real reply; when GitHub refuses it, the
+        word stays pending, so the next selection hears the thread.
+        """
+        marker = (
+            "<!-- code-monkey reply round=2 session=39115306869"
+            " seen=2026-10-03T00:00:00Z -->"
+        )
+        held = "2026-10-02T00:00:00Z"
+        threads = [{"thread_id": "PRRT_1", "comment_id": 100, "held": held}]
+        data = revision_check(
+            threads=threads, responses=revision_check()["responses"][:1]
+        )
+        check = self.write_check(data)
+        result = self.root / "result.json"
+        result.write_text(
+            json.dumps(
+                result_json(
+                    key="repo-7",
+                    pull_request_url=f"https://github.com/{REPOSITORY}/pull/41",
+                    commits=[NEW_HEAD],
+                    round=2,
+                    pending=held,
+                )
+            ),
+            encoding="utf-8",
+        )
+        impostor = [
+            {
+                "author": {"login": "code-monkey", "__typename": "User"},
+                "body": f"Fixed.\n\n{marker}",
+            }
+        ]
+        with (
+            patch.object(review, "pull_head", return_value=NEW_HEAD),
+            patch.object(
+                publish.revision_publish.threads_of,
+                "read_thread",
+                return_value=impostor,
+            ),
+            patch.object(
+                publish.revision_publish,
+                "reply",
+                side_effect=github.GitHubError("refused"),
+            ) as reply,
+            patch.object(publish.revision_publish, "resolve", return_value=None),
+            patch.object(
+                publish.revision_publish, "update_pull_request", return_value=None
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            publish.main(
+                [
+                    "respond",
+                    "--result",
+                    str(result),
+                    "--check",
+                    str(check),
+                    "--output",
+                    str(result),
+                ]
+            )
+        reply.assert_called()
+        stored = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(
+            (stored["responded"]["already"], stored["responded"]["failed"]), (0, 1)
+        )
+        self.assertEqual(stored["pending"], held)
+
     def test_an_unlisted_issue_gets_no_proposal_answers(self) -> None:
         """The live list check guards a proposal's replies and description.
 
@@ -2134,11 +2302,17 @@ class RunRespondTest(NoNetworkCase):
             ),
             encoding="utf-8",
         )
-        marker = "<!-- code-monkey reply round=2 session=39115306869 -->"
+        marker = (
+            "<!-- code-monkey reply round=2 session=39115306869"
+            " seen=2026-10-03T00:00:00Z -->"
+        )
         threads = {
             "PRRT_1": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
-                {"author": {"login": "code-monkey"}, "body": f"Fixed.\n\n{marker}"},
+                {
+                    "author": {"login": "code-monkey", "__typename": "Bot"},
+                    "body": f"Fixed.\n\n{marker}",
+                },
             ],
             # An older round's reply, another session's at the same
             # round, and a human quoting the marker mid-body, are not
@@ -2146,13 +2320,13 @@ class RunRespondTest(NoNetworkCase):
             "PRRT_2": [
                 {"author": {"login": "copilot-pull-request-reviewer"}, "body": "Fix."},
                 {
-                    "author": {"login": "code-monkey"},
+                    "author": {"login": "code-monkey", "__typename": "Bot"},
                     "body": "Earlier.\n\n<!-- code-monkey reply round=1 session=1 -->",
                 },
                 {
-                    "author": {"login": "code-monkey"},
+                    "author": {"login": "code-monkey", "__typename": "Bot"},
                     "body": "Disputed.\n\n<!-- code-monkey reply round=2 "
-                    "session=39115306868 -->",
+                    "session=39115306868 seen=2026-10-03T00:00:00Z -->",
                 },
                 {"author": {"login": "maintainer"}, "body": f"{marker} is the marker"},
             ],
@@ -3653,6 +3827,33 @@ class RunCommentTest(NoNetworkCase):
             body.endswith(
                 "<!-- code-monkey https://run proposed since=2026-10-01T12:00:00Z -->"
             )
+        )
+
+    def test_marker_carries_the_pending_word(self) -> None:
+        """An unanswered resolved thread's word follows the watermark."""
+        path = self.write_result(
+            result_json(
+                bot_login=BOT,
+                collected_at="2026-10-01T12:00:00Z",
+                pending="2026-09-30T08:00:00Z",
+            )
+        )
+        with (
+            patch.object(reads, "api_page", return_value=[]),
+            patch.object(
+                github, "api_write", return_value={"html_url": "https://x/c/1"}
+            ) as write,
+            redirect_stdout(io.StringIO()),
+        ):
+            comments.run_comment(
+                argparse.Namespace(result=path, run_url="https://run", since="t")
+            )
+        body = write.call_args.args[2]["body"]
+        found = round_reads.FOOTER.search(body)
+        assert found is not None
+        self.assertEqual(
+            (found.group("since"), found.group("pending")),
+            ("2026-10-01T12:00:00Z", "2026-09-30T08:00:00Z"),
         )
 
     def test_marker_carries_the_review_verdict(self) -> None:

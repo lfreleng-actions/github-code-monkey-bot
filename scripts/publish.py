@@ -65,6 +65,7 @@ from branch_refs import (
 )
 from proposal_policy import PublishError, Rejection
 from stale_branch import ClosedAttempt, create_fresh_branch, restore_closed_attempt
+from thread_pending import pending_since
 
 SCHEMA = 1
 
@@ -110,6 +111,8 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "workflow_edits_label": check.get("workflow_edits_label") or None,
         "precommit_edits_label": check.get("precommit_edits_label") or None,
         "collected_at": check.get("collected_at") or None,
+        # Unanswered until the respond step posts a reply on its thread.
+        "pending": pending_since(list(check.get("threads") or []), set()),
         # The comment step re-checks the issue under the same mode and list.
         "only_known_authors": check.get("only_known_authors") is not False,
         "issue_authors": list(cast("list[Any]", check.get("issue_authors") or [])),

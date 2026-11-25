@@ -443,7 +443,12 @@ def no_replies(_: str) -> list[dict[str, Any]]:
 
 def answered_thread(_: str) -> list[dict[str, Any]]:
     """A thread the bot already answered this round."""
-    return [{"author": {"login": "code-monkey"}, "body": REVISION_MARKER}]
+    return [
+        {
+            "author": {"login": "code-monkey", "__typename": "Bot"},
+            "body": REVISION_MARKER,
+        }
+    ]
 
 
 class TargetRecoveryTest(unittest.TestCase):
@@ -508,7 +513,8 @@ class TargetRecoveryTest(unittest.TestCase):
 
         def thread(_: str) -> list[dict[str, Any]]:
             return [
-                {"author": {"login": "code-monkey"}, "body": body} for body in posted
+                {"author": {"login": "code-monkey", "__typename": "Bot"}, "body": body}
+                for body in posted
             ]
 
         stored, _ = self.respond(

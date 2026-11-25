@@ -33,7 +33,7 @@ HANDBACK_URL = re.compile(
 HANDBACK_SECTION = "antagonistic review"
 
 
-def reply_marker(round_number: int, session: str) -> str:
+def reply_marker(round_number: int, session: str, seen: str = "") -> str:
     """The last line of a session's replies: what a rerun looks for before posting.
 
     The round alone would not do: a session whose issue comment never
@@ -41,8 +41,12 @@ def reply_marker(round_number: int, session: str) -> str:
     number and must not mistake the earlier replies for its own. The
     session is the run id with the select job's attempt: new on a full
     rerun, which authors anew, and kept across a publish-only retry.
+    ``seen`` is when the selection read the thread, its ``collected_at``:
+    the reply answers a maintainer's word up to then and none after,
+    which the agent never read.
     """
-    return f"<!-- code-monkey reply round={round_number} session={session} -->"
+    stamp = f" seen={seen}" if seen and not any(c.isspace() for c in seen) else ""
+    return f"<!-- code-monkey reply round={round_number} session={session}{stamp} -->"
 
 
 def check_entry(data: dict[str, Any]) -> None:
@@ -178,7 +182,7 @@ def read_responses(manifest: dict[str, Any], check: Check) -> None:
                 "thread_id": thread_id,
                 "comment_id": comment_id,
                 "reply": f"{REPLY_PREFIX}{text}\n\n"
-                f"{reply_marker(check.round, check.session)}",
+                f"{reply_marker(check.round, check.session, check.collected_at)}",
                 "resolve": resolve,
             }
         )

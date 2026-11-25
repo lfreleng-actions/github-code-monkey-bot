@@ -30,6 +30,8 @@ from branch_swap import SwapUnknown, already_moved, move_branch
 from proposal_policy import PublishError, Rejection, Superseded
 from revision_check import reply_marker
 from revision_title import update_pull_request
+from thread_comments import is_bot
+from thread_pending import pending_since
 
 # Waits between head reads while the pull request still names the
 # pre-round head: GitHub's pull request object lags the ref update.
@@ -246,19 +248,19 @@ def answered(thread_id: str, bot_login: str, marker: str) -> bool:
 
     A rerun after the replies went up and a later step failed must
     not post them again. The round marker is the reply's last line;
-    a bot-authored comment ending with it is this round's reply, while
-    an older round's, or anyone quoting the marker mid-body, is not.
+    a comment the App wrote, typed ``Bot``, ending with it is this
+    round's reply, while an older round's, anyone quoting the marker
+    mid-body, or a user who took the App's slug as a login, is not:
+    such a copy would skip the reply and clear the thread's pending word.
     """
     login = bot_login.removesuffix("[bot]")
     for item in threads_of.read_thread(thread_id):
         if not isinstance(item, dict):
             continue
         comment = cast("dict[str, Any]", item)
-        author = comment.get("author")
         body = comment.get("body")
         if (
-            isinstance(author, dict)
-            and cast("dict[str, Any]", author).get("login") == login
+            is_bot(comment, login)
             and isinstance(body, str)
             and body.rstrip().endswith(marker)
         ):
@@ -378,7 +380,10 @@ def run_respond(args: argparse.Namespace) -> None:
     if answering and verdict == "proposed" and not recheck.listed_issue(check, result):
         answering = False
     if answering:
-        respond(check, verdict, counts, warnings)
+        answered: set[str] = set()
+        respond(check, verdict, counts, warnings, answered)
+        threads = cast("list[dict[str, Any]]", check.get("threads") or [])
+        result["pending"] = pending_since(threads, answered)
     result["responded"] = counts
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -392,16 +397,20 @@ def respond(
     verdict: Any,
     counts: dict[str, int],
     warnings: list[str],
+    answered: set[str] | None = None,
 ) -> None:
     """Answer each thread, then update the description of a proposal.
 
-    A write recovered from a transient failure adds a warning.
+    A write recovered from a transient failure adds a warning. Each
+    thread whose reply is on it joins ``answered``.
     """
     with recovery.recording(warnings):
         repository = str(check["repository"])
         number = int(check["pull_number"])
         marker = reply_marker(
-            int(check.get("round") or 0), str(check.get("session") or "")
+            int(check.get("round") or 0),
+            str(check.get("session") or ""),
+            str(check.get("collected_at") or ""),
         )
         for response in cast("list[dict[str, Any]]", check.get("responses") or []):
             thread = str(response["thread_id"])
@@ -412,6 +421,8 @@ def respond(
                     dict(response, marker=marker, bot_login=str(check["bot_login"])),
                     counts,
                 )
+                if answered is not None:
+                    answered.add(thread)
             except (github.GitHubError, reads.SelectionError) as exc:
                 # A refused write, or a thread too long for the bounded
                 # read: this thread is left alone and the rest go on.

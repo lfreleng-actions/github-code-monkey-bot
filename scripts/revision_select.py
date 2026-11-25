@@ -96,10 +96,14 @@ def read_findings(
     since: str | None,
     reviewers: frozenset[str] = frozenset(),
     rule: StaleRule = OFF,
+    bot: str = "",
+    pending: str | None = None,
 ) -> Findings:
     """The unresolved threads, the head's reviews and its failing checks.
 
-    ``rule`` sets the stale statuses apart from the checks.
+    ``rule`` sets the stale statuses apart from the checks; ``bot``,
+    the App's login, tells the thread reads which replies are its own,
+    and ``pending``, the last round's, which resolved threads it owes.
 
     The hand-back is read before the threads and again after every
     other read. GitHub posts a review together with its inline
@@ -114,7 +118,9 @@ def read_findings(
     number, head = int(pull["number"]), str(pull["head_sha"])
     handback = revisions.handback_review(repository, number, head, reviewers)
     findings = Findings(
-        thread_reads.unresolved_threads(repository, number, since, reviewers),
+        thread_reads.unresolved_threads(
+            repository, number, since, reviewers, bot, pending
+        ),
         revisions.latest_review(repository, number, head),
         check_reads.failing_checks(repository, head, rule),
         handback,
@@ -153,10 +159,13 @@ def outstanding(
     commented on the issue or the pull request after the bot's last
     round; on the issue, only a ``listed`` author's comment counts, as
     only theirs reaches the packet. A maintainer's word on a review
-    thread after that round, an opener or a reply, counts as a
-    comment, since the issue and
+    thread after that round, an opener or a reply, on a resolved
+    thread as on an open one, counts as a comment, since the issue and
     pull request comments do not carry it; the thread
-    reads heard it over every thread, the packet's bounds aside. A
+    reads heard it over every thread, the packet's bounds aside. So
+    does an older word on a resolved thread that no reply of the bot's
+    there answers, or that the last round carried and left
+    unanswered (its footer's ``pending``). A
     stale status (``stale_statuses``) is no work. A head with nothing
     else skips (``scan_reasons``): as still running while its checks
     have yet to finish, stale statuses aside, as needing a re-run when its
@@ -168,7 +177,7 @@ def outstanding(
     packet, verdict = findings.threads, findings.verdict
     issue = int(pull["issue"])
     reasons: list[str] = []
-    total = len(packet.threads) + packet.dropped
+    total = len(packet.threads) + packet.dropped - packet.resolved
     if total:
         reasons.append(f"{total} unresolved review thread(s)")
     if verdict is not None and verdict.get("verdict") == "findings":
@@ -188,6 +197,11 @@ def outstanding(
             reasons.append(f"a maintainer commented on the {what} since the last round")
     if packet.maintainer_since:
         reasons.append("a maintainer commented on a review thread since the last round")
+    if packet.unanswered:
+        reasons.append(
+            f"a maintainer commented on {packet.unanswered} resolved review"
+            " thread(s) the bot has not answered"
+        )
     return reasons
 
 
@@ -252,7 +266,10 @@ def build_entry(
         raise Skip("the run that dispatched this continuation published no round here")
     # Skips a capped pull request before the packet's reads.
     next_segment_round(repository, pull, history, inputs, None)
-    findings = read_findings(repository, pull, since, inputs.reviewers, inputs.stale)
+    login = str(bot["login"])
+    findings = read_findings(
+        repository, pull, since, inputs.reviewers, inputs.stale, login, history.pending
+    )
     # The hand-back may have changed since the cap read it; decide on
     # the one the packet carries.
     segment_round = next_segment_round(repository, pull, history, inputs, findings)

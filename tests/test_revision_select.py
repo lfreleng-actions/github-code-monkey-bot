@@ -25,6 +25,8 @@ select = import_module("revision_select")
 scanning = import_module("revision_scan")
 rounding = import_module("revision_rounds")
 github = import_module("bot_github")
+# The real thread read, for tests that drive it from a GraphQL page.
+READ_THREADS = thread_reads.unresolved_threads
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -128,6 +130,8 @@ class RevisionCase(unittest.TestCase):
         self.anchored: frozenset[int] = frozenset()
         # The runs whose footers record a published, counted round.
         self.published: frozenset[str] = frozenset()
+        # The latest handled footer's ``pending`` word.
+        self.pending: str | None = None
         self.newer = False
         patch.object(
             repository_reads, "repository_meta", side_effect=self.meta_of
@@ -199,6 +203,7 @@ class RevisionCase(unittest.TestCase):
             segment,
             self.anchored,
             published=self.published,
+            pending=self.pending,
         )
 
     def newer_of(self, *_args: Any) -> bool:
@@ -394,6 +399,120 @@ class BuildEntryTest(RevisionCase):
         self.assertEqual(entry["threads_dropped"], 1)
         # The reads were asked with the watermark, so they could tell.
         self.assertEqual(self.threads_since[-1], "2026-10-03T00:00:00Z")
+
+    def test_maintainer_reply_on_a_resolved_thread_resumes_after_a_handoff(
+        self,
+    ) -> None:
+        """A resolved thread's new maintainer reply wakes a handed-back pull request."""
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+        self.threads = [thread()]
+        with self.assertRaisesRegex(select.Skip, "handed"):
+            self.build(explicit=False)
+        heard = thread_reads.ThreadPacket([{**thread(), "resolved": True}], 0, True, 1)
+        with patch.object(thread_reads, "unresolved_threads", return_value=heard):
+            entry = self.build(explicit=False)
+        self.assertEqual(entry["round"], 3)
+        # The resolved thread is the maintainer's word, not an open finding.
+        self.assertEqual(
+            entry["round_reasons"],
+            ["a maintainer commented on a review thread since the last round"],
+        )
+        self.assertIs(entry["threads"][0]["resolved"], True)
+
+    def test_an_unanswered_resolved_thread_resumes_after_a_handoff(self) -> None:
+        """A word older than the watermark, left out by the bounds, still wakes it."""
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "handoff")
+        heard = thread_reads.ThreadPacket(
+            [{**thread(), "resolved": True}], 0, False, 1, 1
+        )
+        with patch.object(
+            thread_reads, "unresolved_threads", return_value=heard
+        ) as read:
+            entry = self.build(explicit=False)
+        self.assertEqual(read.call_args.args[4], BOT["login"])
+        self.assertEqual(
+            entry["round_reasons"],
+            [
+                "a maintainer commented on 1 resolved review thread(s)"
+                " the bot has not answered"
+            ],
+        )
+
+    def test_the_last_rounds_pending_word_reaches_the_reads(self) -> None:
+        """A word the last round carried and left unanswered is read for again."""
+        self.rounds = (2, [], "2026-10-03T00:00:00Z", "proposed")
+        self.pending = "2026-10-02T00:00:00Z"
+        heard = thread_reads.ThreadPacket(
+            [{**thread(), "resolved": True}], 0, False, 1, 1
+        )
+        with patch.object(
+            thread_reads, "unresolved_threads", return_value=heard
+        ) as read:
+            entry = self.build(explicit=False)
+        self.assertEqual(read.call_args.args[5], "2026-10-02T00:00:00Z")
+        self.assertEqual(entry["round"], 3)
+
+    def test_the_368_sequence_is_selected_and_carried(self) -> None:
+        """Bot reply, resolve, a maintainer's reply 40 seconds later: a round."""
+        self.rounds = (9, [], "2026-11-22T23:20:00Z", "proposed")
+        nodes = [
+            {
+                "databaseId": 100,
+                "body": "Follow the chain.",
+                "authorAssociation": "NONE",
+                "createdAt": "2026-11-22T22:00:00Z",
+                "author": {"login": "copilot-pull-request-reviewer"},
+            },
+            {
+                "databaseId": 101,
+                "body": "Fixed.",
+                "authorAssociation": "NONE",
+                "createdAt": "2026-11-22T23:27:48Z",
+                "author": {"login": "lf-code-monkey", "__typename": "Bot"},
+            },
+            {
+                "databaseId": 102,
+                "body": "Fail closed; drop the chain-following.",
+                "authorAssociation": "MEMBER",
+                "createdAt": "2026-11-22T23:28:28Z",
+                "author": {"login": "maintainer"},
+            },
+        ]
+        page = {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "PRRT_368",
+                                "isResolved": True,
+                                "isOutdated": False,
+                                "path": "x.py",
+                                "line": 1,
+                                "comments": {"nodes": nodes},
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+        with (
+            patch.object(thread_reads, "unresolved_threads", READ_THREADS),
+            patch.object(github, "graphql", return_value=page),
+        ):
+            entry = self.build(explicit=False)
+        self.assertEqual(
+            entry["round_reasons"],
+            ["a maintainer commented on a review thread since the last round"],
+        )
+        carried = entry["threads"][0]
+        self.assertEqual(
+            (carried["thread_id"], carried["resolved"]), ("PRRT_368", True)
+        )
+        self.assertEqual(
+            carried["replies"][-1]["body"], "Fail closed; drop the chain-following."
+        )
 
     def test_round_history_is_scoped_to_the_pull_request(self) -> None:
         """Footers count for this pull request alone, so a retry starts afresh."""

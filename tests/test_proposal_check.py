@@ -1866,10 +1866,12 @@ class RevisionCheckTest(GitCase):
         self.fixture.revision_manifest()
         (response,) = self.run_revision().responses
         # The round and the session, the run id, name the reply: a later
-        # session at the same round is another reply.
+        # session at the same round is another reply. ``seen`` is when the
+        # selection read the thread: the reply answers no word after it.
         self.assertTrue(
             response["reply"].endswith(
-                "\n\n<!-- code-monkey reply round=2 session=39115306869 -->"
+                "\n\n<!-- code-monkey reply round=2 session=39115306869"
+                " seen=2026-09-18T00:00:00Z -->"
             ),
             response["reply"],
         )
