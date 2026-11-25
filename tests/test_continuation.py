@@ -179,6 +179,37 @@ class ContinuationRuleTest(unittest.TestCase):
                 other = published(antagonistic={"state": state, "reason": None})
                 self.assertIsNone(continuation.unmet(other))
 
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_late_maintainer_comment_continues(self) -> None:
+        """A comment the round never read is work, even on a clean head."""
+        for places in (["issue"], ["pull request"], ["review thread"]):
+            with self.subTest(places=places):
+                item = clean(late_comments=places)
+                self.assertEqual(
+                    continuation.outstanding(item),
+                    ["a maintainer commented after the round read the pull request"],
+                )
+                self.assertIsNone(continuation.unmet(item))
+        for value in ([], None, "issue", ["elsewhere"]):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    continuation.unmet(clean(late_comments=value)),
+                    "nothing outstanding",
+                )
+
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_late_comment_at_a_cap_or_dry_run_does_not_continue(self) -> None:
+        """The comment changes no other condition."""
+        capped = published(late_comments=["issue"], round=10, segment_round=10)
+        self.assertEqual(continuation.unmet(capped), continuation.AT_CAP)
+        # A clean round at a segment's cap is finished: no round follows.
+        finished = clean(late_comments=["issue"], round=10, segment_round=10)
+        self.assertEqual(continuation.unmet(finished), continuation.AT_CAP)
+        done = clean(late_comments=[], round=10, segment_round=10)
+        self.assertEqual(continuation.unmet(done), "nothing outstanding")
+        dry = clean(late_comments=["issue"], dry_run=True)
+        self.assertEqual(continuation.unmet(dry), "a dry run")
+
     def test_round_at_a_cap_does_not_continue(self) -> None:
         """The segment's cap, the ceiling and the guard all stop the loop."""
         ceiling = revisions.MAX_TOTAL_ROUNDS

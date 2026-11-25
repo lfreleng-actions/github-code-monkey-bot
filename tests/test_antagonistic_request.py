@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 from importlib import import_module
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 antagonistic = import_module("antagonistic_request")
@@ -129,6 +130,30 @@ class NominationRuleTest(unittest.TestCase):
         )
 
 
+class LateCommentTest(unittest.TestCase):
+    """A maintainer comment the round never read withholds the nomination."""
+
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_late_comment_is_not_nominated(self) -> None:
+        """The next round answers it first; the comment says which."""
+        item = clean(late_comments=["pull request"])
+        self.assertEqual(antagonistic.unmet(item), antagonistic.LATE)
+        record = antagonistic.state(item, switch=True, repository=REPOSITORY)
+        self.assertEqual(record["state"], "skipped")
+        self.assertEqual(record["reason"], antagonistic.LATE)
+        self.assertEqual(antagonistic.nominations([item], [URL]), {})
+        self.assertIsNone(antagonistic.unmet(clean(late_comments=[])))
+        self.assertIsNone(antagonistic.unmet(clean(late_comments=None)))
+
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_late_comment_at_a_cap_is_not_nominated(self) -> None:
+        """A clean review would hand nothing back, so a human answers it."""
+        capped = clean(late_comments=["issue"], round=10, segment_round=10)
+        self.assertEqual(antagonistic.unmet(capped), antagonistic.LATE_AT_CAP)
+        self.assertEqual(antagonistic.nominations([capped], [URL]), {})
+        self.assertIsNone(antagonistic.unmet(clean(round=10, segment_round=10)))
+
+
 class StateTest(unittest.TestCase):
     """The ``antagonistic`` record the publish job writes."""
 
@@ -205,6 +230,113 @@ class CommentTest(unittest.TestCase):
             with self.subTest(record=record):
                 body = comments.comment_body(clean(antagonistic=record), "")
                 self.assertNotIn("antagonistic", str(body))
+
+
+class LateSentenceTest(unittest.TestCase):
+    """The outcome comment names a comment the round never read."""
+
+    def body(self, *, continuing: bool = True, **changes: Any) -> str:
+        """The outcome comment of a clean round with these changes."""
+        item = clean(**changes)
+        return str(comments.comment_body(item, "https://run", continuing=continuing))
+
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_next_round_answers_when_the_caller_continues(self) -> None:
+        """Below a cap, with continuation on, the next round answers it."""
+        body = self.body(late_comments=["issue", "review thread"])
+        self.assertTrue(
+            body.endswith(
+                " A maintainer commented on the issue and review thread after this"
+                " round read the pull request, so this round did not answer it;"
+                " the next round answers it."
+            ),
+            body,
+        )
+        self.assertNotIn("antagonistic review was requested", body)
+
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_operator_dispatch_when_no_round_follows(self) -> None:
+        """Continuation off, a pending review or a cap: the comment asks for one."""
+        places = ["issue", "pull request", "review thread"]
+        cases: tuple[tuple[dict[str, Any], str], ...] = (
+            (
+                {"continuing": False},
+                "; continuation is off, so it needs an operator's `revise_only`"
+                " dispatch.",
+            ),
+            (
+                {"review": {**clean()["review"], "verdict": "pending"}},
+                "; Copilot's review is pending, which stops the continuation,"
+                " so it needs an operator's `revise_only` dispatch.",
+            ),
+            (
+                {"round": 10, "segment_round": 10},
+                "; no round follows at the round cap, so it needs an operator's"
+                " dispatch or a human.",
+            ),
+        )
+        for changes, ending in cases:
+            with self.subTest(changes=changes):
+                body = self.body(late_comments=places, **changes)
+                self.assertIn(
+                    "on the issue, pull request and review thread after this round",
+                    body,
+                )
+                self.assertIn(ending, body)
+                self.assertNotIn("the next round answers it", body)
+
+    def test_nothing_late_says_nothing(self) -> None:
+        """An empty or failed read adds no sentence."""
+        empty: list[str] = []
+        for value in (empty, None):
+            with self.subTest(value=value):
+                body = comments.comment_body(clean(late_comments=value), "")
+                self.assertNotIn("after this round read", str(body))
+
+    @unittest.expectedFailure  # Late maintainer comments: next commit.
+    def test_marker_names_the_late_places(self) -> None:
+        """A retry that finds a late comment posts anew; the footer still parses."""
+        round_reads = import_module("round_reads")
+        bot = "code-monkey[bot]"
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / "result.json"
+            data = clean(bot_login=bot, round=2, late_comments=["pull request"])
+            path.write_text(json.dumps(data), encoding="utf-8")
+            first = {
+                "id": 1,
+                "user": {"login": bot},
+                "body": "text\n\n<!-- code-monkey https://run proposed review=clean"
+                " mergeable=true checks=passing round=2 -->",
+                "html_url": "https://x/c/1",
+            }
+            posted: dict[str, Any] = {}
+
+            def write(_method: str, _path: str, payload: dict[str, Any]) -> Any:
+                posted.update(payload)
+                return {"html_url": "https://x/c/2"}
+
+            with (
+                patch.object(comments.recheck, "listed_refusal", return_value=None),
+                patch.object(comments.reads, "api_page", return_value=[first]),
+                patch.object(comments.github, "api_write", side_effect=write),
+                redirect_stdout(io.StringIO()),
+            ):
+                comments.run_comment(
+                    argparse.Namespace(
+                        result=path,
+                        run_url="https://run",
+                        since="t",
+                        continue_rounds="true",
+                    )
+                )
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        body = str(posted["body"])
+        self.assertIn(" checks=passing late=pull-request round=2 -->", body)
+        self.assertIn("; the next round answers it.", body)
+        self.assertEqual(stored["comment_url"], "https://x/c/2")
+        found = round_reads.FOOTER.search(body)
+        assert found is not None
+        self.assertEqual(found.group("round"), "2")
 
 
 class ReportNominationTest(unittest.TestCase):
