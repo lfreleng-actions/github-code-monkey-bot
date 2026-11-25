@@ -179,7 +179,6 @@ class ContinuationRuleTest(unittest.TestCase):
                 other = published(antagonistic={"state": state, "reason": None})
                 self.assertIsNone(continuation.unmet(other))
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_late_maintainer_comment_continues(self) -> None:
         """A comment the round never read is work, even on a clean head."""
         for places in (["issue"], ["pull request"], ["review thread"]):
@@ -197,7 +196,6 @@ class ContinuationRuleTest(unittest.TestCase):
                     "nothing outstanding",
                 )
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_late_comment_at_a_cap_or_dry_run_does_not_continue(self) -> None:
         """The comment changes no other condition."""
         capped = published(late_comments=["issue"], round=10, segment_round=10)

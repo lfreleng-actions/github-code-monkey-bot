@@ -90,7 +90,8 @@ outstanding across the organisation and takes no new issue.
 
 When a live `pull-requests` run's round leaves a published pull
 request with work outstanding (review findings on its head, failing
-checks or a conflict), its outcome commented on the issue, below every
+checks, a conflict, or a maintainer comment posted after the round read
+the pull request), its outcome commented on the issue, below every
 round cap and with no antagonistic review requested, its `continue` job
 dispatches the next round of that pull request at once, one dispatch per
 pull request with `outstanding_only` set, the run's own options and
@@ -106,7 +107,12 @@ comment or a failing check that arrives after the loop ends, waits for
 an operator's `revise_only` dispatch. A dispatch that names an issue
 or pull request another run is already working does not work it: the
 run warns, and its summary and report list the target under "Named
-targets not worked". Each run's name in the Actions
+targets not worked"; the running round's publish job reads any
+maintainer comment posted while it ran, says so in its outcome comment,
+requests no antagonistic review of that head, and continues the pull
+request to answer it. Where no round can follow (continuation off, a
+pending review or a cap), the outcome comment says instead that it
+needs an operator's dispatch, or a human. Each run's name in the Actions
 list says what it works, the pull requests or issues named or a
 `revise_only` scan, and marks a dry run.
 

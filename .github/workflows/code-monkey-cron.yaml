@@ -282,6 +282,9 @@ jobs:
       outstanding_only: ${{ inputs.outstanding_only }}
       continues_run: "${{ inputs.continues_run }}"
       inherit_run_parameters: ${{ inputs.inherit_run_parameters }}
+      # The continue job below dispatches next rounds unless the
+      # variable stops it; the outcome comment says which.
+      continue_rounds: ${{ vars.CODE_MONKEY_CONTINUE != 'false' }}
       # The repository variable alone sets the list: no dispatch form
       # field can widen it. Unset, the run fails at pre-flight.
       issue_authors: "${{ vars.CODE_MONKEY_ISSUE_AUTHORS || '' }}"

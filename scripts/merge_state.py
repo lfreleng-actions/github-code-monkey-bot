@@ -13,8 +13,10 @@ A conflicting head gets no ``pull_request`` CI, since GitHub cannot
 build its merge ref, so its checks look missing rather than failed.
 The selection reads this to give such a pull request a round
 (DESIGN.md section 20.1); the publish job reads it after the review
-gate to report the head honestly (sections 8 and 20.3). Every read
-here is of a public repository and needs no permission.
+gate to report the head honestly (sections 8 and 20.3). The same
+step then records the maintainer comments the round never read
+(``late_comments``, section 20.6). Every read here is of a public
+repository and needs no permission.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from typing import Any, cast
 import bot_github as github
 import copilot_review as review
 import issue_reads as reads
+import late_comments
 import proposal_model as model
 from proposal_policy import PublishError
 
@@ -195,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
             print("no pull request to probe")
             return
         probe(result, check)
+        late_comments.record(result)
         review.write_result(args.output, result)
     except (OSError, ValueError, PublishError) as exc:
         message = ascii(str(exc)).replace("::", ": :").replace("##[", "# #[")
@@ -202,7 +206,8 @@ def main(argv: list[str] | None = None) -> None:
     print(
         f"mergeable: {result['mergeable']}; state: {result['mergeable_state']}; "
         f"behind by: {result['base_behind_by']}; "
-        f"base moved: {result['base_moved_during_run']}"
+        f"base moved: {result['base_moved_during_run']}; "
+        f"late maintainer comments: {result[late_comments.FIELD]}"
     )
 
 

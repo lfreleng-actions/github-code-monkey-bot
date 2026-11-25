@@ -13,7 +13,11 @@ most a skipped selection on the other side.
 
 The publish job records the state in ``result.json`` for the comment;
 the report job recomputes the rule from every result for the request
-job, and never trusts the recorded state.
+job, and never trusts the recorded state. A maintainer comment the
+round never read (``late_comments``) always withholds the nomination:
+a clean antagonistic review hands nothing back, so it would leave the
+comment unanswered. Below a cap the next round answers it first, and
+is nominated once it ends clean; at a cap a human must.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from typing import Any, cast
 
 import proposal_model as model
 import review_outcome
+from late_comments import answerable, late
 from round_caps import AT_CAP, at_cap
 
 STATES = ("requested", "off", "skipped", "dry-run")
@@ -38,6 +43,16 @@ PULL_URL = re.compile(
     re.ASCII,
 )
 SHA = re.compile(r"[0-9a-f]{40}")
+# Why a round with a maintainer comment it never read is not nominated:
+# below a cap another round answers it first; at a cap a human must.
+LATE = (
+    "a maintainer commented after the round read the pull request;"
+    " the next round answers it first"
+)
+LATE_AT_CAP = (
+    "a maintainer commented after the round read the pull request;"
+    " no round follows at the cap, so a human answers it"
+)
 
 
 def unmet(item: dict[str, Any]) -> str | None:
@@ -48,6 +63,8 @@ def unmet(item: dict[str, Any]) -> str | None:
         return "a dry run"
     if not item.get("pull_request_url"):
         return "no pull request was opened"
+    if late(item):
+        return LATE if answerable(item) else LATE_AT_CAP
     if review_outcome.review_verdict(item) != "clean":
         return "Copilot's review of the head is not clean"
     head = review_outcome.published_commit(item)

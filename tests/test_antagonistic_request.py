@@ -133,7 +133,6 @@ class NominationRuleTest(unittest.TestCase):
 class LateCommentTest(unittest.TestCase):
     """A maintainer comment the round never read withholds the nomination."""
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_late_comment_is_not_nominated(self) -> None:
         """The next round answers it first; the comment says which."""
         item = clean(late_comments=["pull request"])
@@ -145,7 +144,6 @@ class LateCommentTest(unittest.TestCase):
         self.assertIsNone(antagonistic.unmet(clean(late_comments=[])))
         self.assertIsNone(antagonistic.unmet(clean(late_comments=None)))
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_late_comment_at_a_cap_is_not_nominated(self) -> None:
         """A clean review would hand nothing back, so a human answers it."""
         capped = clean(late_comments=["issue"], round=10, segment_round=10)
@@ -240,7 +238,6 @@ class LateSentenceTest(unittest.TestCase):
         item = clean(**changes)
         return str(comments.comment_body(item, "https://run", continuing=continuing))
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_next_round_answers_when_the_caller_continues(self) -> None:
         """Below a cap, with continuation on, the next round answers it."""
         body = self.body(late_comments=["issue", "review thread"])
@@ -254,7 +251,6 @@ class LateSentenceTest(unittest.TestCase):
         )
         self.assertNotIn("antagonistic review was requested", body)
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_operator_dispatch_when_no_round_follows(self) -> None:
         """Continuation off, a pending review or a cap: the comment asks for one."""
         places = ["issue", "pull request", "review thread"]
@@ -293,7 +289,6 @@ class LateSentenceTest(unittest.TestCase):
                 body = comments.comment_body(clean(late_comments=value), "")
                 self.assertNotIn("after this round read", str(body))
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_marker_names_the_late_places(self) -> None:
         """A retry that finds a late comment posts anew; the footer still parses."""
         round_reads = import_module("round_reads")

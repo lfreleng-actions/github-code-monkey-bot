@@ -328,6 +328,8 @@ class ProbeTest(unittest.TestCase):
             written = json.loads((root / "result.json").read_text(encoding="utf-8"))
         self.assertIs(written["mergeable"], False)
         self.assertEqual(written["base_behind_by"], 2)
+        # No watermark in this result, so no comment read ran.
+        self.assertIsNone(written["late_comments"])
 
 
 class LateCommentReadTest(unittest.TestCase):
@@ -353,7 +355,6 @@ class LateCommentReadTest(unittest.TestCase):
             late.record(data, frozenset({"review-bot"}))
         return [comments_read.call_args_list, threads_read.call_args_list]
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_each_place_a_maintainer_spoke_is_recorded(self) -> None:
         """Issue (listed authors only), pull request, then review threads."""
         data = result(
@@ -376,7 +377,6 @@ class LateCommentReadTest(unittest.TestCase):
         self.record(quiet, False, False, False)
         self.assertEqual(quiet["late_comments"], [])
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_nothing_published_or_no_watermark_reads_nothing(self) -> None:
         """A dry run, a refusal or a result without a watermark is not read."""
         for data in (
@@ -390,7 +390,6 @@ class LateCommentReadTest(unittest.TestCase):
                 self.assertEqual(comments_calls, [])
                 self.assertIsNone(data["late_comments"])
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_a_failed_read_changes_nothing_but_a_warning(self) -> None:
         """The read fails open: no continuation, no withheld nomination."""
         late = import_module("late_comments")
@@ -406,7 +405,6 @@ class LateCommentReadTest(unittest.TestCase):
         self.assertEqual(len(data["warnings"]), 1)
         self.assertIn("rate limited: :x", data["warnings"][0])
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_a_later_failed_read_keeps_a_comment_already_found(self) -> None:
         """A failed pull-request or thread read never erases the issue's comment."""
         late = import_module("late_comments")
@@ -427,7 +425,6 @@ class LateCommentReadTest(unittest.TestCase):
                 self.assertEqual(len(data["warnings"]), 1)
                 self.assertIn("rate limited: :x", data["warnings"][0])
 
-    @unittest.expectedFailure  # Late maintainer comments: next commit.
     def test_reviewers_default_to_the_trusted_config(self) -> None:
         """The step reads the same reviewer list the selector does."""
         late = import_module("late_comments")

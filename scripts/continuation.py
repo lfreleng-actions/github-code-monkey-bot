@@ -13,7 +13,9 @@ costs one select job there, or brings forward a round the scan would run.
 
 The report job applies the rule to every result, over the pull
 request links it already accepted, and never trusts a recorded state
-but the antagonistic request, which can only stop a continuation.
+but the antagonistic request, which can only stop a continuation, and
+the late maintainer comments (``late_comments``), which the
+continuation's select job tests again.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Any, cast
 
 import review_outcome
 from antagonistic_request import nominee, requested
+from late_comments import answerable, late
 from round_caps import AT_CAP, at_cap
 
 
@@ -38,6 +41,8 @@ def outstanding(item: dict[str, Any]) -> list[str]:
         reasons.append("the head has failing checks")
     if item.get("mergeable") is False:
         reasons.append("the head conflicts with the default branch")
+    if late(item):
+        reasons.append("a maintainer commented after the round read the pull request")
     return reasons
 
 
@@ -64,7 +69,9 @@ def unmet(item: dict[str, Any]) -> str | None:
         return "an antagonistic review was requested; its hand-back continues"
     # The segment's cap, the sixty-round ceiling and the superseded
     # rounds' guard: the selector would refuse the next round.
-    if at_cap(item):
+    # A clean round at a segment's cap is no capped round, but the
+    # selector offers it no round to answer a late comment either.
+    if at_cap(item) or (late(item) and not answerable(item)):
         return AT_CAP
     if not outstanding(item):
         return "nothing outstanding"

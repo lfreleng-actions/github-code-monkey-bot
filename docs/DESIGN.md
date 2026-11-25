@@ -675,8 +675,10 @@ mistakes a dispatch whose every target another run held for work
 done. The run still ends green. The report reads those entries
 from `unreviewed-heads.json`, the select job's vouched file it already
 validates, which accepts that reason beside the unreviewed heads';
-`report.json` lists them as `named_not_worked`. The selector records
-a round under its pull request, whichever of its numbers another run holds,
+`report.json` lists them as `named_not_worked`. The running round's
+publish job also reads the comment a held dispatch meant to answer
+(§20.6 "Comments the round never read"). The selector records a round
+under its pull request, whichever of its numbers another run holds,
 and passes over it before reading its packet: a named round by the
 pull request it names, a scanned round by the pull request and issue
 its ranking reads, and a named round whose issue alone another run
@@ -1786,6 +1788,7 @@ For each selected issue:
 | `outstanding_only` | boolean | `false` | §20.6: named pull requests take the scan's tests |
 | `continues_run` | string | `''` | §20.6: the dispatching run, which must have published |
 | `inherit_run_parameters` | boolean | `false` | §20.1: take the run parameters from the named pull request's latest round footer; one pull request alone |
+| `continue_rounds` | boolean | `false` | §20.6: the caller dispatches `continue_pull_requests`; the outcome comment says who answers a late maintainer comment |
 | `exclude_repos` | string | `''` | Commas and/or spaces; overrides bundled list |
 | `issue_authors` | string | `''` | §6: logins trusted to open and edit issues; empty fails the run |
 | `only_known_authors` | string | `''` | §6: `false` turns `issue_authors` off; empty or `true` keeps it; else fails |
@@ -3145,7 +3148,10 @@ failed), `mergeable_state` (GitHub's short word, or `null`),
 `default_branch`, `base_moved_during_run` and `base_behind_by`
 (`null` where a read failed). A conflict means `false` and nothing
 else: the comment, the report and the outputs read `null` as
-unconfirmed.
+unconfirmed. The same step adds `late_comments`: where a maintainer
+commented after the round read the pull request (`issue`, `pull
+request`, `review thread`), `[]` when nowhere, `null` when it found
+nowhere but a read failed, or did not run (§20.6).
 On a published pull request with `request_review` on, the wait
 (§8 step 11) adds `checks`: `state` (`passing`, `infrastructure`,
 `failing`, `running`, `none` or `unknown`), `commit_id` (the head it
@@ -3561,7 +3567,8 @@ selector skips a round, named or scanned, whose pull request or issue
 another in-progress or queued run already selected, counts it under
 `held` and names that run in the reason, so two runs do not revise
 one pull request at once (§6 "Overlapping runs"); a named round also
-warns, and the report lists it as not worked. A scan honours the
+warns, the report lists it as not worked, and the running round hears
+the comment that dispatch was for (§20.6). A scan honours the
 run's repository policy, the named repositories or everything but the
 exclusions, before it reads a hit. The round number continues from the
 bot's own footers on the issue: the last line of each of its comments,
@@ -4182,7 +4189,13 @@ and its checks are `passing`, `infrastructure`, `running` or `none`
 job the egress agent failed is no reason to withhold it), and the
 round is below the sixty-round ceiling. The rule
 nominates a clean head at a segment's cap: the next hand-back opens
-a new segment. `scripts/antagonistic_request.py` holds the rule.
+a new segment. A maintainer comment the round never read
+(`late_comments`, §20.6) always withholds the nomination, since a
+clean antagonistic review hands nothing back and would leave the
+comment unanswered: below a cap the next round answers it first and
+earns the nomination once it ends clean; at a cap, the segment's
+included, the reason says a human answers it.
+`scripts/antagonistic_request.py` holds the rule.
 
 Four jobs share the work. The publish job's offline
 `Record antagonistic review request` step writes the result's
@@ -4295,7 +4308,9 @@ result whose `pull_request_url` the report accepted (§18.6) when at
 least one of these holds: Copilot's review has `findings` and judged
 the published head; the head has defect check failures
 (`review_outcome.checks_failed`, so failures at the egress agent
-alone do not continue); or `mergeable` is `false`. It does not
+alone do not continue); `mergeable` is `false`; or a maintainer
+commented after the round read the pull request (`late_comments`,
+below). It does not
 continue any other verdict (`abstain`, `handoff`, `rejected` and the
 failures wait for an operator), a result with no `comment_url`,
 since the round history counts rounds by their outcome comments and
@@ -4306,12 +4321,55 @@ continuation's select job checks the comment itself; see
 an operator's next `revise_only` dispatch picks up (§11), a result whose antagonistic
 review the run requested, since the review bot's hand-back dispatches that round
 and a continuation would race it, or a round at a cap
-(`round_caps.at_cap`: the segment's cap or the sixty-round ceiling).
+(`round_caps.at_cap`: the segment's cap or the sixty-round ceiling,
+and the segment's cap of a clean round that a late comment would
+otherwise continue).
 The report emits the continuing pull requests as `owner/repo#N`,
 validated and deduplicated as the antagonistic nominees are, in the
 `continue_pull_requests` output (§18.6) of a live `pull-requests`
 run: the report job gives `[]` in any other, since no other mode
 moves a pull request's head.
+
+**Comments the round never read.** A round reads its pull request
+when its run selects (`collected_at`, the footer's `since=`). A
+maintainer who comments while it runs is in no packet, and the running
+round holds a named dispatch to act on that comment (§6 "Overlapping
+runs"), so without more nothing would answer it until an operator's
+next dispatch. After
+publication the publish job's `Probe mergeability` step
+(`scripts/late_comments.py`, from `merge_state.py`) reads again, with
+the same public reads and authors the work-outstanding test counts
+(§20.1): a listed author's comment on the issue, a maintainer's on
+the pull request, and a maintainer's word on a review thread, each
+after `collected_at`. It records where in the result's
+`late_comments`: a list of `issue`, `pull request` and `review
+thread`, empty when nowhere, null when it found nowhere but a read
+failed, or the round published no pull request. It reads each place
+on its own, so a failed read adds a warning and keeps the places the
+other reads found; with none found it changes nothing. A late
+comment continues the pull request under the rule above, withholds
+its antagonistic nomination at every round, a cap's included (§20.5),
+and adds a sentence to the outcome comment naming where the maintainer
+spoke and what answers it (`scripts/late_notice.py`). It says the next
+round answers it when the continuation will dispatch one, and not otherwise: the
+caller passes `continue_rounds` (§9.1), which the dispatch caller sets
+from `CODE_MONKEY_CONTINUE` as its `continue` job reads it, and the
+publish job's comment step hands it on. With `continue_rounds` off, a
+Copilot review still `pending`, or no round to follow at a cap, the
+sentence says instead that it needs an operator's dispatch, or at a
+cap a human; it never says nothing remains open. The marker records
+the places as `late=issue,pull-request,review-thread`, after
+`checks=`, so a publish retry whose read found a comment the first
+attempt did not posts its outcome again rather than reuse the older
+one, and an identical retry still finds its own. The round history's
+footer pattern (`round_reads.FOOTER`) reads the field; a reader
+older than it finds no footer in a comment that carries one, as
+§20.1 says of `params=`. The
+continuation's select job tests the comment again from GitHub, so a
+forged `late_comments` brings forward a round the scan would run
+anyway, or withholds one nomination. A comment posted after this read
+and before the outcome comment still waits for an operator's
+`revise_only` dispatch.
 
 **The job.** The dispatch caller's `continue` job needs the whole
 `code-monkey` call and runs when that output is neither empty nor
@@ -4420,4 +4478,6 @@ round on it. A forged entry costs one select job, the bound
 §20.5 accepts, or brings forward a round the next scan would run
 anyway; a forged list from a dry or non-`pull-requests` run
 dispatches nothing. The change
-leaves the author job alone, and the publish job gains nothing.
+leaves the author job alone, and the publish job gains no permission:
+its late-comment read uses the public reads its mergeability probe
+already makes.

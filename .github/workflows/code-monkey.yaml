@@ -159,6 +159,13 @@ on:
           issues, and pull-requests mode
         type: boolean
         default: false
+      continue_rounds:
+        description: >-
+          Whether the caller dispatches the next round of each pull
+          request in continue_pull_requests; the outcome comment says
+          who answers a maintainer comment the round never read
+        type: boolean
+        default: false
       exclude_repos:
         description: 'Repos to skip, commas and/or spaces; overrides bundle'
         type: string
@@ -2295,10 +2302,13 @@ jobs:
           SINCE: "${{ needs.select.outputs.run_created_at }}"
           # The footer records them for a hand-back to inherit.
           PARAMS: "${{ needs.select.outputs.params }}"
+          # Whether the caller's continue job dispatches the next round.
+          CONTINUE: "${{ inputs.continue_rounds }}"
         run: |
           python3 monkey-assets/scripts/publish.py comment \
             --result artefacts/result.json --run-url "$RUN_URL" \
-            --since "$SINCE" --run-parameters "$PARAMS"
+            --since "$SINCE" --run-parameters "$PARAMS" \
+            --continue-rounds "$CONTINUE"
 
       # Every selected issue gets a row in the report. When an earlier
       # step failed before push wrote a result (the offline check, a
