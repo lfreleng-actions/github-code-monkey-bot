@@ -944,6 +944,10 @@ class HoldsTest(unittest.TestCase):
             self.skipped,
             self.skipped_issues,
         )
+        self.warnings = io.StringIO()
+        capture = redirect_stdout(self.warnings)
+        capture.__enter__()
+        self.addCleanup(capture.__exit__, None, None, None)
 
     def test_issues_keep_order_and_record_the_run(self) -> None:
         """A held issue drops out with its reason; the rest keep their order."""
@@ -956,6 +960,7 @@ class HoldsTest(unittest.TestCase):
             [{"issue": "org/alpha#3", "reason": "being worked by run 200"}],
         )
 
+    @unittest.expectedFailure  # Held named targets: next commit.
     def test_named_pulls_keep_order_and_record_the_run(self) -> None:
         """A held named pull request drops out, unread, under its own reference."""
         kept = self.holds.pulls("org", [("beta", 40), ("beta", 41), ("alpha", 4)])
@@ -963,8 +968,50 @@ class HoldsTest(unittest.TestCase):
         self.assertEqual(self.skipped["held"], 1)
         self.assertEqual(
             self.skipped_issues,
-            [{"issue": "org/beta#41", "reason": "being worked by run 300"}],
+            [
+                {
+                    "issue": "org/beta#41",
+                    "reason": "named, but being worked by run 300; not worked",
+                }
+            ],
         )
+        self.assertEqual(
+            self.warnings.getvalue(),
+            "::warning title=Named target held::org/beta#41 is being worked by"
+            " run 300; this run does not work it\n",
+        )
+
+    def test_scanned_skip_does_not_warn(self) -> None:
+        """A scan's held target is routine: recorded, never warned."""
+        self.holds.issues([issue("alpha", 3)])
+        self.assertEqual(self.warnings.getvalue(), "")
+
+    @unittest.expectedFailure  # Held named targets: next commit.
+    def test_named_issue_and_round_are_marked_not_worked(self) -> None:
+        """Named issues and named rounds take the not-worked reason too."""
+        self.holds.issues([issue("alpha", 3)], named=True)
+        rounds = self.holds.rounds([("org/beta", lambda: revision("beta", 7, 41))])
+        self.assertIsNone(rounds[0][1]())
+        named = self.holds.rounds(
+            [("org/beta", lambda: revision("beta", 7, 41))], named=True
+        )
+        self.assertIsNone(named[0][1]())
+        self.assertEqual(
+            [skip["reason"] for skip in self.skipped_issues],
+            [
+                "named, but being worked by run 200; not worked",
+                "being worked by run 300",
+                "named, but being worked by run 300; not worked",
+            ],
+        )
+
+    @unittest.expectedFailure  # Held named targets: next commit.
+    def test_named_warning_is_sanitised(self) -> None:
+        """A reference cannot open a workflow command of its own."""
+        with redirect_stdout(io.StringIO()) as out:
+            overlap.warn_named("org/a::b\n::error::x", 5)
+        self.assertEqual(out.getvalue().count("::"), 2)
+        self.assertNotIn("\n::", out.getvalue().rstrip("\n"))
 
     def test_round_is_recorded_under_its_pull_request(self) -> None:
         """A round held by its issue or its pull request names the pull request."""

@@ -188,5 +188,55 @@ class ReportTest(unittest.TestCase):
         self.assertIn("1 unreviewed-head entry failed validation", markdown)
 
 
+HELD = "named, but being worked by run 4242; not worked"
+
+
+class NamedHeldTest(unittest.TestCase):
+    """A named target another run held reaches the summary and the report."""
+
+    def setUp(self) -> None:
+        """An empty results tree, as ``ReportTest`` has."""
+        self.report = ReportTest("test_report_lists_the_heads")
+        self.report.setUp()
+        self.addCleanup(self.report.doCleanups)
+
+    @unittest.expectedFailure  # Held named targets: next commit.
+    def test_select_job_hands_held_names_with_the_heads(self) -> None:
+        """The summary lists the held name; the file carries it with the heads."""
+        skipped = [*skips(), {"issue": f"{ORG}/delta#7", "reason": HELD}]
+        text = selection_outputs.summary_markdown(selection(skipped))
+        self.assertIn("### Named targets not worked: 1", text)
+        self.assertIn(f"| {ORG}/delta#7 | {HELD} |", text)
+        with tempfile.TemporaryDirectory() as work:
+            selection_outputs.write_outputs(Path(work), selection(skipped), b"")
+            written = json.loads(
+                (Path(work) / "unreviewed-heads.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(written, [*heads().entries(skips()), skipped[-1]])
+
+    @unittest.expectedFailure  # Held named targets: next commit.
+    def test_report_lists_held_names_apart_from_the_heads(self) -> None:
+        """The report validates the reason and lists the target as not worked."""
+        raw = json.dumps(
+            [
+                {"issue": f"{ORG}/alpha#41", "reason": NO_REVIEW},
+                {"issue": f"{ORG}/delta#7", "reason": HELD},
+                {"issue": f"{ORG}/delta#8", "reason": "being worked by run 4242"},
+            ]
+        )
+        markdown, document = self.report.report(raw)
+        self.assertIn("### Named targets not worked: 1", markdown)
+        self.assertIn(f"| {ORG}/delta#7 | {HELD} |", markdown)
+        self.assertIn("### Heads with no Copilot review: 1", markdown)
+        self.assertEqual(
+            document["named_not_worked"], [{"issue": f"{ORG}/delta#7", "reason": HELD}]
+        )
+        self.assertEqual(
+            document["unreviewed_heads"],
+            [{"issue": f"{ORG}/alpha#41", "reason": NO_REVIEW}],
+        )
+        self.assertIn("1 unreviewed-head entry failed validation", markdown)
+
+
 if __name__ == "__main__":
     unittest.main()

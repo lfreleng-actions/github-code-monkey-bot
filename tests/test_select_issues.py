@@ -11,7 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
@@ -987,6 +987,7 @@ class RevisionIntegrationTest(NoSubprocessCase):
         path.write_text(json.dumps({"held": held}), encoding="utf-8")
         return str(path)
 
+    @unittest.expectedFailure  # Held named targets: next commit.
     def test_issues_another_run_holds_are_skipped(self) -> None:
         """Named issues another run holds: skipped, recorded, read no further."""
         prior = patch.object(reads, "prior_attempt", return_value=None).start()
@@ -997,19 +998,33 @@ class RevisionIntegrationTest(NoSubprocessCase):
         # GitHub compares repository names without case; so does the hold.
         held = self.held_file(("Org/Alpha", 3, 4242))
         named = ("--issues", "org/alpha#3,org/beta#5")
-        with patch.object(explicit_targets, "candidates", return_value=ranked):
+        with (
+            patch.object(explicit_targets, "candidates", return_value=ranked),
+            redirect_stdout(io.StringIO()) as out,
+        ):
             selection, _ = select.build_selection(
                 self.args(*named, "--held-file", held)
             )
+        self.assertIn(
+            "::warning title=Named target held::org/alpha#3 is being worked by run"
+            " 4242",
+            out.getvalue(),
+        )
         self.assertEqual([e["key"] for e in selection["issues"]], ["beta-5"])
         self.assertEqual(selection["skipped"]["held"], 1)
         self.assertEqual(
             selection["skipped_issues"],
-            [{"issue": "org/alpha#3", "reason": "being worked by run 4242"}],
+            [
+                {
+                    "issue": "org/alpha#3",
+                    "reason": "named, but being worked by run 4242; not worked",
+                }
+            ],
         )
         for call in prior.call_args_list:
             self.assertNotEqual(call.args[0], "org/alpha")
 
+    @unittest.expectedFailure  # Held named targets: next commit.
     def test_named_pull_request_another_run_holds_is_skipped(self) -> None:
         """A named round another run selected costs no session and no packet read.
 
@@ -1018,21 +1033,34 @@ class RevisionIntegrationTest(NoSubprocessCase):
         """
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
         held = self.held_file(("org/alpha", 7, 4242), ("org/alpha", 41, 4242))
-        with patch.object(
-            revision_rounds, "build_entry", side_effect=self.entry
-        ) as built:
+        with (
+            patch.object(
+                revision_rounds, "build_entry", side_effect=self.entry
+            ) as built,
+            redirect_stdout(io.StringIO()) as out,
+        ):
             selection, _ = select.build_selection(
                 self.args("--pull-requests", "org/alpha#41", "--held-file", held)
             )
+        self.assertIn("Named target held::org/alpha#41", out.getvalue())
         built.assert_not_called()
         self.assertEqual(selection["issues"], [])
         self.assertEqual(selection["skipped"]["held"], 1)
         self.assertEqual(
             selection["skipped_issues"],
-            [{"issue": "org/alpha#41", "reason": "being worked by run 4242"}],
+            [
+                {
+                    "issue": "org/alpha#41",
+                    "reason": "named, but being worked by run 4242; not worked",
+                }
+            ],
         )
         summary = outputs.summary_markdown(selection)
-        self.assertIn("| org/alpha#41 | being worked by run 4242 |", summary)
+        self.assertIn(
+            "| org/alpha#41 | named, but being worked by run 4242; not worked |",
+            summary,
+        )
+        self.assertIn("### Named targets not worked: 1", summary)
         self.assertIn("| held | 1 |", summary)
 
     def test_scanned_round_another_run_holds_is_recorded(self) -> None:
@@ -1054,23 +1082,31 @@ class RevisionIntegrationTest(NoSubprocessCase):
             [{"issue": "org/alpha#41", "reason": "being worked by run 99"}],
         )
 
+    @unittest.expectedFailure  # Held named targets: next commit.
     def test_named_round_whose_issue_alone_is_held_names_the_pull_request(
         self,
     ) -> None:
         """Known only once built, a held issue still skips the round under its PR."""
         self.entries[("alpha", 41)] = self.revision("alpha", 41, 7)
-        selection, _ = select.build_selection(
-            self.args(
-                "--pull-requests",
-                "org/alpha#41",
-                "--held-file",
-                self.held_file(("org/alpha", 7, 4242)),
+        with redirect_stdout(io.StringIO()) as out:
+            selection, _ = select.build_selection(
+                self.args(
+                    "--pull-requests",
+                    "org/alpha#41",
+                    "--held-file",
+                    self.held_file(("org/alpha", 7, 4242)),
+                )
             )
-        )
+        self.assertIn("Named target held::org/alpha#41", out.getvalue())
         self.assertEqual(selection["issues"], [])
         self.assertEqual(
             selection["skipped_issues"],
-            [{"issue": "org/alpha#41", "reason": "being worked by run 4242"}],
+            [
+                {
+                    "issue": "org/alpha#41",
+                    "reason": "named, but being worked by run 4242; not worked",
+                }
+            ],
         )
 
     def test_no_held_file_holds_nothing(self) -> None:
