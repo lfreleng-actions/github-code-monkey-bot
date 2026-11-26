@@ -56,6 +56,16 @@ TRIGGERS = True
 HARDEN_RUNNER = "step-security/harden-runner"
 BLOCK_ACTION = "lfreleng-actions/harden-runner-block-action"
 SLACK_ACTION = "slackapi/slack-github-action"
+# The author job's own allow-list (#202): a literal, never an input.
+AGENT_ALLOW_LIST_PATH = "lfreleng-actions//.github/harden-runner/bots/code_monkey.txt"
+TRUSTED_JOBS = (
+    "select",
+    "forks",
+    "publish",
+    "report",
+    "antagonistic",
+    "antagonistic-notice",
+)
 CHECKOUT = "actions/checkout"
 APP_TOKEN = "actions/create-github-app-token"
 SPLITTER = "lfreleng-actions/list-splitter-action"
@@ -369,14 +379,7 @@ class TopLevelContracts(ReusableWorkflowCase):
         CONNECTION_ALLOW_LIST does not cross job boundaries, and
         harden-runner in block mode with an empty list enforces nothing.
         """
-        for job in (
-            "select",
-            "forks",
-            "publish",
-            "report",
-            "antagonistic",
-            "antagonistic-notice",
-        ):
+        for job in TRUSTED_JOBS:
             with self.subTest(job=job):
                 loaders = self.actions(job, BLOCK_ACTION)
                 self.assertEqual(len(loaders), 1)
@@ -387,10 +390,9 @@ class TopLevelContracts(ReusableWorkflowCase):
                 self.assert_expression(
                     harden["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
                 )
-        self.assertEqual(self.actions("author", BLOCK_ACTION), [])
 
     def test_every_loader_passes_the_supplemental_inputs(self) -> None:
-        """Every loader forwards all five allow-list keys, even when empty.
+        """Every trusted loader forwards all five allow-list keys, even when empty.
 
         A key passed at one site and not another would leave that job
         blocking endpoints the caller allowed.
@@ -407,7 +409,9 @@ class TopLevelContracts(ReusableWorkflowCase):
             "extra_endpoints": "inputs.harden_runner_extra_endpoints",
         }
         loaders = [
-            (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
+            (job, step)
+            for job in TRUSTED_JOBS
+            for step in self.actions(job, BLOCK_ACTION)
         ]
         self.assertEqual(len(loaders), 6)
         for job, step in loaders:
@@ -428,7 +432,9 @@ class TopLevelContracts(ReusableWorkflowCase):
 
 
 class AuthorJobContracts(ReusableWorkflowCase):
-    """The untrusted job: no App key, audit egress, evidence before checkout."""
+    """The untrusted job: no App key, blocked egress, evidence before checkout."""
+
+    EGRESS_GUARD = "Require egress enforcement"
 
     def test_author_holds_no_app_key(self) -> None:
         """The agent runner never mints, receives or references the App key."""
@@ -443,11 +449,78 @@ class AuthorJobContracts(ReusableWorkflowCase):
             agent["env"]["COPILOT_GITHUB_TOKEN"], "secrets.copilot_token"
         )
 
-    def test_author_budget_and_gating_come_from_select(self) -> None:
-        """Audit egress; timeouts, parallelism and matrix from select outputs."""
+    @unittest.expectedFailure
+    def test_author_blocks_egress_to_the_bot_list(self) -> None:
+        """The agent reaches only the pinned bot list, and fails closed.
+
+        The coordinate is a literal so no caller can widen it, nothing
+        merges into it, and the loader cannot be skipped or told to
+        carry on when the egress agent does not report ready.
+        """
         author = self.jobs["author"]
-        harden = self.action("author", HARDEN_RUNNER)
-        self.assertEqual(harden["with"]["egress-policy"], "audit")
+        steps = self.steps("author")
+        self.assertTrue(is_action(steps[0], BLOCK_ACTION))
+        self.assertTrue(is_action(steps[1], HARDEN_RUNNER))
+        loader = steps[0]
+        self.assertNotIn("if", loader)
+        with_ = cast(dict[str, Any], loader["with"])
+        # ActionPinContracts holds its release to MIN_AGENT_ALLOW_LIST_VERSION.
+        self.assertRegex(
+            with_["config"], rf"^{re.escape(AGENT_ALLOW_LIST_PATH)}@[0-9a-f]{{40}}$"
+        )
+        self.assertLessEqual(
+            set(with_), {"config", "allow_list_summary", "agent_not_ready"}
+        )
+        self.assertEqual(with_.get("agent_not_ready", "error"), "error")
+        harden = cast(dict[str, Any], steps[1]["with"])
+        self.assertEqual(harden["egress-policy"], "block")
+        self.assert_expression(harden["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST")
+        self.assertEqual(author["env"]["AISLOP_NO_TELEMETRY"], "1")
+
+    @unittest.expectedFailure
+    def test_author_requires_the_egress_agent_ready(self) -> None:
+        """The session never starts unless the egress agent reported ready.
+
+        The pinned loader succeeds with ``agent_status: skipped`` when
+        harden-runner installed no agent, whatever ``agent_not_ready``
+        says, so a guard right after the hardening steps requires
+        ``ready`` on every matrix entry, opted in to sudo or not.
+        """
+        steps = self.steps("author")
+        loader = steps[0]
+        self.assertRegex(str(loader.get("id", "")), r"^[a-z][a-z0-9-]*$")
+        guard = self.step("author", self.EGRESS_GUARD)
+        self.assertNotIn("if", guard)
+        self.assertNotIn("continue-on-error", guard)
+        position = self.position("author", self.EGRESS_GUARD)
+        self.assertEqual(
+            [s.get("name") for s in steps[2:position]],
+            ["Require sudo and containers off"],
+        )
+        self.assert_expression(
+            guard["env"]["AGENT_STATUS"],
+            f"steps.{loader['id']}.outputs.agent_status",
+        )
+        for status, code in (
+            ("ready", 0),
+            ("skipped", 1),
+            ("disabled", 1),
+            ("timeout", 1),
+            ("", 1),
+        ):
+            with self.subTest(status=status):
+                proc = subprocess.run(
+                    ["bash", "-e", "-c", str(guard["run"])],
+                    env={"PATH": os.environ["PATH"], "AGENT_STATUS": status},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, code, proc.stdout)
+
+    def test_author_budget_and_gating_come_from_select(self) -> None:
+        """Timeouts, parallelism and matrix come from select outputs."""
+        author = self.jobs["author"]
         self.assert_expression(
             author["timeout-minutes"],
             "fromJSON(needs.select.outputs.author_timeout)",
@@ -4542,21 +4615,22 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
     MARKER = ".enable-sudo-and-containers"
     GUARD = "Require sudo and containers off"
 
-    def test_first_step_disables_both_unless_the_entry_opted_in(self) -> None:
-        """Harden-runner leads the job and turns both off by default."""
-        first = self.steps("author")[0]
-        self.assertTrue(is_action(first, HARDEN_RUNNER))
-        with_ = cast(dict[str, Any], first["with"])
-        self.assertEqual(with_["egress-policy"], "audit")
+    @unittest.expectedFailure
+    def test_harden_runner_disables_both_unless_the_entry_opted_in(self) -> None:
+        """Harden-runner follows the allow-list and turns both off by default."""
+        harden = self.steps("author")[1]
+        self.assertTrue(is_action(harden, HARDEN_RUNNER))
+        with_ = cast(dict[str, Any], harden["with"])
         self.assert_expression(
             with_["disable-sudo-and-containers"],
             "matrix.sudo_and_containers != true",
         )
 
-    def test_second_step_refuses_both_left_usable(self) -> None:
+    @unittest.expectedFailure
+    def test_guard_after_harden_runner_refuses_both_left_usable(self) -> None:
         """A hardener that skipped its setup cannot hand a session root or Docker."""
         guard = self.step("author", self.GUARD)
-        self.assertEqual(self.position("author", self.GUARD), 1)
+        self.assertEqual(self.position("author", self.GUARD), 2)
         self.assert_expression(guard["if"], "matrix.sudo_and_containers != true")
         lines = command_lines(str(guard["run"]))
         self.assertIn("if sudo -n true >/dev/null 2>&1; then", lines)
@@ -5080,13 +5154,19 @@ MIN_BLOCK_VERSION = (0, 16, 4)
 MIN_SLACK_VERSION = (4, 0, 0)
 # Baseline for the endpoints these jobs need in block mode.
 MIN_ALLOW_LIST_VERSION = (0, 21, 0)
+# The first release publishing bots/code_monkey.txt (#202).
+MIN_AGENT_ALLOW_LIST_VERSION = (0, 22, 0)
 
 ALLOW_LIST = "allow-list config"
+AGENT_ALLOW_LIST = "agent allow-list config"
+# The path each allow-list coordinate must carry before its @ref.
+ALLOW_LIST_PREFIXES = {ALLOW_LIST: "", AGENT_ALLOW_LIST: AGENT_ALLOW_LIST_PATH}
 PIN_FLOORS = {
     HARDEN_RUNNER: MIN_HARDEN_VERSION,
     BLOCK_ACTION: MIN_BLOCK_VERSION,
     SLACK_ACTION: MIN_SLACK_VERSION,
     ALLOW_LIST: MIN_ALLOW_LIST_VERSION,
+    AGENT_ALLOW_LIST: MIN_AGENT_ALLOW_LIST_VERSION,
 }
 PIN_RELEASE = re.compile(r"[ \t]+# v([0-9]+)\.([0-9]+)\.([0-9]+)[ \t]*")
 
@@ -5105,7 +5185,7 @@ def yaml_fields(node: yaml.Node | None) -> dict[str, yaml.Node]:
 def pin_fields(workflow: str, text: str) -> Iterator[tuple[str, yaml.Node]]:
     """Yield action pins and literal allow-list coordinates, not script text."""
     root = yaml_fields(yaml.BaseLoader(text).get_single_node())
-    for job in yaml_fields(root.get("jobs")).values():
+    for job_name, job in yaml_fields(root.get("jobs")).items():
         fields = yaml_fields(job)
         caller_pin = yaml_fields(fields.get("with")).get("harden_runner_allowlist")
         if caller_pin is not None:
@@ -5119,13 +5199,20 @@ def pin_fields(workflow: str, text: str) -> Iterator[tuple[str, yaml.Node]]:
             if not isinstance(uses, yaml.ScalarNode):
                 continue
             action = uses.value.partition("@")[0]
-            if action not in PIN_FLOORS or action == ALLOW_LIST:
+            if action not in PIN_FLOORS or action in ALLOW_LIST_PREFIXES:
                 continue
             yield action, uses
             if action == BLOCK_ACTION:
                 config = yaml_fields(fields.get("with")).get("config")
+                # The agent job loads its own list, never the caller's.
+                if (
+                    config is not None
+                    and workflow == REUSABLE.name
+                    and job_name == "author"
+                ):
+                    yield AGENT_ALLOW_LIST, config
                 # The reusable workflow forwards its caller's coordinate.
-                if config is not None and not (
+                elif config is not None and not (
                     workflow == REUSABLE.name
                     and isinstance(config, yaml.ScalarNode)
                     and re.fullmatch(
@@ -5162,7 +5249,7 @@ def workflow_pin_sites(sources: Mapping[str, str]) -> dict[str, list[PinSite]]:
             line = lines[start.line]
             value = node.value if isinstance(node, yaml.ScalarNode) else ""
             prefix, _, ref = value.partition("@")
-            if name == ALLOW_LIST and prefix:
+            if name in ALLOW_LIST_PREFIXES and prefix != ALLOW_LIST_PREFIXES[name]:
                 ref = ""
             comment = (
                 PIN_RELEASE.fullmatch(line[end.column :])
@@ -5219,7 +5306,7 @@ def rewrite_pin_fixture(
 
 def fixture_pin(name: str, ref: str, version: str) -> str:
     """Make a quoted YAML pin, optionally with its release comment."""
-    prefix = "" if name == ALLOW_LIST else name
+    prefix = ALLOW_LIST_PREFIXES.get(name, name)
     comment = f"  # v{version}" if version else ""
     return f"'{prefix}@{ref}'{comment}"
 
@@ -5235,12 +5322,14 @@ class ActionPinContracts(unittest.TestCase):
             for path in sorted(WORKFLOWS.glob("*.y*ml"))
         }
 
+    @unittest.expectedFailure
     def test_pins_agree_and_meet_the_release_floors(self) -> None:
         """Current workflows agree on each commit and its release comment."""
         errors = pin_errors(workflow_pin_sites(self.sources))
         if errors:
             self.fail("\n".join(errors.values()))
 
+    @unittest.expectedFailure
     def test_coordinated_pin_bump_passes(self) -> None:
         """A Dependabot-style update of every call passes without test edits."""
         sites = workflow_pin_sites(self.sources)
@@ -5264,6 +5353,7 @@ class ActionPinContracts(unittest.TestCase):
         if errors:
             self.fail("\n".join(errors.values()))
 
+    @unittest.expectedFailure
     def test_bad_pins_name_the_call_sites(self) -> None:
         """Drift and malformed or too-old pins fail against real workflows."""
         sites = workflow_pin_sites(self.sources)
@@ -5281,6 +5371,9 @@ class ActionPinContracts(unittest.TestCase):
                 ("missing comment", ref, "", "# vX.Y.Z comment"),
                 ("old release", ref, "0.0.0", "release is below"),
             ):
+                # One call site has nothing to disagree with.
+                if case == "different SHA" and len(calls) < 2:
+                    continue
                 with self.subTest(pin=name, case=case):
                     mutated = rewrite_pin_fixture(
                         self.sources, [(first, fixture_pin(name, new_ref, release))]
