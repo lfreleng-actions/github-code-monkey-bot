@@ -73,6 +73,8 @@ jobs:
       # Block mode with the organisation allow-list, as the dispatch
       # caller runs, so a pull request proves the trusted jobs' egress.
       harden_runner_egress: 'block'
+      # The default agent egress mode, named whatever the variable says.
+      agent_egress_mode: 'allow-list'
       # yamllint disable-line rule:line-length
       harden_runner_allowlist: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
       # The merge commit, which the local uses: above reads the
@@ -108,6 +110,7 @@ jobs:
       # yamllint disable-line rule:line-length
       allow_precommit_config_edits: ${{ inputs.allow_precommit_config_edits || false }}
       harden_runner_egress: 'block'
+      agent_egress_mode: "${{ vars.CODE_MONKEY_EGRESS_MODE || '' }}"
       # yamllint disable-line rule:line-length
       harden_runner_allowlist: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
       assets_repository: "${{ github.repository }}"

@@ -208,6 +208,12 @@ on:
         description: 'harden-runner egress for trusted jobs: audit or block'
         type: string
         default: 'block'
+      agent_egress_mode:
+        description: >-
+          The author job's egress: block-all, allow-list or audit-only;
+          empty means allow-list, any other value fails the run
+        type: string
+        default: ''
       harden_runner_allowlist:
         description: 'harden-runner-block-action config coordinate'
         type: string
@@ -387,6 +393,8 @@ jobs:
       request_antagonistic_review: "${{ steps.params.outputs.request_antagonistic_review }}"
       params: "${{ steps.params.outputs.params }}"
       run_parameters: "${{ steps.params.outputs.run_parameters }}"
+      # The author job's egress mode, resolved once (docs/DESIGN.md 7.5).
+      agent_egress_mode: "${{ steps.egress.outputs.mode }}"
     steps:
       - name: 'Load egress allow-list'
         if: inputs.harden_runner_egress == 'block'
@@ -852,6 +860,18 @@ jobs:
             --authors="$ISSUE_AUTHORS" \
             --only-known-authors="$ONLY_KNOWN_AUTHORS"
 
+      # Fails closed: a value outside the three modes stops the run
+      # before any token exists; empty selects allow-list.
+      - name: 'Resolve agent egress mode'
+        id: egress
+        env:
+          AGENT_EGRESS_MODE: "${{ inputs.agent_egress_mode }}"
+        run: |
+          python3 monkey-assets/scripts/egress_mode.py \
+            --mode="$AGENT_EGRESS_MODE" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
       - name: 'Mint read-only App token'
         id: app-token
         if: inputs.github_app_client_id != ''
@@ -1102,18 +1122,51 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     permissions:
       contents: read  # Checkout assets and the public target repository
+    env:
+      # aislop's telemetry host is on no list; no mode should call it.
+      AISLOP_NO_TELEMETRY: '1'
+      # The agent's egress lists, literal at one commit of the
+      # organisation .github release: no input, form field or issue
+      # text can widen them.
+      AGENT_ORG_LIST: '@dfa09089d9d88230380539d2116810910347d378'  # v0.22.0
+      # yamllint disable-line rule:line-length
+      AGENT_BOT_LIST: 'lfreleng-actions//.github/harden-runner/bots/code_monkey.txt@dfa09089d9d88230380539d2116810910347d378'  # v0.22.0
     steps:
-      # Always audit: the agent installs whatever toolchain the target
-      # repository's hooks pin, which no fixed allow-list can cover.
+      # The select job resolved the operator's egress mode
+      # (docs/DESIGN.md section 7.5). allow-list loads the organisation
+      # list plus the bot's own list; block-all loads the bot's list
+      # alone; audit-only enforces nothing and only records connections.
+      # One loader, not one per mode: a step's if gates the action's
+      # main step but not its pre hook, which exports
+      # CONNECTION_ALLOW_LIST, so a second loader would overwrite the
+      # first. Its pre hook runs in audit-only too, loading the bot list
+      # that nothing then enforces.
+      - name: 'Load agent egress list'
+        id: 'egress-list'
+        # yamllint disable-line rule:line-length
+        if: needs.select.outputs.agent_egress_mode == 'allow-list' || needs.select.outputs.agent_egress_mode == 'block-all'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          # yamllint disable-line rule:line-length
+          config: "${{ needs.select.outputs.agent_egress_mode == 'allow-list' && env.AGENT_ORG_LIST || env.AGENT_BOT_LIST }}"
+          # yamllint disable-line rule:line-length
+          supplemental_config: "${{ needs.select.outputs.agent_egress_mode == 'allow-list' && env.AGENT_BOT_LIST || '' }}"
+          # yamllint disable-line rule:line-length
+          supplemental_required: "${{ needs.select.outputs.agent_egress_mode == 'allow-list' }}"
+          allow_list_summary: 'false'
+
       # Root on the runner could undo this step, so sudo and containers
       # stay off unless the select job read the target's marker file
       # at its default-branch commit; an entry without the field
       # counts as not opted in (docs/DESIGN.md section 4.1).
-      - name: 'Harden runner (audit)'
+      - name: "Harden runner (${{ needs.select.outputs.agent_egress_mode }})"
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
-          egress-policy: 'audit'
+          # yamllint disable-line rule:line-length
+          egress-policy: "${{ needs.select.outputs.agent_egress_mode == 'audit-only' && 'audit' || 'block' }}"
+          allowed-endpoints: "${{ env.CONNECTION_ALLOW_LIST }}"
           disable-sudo-and-containers: >-
             ${{ matrix.sudo_and_containers != true }}
 
@@ -1130,6 +1183,36 @@ jobs:
             echo '::error::Docker works although the target did not opt in'
             exit 1
           fi
+
+      # harden-runner in block mode with an empty list blocks nothing,
+      # and the loader succeeds with agent_status 'skipped' when
+      # harden-runner installed no agent, whatever the sudo opt-in. A
+      # block mode without a loaded list and a ready agent fails here.
+      - name: 'Require the agent egress mode'
+        env:
+          EGRESS_MODE: "${{ needs.select.outputs.agent_egress_mode }}"
+          AGENT_STATUS: "${{ steps.egress-list.outputs.agent_status }}"
+        run: |
+          case "$EGRESS_MODE" in
+            block-all|allow-list)
+              if [ -z "$CONNECTION_ALLOW_LIST" ]; then
+                echo "::error::No egress list loaded for $EGRESS_MODE"
+                exit 1
+              fi
+              if [ "$AGENT_STATUS" != 'ready' ]; then
+                echo "::error::Egress agent not enforcing $EGRESS_MODE" \
+                  "(agent_status '$AGENT_STATUS')"
+                exit 1
+              fi
+              ;;
+            audit-only)
+              echo '::warning::Agent egress is not enforced (audit-only)'
+              ;;
+            *)
+              echo "::error::Unknown agent egress mode: '$EGRESS_MODE'"
+              exit 1
+              ;;
+          esac
 
       - name: 'Require pinned assets'
         env:
@@ -2495,6 +2578,7 @@ jobs:
           PUBLISH_RESULT: "${{ needs.publish.result }}"
           ORG: "${{ inputs.org }}"
           UNREVIEWED_SHA: "${{ needs.select.outputs.unreviewed_sha256 }}"
+          AGENT_EGRESS_MODE: "${{ needs.select.outputs.agent_egress_mode }}"
         run: |
           mkdir -p results artefacts
           # The report validates each entry before it prints one.
@@ -2510,6 +2594,8 @@ jobs:
             --results results --output-md artefacts/report.md \
             --output-json artefacts/report.json \
             --org "$ORG" --github-output "$GITHUB_OUTPUT" "${unreviewed[@]}"
+          printf "\nAgent egress mode: \`%s\`\n" "$AGENT_EGRESS_MODE" \
+            >> artefacts/report.md
           cat artefacts/report.md >> "$GITHUB_STEP_SUMMARY"
           printf '\nAuthor job: %s; publish job: %s\n' \
             "$AUTHOR_RESULT" "$PUBLISH_RESULT" >> "$GITHUB_STEP_SUMMARY"

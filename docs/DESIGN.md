@@ -1112,13 +1112,41 @@ home directory and the checkout, under `continue-on-error`.
 
 ### 7.5 Egress
 
-The author job runs harden-runner in `audit` mode, with `sudo` and
-containers disabled unless the target opted in (§4.1). It needs the npm
-registry for the locked toolchain tarballs, PyPI, GitHub, the
-Copilot API and whatever hook repositories the target's
-`.pre-commit-config.yaml` pins. A block-mode allow-list
-that covers every repository's toolchain is a maintenance load this
-design defers; the audit log records what each session reached.
+The author job's egress follows one of three modes the operator
+selects with the repository variable `CODE_MONKEY_EGRESS_MODE`, which
+the dispatch caller forwards as `agent_egress_mode` (§9.1). No form
+field and no continuation carries it. The select job resolves it in
+`scripts/egress_mode.py` before it mints any token: empty means
+`allow-list`, and any value but the three fails the run. It publishes
+the result as its `agent_egress_mode` output, which the author job
+and the report read; no other step reads the raw input.
+
+| Mode | Loaded list | harden-runner policy |
+| ---- | ----------- | -------------------- |
+| `allow-list` (default) | Organisation list plus bot list | `block` |
+| `block-all` | Bot list alone | `block` |
+| audit-o&#110;ly | None enforced | `audit`, with a warning in every run |
+
+The bot list is `harden-runner/bots/code_monkey.txt`. Both coordinates
+are literals in the author job's environment, at one commit of the
+organisation `.github` release, with the bot list required; no caller
+input, `extra_endpoints` included, reaches them. One loader step picks
+between them by mode. A step's `if` skips the loader's main step but
+not its pre hook, which exports the list, so a loader per mode would
+let the last one overwrite the list; in audit-o&#110;ly the pre hook
+still loads the bot list, which nothing enforces. harden-runner in
+`block` mode with an empty list, or with no agent installed, enforces
+nothing, so a step after it fails the session before any checkout
+when a block mode loaded no list or the loader's `agent_status` is not
+`ready`, even where the target opted in to `sudo`, or when the
+mode is unknown. `sudo` and containers stay disabled unless the
+target opted in (§4.1), in every mode. The job sets
+`AISLOP_NO_TELEMETRY=1` so no mode calls aislop's telemetry host.
+
+GitHub hosts and the package registries the toolchains need stay
+allowed in every mode, so a block mode narrows the paths a session
+could send data out on rather than closing them, and `allow-list`
+is wider than `block-all`. The report states the mode each run used.
 
 The select, publish and report jobs run in `block` mode with the
 organisation's allow-list from `harden-runner-block-action`, pinned
@@ -1128,12 +1156,12 @@ caller may pass `audit` to diagnose a blocked endpoint. The dispatch
 caller's `options` job runs in `block` mode too, loading the same
 coordinate it forwards, without a token or a summary.
 
-Each loader also passes the caller's supplemental allow-list, its
-unpinned flag and any inline extra endpoints, empty by default, so
-no trusted job blocks an endpoint the caller allowed. Naming a
-supplemental list makes it required, so a missing list fails at the
-loader rather than at the first blocked connection. The pre-flight
-pin check covers the baseline alone: a same-organisation
+Each trusted job's loader also passes the caller's supplemental
+allow-list, its unpinned flag and any inline extra endpoints, empty by
+default, so no trusted job blocks an endpoint the caller allowed.
+Naming a supplemental list makes it required, so a missing list fails
+at the loader rather than at the first blocked connection. The
+pre-flight pin check covers the baseline alone: a same-organisation
 supplemental may follow its default branch, a rule the action
 enforces.
 
@@ -1796,7 +1824,8 @@ For each selected issue:
 | `fork_pool_token_expires` | string | `''` | §10.6: recorded token expiry, `YYYY-MM-DD`; a mismatch warns |
 | `guidance_repository` | string | `<org>/.github` | Holds the org `AGENTS.md` |
 | `guidance_ref` | string | `main` | Branch or tag recorded and used |
-| `harden_runner_egress` | string | `block` | Trusted jobs; author is always `audit` |
+| `harden_runner_egress` | string | `block` | Trusted jobs; the author job follows `agent_egress_mode` |
+| `agent_egress_mode` | string | `''` | §7.5: `block-all`, `allow-list` or audit-o&#110;ly; empty means `allow-list`; else fails |
 | `harden_runner_allowlist` | string | `''` | Allow-list action coordinate |
 | `harden_runner_supplemental_allowlist` | string | `''` | Merged with the baseline; required when set |
 | `harden_runner_supplemental_unpinned` | boolean | `false` | Same-org supplemental may omit `@ref` |
@@ -1898,7 +1927,10 @@ the identifiers in §10.3. The caller passes `inputs.dry_run`, so a
 dispatch is live unless the operator ticks `dry_run`. The reusable
 workflow's own `dry_run` (§9.1) keeps its default of `true`; the
 caller alone defaults live. A form field left blank takes the
-default above.
+default above. The agent egress mode is no form field: the caller
+forwards the repository variable `CODE_MONKEY_EGRESS_MODE` alone
+(§7.5); a continuation does not forward it, so each run reads the
+variable afresh.
 
 `max_pull_requests` semantics: `1` raises at most one pull request,
 `20` at most twenty, and `0` lifts the cap as far as the matrix
@@ -2444,7 +2476,7 @@ conflicts while producer artifacts survive.
 | ------- | ------ | ---------- |
 | Agent times out | No proposal artifact | Publisher records `author-failed`; issue eligible next run |
 | Agent abstains | Manifest says why | Recorded; publisher comments the reason on the issue (§8 step 8) |
-| Hooks need network the runner blocks | Agent cannot pass gates | Author job runs in audit mode (§7.5) |
+| Hooks need network the runner blocks | Agent cannot pass gates | The bot list covers the toolchains; an operator sets `CODE_MONKEY_EGRESS_MODE` to audit-o&#110;ly to diagnose (§7.5) |
 | Task needs `sudo` or containers (an image build, a loop mount) in a target without the marker | Runner refuses both; the step cannot run | Prompt tells the agent not to work around it: it abstains, or leaves the step out and says so, naming `.enable-sudo-and-containers`; a maintainer adds the marker to the default branch where the repository needs it (§4.1, §7.3) |
 | `main` moves after selection | Branch created at old base | GitHub reports mergeability; reviewer rebases or agent retries later |
 | Target repository renamed | Its fork keeps the old name, so the by-name lookups miss it | The forks job finds the fork by parent and renames it after the target (§4.3 step 1); selection reads the old name until that job runs |
@@ -2512,6 +2544,7 @@ scripts/selection_outputs.py             selection files and summary
 scripts/issue_reads.py                   GitHub reads for selection
 scripts/repository_reads.py              owner listing or one repository
 scripts/sudo_marker.py                   the sudo and container marker (§4.1)
+scripts/egress_mode.py                   the agent egress mode (§7.5)
 scripts/bot_github.py                    gh wrapper, REST and GraphQL (shared)
 scripts/bot_evidence.py                  evidence digest verification (shared)
 scripts/artifact_fetch.py                bounded artifact extraction (shared)

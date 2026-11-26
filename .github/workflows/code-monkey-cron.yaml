@@ -296,8 +296,12 @@ jobs:
       fork_pool_token_max_days: "${{ vars.FORK_POOL_TOKEN_MAX_DAYS || '' }}"
       fork_pool_token_expires: "${{ vars.FORK_POOL_TOKEN_EXPIRES || '' }}"
       # Trusted jobs hold App tokens and run in block mode with the
-      # organisation allow-list; the author job is always audit.
+      # organisation allow-list.
       harden_runner_egress: 'block'
+      # The author job's egress mode comes from the repository variable
+      # alone, like the author list: no dispatch form field, and no
+      # continuation, can loosen it. Unset means allow-list.
+      agent_egress_mode: "${{ vars.CODE_MONKEY_EGRESS_MODE || '' }}"
       # yamllint disable-line rule:line-length
       harden_runner_allowlist: '@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
       github_app_client_id: "${{ vars.BOT_APP_CLIENT_ID || '' }}"

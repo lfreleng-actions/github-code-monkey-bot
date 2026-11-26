@@ -387,7 +387,6 @@ class TopLevelContracts(ReusableWorkflowCase):
                 self.assert_expression(
                     harden["with"]["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST"
                 )
-        self.assertEqual(self.actions("author", BLOCK_ACTION), [])
 
     def test_every_loader_passes_the_supplemental_inputs(self) -> None:
         """Every loader forwards all five allow-list keys, even when empty.
@@ -406,8 +405,12 @@ class TopLevelContracts(ReusableWorkflowCase):
             ),
             "extra_endpoints": "inputs.harden_runner_extra_endpoints",
         }
+        # The author job's loaders follow the agent egress mode instead.
         loaders = [
-            (job, step) for job in self.jobs for step in self.actions(job, BLOCK_ACTION)
+            (job, step)
+            for job in self.jobs
+            if job != "author"
+            for step in self.actions(job, BLOCK_ACTION)
         ]
         self.assertEqual(len(loaders), 6)
         for job, step in loaders:
@@ -428,7 +431,7 @@ class TopLevelContracts(ReusableWorkflowCase):
 
 
 class AuthorJobContracts(ReusableWorkflowCase):
-    """The untrusted job: no App key, audit egress, evidence before checkout."""
+    """The untrusted job: no App key, mode-led egress, evidence before checkout."""
 
     def test_author_holds_no_app_key(self) -> None:
         """The agent runner never mints, receives or references the App key."""
@@ -444,10 +447,8 @@ class AuthorJobContracts(ReusableWorkflowCase):
         )
 
     def test_author_budget_and_gating_come_from_select(self) -> None:
-        """Audit egress; timeouts, parallelism and matrix from select outputs."""
+        """Timeouts, parallelism and matrix come from select outputs."""
         author = self.jobs["author"]
-        harden = self.action("author", HARDEN_RUNNER)
-        self.assertEqual(harden["with"]["egress-policy"], "audit")
         self.assert_expression(
             author["timeout-minutes"],
             "fromJSON(needs.select.outputs.author_timeout)",
@@ -2444,6 +2445,7 @@ class SelectAndReportContracts(ReusableWorkflowCase):
                 "request_antagonistic_review",
                 "params",
                 "run_parameters",
+                "agent_egress_mode",
             },
         )
 
@@ -4470,6 +4472,7 @@ class InterfaceContracts(ReusableWorkflowCase):
                 "guidance_repository",
                 "guidance_ref",
                 "harden_runner_egress",
+                "agent_egress_mode",
                 "harden_runner_allowlist",
                 "harden_runner_supplemental_allowlist",
                 "harden_runner_supplemental_unpinned",
@@ -4548,7 +4551,6 @@ BOT_LIST_COORDINATE = re.compile(
 class AgentEgressContracts(ReusableWorkflowCase):
     """The author job's egress follows one mode the select job resolved (#255)."""
 
-    @unittest.expectedFailure
     def test_select_resolves_the_mode_before_any_token(self) -> None:
         """The input is parsed once, before the first App token, and published."""
         inputs = cast(
@@ -4585,7 +4587,6 @@ class AgentEgressContracts(ReusableWorkflowCase):
                 self.assertNotIn("inputs.agent_egress_mode", dumped(outside))
         self.assertNotIn("CODE_MONKEY_EGRESS_MODE", dumped(self.jobs["author"]))
 
-    @unittest.expectedFailure
     def test_one_loader_picks_the_literal_coordinates(self) -> None:
         """One loader, gated on a block mode, loads fixed coordinates.
 
@@ -4631,7 +4632,6 @@ class AgentEgressContracts(ReusableWorkflowCase):
         )
         self.assertNotIn("extra_endpoints", dumped(self.jobs["author"]))
 
-    @unittest.expectedFailure
     def test_harden_runner_policy_follows_the_resolved_mode(self) -> None:
         """Block in both block modes against the loaded list; audit otherwise."""
         harden = self.action("author", HARDEN_RUNNER)
@@ -4646,7 +4646,6 @@ class AgentEgressContracts(ReusableWorkflowCase):
             with_["disable-sudo-and-containers"], "matrix.sudo_and_containers != true"
         )
 
-    @unittest.expectedFailure
     def test_author_requires_the_mode_before_any_checkout(self) -> None:
         """A block mode without a list or a ready agent, or no mode, fails."""
         name = "Require the agent egress mode"
@@ -4666,13 +4665,11 @@ class AgentEgressContracts(ReusableWorkflowCase):
             self.position("author", "Checkout prompt assets"),
         )
 
-    @unittest.expectedFailure
     def test_aislop_telemetry_is_off_in_every_mode(self) -> None:
         """The job environment, not one mode's step, turns telemetry off."""
         env = cast(dict[str, Any], self.jobs["author"]["env"])
         self.assertEqual(env["AISLOP_NO_TELEMETRY"], "1")
 
-    @unittest.expectedFailure
     def test_report_states_the_mode(self) -> None:
         """Every run's report names the mode the select job resolved."""
         step = self.step("report", "report")
@@ -4686,12 +4683,17 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
     MARKER = ".enable-sudo-and-containers"
     GUARD = "Require sudo and containers off"
 
+    def harden_index(self) -> int:
+        """The author job's harden-runner step index."""
+        steps = self.steps("author")
+        return next(i for i, s in enumerate(steps) if is_action(s, HARDEN_RUNNER))
+
     def test_first_step_disables_both_unless_the_entry_opted_in(self) -> None:
-        """Harden-runner leads the job and turns both off by default."""
-        first = self.steps("author")[0]
-        self.assertTrue(is_action(first, HARDEN_RUNNER))
-        with_ = cast(dict[str, Any], first["with"])
-        self.assertEqual(with_["egress-policy"], "audit")
+        """Harden-runner follows only the list loaders and turns both off by default."""
+        steps = self.steps("author")
+        index = self.harden_index()
+        self.assertTrue(all(is_action(step, BLOCK_ACTION) for step in steps[:index]))
+        with_ = cast(dict[str, Any], steps[index]["with"])
         self.assert_expression(
             with_["disable-sudo-and-containers"],
             "matrix.sudo_and_containers != true",
@@ -4700,7 +4702,7 @@ class SudoAndContainerContracts(ReusableWorkflowCase):
     def test_second_step_refuses_both_left_usable(self) -> None:
         """A hardener that skipped its setup cannot hand a session root or Docker."""
         guard = self.step("author", self.GUARD)
-        self.assertEqual(self.position("author", self.GUARD), 1)
+        self.assertEqual(self.position("author", self.GUARD), self.harden_index() + 1)
         self.assert_expression(guard["if"], "matrix.sudo_and_containers != true")
         lines = command_lines(str(guard["run"]))
         self.assertIn("if sudo -n true >/dev/null 2>&1; then", lines)
@@ -4961,7 +4963,6 @@ class CronCallerContracts(WorkflowCase):
             with self.subTest(name=name):
                 self.assertNotIn(name, dispatch)
 
-    @unittest.expectedFailure
     def test_agent_egress_mode_comes_from_the_variable_alone(self) -> None:
         """No dispatch field, and no continuation, can loosen agent egress."""
         with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
@@ -5238,13 +5239,19 @@ MIN_BLOCK_VERSION = (0, 16, 4)
 MIN_SLACK_VERSION = (4, 0, 0)
 # Baseline for the endpoints these jobs need in block mode.
 MIN_ALLOW_LIST_VERSION = (0, 21, 0)
+# First release carrying the bot list the author job loads (#255).
+MIN_AGENT_ALLOW_LIST_VERSION = (0, 22, 0)
 
 ALLOW_LIST = "allow-list config"
+# The author job's literal coordinates move together, apart from the
+# trusted jobs' list, so each group bumps on its own.
+AGENT_ALLOW_LIST = "agent allow-list config"
 PIN_FLOORS = {
     HARDEN_RUNNER: MIN_HARDEN_VERSION,
     BLOCK_ACTION: MIN_BLOCK_VERSION,
     SLACK_ACTION: MIN_SLACK_VERSION,
     ALLOW_LIST: MIN_ALLOW_LIST_VERSION,
+    AGENT_ALLOW_LIST: MIN_AGENT_ALLOW_LIST_VERSION,
 }
 PIN_RELEASE = re.compile(r"[ \t]+# v([0-9]+)\.([0-9]+)\.([0-9]+)[ \t]*")
 
@@ -5263,7 +5270,8 @@ def yaml_fields(node: yaml.Node | None) -> dict[str, yaml.Node]:
 def pin_fields(workflow: str, text: str) -> Iterator[tuple[str, yaml.Node]]:
     """Yield action pins and literal allow-list coordinates, not script text."""
     root = yaml_fields(yaml.BaseLoader(text).get_single_node())
-    for job in yaml_fields(root.get("jobs")).values():
+    for job_name, job in yaml_fields(root.get("jobs")).items():
+        agent = workflow == REUSABLE.name and job_name == "author"
         fields = yaml_fields(job)
         caller_pin = yaml_fields(fields.get("with")).get("harden_runner_allowlist")
         if caller_pin is not None:
@@ -5280,6 +5288,13 @@ def pin_fields(workflow: str, text: str) -> Iterator[tuple[str, yaml.Node]]:
             if action not in PIN_FLOORS or action == ALLOW_LIST:
                 continue
             yield action, uses
+            if action == BLOCK_ACTION and agent:
+                # The loader picks one of the job's literal coordinates.
+                env = yaml_fields(yaml_fields(job).get("env"))
+                for key in ("AGENT_ORG_LIST", "AGENT_BOT_LIST"):
+                    if key in env:
+                        yield AGENT_ALLOW_LIST, env[key]
+                continue
             if action == BLOCK_ACTION:
                 config = yaml_fields(fields.get("with")).get("config")
                 # The reusable workflow forwards its caller's coordinate.
@@ -5377,7 +5392,7 @@ def rewrite_pin_fixture(
 
 def fixture_pin(name: str, ref: str, version: str) -> str:
     """Make a quoted YAML pin, optionally with its release comment."""
-    prefix = "" if name == ALLOW_LIST else name
+    prefix = "" if name in (ALLOW_LIST, AGENT_ALLOW_LIST) else name
     comment = f"  # v{version}" if version else ""
     return f"'{prefix}@{ref}'{comment}"
 
@@ -5666,7 +5681,6 @@ class TestingCallerContracts(WorkflowCase):
             dry_run["only_known_authors"], "vars.ONLY_KNOWN_AUTHORS || ''"
         )
 
-    @unittest.expectedFailure
     def test_plumbing_callers_pass_the_egress_mode_explicitly(self) -> None:
         """Plumbing names the default mode; the dry-run reads the variable."""
         plumbing = cast(dict[str, Any], self.jobs["plumbing"]["with"])
