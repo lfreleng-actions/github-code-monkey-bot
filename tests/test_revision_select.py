@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 check_reads = import_module("check_reads")
+inherited_checks = import_module("inherited_checks")
 reads = import_module("issue_reads")
 repository_reads = import_module("repository_reads")
 revisions = import_module("revision_reads")
@@ -117,6 +118,7 @@ class RevisionCase(unittest.TestCase):
         self.threads_since: list[str | None] = []
         self.review: dict[str, Any] | None = {"verdict": "clean"}
         self.checks = check_reads.CheckPacket([], 0, 0)
+        self.default_shas: list[str | None] = []
         self.rounds: tuple[int, list[dict[str, Any]], str | None, str | None] = (
             0,
             [],
@@ -141,7 +143,9 @@ class RevisionCase(unittest.TestCase):
             thread_reads, "unresolved_threads", side_effect=self.threads_of
         ).start()
         patch.object(revisions, "latest_review", side_effect=self.review_of).start()
-        patch.object(check_reads, "failing_checks", side_effect=self.checks_of).start()
+        patch.object(
+            inherited_checks, "failing_checks", side_effect=self.checks_of
+        ).start()
         patch.object(round_reads, "round_history", side_effect=self.rounds_of).start()
         patch.object(
             round_reads, "newer_member_comment", side_effect=self.newer_of
@@ -183,8 +187,9 @@ class RevisionCase(unittest.TestCase):
         self.threads_since.append(args[2] if len(args) > 2 else None)
         return thread_reads.ThreadPacket(self.threads, self.dropped, self.thread_word)
 
-    def checks_of(self, *_args: Any) -> Any:
-        """The fixture failing checks."""
+    def checks_of(self, *_args: Any, **kwargs: Any) -> Any:
+        """The fixture failing checks, noting the default branch head asked for."""
+        self.default_shas.append(kwargs.get("default_sha"))
         return self.checks
 
     def review_of(self, *_args: Any) -> dict[str, Any] | None:
@@ -288,7 +293,7 @@ class BuildEntryTest(RevisionCase):
         self.threads = [thread()]
         rule = stale_statuses.Rule(frozenset({"pre-commit.ci - pr"}), 8)
         with patch.object(
-            check_reads, "failing_checks", return_value=self.checks
+            inherited_checks, "failing_checks", return_value=self.checks
         ) as read:
             entry = select.build_entry(
                 select.Inputs("org", BOT, FORK_ORGS, stale=rule, listed=LISTED),
@@ -338,6 +343,41 @@ class BuildEntryTest(RevisionCase):
         entry = self.build(explicit=False)
         self.assertEqual(entry["round_reasons"], ["1 unresolved review thread(s)"])
         self.assertEqual(entry["checks"], [agent])
+
+    def test_inherited_failures_alone_skip_naming_the_default_branch(self) -> None:
+        """Failures main fails too spend no round; the skip says why (#258)."""
+        lint = {"name": "Lint", "kind": "defect", "inherited": True}
+        self.checks = check_reads.CheckPacket([lint], 0, 0, inherited=1)
+        with self.assertRaisesRegex(
+            select.Skip, "^failing checks inherited from main$"
+        ):
+            self.build(explicit=False)
+        self.assertEqual(self.default_shas[-1], TIP)
+        # The operator decided: a named pull request still gets its round.
+        named = self.build(explicit=True)
+        self.assertEqual(named["round_reasons"], ["named by the operator"])
+        self.assertEqual(named["checks"], [lint])
+        self.assertEqual(named["checks_inherited"], 1)
+
+    def test_own_and_inherited_failures_bring_a_round_carrying_both(self) -> None:
+        """A failure of the pull request's own brings the round; both are listed."""
+        own = {"name": "Test", "kind": "defect", "inherited": False}
+        lint = {"name": "Lint", "kind": "defect", "inherited": True}
+        self.checks = check_reads.CheckPacket(
+            [own, lint],
+            0,
+            1,
+            inherited=1,
+            default_sha=TIP,
+            default_running=["Build"],
+        )
+        entry = self.build(explicit=False)
+        self.assertEqual(entry["round_reasons"], ["failing checks"])
+        self.assertEqual(entry["checks"], [own, lint])
+        self.assertEqual(entry["checks_inherited"], 1)
+        self.assertEqual(entry["checks_default_sha"], TIP)
+        self.assertEqual(entry["checks_default_running"], ["Build"])
+        self.assertEqual(entry["rebase_sha"], TIP)
 
     def test_failing_checks_do_not_resume_after_a_handoff(self) -> None:
         """After a handoff a maintainer's word, not a failing check, resumes."""

@@ -478,6 +478,34 @@ class CommentBodyTest(unittest.TestCase):
         quiet = comments.comment_body(result_json(round=2, round_summary="s"), "")
         self.assertNotIn("failing checks", quiet or "")
 
+    def test_revision_round_comment_lists_inherited_failures_apart(self) -> None:
+        """Failures main fails too are named apart, with main's head (#258)."""
+        result = result_json(
+            round=2,
+            round_summary="Fixed the build.",
+            failing_checks=["Test"],
+            inherited_checks=["Lint"],
+            inherited_sha="d" * 40,
+            default_branch="main",
+            review=review_record("clean", assessment="approval"),
+        )
+        text = comments.comment_body(result, "") or ""
+        self.assertIn(
+            "It set out to fix the failing checks: Test. Failing checks inherited "
+            "from `main` at dddddddddddd, not this pull request's: Lint. The "
+            "Copilot review",
+            text,
+        )
+        lines = reporting.inherited_checks.report_lines([result], reporting.cell)
+        listed = [line for line in lines if line.startswith("- ")]
+        self.assertEqual(len(listed), 1)
+        self.assertIn("`main` at dddddddddddd", listed[0])
+        self.assertIn("Lint", listed[0])
+        self.assertNotIn("Test", listed[0])
+        self.assertEqual(
+            reporting.inherited_checks.report_lines([result_json()], reporting.cell), []
+        )
+
     def test_revision_round_comment_names_checks_still_running(self) -> None:
         """A round says how many checks had not finished when it was selected."""
         result = result_json(

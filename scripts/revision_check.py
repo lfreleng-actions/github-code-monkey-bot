@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any, cast
 
+import inherited_checks
 import proposal_policy as policy
 import review_outcome as outcome
 import revision_reads as revisions
@@ -254,6 +255,11 @@ def round_note(check: Check) -> str:
     base = "rebased onto the default branch" if check.rebased else "on its base"
     failing = policy.failing_checks_text(list(check.failing_checks))
     checks = f" It set out to fix the failing checks: {failing}." if failing else ""
+    inherited = inherited_checks.sentence(
+        check.inherited_checks, check.default_branch, check.inherited_sha
+    )
+    if inherited:
+        checks += f" {inherited}."
     running = outcome.unsettled_at_selection(check.checks_unsettled)
     if running:
         checks += f" {running}."

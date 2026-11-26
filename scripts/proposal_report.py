@@ -13,6 +13,7 @@ from typing import Any, cast
 import antagonistic_request as antagonistic
 import continuation
 import hook_runs
+import inherited_checks
 import named_holds
 import proposal_model as model
 import proposal_policy as policy
@@ -394,6 +395,7 @@ def run_report(args: argparse.Namespace) -> None:
         *workflow_grant.all_report_lines(results, cell),
         *failing_check_lines(results),
         *infrastructure_check_lines(results),
+        *inherited_checks.report_lines(results, cell),
         *unreviewed_heads.report_lines(unreviewed, invalid),
         policy.REVISION_DISCLOSURE,
         "",

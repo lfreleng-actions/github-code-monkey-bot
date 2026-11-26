@@ -107,6 +107,11 @@ def base_result(args: argparse.Namespace, check: dict[str, Any]) -> dict[str, An
         "round_summary": check.get("round_summary") or None,
         **{k: check.get(k) or 0 for k in ("round", "max_rounds")},
         "failing_checks": list(cast("list[Any]", check.get("failing_checks") or [])),
+        "inherited_checks": list(
+            cast("list[Any]", check.get("inherited_checks") or [])
+        ),
+        "inherited_sha": check.get("inherited_sha") or None,
+        "default_branch": check.get("default_branch") or None,
         "antagonistic_review": check.get("antagonistic_review") or None,
         "workflow_edits_label": check.get("workflow_edits_label") or None,
         "precommit_edits_label": check.get("precommit_edits_label") or None,

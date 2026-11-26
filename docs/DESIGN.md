@@ -2554,6 +2554,7 @@ scripts/thread_comments.py               one thread's comments, read whole
 scripts/thread_pending.py                resolved threads a round left unanswered
 scripts/check_reads.py                   its head's failing checks
 scripts/stale_statuses.py                statuses pending too long (§13.1)
+scripts/inherited_checks.py              failures the default branch shares (§20.1)
 scripts/round_reads.py                   the issue's rounds and new comments
 scripts/round_caps.py                    the round caps a result reads (§20.1)
 scripts/round_recount.py                 the ceiling's rounds after a race
@@ -2889,11 +2890,14 @@ kind}`; a status carries its `context` as `name`, its `state` as
 `details_url`, a null `app`, an empty `summary` and no annotations,
 bounded as a run is; each annotation
 `{level, path, line, title, message}` at level `failure` or `warning`,
-and `kind` `defect` or `infrastructure` (§8 step 11);
+and `kind` `defect` or `infrastructure` (§8 step 11), and
+`inherited`, `true` when the default branch's head fails a defect of
+the same name (§20.1);
 empty when none failed), `checks_dropped` (the failing runs, and
 the annotations of carried runs, the bounds left out: at most 30
 runs, 10 annotations each, 2 KiB per title, summary and message,
-32 KiB in all, defect runs kept before infrastructure ones;
+32 KiB in all, the pull request's own defect runs kept before
+inherited ones and both before infrastructure ones;
 annotations past the third page of a run count unread, whatever
 their level), `checks_unsettled` (the head's runs
 whose `status` is not `completed`, queued, in progress or waiting,
@@ -2903,7 +2907,12 @@ beside a non-zero count says CI had not finished, not that it
 passed; a stale status, §13.1, is not counted), `checks_stale` (the
 stale statuses, at most 30, each with `context`, `updated_at` and
 the run's `minutes`: the hook service did not report, so the result
-is unknown), `pr_comments`, `new_comments` and
+is unknown), `checks_inherited` (the failing defect runs the default
+branch's head fails too, counted whole), `checks_default_sha` (the
+default branch head the selection compared, `rebase_sha`),
+`checks_default_running` (at most 30 names of the head's failing
+checks the default branch's head had yet to finish, counted as the
+pull request's own, §20.1), `pr_comments`, `new_comments` and
 `new_pr_comments`; an issue entry has `task: "issue"` and
 `checkout_sha` equal to `base_sha`. Every entry carries
 `sudo_and_containers`: `true` when the root tree at its
@@ -3446,7 +3455,8 @@ Three ways in, all through the select job and its read token:
   latest footer, recorded as `antagonistic review round N handed
   back`; a check run on the head whose conclusion is
   `failure`, `timed_out` or `startup_failure` and whose kind is
-  `defect` (§8 step 11), recorded as `failing
+  `defect` (§8 step 11), and that is the pull request's own (see
+  "Inherited failures" below), recorded as `failing
   checks` among the round's reasons (the publish job's `checks`
   record, §18.4, reports the same failures on the round that
   published the head, but selection reads them afresh); a head that
@@ -3465,8 +3475,9 @@ Three ways in, all through the select job and its read token:
   alone reach the packet, unless `ONLY_KNOWN_AUTHORS` turned the list
   off. The predicate leaves out, by name, a
   check the head's own round cannot influence (`check_reads.EXCLUDED`,
-  empty today); the round cap bounds a check that fails for reasons outside
-  the pull request. GitHub computes `mergeable` in the background,
+  empty today), and by comparison a check the default branch fails
+  too; the round cap bounds any other check that fails for reasons
+  outside the pull request. GitHub computes `mergeable` in the background,
   so the selection reads a `null` again on the §8 step 11 backoff,
   for the head it selected, before the test, which
   adds up to a minute per such candidate; one that never settles is
@@ -3489,7 +3500,13 @@ Three ways in, all through the select job and its read token:
   other work outstanding the round goes ahead and the packet carries
   those entries marked `infrastructure` (`CheckPacket.infrastructure`
   counts them whole, each failing run read and classified before
-  the bounds, as `outstanding` counts the defects); a head with
+  the bounds, as `outstanding` counts the defects); a head whose
+  failing defects are all inherited, settled, with nothing else
+  outstanding, skips with the reason `failing checks inherited from
+  <default branch>` (`revision_select.inherited_reason`), ahead of the
+  infrastructure skip, so the scan and its summary show why it waited;
+  with other work outstanding the round goes ahead and carries them
+  marked `inherited`; a head with
   nothing else outstanding, its checks settled with no
   infrastructure failure, and no Copilot review skips with the
   reason `unreviewed_heads.NO_REVIEW`, or `unreviewed_heads.REFUSED`
@@ -3511,6 +3528,40 @@ Three ways in, all through the select job and its read token:
   nothing.
   Revisions select in `pull-requests` mode alone, named ones included,
   since a `branches` run publishes none.
+
+**Inherited failures.** When `main` itself fails a check (an upstream
+tool release, an expired runner image, a hook autoupdate), every bot
+pull request inherits the failure, and no round of its own can fix it.
+The selection reads the default branch's head, `rebase_sha`, before the
+findings, and when the head has a failing run it reads that commit's
+check runs and commit statuses with the same `check_reads.head_runs`,
+bounded and failing closed the same way, its stale statuses set apart
+(`inherited_checks.baseline`). The head inherits a failing defect when a
+run or status of the same **name** (check run name or status context,
+either way) failed on the default branch's head as a defect and none of
+that name still runs there; the selection reads annotations for the
+default branch's failing runs whose name the head fails and no others,
+so one that failed there at the egress agent alone leaves the head's
+failure its own, as does one whose annotations ran past the read's
+bound, since an unread annotation may be the egress agent's.
+Everything else that fails is the pull request's own: a check absent
+from the default branch's head, passing there, or still running there,
+the last listed in `checks_default_running` as the note that the
+selection counted it own for want of a result. `failing checks`
+needs at least one failing check of the pull request's own
+(`CheckPacket.outstanding`); `CheckPacket.inherited` counts the
+inherited ones whole, past the bounds as well. A named pull request
+still gets its round. The packet marks each entry `inherited`, own
+defects kept before inherited ones under the bounds, and the revise
+prompt tells the agent an inherited failure is the default branch's, to
+change no code for it unless a maintainer's comment asks, and to say so
+in its round summary. The publisher carries the names apart from
+`failing_checks` as `inherited_checks`, with the default branch head as
+`inherited_sha`, and the round's issue comment, the description's round
+note and the report each list them apart from the pull request's own,
+naming that head. The comparison is with the default branch's head, not
+the merge base: the round rebases onto that head anyway. Fixing the
+default branch stays a human's work.
 
 **Heads with no review.** A head reaches the scan with no Copilot review
 when the publish job's wait ended `pending`, Copilot not having answered

@@ -93,6 +93,24 @@ class CheckPacket:
     # Pending statuses the stale rule set apart (``stale_statuses``):
     # not counted as unsettled, their result unknown.
     stale: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
+    # Failing defect runs, kept or dropped, the default branch head fails
+    # too (``inherited_checks``), the head compared, and the names it
+    # had yet to finish, counted as the pull request's own.
+    inherited: int = 0
+    default_sha: str | None = None
+    default_running: list[str] = field(default_factory=lambda: list[str]())
+
+    def entry_fields(self) -> dict[str, Any]:
+        """The packet as a revision selection entry's ``checks`` fields."""
+        return {
+            "checks": self.checks,
+            "checks_dropped": self.dropped,
+            "checks_unsettled": self.unsettled,
+            "checks_stale": self.stale,
+            "checks_inherited": self.inherited,
+            "checks_default_sha": self.default_sha,
+            "checks_default_running": self.default_running,
+        }
 
 
 def failing_checks(
@@ -126,6 +144,7 @@ def failing_of(
     runs: list[dict[str, Any]],
     *,
     fits: Callable[[], bool] | None = None,
+    inherited: frozenset[str] | None = None,
 ) -> CheckPacket:
     """The failing runs among ``runs`` with their annotations, bounded.
 
@@ -134,7 +153,10 @@ def failing_of(
     run is classified on every annotation read, before the bounds cut
     runs or annotations, so a run past the run bound counts by its
     kind too; one whose annotations went unread counts as a defect.
-    Defect runs take the bounds first, by name, and infrastructure
+    With ``inherited``, names the default branch head fails, a defect
+    run of such a name counts as inherited, not outstanding, and every
+    entry says whether it is. The pull request's own defect runs take
+    the bounds first, by name, then inherited ones, and infrastructure
     runs fill what is left: the run that brings a round is the one
     the session has to see.
     """
@@ -143,23 +165,23 @@ def failing_of(
         key=lambda run: (str(run.get("name") or ""), run_id(run) or 0),
     )
     unsettled = sum(1 for run in runs if is_unsettled(run))
-    classified: list[tuple[dict[str, Any], list[dict[str, Any]], int, str]] = []
-    outstanding = 0
-    infrastructure = 0
+    classified: list[tuple[dict[str, Any], list[dict[str, Any]], int, str, bool]] = []
+    counts = {DEFECT: 0, INFRASTRUCTURE: 0, "inherited": 0}
     for run in failing:
         annotations, unread = run_annotations(repository, run, fits=fits)
         kind = kind_of(annotations)
-        if kind == INFRASTRUCTURE:
-            infrastructure += 1
-        elif run.get("name") not in EXCLUDED:
-            outstanding += 1
-        classified.append((run, annotations, unread, kind))
-    classified.sort(key=lambda item: item[3] == INFRASTRUCTURE)
+        shared = kind == DEFECT and str(run.get("name") or "") in (inherited or ())
+        if kind == INFRASTRUCTURE or run.get("name") not in EXCLUDED:
+            counts["inherited" if shared else kind] += 1
+        classified.append((run, annotations, unread, kind, shared))
+    classified.sort(key=lambda item: (item[3] == INFRASTRUCTURE, item[4]))
     kept: list[dict[str, Any]] = []
     dropped = max(0, len(failing) - MAX_CHECKS)
     total = 0
-    for run, annotations, unread, kind in classified[:MAX_CHECKS]:
+    for run, annotations, unread, kind, shared in classified[:MAX_CHECKS]:
         entry = check_entry(run, annotations[:MAX_ANNOTATIONS], kind)
+        if inherited is not None:
+            entry["inherited"] = shared
         while total + entry_size(entry) > MAX_CHECK_BYTES and entry["annotations"]:
             entry["annotations"].pop()
         size = entry_size(entry)
@@ -170,7 +192,14 @@ def failing_of(
         dropped += unread + len(annotations) - len(entry["annotations"])
         total += size
         kept.append(entry)
-    return CheckPacket(kept, dropped, outstanding, unsettled, infrastructure)
+    return CheckPacket(
+        kept,
+        dropped,
+        counts[DEFECT],
+        unsettled,
+        counts[INFRASTRUCTURE],
+        inherited=counts["inherited"],
+    )
 
 
 def check_runs(
