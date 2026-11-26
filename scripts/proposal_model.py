@@ -112,6 +112,10 @@ class Check:
     # The names of the head's failing checks the selection carried:
     # what the round set out to fix besides the threads.
     failing_checks: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    # The failing checks the default branch head fails too, and that
+    # head: the default branch's failures, not the round's to fix.
+    inherited_checks: list[str] = field(default_factory=lambda: cast("list[str]", []))
+    inherited_sha: str = ""
     # How many of the head's checks the selection found still running:
     # an empty ``failing_checks`` then proves nothing about CI.
     checks_unsettled: int = 0
@@ -192,12 +196,20 @@ class Check:
                 }
                 for t in cast("list[dict[str, Any]]", entry.get("threads") or [])
             ]
-            # A run the egress agent failed is not one the round fixes.
+            # A run the egress agent failed, or one the default branch
+            # fails too, is not one the round fixes.
+            entries = cast("list[dict[str, Any]]", entry.get("checks") or [])
             check.failing_checks = [
                 str(c["name"])
-                for c in cast("list[dict[str, Any]]", entry.get("checks") or [])
-                if c.get("kind") != "infrastructure"
+                for c in entries
+                if c.get("kind") != "infrastructure" and c.get("inherited") is not True
             ]
+            check.inherited_checks = [
+                str(c["name"]) for c in entries if c.get("inherited") is True
+            ]
+            sha = entry.get("checks_default_sha")
+            if check.inherited_checks and isinstance(sha, str):
+                check.inherited_sha = sha
             check.checks_unsettled = outcome.unsettled_count(
                 entry.get("checks_unsettled")
             )
@@ -260,6 +272,8 @@ class Check:
             "responses": self.responses,
             "round_summary": self.round_summary,
             "failing_checks": self.failing_checks,
+            "inherited_checks": self.inherited_checks,
+            "inherited_sha": self.inherited_sha,
             "checks_unsettled": self.checks_unsettled,
             "conflicted": self.conflicted,
             "superseded": self.superseded,

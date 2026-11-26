@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 checks = import_module("check_reads")
 github = import_module("bot_github")
 reads = import_module("issue_reads")
+inherited = import_module("inherited_checks")
 
 REPOSITORY = "org/alpha"
 HEAD = "a" * 40
@@ -424,6 +425,132 @@ class InfrastructureTest(ChecksCase):
         self.notes[1] = [agent_note("failure", "m", "t" * (checks.MAX_TEXT + 9))]
         title = self.read().checks[0]["annotations"][0]["title"]
         self.assertEqual(len(title), checks.MAX_TEXT)
+
+
+MAIN = "d" * 40
+
+
+def failed_status(context: str, state: str = "failure") -> dict[str, Any]:
+    """A commit status, as the combined status endpoint returns it."""
+    return {
+        "context": context,
+        "state": state,
+        "description": "checks completed with failures",
+        "target_url": "https://results.pre-commit.ci/run/github/1/2/3",
+    }
+
+
+class InheritedTest(ChecksCase):
+    """A failure the default branch head also fails is inherited (#258)."""
+
+    def setUp(self) -> None:
+        """The default branch head carries no runs or statuses until a test adds them."""
+        super().setUp()
+        self.main_runs: list[dict[str, Any]] = []
+        self.statuses: dict[str, list[dict[str, Any]]] = {HEAD: [], MAIN: []}
+
+    def runs_page(self, endpoint: str) -> dict[str, Any]:
+        """The head's or the default branch head's runs and statuses."""
+        sha = MAIN if f"commits/{MAIN}/" in endpoint else HEAD
+        if "/status?" in endpoint:
+            self.endpoints.append(endpoint)
+            found = self.statuses[sha]
+            return {"sha": sha, "total_count": len(found), "statuses": found}
+        if sha == HEAD:
+            return super().runs_page(endpoint)
+        self.endpoints.append(endpoint)
+        return {"total_count": len(self.main_runs), "check_runs": self.main_runs}
+
+    def compare(self) -> Any:
+        """The head's packet, compared against the default branch head."""
+        return inherited.failing_checks(REPOSITORY, HEAD, default_sha=MAIN)
+
+    def test_a_failure_main_also_fails_is_inherited(self) -> None:
+        """Inherited alone: counted apart, not outstanding, marked on the entry."""
+        self.runs = [run(1, "Lint")]
+        self.main_runs = [run(51, "Lint")]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (0, 1))
+        self.assertIs(packet.checks[0]["inherited"], True)
+        self.assertEqual(packet.default_sha, MAIN)
+        self.assertEqual(packet.default_running, [])
+
+    def test_a_failure_main_passes_is_the_pull_requests_own(self) -> None:
+        """Own alone: outstanding, marked not inherited."""
+        self.runs = [run(1, "Lint")]
+        self.main_runs = [run(51, "Lint", "success")]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (1, 0))
+        self.assertIs(packet.checks[0]["inherited"], False)
+
+    def test_mixed_failures_keep_the_pull_requests_own_first(self) -> None:
+        """Both are carried; the pull request's own takes the bounds first."""
+        self.runs = [run(1, "Lint"), run(2, "Test")]
+        self.main_runs = [run(51, "Lint"), run(52, "Test", "success")]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (1, 1))
+        self.assertEqual(
+            [(c["name"], c["inherited"]) for c in packet.checks],
+            [("Test", False), ("Lint", True)],
+        )
+
+    def test_a_check_main_still_runs_counts_as_own_with_a_note(self) -> None:
+        """Fail closed: a result main has yet to give is not a failure there."""
+        self.runs = [run(1, "Lint")]
+        self.main_runs = [
+            run(51, "Lint"),
+            run(52, "Lint", None, status="in_progress"),
+        ]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (1, 0))
+        self.assertIs(packet.checks[0]["inherited"], False)
+        self.assertEqual(packet.default_running, ["Lint"])
+
+    def test_a_check_absent_on_main_is_the_pull_requests_own(self) -> None:
+        """A check main does not carry cannot be inherited from it."""
+        self.runs = [run(1, "New check")]
+        self.main_runs = [run(51, "Lint")]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (1, 0))
+        self.assertIs(packet.checks[0]["inherited"], False)
+
+    def test_a_status_context_is_matched_by_name(self) -> None:
+        """A failing pre-commit.ci status on both heads is inherited."""
+        self.statuses[HEAD] = [failed_status("pre-commit.ci - pr")]
+        self.statuses[MAIN] = [failed_status("pre-commit.ci - pr", "error")]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (0, 1))
+        self.assertEqual(packet.checks[0]["name"], "pre-commit.ci - pr")
+        self.assertIs(packet.checks[0]["inherited"], True)
+
+    def test_main_failing_at_the_egress_agent_leaves_the_failure_own(self) -> None:
+        """Main's failure of that name must be a defect to make the head's inherited."""
+        self.runs = [run(1, "Lint")]
+        self.main_runs = [run(51, "Lint", annotations=1)]
+        self.notes[51] = [
+            agent_note("failure", "m", checks.AGENT_TITLE),
+        ]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (1, 0))
+
+    def test_main_annotations_left_unread_leave_the_failure_own(self) -> None:
+        """Fail closed: an agent failure past the annotation bound may hide there."""
+        bound = checks.MAX_ANNOTATION_PAGES * checks.ANNOTATIONS_PER_PAGE
+        self.runs = [run(1, "Lint")]
+        self.main_runs = [run(51, "Lint", annotations=bound + 1)]
+        self.notes[51] = [note("notice")] * bound + [
+            agent_note("failure", "m", checks.AGENT_TITLE),
+        ]
+        packet = self.compare()
+        self.assertEqual((packet.outstanding, packet.inherited), (1, 0))
+        self.assertIs(packet.checks[0]["inherited"], False)
+
+    def test_a_head_with_no_failure_costs_no_read_of_main(self) -> None:
+        """The default branch head is read only when the head has a failure."""
+        self.runs = [run(1, "Lint", "success")]
+        packet = self.compare()
+        self.assertEqual(packet.default_sha, MAIN)
+        self.assertFalse([e for e in self.endpoints if MAIN in e])
 
 
 if __name__ == "__main__":

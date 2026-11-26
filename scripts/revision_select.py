@@ -23,6 +23,7 @@ import bot_github as github
 import check_reads
 import explicit_issues
 import fork_orgs as forks
+import inherited_checks
 import issue_authors as authors
 import issue_reads as reads
 import merge_state
@@ -93,17 +94,16 @@ class Findings:
 def read_findings(
     repository: str,
     pull: dict[str, Any],
-    since: str | None,
-    reviewers: frozenset[str] = frozenset(),
-    rule: StaleRule = OFF,
-    bot: str = "",
-    pending: str | None = None,
+    history: rounds_of.RoundHistory,
+    inputs: Inputs,
+    default_sha: str | None = None,
 ) -> Findings:
     """The unresolved threads, the head's reviews and its failing checks.
 
-    ``rule`` sets the stale statuses apart from the checks; ``bot``,
-    the App's login, tells the thread reads which replies are its own,
-    and ``pending``, the last round's, which resolved threads it owes.
+    The run's stale rule sets the stale statuses apart from the checks,
+    the App's login tells the thread reads its own replies, the last
+    round's ``pending`` the resolved threads it owes, and ``default_sha``,
+    the default branch head, the check read the inherited failures.
 
     The hand-back is read before the threads and again after every
     other read. GitHub posts a review together with its inline
@@ -116,13 +116,16 @@ def read_findings(
     revision read does, and the next run reads both together.
     """
     number, head = int(pull["number"]), str(pull["head_sha"])
+    reviewers, bot = inputs.reviewers, str(inputs.bot["login"])
     handback = revisions.handback_review(repository, number, head, reviewers)
     findings = Findings(
         thread_reads.unresolved_threads(
-            repository, number, since, reviewers, bot, pending
+            repository, number, history.since, reviewers, bot, history.pending
         ),
         revisions.latest_review(repository, number, head),
-        check_reads.failing_checks(repository, head, rule),
+        inherited_checks.failing_checks(
+            repository, head, inputs.stale, default_sha=default_sha
+        ),
         handback,
     )
     recheck = revisions.handback_review(repository, number, head, reviewers)
@@ -153,9 +156,10 @@ def outstanding(
     maintainer is unresolved, when Copilot's review of the head has
     findings, when an antagonistic review of the head handed it back
     after the last round's watermark, when a check on the head
-    failed, outside the exclusion list and not at the egress agent
-    (``check_reads``), when the head conflicts with
-    the default branch, so no CI ran on it, or when a maintainer
+    failed, outside the exclusion list, not at the egress agent and
+    not on the default branch head too (``inherited_checks``), when
+    the head conflicts with the default branch, so no CI ran on it, or
+    when a maintainer
     commented on the issue or the pull request after the bot's last
     round; on the issue, only a ``listed`` author's comment counts, as
     only theirs reaches the packet. A maintainer's word on a review
@@ -168,11 +172,12 @@ def outstanding(
     unanswered (its footer's ``pending``). A
     stale status (``stale_statuses``) is no work. A head with nothing
     else skips (``scan_reasons``): as still running while its checks
-    have yet to finish, stale statuses aside, as needing a re-run when its
+    have yet to finish, stale statuses aside, as inherited when the
+    default branch head fails them too, as needing a re-run when its
     only failures are infrastructure, as unreviewed when Copilot has
     not reviewed it, and as done when its review is clean. A
-    ``mergeable`` that never settled
-    is no work on its own, so a GitHub hiccup cannot spend rounds.
+    ``mergeable`` that never settled is no work on its own, so a
+    GitHub hiccup cannot spend rounds.
     """
     packet, verdict = findings.threads, findings.verdict
     issue = int(pull["issue"])
@@ -266,10 +271,9 @@ def build_entry(
         raise Skip("the run that dispatched this continuation published no round here")
     # Skips a capped pull request before the packet's reads.
     next_segment_round(repository, pull, history, inputs, None)
-    login = str(bot["login"])
-    findings = read_findings(
-        repository, pull, since, inputs.reviewers, inputs.stale, login, history.pending
-    )
+    branch = str(meta["default_branch"])
+    rebase_sha = reads.branch_head(repository, branch)
+    findings = read_findings(repository, pull, history, inputs, rebase_sha)
     # The hand-back may have changed since the cap read it; decide on
     # the one the packet carries.
     segment_round = next_segment_round(repository, pull, history, inputs, findings)
@@ -277,7 +281,7 @@ def build_entry(
         ["named by the operator"]
         if explicit and not require_outstanding
         else scan_reasons(
-            pull, findings, history, repository=repository, listed=inputs.listed
+            pull, findings, history, branch, repository=repository, listed=inputs.listed
         )
     )
     details = packet_of(
@@ -286,7 +290,6 @@ def build_entry(
         explicit=explicit and not require_outstanding,
         listed=inputs.listed,
     )
-    rebase_sha = reads.branch_head(repository, str(meta["default_branch"]))
     return {
         "key": f"{meta['name']}-{issue}",
         "task": TASK,
@@ -318,10 +321,7 @@ def build_entry(
         "threads_dropped": findings.threads.dropped,
         "review": findings.verdict,
         "antagonistic_review": findings.handback,
-        "checks": findings.checks.checks,
-        "checks_dropped": findings.checks.dropped,
-        "checks_unsettled": findings.checks.unsettled,
-        "checks_stale": findings.checks.stale,
+        **findings.checks.entry_fields(),
         **rounds_of.conversation(repository, issue, pull_number, since, inputs.listed),
     }
 
@@ -370,16 +370,18 @@ def scan_reasons(
     pull: dict[str, Any],
     findings: Findings,
     history: rounds_of.RoundHistory,
+    default_branch: str = "the default branch",
     *,
     repository: str,
     listed: frozenset[str] | None = frozenset(),
 ) -> list[str]:
     """Why a scan gives the pull request a round, or ``Skip`` when it does not.
 
-    A head with nothing outstanding and no Copilot review skips by its
-    own reason, naming a refused request when the latest footer
-    records one, so the scan records it rather than reading it as
-    done: no round can request a review (DESIGN.md section 20.1).
+    A head whose only failures ``default_branch`` fails too skips as
+    inherited. A head with nothing outstanding and no Copilot review
+    skips by its own reason, naming a refused request when the latest
+    footer records one, so the scan records it rather than reading it
+    as done: no round can request a review (DESIGN.md section 20.1).
     """
     reasons = outstanding(
         pull, findings, repository=repository, since=history.since, listed=listed
@@ -387,6 +389,8 @@ def scan_reasons(
     if not reasons:
         if findings.checks.unsettled:
             raise Skip("checks still running")
+        if findings.checks.inherited:
+            raise Skip(inherited_checks.skip_reason(default_branch))
         if findings.checks.infrastructure:
             raise Skip(INFRASTRUCTURE_ONLY)
         if findings.verdict is None:

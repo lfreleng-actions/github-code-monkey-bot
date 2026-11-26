@@ -179,7 +179,8 @@ failed on the pull request's head: each with its `name`,
 `conclusion`, the `app` that ran it, a `details_url`, the run's
 `title` and `summary`, its
 `annotations` (`level`, `path`, `line`, `title`, `message`, failures
-and warnings alone), and its `kind`, `defect` or `infrastructure`.
+and warnings alone), its `kind`, `defect` or `infrastructure`, and
+`inherited`, `true` or `false`.
 `checks_dropped` counts the failing runs and
 annotations the packet's bounds left out; an empty `checks` with a
 zero count means no check failed. `checks_unsettled > 0` means CI had
@@ -226,6 +227,18 @@ caused it, and a re-run clears it. Do not change code for it and do
 not try to reproduce it. Say so in one line of the round summary,
 naming the check, and run the repository's own tests as you would
 anyway.
+
+An entry whose `inherited` is `true` also fails, by the same name, on
+the default branch's head, `checks_default_sha`, which this round
+rebases onto: the failure belongs to the default branch, not this pull
+request, and `checks_inherited` counts them all. Do not change code
+for it unless a maintainer's comment in the packet asks you to; fixing
+the default branch is another pull request's work. Say in the round
+summary, naming each such check, that this pull request inherits it
+from the default branch, and run the repository's own tests as you would anyway.
+`checks_default_running` names failing checks the default branch's
+head had yet to finish: they count as this pull request's own, so
+treat them as you would any other failing check.
 
 ## Antagonistic review
 

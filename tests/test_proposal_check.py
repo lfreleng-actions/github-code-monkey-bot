@@ -2040,6 +2040,27 @@ class RevisionCheckTest(GitCase):
         )
         self.assertEqual(check.failing_checks, ["Test"])
 
+    def test_round_note_lists_inherited_failures_apart(self) -> None:
+        """A failure main fails too is named apart, with main's head (#258)."""
+        self.fixture.bundle()
+        self.fixture.revision_manifest()
+        main = "d" * 40
+        check = self.run_revision(
+            checks=[
+                {"name": "Lint", "conclusion": "failure", "inherited": True},
+                {"name": "Test", "conclusion": "failure", "inherited": False},
+            ],
+            checks_default_sha=main,
+        )
+        self.assertEqual(check.failing_checks, ["Test"])
+        self.assertEqual(check.inherited_checks, ["Lint"])
+        self.assertEqual(check.to_json()["inherited_sha"], main)
+        self.assertIn(
+            "It set out to fix the failing checks: Test. Failing checks "
+            "inherited from `main` at dddddddddddd, not this pull request's: Lint.",
+            check.pr_body,
+        )
+
     def test_round_note_names_checks_still_running_at_selection(self) -> None:
         """The description says how many checks had not finished at selection."""
         self.fixture.bundle()

@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import bot_github as github
+import inherited_checks
 import issue_reads as reads
 import issue_recheck as recheck
 import late_notice
@@ -85,12 +86,13 @@ def _proposed_comment(
                 opening.rstrip(".")
                 + f". It set out to fix the failing checks: {failing}"
             )
-        running = unsettled_at_selection(result.get("checks_unsettled"))
-        if running:
-            opening = opening.rstrip(".") + f". {running}"
-        answered = handback_text(result)
-        if answered:
-            opening = opening.rstrip(".") + f". {answered}"
+        for extra in (
+            inherited_checks.result_sentence(result),
+            unsettled_at_selection(result.get("checks_unsettled")),
+            handback_text(result),
+        ):
+            if extra:
+                opening = opening.rstrip(".") + f". {extra}"
         return outcome_text(granted(opening, result), result) + antagonistic_sentence(
             result
         )
