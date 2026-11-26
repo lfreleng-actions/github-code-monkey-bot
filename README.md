@@ -146,6 +146,8 @@ jobs:
       issue_authors: ${{ vars.CODE_MONKEY_ISSUE_AUTHORS }}
       # Optional: 'false' turns the author list off; unset keeps it.
       only_known_authors: ${{ vars.ONLY_KNOWN_AUTHORS }}
+      # Optional: the agent's egress mode; unset means allow-list.
+      agent_egress_mode: ${{ vars.CODE_MONKEY_EGRESS_MODE }}
       # Optional: the fork pool token's lifetime limit in days (empty
       # means 90, at most 366) and its recorded expiry, YYYY-MM-DD.
       fork_pool_token_max_days: ${{ vars.FORK_POOL_TOKEN_MAX_DAYS }}
@@ -272,6 +274,34 @@ a reviewed pull request, and the publisher refuses any proposal or
 round that adds, edits or deletes it. Keep the marker rare and say
 in its pull request why the repository needs it: it gives every
 session there root and Docker back (design document section 4.1).
+
+## Agent egress
+
+The repository variable `CODE_MONKEY_EGRESS_MODE` sets how far the
+agent's runner may reach. No dispatch form field and no continuation
+can change it; the select job reads it once, before any token
+exists, and fails the run on any value but these three. A block
+mode blocks every host its lists leave out:
+
+| Mode | Author job egress |
+| ---- | ----------------- |
+| `allow-list` (unset or empty) | Organisation list plus the bot list |
+| `block-all` | The bot list alone |
+| audit-o&#110;ly | Records connections, blocks none, warns |
+
+Set it as this repository does:
+
+```bash
+gh variable set CODE_MONKEY_EGRESS_MODE \
+  --repo lfreleng-actions/github-code-monkey-bot --body allow-list
+```
+
+Both lists load at one pinned commit of the organisation `.github`
+release; nothing a caller passes widens them. GitHub hosts and the
+package registries stay allowed in every mode, so block mode narrows
+the paths a session could send data out on rather than closing them,
+and `allow-list` is wider than `block-all`. Each run's report states
+the mode in effect (design document section 7.5).
 
 ## Development
 
