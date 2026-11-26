@@ -4536,6 +4536,150 @@ class InterfaceContracts(ReusableWorkflowCase):
                 self.assertEqual(actual, default)
 
 
+AGENT_EGRESS_MODE = "needs.select.outputs.agent_egress_mode"
+# The literal coordinates the author job loads: the organisation list
+# and the bot list, at one commit of the organisation .github release.
+ORG_LIST_COORDINATE = re.compile(r"@([0-9a-f]{40})")
+BOT_LIST_COORDINATE = re.compile(
+    r"lfreleng-actions//\.github/harden-runner/bots/code_monkey\.txt@([0-9a-f]{40})"
+)
+
+
+class AgentEgressContracts(ReusableWorkflowCase):
+    """The author job's egress follows one mode the select job resolved (#255)."""
+
+    @unittest.expectedFailure
+    def test_select_resolves_the_mode_before_any_token(self) -> None:
+        """The input is parsed once, before the first App token, and published."""
+        inputs = cast(
+            dict[str, dict[str, Any]], self.triggers["workflow_call"]["inputs"]
+        )
+        self.assertEqual(inputs["agent_egress_mode"]["type"], "string")
+        self.assertEqual(inputs["agent_egress_mode"]["default"], "")
+        step = self.step("select", "egress")
+        self.assert_expression(
+            step["env"]["AGENT_EGRESS_MODE"], "inputs.agent_egress_mode"
+        )
+        self.assertIn(
+            'python3 monkey-assets/scripts/egress_mode.py --mode="$AGENT_EGRESS_MODE"',
+            flatten(str(step["run"])),
+        )
+        self.assertLess(
+            self.position("select", "egress"), self.position("select", "app-token")
+        )
+        outputs = cast(dict[str, str], self.jobs["select"]["outputs"])
+        self.assert_expression(
+            outputs["agent_egress_mode"], "steps.egress.outputs.mode"
+        )
+
+    def test_only_the_select_step_reads_the_input(self) -> None:
+        """No job but select's resolving step reads the raw input."""
+        for job, body in self.jobs.items():
+            for step in cast(list[dict[str, Any]], body.get("steps", [])):
+                if job == "select" and step.get("id") == "egress":
+                    continue
+                with self.subTest(job=job, step=step.get("name")):
+                    self.assertNotIn("inputs.agent_egress_mode", dumped(step))
+            outside = {k: v for k, v in body.items() if k != "steps"}
+            with self.subTest(job=job):
+                self.assertNotIn("inputs.agent_egress_mode", dumped(outside))
+        self.assertNotIn("CODE_MONKEY_EGRESS_MODE", dumped(self.jobs["author"]))
+
+    @unittest.expectedFailure
+    def test_one_loader_picks_the_literal_coordinates(self) -> None:
+        """One loader, gated on a block mode, loads fixed coordinates.
+
+        A step's if skips the action's main step but not its pre hook,
+        which exports CONNECTION_ALLOW_LIST; a second loader's pre hook
+        would overwrite the first one's list whatever the mode.
+        """
+        loaders = self.actions("author", BLOCK_ACTION)
+        self.assertEqual(len(loaders), 1)
+        loader = loaders[0]
+        self.assertEqual(loader["id"], "egress-list")
+        self.assert_expression(
+            loader["if"],
+            f"{AGENT_EGRESS_MODE} == 'allow-list' || "
+            f"{AGENT_EGRESS_MODE} == 'block-all'",
+        )
+        allow = f"{AGENT_EGRESS_MODE} == 'allow-list'"
+        with_ = cast(dict[str, Any], loader["with"])
+        self.assertEqual(
+            set(with_) - {"agent_not_ready"},
+            {
+                "config",
+                "supplemental_config",
+                "supplemental_required",
+                "allow_list_summary",
+            },
+        )
+        self.assert_expression(
+            with_["config"], f"{allow} && env.AGENT_ORG_LIST || env.AGENT_BOT_LIST"
+        )
+        self.assert_expression(
+            with_["supplemental_config"], f"{allow} && env.AGENT_BOT_LIST || ''"
+        )
+        self.assert_expression(with_["supplemental_required"], allow)
+        self.assertEqual(with_["allow_list_summary"], "false")
+        self.assertIn(with_.get("agent_not_ready", "error"), ("error",))
+        env = cast(dict[str, Any], self.jobs["author"]["env"])
+        org = ORG_LIST_COORDINATE.fullmatch(str(env["AGENT_ORG_LIST"]))
+        bot = BOT_LIST_COORDINATE.fullmatch(str(env["AGENT_BOT_LIST"]))
+        assert org is not None and bot is not None
+        self.assertEqual(
+            org.group(1), bot.group(1), "the coordinates name one release commit"
+        )
+        self.assertNotIn("extra_endpoints", dumped(self.jobs["author"]))
+
+    @unittest.expectedFailure
+    def test_harden_runner_policy_follows_the_resolved_mode(self) -> None:
+        """Block in both block modes against the loaded list; audit otherwise."""
+        harden = self.action("author", HARDEN_RUNNER)
+        with_ = cast(dict[str, Any], harden["with"])
+        self.assert_expression(
+            with_["egress-policy"],
+            f"{AGENT_EGRESS_MODE} == 'audit-only' && 'audit' || 'block'",
+        )
+        self.assert_expression(with_["allowed-endpoints"], "env.CONNECTION_ALLOW_LIST")
+        self.assertIn(AGENT_EGRESS_MODE, str(harden["name"]))
+        self.assert_expression(
+            with_["disable-sudo-and-containers"], "matrix.sudo_and_containers != true"
+        )
+
+    @unittest.expectedFailure
+    def test_author_requires_the_mode_before_any_checkout(self) -> None:
+        """A block mode without a list or a ready agent, or no mode, fails."""
+        name = "Require the agent egress mode"
+        step = self.step("author", name)
+        self.assert_expression(step["env"]["EGRESS_MODE"], AGENT_EGRESS_MODE)
+        self.assert_expression(
+            step["env"]["AGENT_STATUS"], "steps.egress-list.outputs.agent_status"
+        )
+        self.assertNotIn("if", step)
+        script = str(step["run"])
+        self.assertIn('[ -z "$CONNECTION_ALLOW_LIST" ]', script)
+        self.assertIn("""[ "$AGENT_STATUS" != 'ready' ]""", script)
+        self.assertIn("::warning::Agent egress is not enforced", script)
+        self.assertEqual(command_lines(script).count("exit 1"), 3)
+        self.assertLess(
+            self.position("author", name),
+            self.position("author", "Checkout prompt assets"),
+        )
+
+    @unittest.expectedFailure
+    def test_aislop_telemetry_is_off_in_every_mode(self) -> None:
+        """The job environment, not one mode's step, turns telemetry off."""
+        env = cast(dict[str, Any], self.jobs["author"]["env"])
+        self.assertEqual(env["AISLOP_NO_TELEMETRY"], "1")
+
+    @unittest.expectedFailure
+    def test_report_states_the_mode(self) -> None:
+        """Every run's report names the mode the select job resolved."""
+        step = self.step("report", "report")
+        self.assert_expression(step["env"]["AGENT_EGRESS_MODE"], AGENT_EGRESS_MODE)
+        self.assertIn("$AGENT_EGRESS_MODE", str(step["run"]))
+
+
 class SudoAndContainerContracts(ReusableWorkflowCase):
     """The author job runs without sudo and containers unless opted in (#189)."""
 
@@ -4814,6 +4958,20 @@ class CronCallerContracts(WorkflowCase):
         self.assertNotIn("only_known_authors", inputs)
         dispatch = dumped(self.jobs["continue"]).lower()
         for name in ("only_known_authors", "issue_authors"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, dispatch)
+
+    @unittest.expectedFailure
+    def test_agent_egress_mode_comes_from_the_variable_alone(self) -> None:
+        """No dispatch field, and no continuation, can loosen agent egress."""
+        with_ = cast(dict[str, Any], self.jobs["code-monkey"]["with"])
+        self.assert_expression(
+            str(with_["agent_egress_mode"]), "vars.CODE_MONKEY_EGRESS_MODE || ''"
+        )
+        inputs = cast(dict[str, Any], self.triggers["workflow_dispatch"]["inputs"])
+        self.assertNotIn("agent_egress_mode", inputs)
+        dispatch = dumped(self.jobs["continue"]).lower()
+        for name in ("agent_egress_mode", "code_monkey_egress_mode"):
             with self.subTest(name=name):
                 self.assertNotIn(name, dispatch)
 
@@ -5506,6 +5664,16 @@ class TestingCallerContracts(WorkflowCase):
         dry_run = cast(dict[str, Any], self.jobs["dry-run"]["with"])
         self.assert_expression(
             dry_run["only_known_authors"], "vars.ONLY_KNOWN_AUTHORS || ''"
+        )
+
+    @unittest.expectedFailure
+    def test_plumbing_callers_pass_the_egress_mode_explicitly(self) -> None:
+        """Plumbing names the default mode; the dry-run reads the variable."""
+        plumbing = cast(dict[str, Any], self.jobs["plumbing"]["with"])
+        self.assertEqual(plumbing["agent_egress_mode"], "allow-list")
+        dry_run = cast(dict[str, Any], self.jobs["dry-run"]["with"])
+        self.assert_expression(
+            dry_run["agent_egress_mode"], "vars.CODE_MONKEY_EGRESS_MODE || ''"
         )
 
     def test_manual_dry_run_takes_the_target_lists(self) -> None:
